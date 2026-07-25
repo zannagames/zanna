@@ -8,7 +8,7 @@ endforeach ()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ToolchainInstallerSmokeHelpers.cmake")
 
-if (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if (NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     message(STATUS "Skipping Linux installer smoke; host is not Linux")
     return()
 endif ()
@@ -76,14 +76,13 @@ foreach (_needle IN ITEMS
         "Depends:"
         "libc6"
         "libgcc-s1"
+        "libx11-6"
+        "libasound2 | libasound2t64"
         "Zanna compiler toolchain")
     if (NOT _info_out MATCHES "${_needle}")
         message(FATAL_ERROR "dpkg-deb -I output did not contain '${_needle}'\n${_info_out}")
     endif ()
 endforeach ()
-if (_info_out MATCHES "Depends:.*libx11-6" AND NOT _info_out MATCHES "zannagfx|zannagui")
-    message(FATAL_ERROR "Debian dependency metadata appears to include X11 unconditionally\n${_info_out}")
-endif ()
 
 execute_process(
         COMMAND "${DPKG_DEB_BIN}" -c "${_artifact}"
@@ -96,16 +95,17 @@ if (NOT _list_rv EQUAL 0)
 endif ()
 zanna_installer_smoke_required_tool_names(_required_tools)
 set(_required_listing_paths
-        "./usr/lib/cmake/Zanna/ZannaConfig.cmake"
-        "./usr/share/applications/zannastudio.desktop"
-        "./usr/share/man/man1/zanna.1")
+        "usr/lib/cmake/Zanna/ZannaConfig.cmake"
+        "usr/share/applications/zannastudio.desktop"
+        "usr/share/man/man1/zanna.1")
 foreach (_tool IN LISTS _required_tools)
-    list(APPEND _required_listing_paths "./usr/bin/${_tool}")
+    list(APPEND _required_listing_paths "usr/bin/${_tool}")
 endforeach ()
 zanna_installer_smoke_require_listing_paths("${_list_out}" "Debian installer smoke" ${_required_listing_paths})
 
 if (NOT DEFINED ENV{ZANNA_RUN_LINUX_INSTALLER_SMOKE} OR NOT "$ENV{ZANNA_RUN_LINUX_INSTALLER_SMOKE}" STREQUAL "1")
-    message(STATUS "Skipping Linux installer smoke; set ZANNA_RUN_LINUX_INSTALLER_SMOKE=1 to install the .deb")
+    message(STATUS
+            "Linux DEB artifact smoke passed; set ZANNA_RUN_LINUX_INSTALLER_SMOKE=1 to add the privileged install lifecycle")
     return()
 endif ()
 

@@ -39,6 +39,7 @@
 #include "rt_trap.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cerrno>
