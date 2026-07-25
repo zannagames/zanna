@@ -5,15 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/OperandRoles.hpp
+// File: src/codegen/x86_64/OperandRoles.hpp
 // Purpose: Shared x86-64 Machine IR operand role classification.
 // Key invariants:
 //   - operandRoles() covers all defined MIR opcodes deterministically.
 //   - EFlags queries are consistent with the x86-64 instruction set.
 // Ownership/Lifetime:
 //   - Stateless free functions; no dynamic allocation or persistent state.
-// Links: codegen/x86_64/OperandRoles.cpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/OperandRoles.cpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,20 +24,28 @@
 #include <cstddef>
 #include <utility>
 
+/**
+ * @file
+ * @brief Declares the canonical implicit and explicit role model for x86-64 MIR.
+ *
+ * Dataflow passes query explicit operand use/definition roles through one
+ * opcode-complete classifier. Separate predicates model EFLAGS reads/writes and
+ * conservatively identify instructions that dead-code elimination must retain.
+ */
+
 namespace zanna::codegen::x64 {
 
 /// @brief Return `{isUse, isDef}` for an operand of an x86-64 MIR instruction.
 /// @details Used by liveness, DCE, and the register allocator to classify every
 ///          operand of every MIR opcode without re-encoding the rules per pass.
 /// @param instr Machine instruction whose operand is being classified.
-/// @param idx   Zero-based index into `instr.ops`.
+/// @param idx   Zero-based index into @c instr.operands.
 /// @return Pair indicating whether the operand is read, written, or both.
 [[nodiscard]] std::pair<bool, bool> operandRoles(const MInstr &instr, std::size_t idx) noexcept;
 
 /// @brief Test whether @p opcode reads the x86 EFLAGS register.
-/// @details EFLAGS-reading instructions include the conditional branches, `SETcc`,
-///          `CMOVcc`, and `ADC`/`SBB`. Used by fold-safety checks to refuse to
-///          delete a flag-producing instruction whose flags are consumed later.
+/// @details The current MIR readers are JCC, SETcc, and CMOVNErr. Fold-safety
+///          checks use this result to retain an observable flag producer.
 /// @param opcode Opcode to classify.
 /// @return True if @p opcode reads EFLAGS.
 [[nodiscard]] bool usesEFlags(MOpcode opcode) noexcept;

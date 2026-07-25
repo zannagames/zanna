@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/FrameCodegen.hpp
+// File: src/codegen/aarch64/FrameCodegen.hpp
 // Purpose: Shared prologue/epilogue iteration utilities for AArch64 callee-saved
 //          register save/restore sequences. Both AsmEmitter (text) and
 //          A64BinaryEncoder (binary) delegate to these templates to avoid
@@ -16,10 +16,20 @@
 //   - GPRs and FPRs are processed separately (different instruction encodings).
 // Ownership/Lifetime:
 //   - Header-only; all functions are templates with no persistent state.
-// Links: codegen/aarch64/AsmEmitter.cpp,
-//        codegen/aarch64/binenc/A64BinaryEncoder.cpp
+// Links: src/codegen/aarch64/AsmEmitter.cpp,
+//        src/codegen/aarch64/binenc/A64BinaryEncoder.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Defines the shared AArch64 prologue/epilogue step ordering.
+ *
+ * Text and binary emitters supply small callback objects implementing the
+ * required save, restore, stack-adjustment, signing, and return operations.
+ * Keeping iteration here guarantees both encoders apply identical register
+ * ordering and odd-tail padding behavior.
+ */
 
 #pragma once
 
@@ -30,13 +40,14 @@
 
 namespace zanna::codegen::aarch64 {
 
-/// Iterate over a register list in forward-pair order for callee save (prologue).
-///
-/// Processes registers two at a time. For each full pair, calls \p onPair(r0, r1).
-/// If the list has an odd length, calls \p onSingle(rLast) for the trailing register.
-///
-/// @tparam OnPair   Callable with signature void(PhysReg, PhysReg)
-/// @tparam OnSingle Callable with signature void(PhysReg)
+/// @brief Iterate over a register list in forward-pair save order.
+/// @details Processes registers two at a time. For each full pair, calls
+///          @p onPair. An odd trailing register is passed to @p onSingle.
+/// @tparam OnPair Callable with signature `void(PhysReg, PhysReg)`.
+/// @tparam OnSingle Callable with signature `void(PhysReg)`.
+/// @param regs Ordered callee-saved register list.
+/// @param onPair Callback for each complete adjacent pair.
+/// @param onSingle Callback for an odd trailing register.
 template <typename OnPair, typename OnSingle>
 void forEachSaveReg(const std::vector<PhysReg> &regs, OnPair onPair, OnSingle onSingle) {
     for (std::size_t i = 0; i < regs.size();) {
@@ -48,14 +59,14 @@ void forEachSaveReg(const std::vector<PhysReg> &regs, OnPair onPair, OnSingle on
     }
 }
 
-/// Iterate over a register list in reverse-pair order for callee restore (epilogue).
-///
-/// Processes registers from the end. If the list has an odd length, calls
-/// \p onSingle(rLast) first (the last register saved was last on the stack).
-/// Then processes remaining registers in descending pairs via \p onPair(r0, r1).
-///
-/// @tparam OnPair   Callable with signature void(PhysReg, PhysReg)
-/// @tparam OnSingle Callable with signature void(PhysReg)
+/// @brief Iterate over a register list in reverse-pair restore order.
+/// @details An odd tail is restored first because it was pushed last, followed
+///          by adjacent pairs in descending order.
+/// @tparam OnPair Callable with signature `void(PhysReg, PhysReg)`.
+/// @tparam OnSingle Callable with signature `void(PhysReg)`.
+/// @param regs Register list originally passed to @ref forEachSaveReg.
+/// @param onPair Callback for each pair in restore order.
+/// @param onSingle Callback for an odd trailing register.
 template <typename OnPair, typename OnSingle>
 void forEachRestoreReg(const std::vector<PhysReg> &regs, OnPair onPair, OnSingle onSingle) {
     std::size_t n = regs.size();
@@ -79,6 +90,12 @@ void forEachRestoreReg(const std::vector<PhysReg> &regs, OnPair onPair, OnSingle
 ///          The Steps callable must expose: paciasp(), stpFpLrPre(), movFpSp(),
 ///          subSp(int32_t), stpGprPair(PhysReg,PhysReg), strGprSingle(PhysReg),
 ///          stpFprPair(PhysReg,PhysReg), strFprSingle(PhysReg).
+/// @tparam Steps Callback-object type implementing the listed operations.
+/// @param savedGPRs GPRs to save in forward order.
+/// @param savedFPRs FPRs to save after the GPRs.
+/// @param localFrameSize Local/spill/outgoing area size in bytes.
+/// @param needPaciasp Whether pointer authentication signs LR before frame setup.
+/// @param s Callback object receiving each abstract prologue step.
 template <typename Steps>
 void iteratePrologue(const std::vector<PhysReg> &savedGPRs,
                      const std::vector<PhysReg> &savedFPRs,
@@ -105,6 +122,12 @@ void iteratePrologue(const std::vector<PhysReg> &savedGPRs,
 /// @details Required Steps members (mirrors iteratePrologue): ldpFprPair,
 ///          ldrFprSingle, ldpGprPair, ldrGprSingle, addSp(int32_t), ldpFpLrPost(),
 ///          autiasp(), ret().
+/// @tparam Steps Callback-object type implementing the listed operations.
+/// @param savedGPRs GPRs restored after FPRs in reverse order.
+/// @param savedFPRs FPRs restored first in reverse order.
+/// @param localFrameSize Local/spill/outgoing area size to deallocate.
+/// @param needAutiasp Whether pointer authentication verifies LR before return.
+/// @param s Callback object receiving each abstract epilogue step.
 template <typename Steps>
 void iterateEpilogue(const std::vector<PhysReg> &savedGPRs,
                      const std::vector<PhysReg> &savedFPRs,

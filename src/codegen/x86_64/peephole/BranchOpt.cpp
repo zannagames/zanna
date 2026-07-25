@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/peephole/BranchOpt.cpp
+// File: src/codegen/x86_64/peephole/BranchOpt.cpp
 // Purpose: Branch optimization peephole sub-passes for the x86-64 backend.
 //          Implements greedy trace block layout, cold block reordering,
 //          branch chain elimination, conditional branch inversion, and
@@ -16,8 +16,8 @@
 //   - All control-flow rewrites preserve semantic equivalence.
 // Ownership/Lifetime:
 //   - Stateless; all state is owned by the caller.
-// Links: codegen/x86_64/peephole/BranchOpt.hpp,
-//        codegen/x86_64/peephole/PeepholeCommon.hpp
+// Links: src/codegen/x86_64/peephole/BranchOpt.hpp,
+//        src/codegen/x86_64/peephole/PeepholeCommon.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +28,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+/// @file
+/// @brief Implements cycle-safe branch retargeting and block-layout rewrites.
 
 namespace zanna::codegen::x64::peephole {
 
@@ -62,6 +65,8 @@ std::optional<std::size_t> lookupUnplacedTarget(
 /// @details A block falls through unless its last instruction is an
 ///          unconditional terminator (JMP/RET/UD2). JCC counts as
 ///          fall-through because it has an implicit unconditional path.
+/// @param block Machine block whose terminal instruction is inspected.
+/// @return @c true when execution may continue into the physically next block.
 bool fallsThroughToNext(const MBasicBlock &block) {
     if (block.instructions.empty()) {
         return true;
@@ -72,6 +77,9 @@ bool fallsThroughToNext(const MBasicBlock &block) {
            last != MOpcode::JUMPTABLE;
 }
 
+/// @brief Finds the unique label operand in a mutable instruction.
+/// @param instr Instruction whose operand variants are scanned.
+/// @return Pointer to the sole label, or @c nullptr for zero or multiple labels.
 OpLabel *singleLabelOperand(MInstr &instr) noexcept {
     OpLabel *label = nullptr;
     for (auto &operand : instr.operands) {
@@ -85,6 +93,9 @@ OpLabel *singleLabelOperand(MInstr &instr) noexcept {
     return label;
 }
 
+/// @brief Finds the unique label operand in an immutable instruction.
+/// @param instr Instruction whose operand variants are scanned.
+/// @return Pointer to the sole label, or @c nullptr for zero or multiple labels.
 const OpLabel *singleLabelOperand(const MInstr &instr) noexcept {
     const OpLabel *label = nullptr;
     for (const auto &operand : instr.operands) {
@@ -98,6 +109,9 @@ const OpLabel *singleLabelOperand(const MInstr &instr) noexcept {
     return label;
 }
 
+/// @brief Finds the unique immediate condition operand in an instruction.
+/// @param instr Conditional instruction whose operand variants are scanned.
+/// @return Pointer to the sole immediate, or @c nullptr for zero or multiple immediates.
 OpImm *singleConditionOperand(MInstr &instr) noexcept {
     OpImm *condition = nullptr;
     for (auto &operand : instr.operands) {
@@ -119,7 +133,7 @@ OpImm *singleConditionOperand(MInstr &instr) noexcept {
 ///          silent peephole miss.
 /// @param instr Branch instruction to rewrite.
 /// @param forwarding Map of @c old_label -> @c new_label.
-/// @return True when the operand was rewritten.
+/// @return @c true when the operand was rewritten.
 bool retargetBranchLabel(MInstr &instr,
                          const std::unordered_map<std::string, std::string> &forwarding) {
     if (instr.opcode != MOpcode::JMP && instr.opcode != MOpcode::JCC)
@@ -144,10 +158,13 @@ bool retargetBranchLabel(MInstr &instr,
 /// @details Starts at the entry block and follows the preferred fall-through
 ///          edge of each terminator, threading blocks together so the most
 ///          likely path through the function uses physical adjacency
-///          (eliminating the need for a JMP). Cold/error blocks come last
+///          (eliminating the need for a JMP). Explicit trap blocks come last
 ///          courtesy of the subsequent @ref moveColdBlocks pass. Bails out
 ///          early when the function has 2 or fewer blocks because no useful
-///          rearrangement is possible.
+///          rearrangement is possible. Functions containing any implicit
+///          fall-through edge are also left unchanged.
+/// @param fn Machine function whose blocks may be moved.
+/// @param stats Statistics incremented by the function's block count on change.
 void traceBlockLayout(MFunction &fn, PeepholeStats &stats) {
     if (fn.blocks.size() <= 2)
         return;
@@ -243,11 +260,13 @@ void traceBlockLayout(MFunction &fn, PeepholeStats &stats) {
     }
 }
 
-/// @brief Move trap/error blocks to the tail of the function.
-/// @details Cold blocks contain terminators like @c UD2 or calls to runtime
-///          trap functions and should not pollute the hot fall-through trace.
-///          Reorders the block list so they end up at the very end of the
-///          function in original order. Preserves the entry block position.
+/// @brief Move explicit trap blocks to the tail of the function.
+/// @details Classifies a non-entry block as cold when it contains @c UD2 and
+///          does not participate in an implicit fall-through pair. Reorders
+///          hot blocks before cold blocks while preserving order within each
+///          partition and keeping the entry first.
+/// @param fn Machine function whose blocks may be moved.
+/// @param stats Statistics incremented once for each cold block appended.
 void moveColdBlocks(MFunction &fn, PeepholeStats &stats) {
     if (fn.blocks.size() <= 2)
         return;
@@ -307,8 +326,11 @@ void moveColdBlocks(MFunction &fn, PeepholeStats &stats) {
 /// @brief Collapse multi-hop branch chains into single branches.
 /// @details Detects blocks whose sole instruction is an unconditional jump
 ///          and rewrites all branches that target such blocks to point at
-///          the eventual destination instead. Limits hop chains to 8 to
-///          prevent cycles from looping infinitely.
+///          the eventual destination instead. Explicit visited-label sets
+///          identify cycles; forwarding entries rooted in a cycle are removed
+///          so their existing targets remain unchanged.
+/// @param fn Machine function whose @c JMP and @c JCC labels may be rewritten.
+/// @param stats Statistics incremented once per rewritten branch instruction.
 void eliminateBranchChains(MFunction &fn, PeepholeStats &stats) {
     // Build forwarding map: label -> ultimate JMP target for single-JMP blocks.
     std::unordered_map<std::string, std::string> forwarding;
@@ -360,6 +382,8 @@ void eliminateBranchChains(MFunction &fn, PeepholeStats &stats) {
 ///          next block. After inversion the JCC condition flips and the
 ///          JMP can be removed because the fall-through replaces it. This
 ///          saves an instruction on the hot path.
+/// @param fn Machine function rewritten in place.
+/// @param stats Statistics incremented once per successful inversion.
 void invertConditionalBranches(MFunction &fn, PeepholeStats &stats) {
     // Pattern:  JCC(cc, label_skip) / JMP(label_exit) where label_skip is the next block
     // Rewrite:  JCC(invert(cc), label_exit) — saves 5 bytes (eliminates JMP)
@@ -418,7 +442,10 @@ void invertConditionalBranches(MFunction &fn, PeepholeStats &stats) {
 /// @details After layout passes have run, many JMPs become redundant
 ///          because their target sits physically next. This pass scans
 ///          every terminator and removes such jumps, replacing them with
-///          implicit fall-through.
+///          implicit fall-through. A jump immediately following @c JCC is
+///          retained because it represents the explicit alternative edge.
+/// @param fn Machine function rewritten in place.
+/// @param stats Statistics incremented once per removed jump.
 void removeFallthroughJumps(MFunction &fn, PeepholeStats &stats) {
     for (std::size_t bi = 0; bi + 1 < fn.blocks.size(); ++bi) {
         auto &block = fn.blocks[bi];

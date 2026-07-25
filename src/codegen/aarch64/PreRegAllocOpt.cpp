@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/PreRegAllocOpt.cpp
+// File: src/codegen/aarch64/PreRegAllocOpt.cpp
 // Purpose: Conservative AArch64 MIR cleanup before register allocation:
 //          identity-copy removal, single-use copy forwarding. The traversal
 //          and safety conditions live in the shared PreRAForwardCopy
@@ -13,16 +13,17 @@
 //          shapes, def positions, boundary opcodes).
 //
 // Key invariants:
-//   - Operates on virtual registers only; no physical register assignment.
+//   - Forwarding candidates are virtual-register copies; precolored physical
+//     operands are treated as barriers rather than forwarded sources.
 //   - Only eliminates copies that are provably safe (single use, no call crosses,
 //     no aliasing in the def/use chain).
 //
 // Ownership/Lifetime:
 //   - Borrows MFunction for the duration of the call; no persistent state.
 //
-// Links: codegen/common/PreRAForwardCopy.hpp,
-//        codegen/aarch64/PreRegAllocOpt.hpp,
-//        codegen/aarch64/passes/PreRegAllocOptPass.cpp
+// Links: src/codegen/common/PreRAForwardCopy.hpp,
+//        src/codegen/aarch64/PreRegAllocOpt.hpp,
+//        src/codegen/aarch64/passes/PreRegAllocOptPass.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,20 +38,47 @@
 #include <unordered_map>
 #include <vector>
 
+/**
+ * @file
+ * @brief Implements AArch64 pre-allocation copy forwarding and shifted-operand folding.
+ *
+ * `A64PreRATraits` adapts AArch64 operand shapes to the shared copy-forwarding
+ * algorithm. A second whole-function analysis folds single-def/single-use
+ * `LslRI` chains into scaled load/store addressing or shifted-register ALU
+ * instructions without extending virtual-register live ranges.
+ */
+
 namespace zanna::codegen::aarch64 {
 namespace {
 
-/// @brief Return true if @p lhs and @p rhs refer to the same physical or virtual register.
+/**
+ * @brief Tests whether two register descriptors name the same typed register.
+ *
+ * @param lhs First physical or virtual register.
+ * @param rhs Second physical or virtual register.
+ * @return `true` when physicality, class, and numeric identity all match.
+ */
 [[nodiscard]] bool sameReg(const MReg &lhs, const MReg &rhs) noexcept {
     return lhs.isPhys == rhs.isPhys && lhs.cls == rhs.cls && lhs.idOrPhys == rhs.idOrPhys;
 }
 
-/// @brief Return true if @p opcode is a register-to-register copy (MovRR or FMovRR).
+/**
+ * @brief Tests whether an opcode is an integer or FP register copy.
+ *
+ * @param opcode MIR opcode to classify.
+ * @return `true` for `MovRR` or `FMovRR`.
+ */
 [[nodiscard]] bool isCopyOpcode(MOpcode opcode) noexcept {
     return opcode == MOpcode::MovRR || opcode == MOpcode::FMovRR;
 }
 
-/// @brief Return true if @p opcode ends sequential flow within a block (calls excluded).
+/**
+ * @brief Tests whether an opcode forms a non-call block boundary.
+ *
+ * @param opcode MIR opcode to classify.
+ * @return `true` for branch, jump-table, or return opcodes; calls deliberately
+ *         return `false` because the shared algorithm handles them separately.
+ */
 [[nodiscard]] bool isNonCallBoundaryOpcode(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::Br:
@@ -67,7 +95,13 @@ namespace {
     }
 }
 
-/// @brief Return true if @p opcode writes its result into the first operand slot (ops[0]).
+/**
+ * @brief Tests whether an opcode defines its first operand.
+ *
+ * @param opcode MIR opcode to classify.
+ * @return `true` for the explicitly enumerated single-destination operations.
+ * @note Paired loads are handled separately because they define two operands.
+ */
 [[nodiscard]] bool definesFirstOperand(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::MovRR:
@@ -146,12 +180,26 @@ namespace {
     }
 }
 
-/// @brief Return true if @p operand is a register operand naming the same register as @p reg.
+/**
+ * @brief Tests whether an operand names a particular register.
+ *
+ * @param operand Candidate MIR operand.
+ * @param reg Register descriptor to match.
+ * @return `true` only for a register operand accepted by `sameReg()`.
+ */
 [[nodiscard]] bool operandIsReg(const MOperand &operand, const MReg &reg) noexcept {
     return operand.kind == MOperand::Kind::Reg && sameReg(operand.reg, reg);
 }
 
-/// @brief Return true if operand at @p operandIndex in @p instr is a register use (not a def).
+/**
+ * @brief Classifies an indexed register operand as a use rather than a definition.
+ *
+ * @param instr Instruction whose operand roles are inspected.
+ * @param operandIndex Valid index into `instr.ops`.
+ * @return `false` for non-registers, first-operand definitions, and the two
+ *         destination operands of paired loads; otherwise `true`.
+ * @pre `operandIndex < instr.ops.size()`.
+ */
 [[nodiscard]] bool operandIsUse(const MInstr &instr, std::size_t operandIndex) noexcept {
     if (instr.ops[operandIndex].kind != MOperand::Kind::Reg)
         return false;
@@ -164,20 +212,40 @@ namespace {
     return true;
 }
 
-/// @brief AArch64 traits for the shared pre-RA copy forwarding template.
+/**
+ * @brief Adapts AArch64 MIR to the shared pre-register-allocation copy forwarder.
+ *
+ * The trait operations expose instruction storage, recognize copy shapes and
+ * boundaries, count direct uses, and perform the final operand substitution.
+ */
 struct A64PreRATraits {
     using BlockT = MBasicBlock;
     using InstrT = MInstr;
     using RegT = MReg;
 
+    /**
+     * @brief Retrieves mutable instruction storage for a block.
+     * @param block Block to adapt.
+     * @return Reference to `block.instrs`.
+     */
     static std::vector<MInstr> &instrs(MBasicBlock &block) {
         return block.instrs;
     }
 
+    /**
+     * @brief Retrieves read-only instruction storage for a block.
+     * @param block Block to adapt.
+     * @return Const reference to `block.instrs`.
+     */
     static const std::vector<MInstr> &instrs(const MBasicBlock &block) {
         return block.instrs;
     }
 
+    /**
+     * @brief Tests for a well-formed copy whose source and destination are identical.
+     * @param instr Instruction to classify.
+     * @return `true` for a two-register `MovRR`/`FMovRR` identity.
+     */
     static bool isIdentityCopy(const MInstr &instr) {
         if (!isCopyOpcode(instr.opc) || instr.ops.size() != 2)
             return false;
@@ -186,6 +254,14 @@ struct A64PreRATraits {
         return sameReg(instr.ops[0].reg, instr.ops[1].reg);
     }
 
+    /**
+     * @brief Extracts a forwardable virtual-register copy.
+     *
+     * @param instr Candidate copy instruction.
+     * @param[out] dst Destination register on success.
+     * @param[out] src Source register on success.
+     * @return `true` for a non-identity, same-class virtual-to-virtual copy.
+     */
     static bool isForwardableCopy(const MInstr &instr, MReg &dst, MReg &src) {
         if (!isCopyOpcode(instr.opc) || instr.ops.size() != 2)
             return false;
@@ -203,6 +279,12 @@ struct A64PreRATraits {
         return true;
     }
 
+    /**
+     * @brief Tests whether an instruction defines a specified register.
+     * @param instr Instruction to inspect.
+     * @param reg Register whose definition is sought.
+     * @return `true` for a matching ordinary destination or either paired-load destination.
+     */
     static bool definesReg(const MInstr &instr, const MReg &reg) {
         if (definesFirstOperand(instr.opc) && !instr.ops.empty() && operandIsReg(instr.ops[0], reg))
             return true;
@@ -213,14 +295,30 @@ struct A64PreRATraits {
         return false;
     }
 
+    /**
+     * @brief Tests whether an instruction is a direct or indirect call.
+     * @param instr Instruction to classify.
+     * @return `true` for `Bl` or `Blr`.
+     */
     static bool isCall(const MInstr &instr) {
         return instr.opc == MOpcode::Bl || instr.opc == MOpcode::Blr;
     }
 
+    /**
+     * @brief Tests whether an instruction ends non-call sequential flow.
+     * @param instr Instruction to classify.
+     * @return Classification supplied by `isNonCallBoundaryOpcode()`.
+     */
     static bool isNonCallBoundary(const MInstr &instr) {
         return isNonCallBoundaryOpcode(instr.opc);
     }
 
+    /**
+     * @brief Counts direct uses of a candidate copy destination in one instruction.
+     * @param instr Instruction whose use operands are scanned.
+     * @param dst Register to count.
+     * @return Use count and the last matching direct operand index.
+     */
     static common::PreRAUseScan scanUses(const MInstr &instr, const MReg &dst) {
         common::PreRAUseScan scan{};
         for (std::size_t opIdx = 0; opIdx < instr.ops.size(); ++opIdx) {
@@ -235,21 +333,30 @@ struct A64PreRATraits {
         return scan;
     }
 
+    /**
+     * @brief Replaces one use operand with a copy's source operand.
+     * @param[in,out] use Instruction containing the operand to rewrite.
+     * @param operandIndex Valid use index in `use.ops`.
+     * @param copy Well-formed copy whose second operand is the replacement source.
+     * @pre `operandIndex < use.ops.size()` and `copy.ops.size() >= 2`.
+     */
     static void forwardUse(MInstr &use, std::size_t operandIndex, const MInstr &copy) {
         use.ops[operandIndex] = copy.ops[1];
     }
 };
 
-/// @brief Fold shift+add address arithmetic into scaled addressing forms.
-/// @details Rewrites, within a block and over single-def/single-use vregs:
-///            lsl t, x, #k ; add p, base, t ; ldr d, [p, #0]
-///              -> ldr d, [base, x, lsl #k]       (k in {0, log2(size)})
-///            lsl t, x, #k ; add d, y, t
-///              -> add d, y, x, lsl #k            (any k)
-///          plus the str / 32-bit / FPR load-store variants and the
-///          sub/and/orr/eor shifted-operand forms. Def/use counts are taken
-///          over the whole function so deleting the feeding instructions can
-///          never orphan another consumer.
+/**
+ * @brief Folds shifted virtual-register chains into AArch64 addressing and ALU forms.
+ *
+ * Within each block, a single-use `lsl` plus `add` address can be absorbed by
+ * a zero-offset scalar load/store when the scale is legal for its access size.
+ * A single-use shifted operand may also be absorbed by add/sub/and/orr/eor.
+ * Whole-function definition/use counts ensure removed producers have no other
+ * consumers.
+ *
+ * @param[in,out] fn Pre-allocation MIR function to rewrite.
+ * @return Number of load/store or ALU patterns folded.
+ */
 std::size_t runAddressingFolds(MFunction &fn) {
     // Whole-function def/use counts per GPR vreg.
     std::unordered_map<uint16_t, unsigned> defCount;
@@ -269,14 +376,29 @@ std::size_t runAddressingFolds(MFunction &fn) {
             }
         }
     }
+    /**
+     * @brief Tests whether a GPR virtual register has exactly one definition and use.
+     * @param vreg Virtual-register ID to query.
+     * @return `true` when both whole-function counts equal one.
+     */
     const auto singleDefUse = [&](uint16_t vreg) {
         auto d = defCount.find(vreg);
         auto u = useCount.find(vreg);
         return d != defCount.end() && d->second == 1 && u != useCount.end() && u->second == 1;
     };
+    /**
+     * @brief Extracts the numeric ID from a known register operand.
+     * @param op Register operand.
+     * @return Stored register ID.
+     */
     const auto vregOf = [](const MOperand &op) -> uint16_t {
         return op.reg.idOrPhys;
     };
+    /**
+     * @brief Tests whether an operand names a virtual GPR.
+     * @param op Operand to classify.
+     * @return `true` for a non-physical GPR register operand.
+     */
     const auto isVGpr = [](const MOperand &op) {
         return op.kind == MOperand::Kind::Reg && !op.reg.isPhys && op.reg.cls == RegClass::GPR;
     };
@@ -299,7 +421,12 @@ std::size_t runAddressingFolds(MFunction &fn) {
         std::unordered_map<uint16_t, AddrDef> addrDefs;
         std::vector<char> removed(bb.instrs.size(), 0);
 
-        // Invalidate any recorded pattern whose inputs are redefined.
+        /**
+         * @brief Invalidates recorded patterns affected by an instruction's definitions.
+         *
+         * @param mi Instruction whose defining operands may overwrite a
+         *        tracked result, base, index, or shifted source.
+         */
         const auto invalidateOnDef = [&](const MInstr &mi) {
             for (std::size_t oi = 0; oi < mi.ops.size(); ++oi) {
                 const auto [isUse, isDef] = ra::operandRoles(mi, oi);
@@ -320,6 +447,7 @@ std::size_t runAddressingFolds(MFunction &fn) {
                 }
                 for (auto it = addrDefs.begin(); it != addrDefs.end();) {
                     const auto &entry = it->second;
+                    /// @brief Tests whether the current definition overwrites a tracked operand.
                     const auto matches = [&](const MOperand &src) {
                         return defReg.isPhys == src.reg.isPhys && defReg.cls == src.reg.cls &&
                                defReg.idOrPhys == src.reg.idOrPhys;
@@ -457,6 +585,12 @@ std::size_t runAddressingFolds(MFunction &fn) {
 
 } // namespace
 
+/**
+ * @brief Runs shared copy forwarding followed by optional addressing folds.
+ *
+ * @param[in,out] fn Legalized pre-allocation function to optimize.
+ * @return Sum of transformations reported by copy forwarding and addressing folding.
+ */
 std::size_t runPreRegAllocOpt(MFunction &fn) {
     const std::size_t forwarded = common::runPreRAForwardCopy<A64PreRATraits>(fn);
     // ZANNA_NO_ADDR_FOLDS=1 disables the addressing folds for triage.

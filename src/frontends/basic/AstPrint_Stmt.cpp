@@ -21,6 +21,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file AstPrint_Stmt.cpp
+ * @brief Implements the visitor that serializes BASIC statement AST nodes.
+ *
+ * The visitor emits deterministic S-expression-like tokens and delegates
+ * repeated declaration, control-flow, and I/O layouts to print_stmt helpers.
+ */
+
 #include "frontends/basic/AstPrinter.hpp"
 
 #include "frontends/basic/print/Print_Stmt_Common.hpp"
@@ -191,6 +199,7 @@ struct AstPrinter::StmtPrinter final : StmtVisitor {
     }
 
     /// @brief Render a SHARED statement listing names.
+    /// @param stmt Declaration whose names are emitted in stored order.
     void visit(const SharedStmt &stmt) override {
         auto &os = ctx.stream();
         os << "(SHARED";
@@ -207,6 +216,7 @@ struct AstPrinter::StmtPrinter final : StmtVisitor {
     }
 
     /// @brief Render a SWAP statement.
+    /// @param stmt Swap operands; absent operands leave their position empty.
     void visit(const SwapStmt &stmt) override {
         auto &os = ctx.stream();
         os << "(SWAP ";
@@ -242,6 +252,7 @@ struct AstPrinter::StmtPrinter final : StmtVisitor {
     }
 
     /// @brief Render a TRY/CATCH block with optional catch variable.
+    /// @param stmt Try body, optional catch name, and catch body to render.
     void visit(const TryCatchStmt &stmt) override {
         auto &os = ctx.stream();
         os << "(TRY";
@@ -477,6 +488,7 @@ struct AstPrinter::StmtPrinter final : StmtVisitor {
         ctx.stream() << ')';
     }
 
+    ///< Shared destination, style, and recursive dispatcher facade.
     Context ctx;
 };
 
@@ -495,15 +507,17 @@ void AstPrinter::printStmt(const Stmt &stmt, Printer &printer, PrintStyle &style
 namespace il::frontends::basic::print_stmt {
 
 /// @brief Print an expression using the AST printer dispatcher.
-///
 /// @param expr Expression node to serialise.
+/// @details Delegates through the owning StmtPrinter so expression traversal
+///          uses the same destination stream and style.
 void Context::printExpr(const Expr &expr) const {
     dispatcher.printExpr(expr);
 }
 
 /// @brief Print an optional expression, emitting null markers when absent.
-///
 /// @param expr Optional expression pointer supplied by the caller.
+/// @details Dispatches a non-null expression or emits the style's canonical
+///          null placeholder.
 void Context::printOptionalExpr(const Expr *expr) const {
     if (expr) {
         printExpr(*expr);
@@ -513,15 +527,16 @@ void Context::printOptionalExpr(const Expr *expr) const {
 }
 
 /// @brief Print a statement using the nested dispatcher instance.
-///
 /// @param stmt Statement to serialise.
+/// @details Preserves the active context while recursively visiting @p stmt.
 void Context::printStmt(const Stmt &stmt) const {
     dispatcher.print(stmt);
 }
 
 /// @brief Print a body of numbered statements such as SELECT arms.
-///
 /// @param body Ordered list of statements with BASIC line numbers.
+/// @details Emits the style's body delimiters, separates entries, prefixes each
+///          statement with its stored line number, and dispatches recursively.
 void Context::printNumberedBody(const std::vector<std::unique_ptr<Stmt>> &body) const {
     style.openBody();
     bool first = true;

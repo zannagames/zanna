@@ -6,12 +6,14 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/frontends/basic/ControlStatementLowerer.cpp
-// Purpose: Implementation of control flow statement lowering extracted from Lowerer.
+// Purpose: Implement control-flow statement lowering extracted from Lowerer.
 //          Handles lowering of BASIC jump-oriented control constructs (GOSUB, GOTO,
 //          RETURN, END) to IL branches and continuation stack operations.
 // Key invariants: Maintains Lowerer's control flow lowering semantics exactly
 // Ownership/Lifetime: Borrows Lowerer reference; coordinates with parent
-// Links: docs/internals/codemap.md
+// Links: src/frontends/basic/ControlStatementLowerer.hpp,
+//        src/frontends/basic/Lowerer.hpp,
+//        src/frontends/basic/LocationScope.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,6 +36,7 @@ using il::frontends::basic::OverflowPolicy;
 
 namespace il::frontends::basic {
 
+/// @copydoc ControlStatementLowerer::ControlStatementLowerer()
 ControlStatementLowerer::ControlStatementLowerer(Lowerer &lowerer) : lowerer_(lowerer) {}
 
 /// @brief Lower a BASIC GOSUB statement using the runtime-managed continuation stack.
@@ -44,6 +47,8 @@ ControlStatementLowerer::ControlStatementLowerer(Lowerer &lowerer) : lowerer_(lo
 ///          looked up through @ref ProcedureContext::gosub so matching RETURN
 ///          statements can pop back to the correct block.
 /// @param stmt GOSUB statement providing the target line and source location.
+/// @note If the target line is absent, the routine returns after stack setup and
+///       continuation lookup without emitting the final branch.
 void ControlStatementLowerer::lowerGosub(const GosubStmt &stmt) {
     LocationScope loc(lowerer_, stmt.loc);
     Lowerer::ProcedureContext &ctx = lowerer_.context();
@@ -122,9 +127,9 @@ void ControlStatementLowerer::lowerGosub(const GosubStmt &stmt) {
 /// @brief Lower an unconditional GOTO statement.
 /// @details Resolves the destination block via the shared line-label mapping
 ///          and emits a direct branch when the label has been materialised.
-///          Missing targets are ignored so unresolved labels can be diagnosed
-///          later during verification.
+///          Missing targets are ignored.
 /// @param stmt GOTO statement pointing at a target line label.
+/// @pre A resolved target requires an active function in the lowering context.
 void ControlStatementLowerer::lowerGoto(const GotoStmt &stmt) {
     LocationScope loc(lowerer_, stmt.loc);
     auto &lineBlocks = lowerer_.context().blockNames().lineBlocks();
@@ -144,6 +149,8 @@ void ControlStatementLowerer::lowerGoto(const GotoStmt &stmt) {
 ///          RETURN statements manifest as runtime errors rather than silent
 ///          corruption.
 /// @param stmt RETURN statement appearing in GOSUB contexts.
+/// @note Returns without emission if either the active function or current
+///       block is absent.
 void ControlStatementLowerer::lowerGosubReturn(const ReturnStmt &stmt) {
     LocationScope loc(lowerer_, stmt.loc);
     Lowerer::ProcedureContext &ctx = lowerer_.context();
@@ -238,9 +245,9 @@ void ControlStatementLowerer::lowerGosubReturn(const ReturnStmt &stmt) {
 }
 
 /// @brief Lower the END statement, terminating program execution.
-/// @details For main (returns i64), emits `ret 0` for normal termination.
-///          For SUB/FUNCTION (returns void or other), emits trap since we
-///          cannot return from a void procedure with a value.
+/// @details Emits `ret 0` for any active function whose declared IL return type
+///          is i64. A void, floating, object, missing, or otherwise non-i64
+///          function context emits a trap instead.
 /// @param stmt END statement providing the source location.
 void ControlStatementLowerer::lowerEnd(const EndStmt &stmt) {
     LocationScope loc(lowerer_, stmt.loc);

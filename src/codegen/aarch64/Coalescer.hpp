@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/Coalescer.hpp
+// File: src/codegen/aarch64/Coalescer.hpp
 // Purpose: Pre-register-allocation move coalescer for AArch64 MIR.
 //          Eliminates redundant MovRR/FMovRR instructions by merging virtual
 //          registers whose live ranges do not interfere.
@@ -15,11 +15,20 @@
 //   - Must run before register allocation (all operands still virtual).
 // Ownership/Lifetime:
 //   - Modifies MFunction in place; caller owns the MFunction.
-// Links: codegen/aarch64/Coalescer.cpp,
-//        codegen/aarch64/MachineIR.hpp,
-//        codegen/aarch64/RegAllocLinear.hpp
+// Links: src/codegen/aarch64/Coalescer.cpp,
+//        src/codegen/aarch64/MachineIR.hpp,
+//        src/codegen/aarch64/RegAllocLinear.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares conservative virtual-register copy coalescing for AArch64 MIR.
+ *
+ * The pass runs before physical register allocation and rewrites only
+ * same-class virtual-register handoff copies whose conservative live intervals
+ * do not overlap beyond the move point.
+ */
 
 #pragma once
 
@@ -37,6 +46,7 @@ namespace zanna::codegen::aarch64 {
 /// the linear-scan register allocator runs.
 ///
 /// @param fn The machine function to coalesce (modified in place).
+/// @post Safe identity moves created by coalescing are removed.
 void coalesce(MFunction &fn);
 
 } // namespace zanna::codegen::aarch64

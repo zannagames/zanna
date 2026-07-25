@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file RuntimeStatementLowerer_Terminal.cpp
+/// @brief Implements terminal-control runtime calls for BASIC statements.
+/// @details Each visitor applies the statement location, coerces/narrows any
+///          operands to the runtime ABI, records the appropriate generated or
+///          manual helper requirement, and emits one call.
+
 #include "Lowerer.hpp"
 #include "RuntimeCallHelpers.hpp"
 #include "RuntimeStatementLowerer.hpp"
@@ -52,6 +58,7 @@ void RuntimeStatementLowerer::visit(const ClsStmt &s) {
 ///          matching runtime semantics.
 ///
 /// @param s AST node describing the @c COLOR statement.
+/// @pre @p s has a non-null foreground expression.
 void RuntimeStatementLowerer::visit(const ColorStmt &s) {
     auto fg = lowerer_.ensureI64(lowerer_.lowerExpr(*s.fg), s.loc);
     Value bgv = Value::constInt(-1);
@@ -67,11 +74,11 @@ void RuntimeStatementLowerer::visit(const ColorStmt &s) {
 /// @brief Lower the BASIC @c LOCATE statement that positions the cursor.
 ///
 /// @details Evaluates the row and optional column expressions, coercing them to
-///          32-bit integers after clamping to runtime-supported ranges.  The
-///          helper request ensures the runtime terminal locator is linked into
-///          the module when used.
+///          I64 and then narrowing them to the I32 runtime ABI. A missing column
+///          defaults to one. The runtime feature is recorded before the call.
 ///
 /// @param s AST node describing the @c LOCATE statement.
+/// @pre @p s has a non-null row expression.
 void RuntimeStatementLowerer::visit(const LocateStmt &s) {
     auto row = lowerer_.ensureI64(lowerer_.lowerExpr(*s.row), s.loc);
     Value colv = Value::constInt(1);
@@ -115,10 +122,12 @@ void RuntimeStatementLowerer::visit(const AltScreenStmt &s) {
 /// @brief Lower the BASIC SLEEP statement to the runtime helper.
 ///
 /// @details Evaluates the duration expression, coerces it to a 32-bit integer,
-///          and emits a call to `rt_sleep_ms`. Negative values are clamped by
-///          the runtime to zero. No runtime feature request is required.
+///          records the manual sleep-helper requirement, and emits
+///          `rt_sleep_ms`. This lowering layer performs no range clamp beyond
+///          the narrowing conversion.
 ///
 /// @param s AST node describing the SLEEP statement.
+/// @pre @p s has a non-null duration expression.
 void RuntimeStatementLowerer::visit(const SleepStmt &s) {
     auto ms = lowerer_.ensureI64(lowerer_.lowerExpr(*s.ms), s.loc);
 

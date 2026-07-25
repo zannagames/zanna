@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/MachOExeWriter.cpp
+// File: src/codegen/common/linker/MachOExeWriter.cpp
 // Purpose: Writes a Mach-O executable (MH_EXECUTE) with dynamic library support.
 //          Generates __LINKEDIT segment with symbol table, bind opcodes, and
 //          optional ad-hoc code signature for arm64.
@@ -30,6 +30,11 @@
 // Links: codegen/common/linker/MachOExeWriter.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file MachOExeWriter.cpp
+ * @brief Implements secure, direct Mach-O executable and `__LINKEDIT` emission.
+ */
 
 #include "codegen/common/linker/MachOExeWriter.hpp"
 #include "codegen/common/MachOBuildVersion.hpp"
@@ -105,6 +110,9 @@ static constexpr uint32_t PLATFORM_MACOS = zanna::codegen::macho::kPlatformMacOS
 /// @brief Convert a power-of-two alignment value to its log2 (Mach-O encoding).
 /// @details Mach-O `section_64::align` stores alignment as the exponent (e.g.,
 ///          16-byte alignment is stored as 4). Returns 0 for alignment ≤ 1.
+/// @param alignment Section alignment in bytes.
+/// @return Base-two exponent used by `section_64::align`.
+/// @pre A value greater than one is a power of two.
 static uint32_t machoSectionAlignLog2(uint32_t alignment) {
     uint32_t pow2 = 0;
     uint32_t value = (alignment == 0) ? 1 : alignment;
@@ -119,6 +127,8 @@ static uint32_t machoSectionAlignLog2(uint32_t alignment) {
 /// @details Most outputs collapse to __text (executable) or __const (rodata);
 ///          loader/runtime-discovered sections preserve their original
 ///          "__SEG,__sect" name.
+/// @param sec Output section to encode.
+/// @return Mach-O section component without its segment prefix.
 static std::string machoSectionNameForOutput(const OutputSection &sec) {
     if (!isObjCSection(sec.name) && !isMachOModInitTermSection(sec.name))
         return sec.executable ? "__text" : "__const";
@@ -126,11 +136,19 @@ static std::string machoSectionNameForOutput(const OutputSection &sec) {
     return (comma != std::string::npos) ? sec.name.substr(comma + 1) : sec.name;
 }
 
+/// @brief Extracts the section component from a `segment,section` name.
+/// @param name Full combined name or an already bare section name.
+/// @return Substring after the first comma, or @p name unchanged.
 static std::string machoSectionFieldName(const std::string &name) {
     const auto comma = name.find(',');
     return (comma != std::string::npos) ? name.substr(comma + 1) : name;
 }
 
+/// @brief Validates a name against Mach-O's fixed 16-byte segment/section field.
+/// @param name Name to validate.
+/// @param field Field description used in diagnostics.
+/// @param err Diagnostic output stream.
+/// @return `true` when @p name fits without truncation.
 static bool validateMachOName(const std::string &name, const char *field, std::ostream &err) {
     if (name.size() <= 16)
         return true;
@@ -138,6 +156,12 @@ static bool validateMachOName(const std::string &name, const char *field, std::o
     return false;
 }
 
+/// @brief Narrows a count or offset to a 32-bit Mach-O field.
+/// @param value Value to narrow.
+/// @param what Field description used in diagnostics.
+/// @param err Diagnostic output stream.
+/// @param out Receives the narrowed value.
+/// @return `true` when the value fits.
 static bool checkedU32(uint64_t value, const char *what, std::ostream &err, uint32_t &out) {
     if (value > std::numeric_limits<uint32_t>::max()) {
         err << "error: Mach-O " << what << " exceeds 32-bit file format limit\n";
@@ -147,6 +171,13 @@ static bool checkedU32(uint64_t value, const char *what, std::ostream &err, uint
     return true;
 }
 
+/// @brief Adds host file sizes with a Mach-O-specific overflow diagnostic.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param what Operation description.
+/// @param err Diagnostic output stream.
+/// @param out Receives the sum.
+/// @return `true` when the sum is representable.
 static bool checkedAddSize(
     size_t lhs, size_t rhs, const char *what, std::ostream &err, size_t &out) {
     if (lhs > std::numeric_limits<size_t>::max() - rhs) {
@@ -157,6 +188,13 @@ static bool checkedAddSize(
     return true;
 }
 
+/// @brief Adds virtual-address values with a Mach-O-specific overflow diagnostic.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param what Operation description.
+/// @param err Diagnostic output stream.
+/// @param out Receives the sum.
+/// @return `true` when the sum is representable.
 static bool checkedAddU64(
     uint64_t lhs, uint64_t rhs, const char *what, std::ostream &err, uint64_t &out) {
     if (lhs > std::numeric_limits<uint64_t>::max() - rhs) {
@@ -167,6 +205,13 @@ static bool checkedAddU64(
     return true;
 }
 
+/// @brief Aligns a file size while converting alignment exceptions to diagnostics.
+/// @param value Size to round upward.
+/// @param alignment Required power-of-two alignment.
+/// @param what Operation description.
+/// @param err Diagnostic output stream.
+/// @param out Receives the aligned size.
+/// @return `true` when the alignment is valid and representable.
 static bool checkedAlignUpSize(
     size_t value, size_t alignment, const char *what, std::ostream &err, size_t &out) {
     try {
@@ -178,6 +223,13 @@ static bool checkedAlignUpSize(
     return true;
 }
 
+/// @brief Accounts for one load command in the Mach-O header totals.
+/// @param ncmds Mutable load-command count.
+/// @param sizeofcmds Mutable aggregate command byte size.
+/// @param cmdSize Size of the new command.
+/// @param what Command description used in diagnostics.
+/// @param err Diagnostic output stream.
+/// @return `true` when both 32-bit header fields remain representable.
 static bool appendLoadCommand(
     uint32_t &ncmds, uint32_t &sizeofcmds, uint64_t cmdSize, const char *what, std::ostream &err) {
     uint32_t cmdSize32 = 0;
@@ -196,6 +248,12 @@ static bool appendLoadCommand(
     return true;
 }
 
+/// @brief Zero-pads a file buffer to an exact planned offset.
+/// @param file Mutable output bytes.
+/// @param targetOff Required next write offset.
+/// @param what Region description used in diagnostics.
+/// @param err Diagnostic output stream.
+/// @return `false` when already-written data overlaps @p targetOff.
 static bool padToExact(std::vector<uint8_t> &file,
                        size_t targetOff,
                        const char *what,
@@ -213,6 +271,8 @@ static bool padToExact(std::vector<uint8_t> &file,
 /// @details The ObjC runtime expects S_CSTRING_LITERALS for name pools and
 ///          S_ATTR_NO_DEAD_STRIP for class/category lists so the loader cannot
 ///          discard them even if no IL code references them directly.
+/// @param machoSecName Bare Mach-O section name.
+/// @return Required section type/attribute bits, or `S_REGULAR`.
 static uint32_t objcSectionFlags(const std::string &machoSecName) {
     if (machoSecName == "__objc_classname" || machoSecName == "__objc_methname" ||
         machoSecName == "__objc_methtype")
@@ -229,7 +289,9 @@ static uint32_t objcSectionFlags(const std::string &machoSecName) {
     return S_REGULAR;
 }
 
-/// @brief Return dyld's required section type for module lifetime pointers.
+/// @brief Returns dyld's required section type for module lifetime pointers.
+/// @param machoSecName Bare Mach-O section name.
+/// @return Init/term pointer type, or `S_REGULAR` for other names.
 static uint32_t moduleLifetimeSectionFlags(const std::string &machoSecName) {
     if (machoSecName == "__mod_init_func")
         return S_MOD_INIT_FUNC_POINTERS;
@@ -240,6 +302,7 @@ static uint32_t moduleLifetimeSectionFlags(const std::string &machoSecName) {
 
 } // anonymous namespace
 
+/// @copydoc writeMachOExe(const std::string &, const LinkLayout &, LinkArch, const std::vector<DylibImport> &, const std::unordered_set<std::string> &, const std::unordered_map<std::string, uint32_t> &, std::size_t, std::ostream &)
 bool writeMachOExe(const std::string &path,
                    const LinkLayout &layout,
                    LinkArch arch,

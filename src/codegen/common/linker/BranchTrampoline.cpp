@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/BranchTrampoline.cpp
+// File: src/codegen/common/linker/BranchTrampoline.cpp
 // Purpose: Implements AArch64 branch trampoline insertion.
 //          After section merging, scans all Branch26 relocations for out-of-range
 //          displacements. For each, appends an ADRP+ADD+BR x16 trampoline to
@@ -18,6 +18,11 @@
 // Links: codegen/common/linker/BranchTrampoline.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file BranchTrampoline.cpp
+ * @brief Implements deterministic AArch64 branch-island placement and patching.
+ */
 
 #include "codegen/common/linker/BranchTrampoline.hpp"
 
@@ -37,7 +42,9 @@ namespace zanna::codegen::linker {
 
 namespace {
 
-/// Write a 32-bit LE value to a byte pointer.
+/// @brief Writes a 32-bit value to an unaligned little-endian byte location.
+/// @param p Pointer to at least four writable bytes.
+/// @param v Value to encode.
 void writeLE32At(uint8_t *p, uint32_t v) {
     p[0] = static_cast<uint8_t>(v);
     p[1] = static_cast<uint8_t>(v >> 8);
@@ -45,12 +52,19 @@ void writeLE32At(uint8_t *p, uint32_t v) {
     p[3] = static_cast<uint8_t>(v >> 24);
 }
 
-/// Read a 32-bit LE value from a byte pointer.
+/// @brief Reads a 32-bit value from an unaligned little-endian byte location.
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded host-order value.
 uint32_t readLE32At(const uint8_t *p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
+/// @brief Adds two unsigned virtual-address values with overflow checking.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param out Receives the sum when representable.
+/// @return `true` on success; `false` on overflow.
 bool checkedAddU64(uint64_t a, uint64_t b, uint64_t &out) {
     if (a > std::numeric_limits<uint64_t>::max() - b)
         return false;
@@ -58,6 +72,11 @@ bool checkedAddU64(uint64_t a, uint64_t b, uint64_t &out) {
     return true;
 }
 
+/// @brief Adds two host sizes with overflow checking.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param out Receives the sum when representable.
+/// @return `true` on success; `false` on overflow.
 bool checkedAddSize(size_t a, size_t b, size_t &out) {
     if (a > std::numeric_limits<size_t>::max() - b)
         return false;
@@ -65,6 +84,11 @@ bool checkedAddSize(size_t a, size_t b, size_t &out) {
     return true;
 }
 
+/// @brief Multiplies two host sizes with overflow checking.
+/// @param a Left factor.
+/// @param b Right factor.
+/// @param out Receives the product when representable.
+/// @return `true` on success; `false` on overflow.
 bool checkedMulSize(size_t a, size_t b, size_t &out) {
     if (a != 0 && b > std::numeric_limits<size_t>::max() / a)
         return false;
@@ -72,6 +96,11 @@ bool checkedMulSize(size_t a, size_t b, size_t &out) {
     return true;
 }
 
+/// @brief Computes a signed virtual-address difference without overflow.
+/// @param lhs Address from which @p rhs is subtracted.
+/// @param rhs Address to subtract.
+/// @param out Receives `lhs - rhs` when it fits in `int64_t`.
+/// @return `true` when the signed difference is representable.
 bool checkedAddressDelta(uint64_t lhs, uint64_t rhs, int64_t &out) {
     if (lhs >= rhs) {
         const uint64_t delta = lhs - rhs;
@@ -108,7 +137,7 @@ bool checkedAddI64(uint64_t base, int64_t addend, uint64_t &out) {
     return true;
 }
 
-/// Output placement for one input section inside the merged layout.
+/// @brief Records one input section's placement inside a merged output section.
 struct OutputLocation {
     size_t outSecIdx = 0;
     size_t outputOffset = 0;
@@ -146,6 +175,14 @@ bool buildLocMap(const LinkLayout &layout, LocationMap &map, std::ostream &err) 
     return true;
 }
 
+/// @brief Resolves a section-relative or absolute object symbol.
+/// @param sym Symbol to resolve.
+/// @param objIdx Index of the symbol's owning object.
+/// @param locMap Input-to-output section placement map.
+/// @param layout Current merged layout.
+/// @param addr Receives the resolved virtual address.
+/// @return `true` when the symbol is defined, placed, in bounds, and its
+///         address is representable.
 bool resolveLocalSymbol(const ObjSymbol &sym,
                         size_t objIdx,
                         const LocationMap &locMap,
@@ -171,6 +208,12 @@ bool resolveLocalSymbol(const ObjSymbol &sym,
     return true;
 }
 
+/// @brief Looks up a resolved global symbol using platform name fallbacks.
+/// @param name Object-format symbol name.
+/// @param layout Current merged layout.
+/// @param platform Target platform controlling fallback mangling.
+/// @param addr Receives the resolved virtual address.
+/// @return `true` when a usable resolved global entry exists.
 bool resolveGlobalSymbol(const std::string &name,
                          const LinkLayout &layout,
                          LinkPlatform platform,
@@ -184,6 +227,14 @@ bool resolveGlobalSymbol(const std::string &name,
     return true;
 }
 
+/// @brief Resolves a relocation target through local definition then global lookup.
+/// @param sym Relocation target symbol.
+/// @param objIdx Index of the symbol's owning object.
+/// @param locMap Input-to-output section placement map.
+/// @param layout Current merged layout.
+/// @param platform Target platform controlling global-name fallback.
+/// @param addr Receives the resolved virtual address.
+/// @return `true` when either resolution path succeeds.
 bool resolveRelocSymbol(const ObjSymbol &sym,
                         size_t objIdx,
                         const LocationMap &locMap,
@@ -201,6 +252,11 @@ bool resolveRelocSymbol(const ObjSymbol &sym,
 constexpr size_t kTrampolineSize = 12;
 constexpr uint64_t kBranch26MaxForward = static_cast<uint64_t>(0x1FFFFFF) << 2;
 
+/// @brief Tests whether one address can reach another with an AArch64 `imm26` branch.
+/// @param from Address of the branch instruction.
+/// @param to Target address.
+/// @return `true` when the byte displacement is four-byte aligned and lies in
+///         the signed 26-bit word-offset range.
 bool branch26Reachable(uint64_t from, uint64_t to) {
     int64_t disp = 0;
     if (!checkedAddressDelta(to, from, disp))
@@ -211,10 +267,16 @@ bool branch26Reachable(uint64_t from, uint64_t to) {
     return imm26 <= 0x1FFFFFF && imm26 >= -0x2000000;
 }
 
+/// @brief Collects sorted, unique instruction-aligned text chunk boundaries.
+/// @param textSec Executable output section whose chunks define island sites.
+/// @param boundaries Destination vector, cleared before collection.
+/// @param err Stream that receives an overflow diagnostic.
+/// @return `true` on success; `false` if a chunk end cannot be represented.
 bool collectChunkBoundaries(const OutputSection &textSec,
                             std::vector<size_t> &boundaries,
                             std::ostream &err) {
     boundaries.clear();
+    /// Adds an instruction-aligned candidate boundary to the unsorted result.
     auto addBoundary = [&](size_t boundary) {
         if ((boundary & 0x3u) == 0)
             boundaries.push_back(boundary);
@@ -234,6 +296,14 @@ bool collectChunkBoundaries(const OutputSection &textSec,
     return true;
 }
 
+/// @brief Chooses the nearest island boundary that remains safely reachable.
+/// @details @p reachSlack reserves room for worst-case island growth so a
+///          branch selected before insertion stays in range afterward.
+/// @param boundaries Sorted candidate offsets in the executable section.
+/// @param sourceOffset Branch offset within that section.
+/// @param reachSlack Conservative number of growth bytes to reserve.
+/// @param chosenBoundary Receives the closest suitable boundary.
+/// @return `true` when a boundary satisfies the range and slack constraints.
 bool chooseReachableBoundary(const std::vector<size_t> &boundaries,
                              uint64_t sourceOffset,
                              size_t reachSlack,
@@ -257,6 +327,11 @@ bool chooseReachableBoundary(const std::vector<size_t> &boundaries,
     return found;
 }
 
+/// @brief Checks both input and merged symbol tables for a proposed synthetic name.
+/// @param objects Input object files.
+/// @param layout Current merged layout.
+/// @param name Proposed trampoline symbol name.
+/// @return `true` if @p name is already in use.
 bool trampolineSymbolExists(const std::vector<ObjFile> &objects,
                             const LinkLayout &layout,
                             const std::string &name) {
@@ -271,6 +346,11 @@ bool trampolineSymbolExists(const std::vector<ObjFile> &objects,
     return false;
 }
 
+/// @brief Generates a collision-free synthetic trampoline symbol name.
+/// @param objects Input object files searched for collisions.
+/// @param layout Current merged layout searched for collisions.
+/// @param counter Monotonic suffix counter, advanced for every attempted name.
+/// @return A previously unused `__zanna_trampoline_N` name.
 std::string makeTrampolineSymbolName(const std::vector<ObjFile> &objects,
                                      const LinkLayout &layout,
                                      size_t &counter) {
@@ -281,7 +361,7 @@ std::string makeTrampolineSymbolName(const std::vector<ObjFile> &objects,
     }
 }
 
-/// Record of an out-of-range branch that needs a trampoline.
+/// @brief Records one out-of-range branch and its selected trampoline.
 struct OutOfRangeBranch {
     size_t objIdx = 0;
     size_t secIdx = 0;
@@ -294,6 +374,7 @@ struct OutOfRangeBranch {
     std::string trampolineSymName;
 };
 
+/// @brief Describes one deduplicated trampoline emitted into a branch island.
 struct TrampolineEntry {
     std::string targetSymName;
     size_t targetObjIdx = 0;
@@ -307,6 +388,7 @@ struct TrampolineEntry {
 
 } // namespace
 
+/// @copydoc insertBranchTrampolines(std::vector<ObjFile> &, LinkLayout &, LinkArch, LinkPlatform, std::ostream &)
 bool insertBranchTrampolines(std::vector<ObjFile> &objects,
                              LinkLayout &layout,
                              LinkArch arch,
@@ -528,6 +610,7 @@ bool insertBranchTrampolines(std::vector<ObjFile> &objects,
     // stable key so per-slot offsets — and thus the emitted ADRP/ADD immediates
     // and patched imm26 fields — are reproducible across runs.
     for (auto &island : islands) {
+        /// Orders trampoline slots reproducibly by target name and addend.
         std::sort(island.second.begin(),
                   island.second.end(),
                   [](const TrampolineEntry *a, const TrampolineEntry *b) {
@@ -555,6 +638,7 @@ bool insertBranchTrampolines(std::vector<ObjFile> &objects,
     }
     newText.reserve(reservedSize);
 
+    /// @brief Records inserted island growth for shifting original text chunks.
     struct IslandPlacement {
         size_t boundary = 0;
         size_t size = 0;
@@ -626,6 +710,7 @@ bool insertBranchTrampolines(std::vector<ObjFile> &objects,
                                                 true});
         }
     }
+    /// Restores ascending output-offset order after synthetic chunk insertion.
     std::stable_sort(textSec.chunks.begin(),
                      textSec.chunks.end(),
                      [](const auto &a, const auto &b) { return a.outputOffset < b.outputOffset; });
@@ -763,6 +848,7 @@ bool insertBranchTrampolines(std::vector<ObjFile> &objects,
             return false;
         }
 
+        /// Finds the deduplicated trampoline selected for this branch record.
         const auto trampIt =
             std::find_if(trampolines.begin(), trampolines.end(), [&](const auto &entry) {
                 return entry.second.symbolName == oob.trampolineSymName;

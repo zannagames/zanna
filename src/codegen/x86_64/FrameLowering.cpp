@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/FrameLowering.cpp
+// File: src/codegen/x86_64/FrameLowering.cpp
 // Purpose: Define stack-frame construction utilities for the x86-64 backend.
 //          Allocates concrete spill displacements, reserves callee-saved slots,
 //          and generates ABI-compliant prologue/epilogue sequences.
@@ -15,8 +15,8 @@
 // Ownership/Lifetime:
 //   - Operates directly on Machine IR owned by the caller; uses only
 //     automatic storage duration helpers.
-// Links: codegen/x86_64/FrameLowering.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/FrameLowering.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,16 +35,30 @@
 #include <unordered_set>
 #include <variant>
 
+/**
+ * @file
+ * @brief Implements checked x86-64 frame layout and prologue/epilogue insertion.
+ *
+ * The implementation recognizes disjoint symbolic slot ranges for allocas and
+ * register-class spills, calculates a deterministic RBP-relative layout, and
+ * rewrites MIR memory operands. It supports SysV inline stack probing and Win64
+ * `__chkstk`, nonvolatile XMM preservation, shadow space, and unwind planning.
+ */
+
 namespace zanna::codegen::x64 {
 
 namespace {
 
 /// @brief Composite key describing a spill slot's register class and index.
 struct SlotKey {
+    /// Register bank whose slot namespace contains @ref index.
     RegClass cls{RegClass::GPR};
+    /// Symbolic slot index from the MIR placeholder.
     int index{0};
 
     /// @brief Equality comparison required by the unordered_map cache.
+    /// @param other Key to compare.
+    /// @return @c true when class and index are identical.
     bool operator==(const SlotKey &other) const noexcept {
         return cls == other.cls && index == other.index;
     }
@@ -53,6 +67,8 @@ struct SlotKey {
 /// @brief Hash functor for @ref SlotKey enabling unordered maps.
 struct SlotKeyHash {
     /// @brief Combine the register class and index into a small hash code.
+    /// @param key Slot key to hash.
+    /// @return Hash value suitable for @c std::unordered_map.
     std::size_t operator()(const SlotKey &key) const noexcept {
         const auto clsVal = static_cast<std::size_t>(key.cls);
         const auto idxVal = static_cast<std::size_t>(key.index);
@@ -61,6 +77,10 @@ struct SlotKeyHash {
 };
 
 /// @brief Add two frame byte counts with signed-int overflow checking.
+/// @param lhs Existing nonnegative byte count.
+/// @param rhs Nonnegative byte count to add.
+/// @param what Human-readable frame-area name used in diagnostics.
+/// @return Checked sum.
 /// @throws std::invalid_argument if @p rhs is negative.
 /// @throws std::overflow_error if the sum exceeds int range.
 [[nodiscard]] int checkedFrameAdd(int lhs, int rhs, const char *what) {
@@ -73,6 +93,10 @@ struct SlotKeyHash {
 }
 
 /// @brief Multiply a slot count by a slot size with signed-int overflow checking.
+/// @param count Number of slots.
+/// @param slotSize Positive byte size of one slot.
+/// @param what Human-readable frame-area name used in diagnostics.
+/// @return Checked product represented as @c int.
 /// @throws std::invalid_argument if @p slotSize is not positive.
 /// @throws std::overflow_error if the product exceeds int range.
 [[nodiscard]] int checkedFrameMul(std::size_t count, int slotSize, const char *what) {
@@ -86,6 +110,9 @@ struct SlotKeyHash {
 }
 
 /// @brief Convert a size_t frame quantity to int with overflow checking.
+/// @param value Nonnegative byte count to narrow.
+/// @param what Human-readable frame-area name used in diagnostics.
+/// @return @p value represented as @c int.
 /// @throws std::overflow_error if @p value exceeds int range.
 [[nodiscard]] int checkedFrameSizeFromSizeT(std::size_t value, const char *what) {
     if (value > static_cast<std::size_t>(std::numeric_limits<int>::max()))
@@ -94,6 +121,9 @@ struct SlotKeyHash {
 }
 
 /// @brief Return a negative FP-relative offset for a positive frame extent.
+/// @param extent Positive distance below the frame pointer.
+/// @param what Human-readable slot name used in diagnostics.
+/// @return Negative RBP-relative displacement.
 /// @throws std::invalid_argument if @p extent is not positive.
 [[nodiscard]] int negativeFrameOffset(int extent, const char *what) {
     if (extent <= 0)
@@ -159,6 +189,9 @@ struct SlotKeyHash {
 
 /// @brief Record a physical callee-saved register use when frame lowering must preserve it.
 /// @details RBP/RSP are managed by the canonical frame setup and are therefore excluded here.
+/// @param reg Register operand to classify.
+/// @param calleeSavedSet ABI nonvolatile-register set.
+/// @param usedCalleeSaved Destination set updated for a qualifying register.
 void markUsedCalleeSaved(const OpReg &reg,
                          const std::unordered_set<PhysReg> &calleeSavedSet,
                          std::unordered_set<PhysReg> &usedCalleeSaved) {
@@ -174,15 +207,15 @@ void markUsedCalleeSaved(const OpReg &reg,
     }
 }
 
-/// @brief Classify a decoded placeholder slot index into its frame-slot kind.
-/// @details Placeholder index ranges are disjoint by construction
-///          (TargetX64.hpp): alloca slots sit below kSpillSlotOffsetGPR, GPR
-///          spill slots in [kSpillSlotOffsetGPR, kSpillSlotOffsetXMM), and XMM
-///          spill slots above. Classification therefore needs no guessing from
-///          neighbouring operands, which previously misfiled slots whenever an
-///          instruction mixed register classes.
+/// @brief Disjoint storage categories encoded by placeholder index ranges.
 enum class FrameSlotKind { Alloca, SpillGPR, SpillXMM };
 
+/// @brief Classify a decoded placeholder slot index into its frame-slot kind.
+/// @details Indices below @c kSpillSlotOffsetGPR denote allocas, the next range
+///          denotes GPR spills, and indices at or above
+///          @c kSpillSlotOffsetXMM denote XMM spills.
+/// @param slotIndex Decoded nonnegative placeholder index.
+/// @return Storage category selected by the reserved index range.
 [[nodiscard]] FrameSlotKind classifyFrameSlot(int slotIndex) noexcept {
     if (slotIndex >= kSpillSlotOffsetXMM)
         return FrameSlotKind::SpillXMM;
@@ -194,12 +227,17 @@ enum class FrameSlotKind { Alloca, SpillGPR, SpillXMM };
 /// @brief Byte size needed to spill one callee-saved register.
 /// @details GPR registers need 8 bytes; XMM registers need 16 bytes to
 ///          preserve the full 128-bit value (using MOVUPS).
+/// @param reg Physical register to size.
+/// @return Eight bytes for a GPR or 16 bytes for an XMM register.
 [[nodiscard]] int calleeSaveSlotSize(PhysReg reg) {
     return isXMM(reg) ? 16 : kSlotSizeBytes;
 }
 
+/// @brief Offsets and total extent of the nonvolatile-register save area.
 struct CalleeSavedLayout {
+    /// Negative RBP-relative offset parallel to the input register sequence.
     std::vector<int> offsets{};
+    /// Total bytes occupied, including XMM-alignment padding.
     int totalBytes{0};
 };
 
@@ -208,6 +246,9 @@ struct CalleeSavedLayout {
 ///          16-byte unwind offset on Win64, so padding is inserted before XMM
 ///          saves when an odd number of preceding GPR saves would misalign them.
 ///          Offsets are all negative and relative to %rbp.
+/// @param regs Ordered nonvolatile registers that require preservation.
+/// @return Parallel offsets and total save-area size.
+/// @throws std::exception If the area size exceeds the supported integer range.
 [[nodiscard]] CalleeSavedLayout calleeSavedLayout(const std::vector<PhysReg> &regs) {
     CalleeSavedLayout layout{};
     layout.offsets.reserve(regs.size());
@@ -224,6 +265,10 @@ struct CalleeSavedLayout {
 }
 
 /// @brief Convert an RBP-relative save slot into a positive offset from final RSP.
+/// @param frameSize Final allocation below RBP.
+/// @param rbpRelativeOffset Nonpositive save-slot displacement from RBP.
+/// @return Save-slot byte offset measured from the post-prologue RSP.
+/// @throws std::runtime_error If the input or resulting offset is invalid.
 [[nodiscard]] uint32_t unwindOffsetFromFinalRsp(int frameSize, int rbpRelativeOffset) {
     if (rbpRelativeOffset > 0)
         throw std::runtime_error("x86-64 frame lowering: callee-saved slot is above RBP");
@@ -236,17 +281,7 @@ struct CalleeSavedLayout {
 
 } // namespace
 
-/// @brief Assign concrete spill slot displacements and record callee saves.
-/// @details Walks all Machine IR instructions searching for placeholder stack
-///          references (encoded as negative displacements from %rbp) and
-///          replaces them with the final offsets computed from the register
-///          class partitioning.  The routine also records which callee-saved
-///          registers actually appear in the function and rounds frame
-///          allocations up to 16 bytes to maintain ABI alignment.
-/// @param func Machine function whose frame layout is being materialised.
-/// @param target Target ABI description (callee-saved sets, etc.).
-/// @param frame Frame metadata that will be populated with spill sizes and
-///              outgoing argument requirements.
+/// @copydoc assignSpillSlots
 void assignSpillSlots(MFunction &func, const TargetInfo &target, FrameInfo &frame) {
     // Pre-compute callee-saved set for O(1) lookup instead of O(n) linear search.
     const auto calleeSavedSet = buildCalleeSavedSet(target);
@@ -406,6 +441,8 @@ void assignSpillSlots(MFunction &func, const TargetInfo &target, FrameInfo &fram
 /// @details A non-leaf frame must keep its prologue so callers can find their
 ///          spilled stack arguments through the canonical RBP-relative
 ///          addressing. Walks every operand once; short-circuits on first hit.
+/// @param func Function to inspect.
+/// @return @c true when a memory operand uses a positive RBP displacement.
 static bool functionReadsIncomingStackParams(const MFunction &func) {
     for (const auto &block : func.blocks) {
         for (const auto &instr : block.instructions) {
@@ -422,6 +459,8 @@ static bool functionReadsIncomingStackParams(const MFunction &func) {
 }
 
 /// @brief Predicate: does @p func contain any CALL instruction?
+/// @param func Function to inspect.
+/// @return @c true on the first direct or indirect CALL pseudo.
 static bool functionHasCall(const MFunction &func) {
     for (const auto &block : func.blocks) {
         for (const auto &instr : block.instructions) {
@@ -436,6 +475,11 @@ static bool functionHasCall(const MFunction &func) {
 /// @details Windows large frames call @c __chkstk to probe pages safely; Unix
 ///          inlines per-page touches. Frames within one page just subtract.
 ///          Sets @ref FrameInfo::usesChkstk and pushes the Win64 unwind op.
+/// @param prologue Instruction vector extended with allocation and probe MIR.
+/// @param frame Final frame size plus Win64 probe/unwind output state.
+/// @param isWin64 Select @c __chkstk instead of inline probing.
+/// @param rspOperand Physical RSP operand used by arithmetic instructions.
+/// @param rspBase Physical RSP base used by probe memory reads.
 static void emitStackProbe(std::vector<MInstr> &prologue,
                            FrameInfo &frame,
                            bool isWin64,
@@ -484,6 +528,11 @@ static void emitStackProbe(std::vector<MInstr> &prologue,
 
 /// @brief Push callee-saved registers (GPR via MOVrm, XMM via MOVUPSrm) and
 ///        record their Win64 unwind ops when applicable.
+/// @param prologue Instruction vector extended with save operations.
+/// @param frame Ordered registers to save and unwind records to update.
+/// @param csLayout RBP-relative slot offsets parallel to the register order.
+/// @param isWin64 Whether to record COFF unwind operations.
+/// @param rbpBase Physical RBP base for save-slot memory operands.
 static void emitSaveCalleeSaved(std::vector<MInstr> &prologue,
                                 FrameInfo &frame,
                                 const CalleeSavedLayout &csLayout,
@@ -507,6 +556,10 @@ static void emitSaveCalleeSaved(std::vector<MInstr> &prologue,
 }
 
 /// @brief Restore callee-saved registers in reverse-push order.
+/// @param epilogue Instruction vector extended with restore operations.
+/// @param frame Ordered nonvolatile-register set saved by the prologue.
+/// @param csLayout RBP-relative slot offsets parallel to the register order.
+/// @param rbpBase Physical RBP base for restore-slot memory operands.
 static void emitRestoreCalleeSaved(std::vector<MInstr> &epilogue,
                                    const FrameInfo &frame,
                                    const CalleeSavedLayout &csLayout,
@@ -522,17 +575,7 @@ static void emitRestoreCalleeSaved(std::vector<MInstr> &epilogue,
     }
 }
 
-/// @brief Inject prologue and epilogue sequences that honour the SysV ABI.
-/// @details Emits the canonical prologue (`push %rbp; mov %rsp, %rbp; sub ...`)
-///          and mirrors it with an epilogue that restores callee-saved
-///          registers, tears down the frame allocation, and pops %rbp before
-///          returning.  Prologue instructions are prepended to the entry block
-///          while each `ret` instruction receives an epilogue copy to ensure
-///          multiple return sites stay well-formed.
-/// @param func Machine function receiving prologue/epilogue code.
-/// @param target Target ABI description (currently unused but kept for
-///               symmetry with future extensions).
-/// @param frame Frame metadata produced by @ref assignSpillSlots.
+/// @copydoc insertPrologueEpilogue
 void insertPrologueEpilogue(MFunction &func, const TargetInfo &target, FrameInfo &frame) {
     if (func.blocks.empty())
         return;

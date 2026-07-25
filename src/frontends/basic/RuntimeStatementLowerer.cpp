@@ -24,6 +24,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file RuntimeStatementLowerer.cpp
+/// @brief Implements LET target dispatch and complex runtime-backed assignments.
+/// @details Terminal, declaration, and low-level slot/array operations live in
+///          sibling split files; this unit retains construction, scalar coercion,
+///          runtime-constructor recognition, and assignments to variables,
+///          field arrays, properties, members, and static fields.
+
 #include "RuntimeStatementLowerer.hpp"
 #include "Lowerer.hpp"
 #include "RuntimeCallHelpers.hpp"
@@ -89,6 +96,8 @@ static std::optional<std::string> runtimeCtorClassQNameFromName(std::string_view
 }
 
 /// @brief Runtime-ctor class name for a call expression (delegates to the by-name resolver).
+/// @param expr Call whose qualified or unqualified callee is inspected.
+/// @return Qualified runtime class name, or `std::nullopt` when the call is not a constructor.
 static std::optional<std::string> runtimeCtorClassQNameFrom(const CallExpr &expr) {
     std::string calleeName;
     if (!expr.calleeQualified.empty())
@@ -100,6 +109,8 @@ static std::optional<std::string> runtimeCtorClassQNameFrom(const CallExpr &expr
 }
 
 /// @brief Runtime-ctor class name for a method-call expression (`base.Method`), if any.
+/// @param expr Method call whose base runtime class and method are inspected.
+/// @return Qualified runtime class name, or `std::nullopt` when it is not an object constructor.
 static std::optional<std::string> runtimeCtorClassQNameFrom(const MethodCallExpr &expr) {
     if (!expr.base)
         return std::nullopt;
@@ -125,6 +136,8 @@ static AstType arrayElementTypeFromSlot(const SlotType &slotInfo) {
 }
 
 /// @brief Bind a runtime-statement lowerer to its parent Lowerer (non-owning).
+/// @param lowerer Parent lowering coordinator receiving all emitted IL.
+/// @pre @p lowerer outlives this helper.
 RuntimeStatementLowerer::RuntimeStatementLowerer(Lowerer &lowerer) : lowerer_(lowerer) {}
 
 /// @brief Coerce a lowered value to a user-declared BASIC scalar type when supported.
@@ -155,9 +168,11 @@ Lowerer::RVal RuntimeStatementLowerer::coerceToAstScalar(Lowerer::RVal value,
 /// @brief Lower a BASIC @c LET statement.
 ///
 /// @details Evaluates the right-hand expression and dispatches to the
-///          appropriate assignment helper based on whether the left-hand side is
-///          a scalar or array element.  The lowering cursor is updated so any
-///          helper-triggered diagnostics point at the @c LET statement.
+///          appropriate helper for scalar variables, call/method-call-shaped
+///          field arrays, ordinary array elements, or member/property access.
+///          Missing operands emit `B2001` plus a trap; unrecognized target kinds
+///          are left to semantic diagnostics. The lowering cursor is scoped to
+///          the LET location.
 ///
 /// @param stmt Parsed @c LET statement.
 void RuntimeStatementLowerer::lowerLet(const LetStmt &stmt) {
@@ -736,6 +751,7 @@ void RuntimeStatementLowerer::lowerLetToMember(const LetStmt &stmt,
                 std::string qname = lowerer_.qualify(className);
                 std::string setter = std::string("set_") + member->member;
                 // Overload resolution for instance setter with one user arg (value)
+                /// Map a lowered IL scalar kind back to overload-resolution AST type.
                 auto mapIlToAst = [](Lowerer::Type t) -> ::il::frontends::basic::Type {
                     using K = Lowerer::Type::Kind;
                     switch (t.kind) {
@@ -787,6 +803,7 @@ void RuntimeStatementLowerer::lowerLetToMember(const LetStmt &stmt,
                 if (const ClassInfo *ci = lowerer_.oopIndex_.findClass(qname)) {
                     // Prefer static property setter when present
                     std::string setter = std::string("set_") + member->member;
+                    /// Map a lowered IL scalar kind back to overload-resolution AST type.
                     auto mapIlToAst = [](Lowerer::Type t) -> ::il::frontends::basic::Type {
                         using K = Lowerer::Type::Kind;
                         switch (t.kind) {

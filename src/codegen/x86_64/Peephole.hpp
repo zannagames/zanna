@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Peephole.hpp
+// File: src/codegen/x86_64/Peephole.hpp
 // Purpose: Declare peephole optimisations over the provisional Machine IR.
 // Key invariants:
 //   - Rewrites preserve instruction ordering and semantics.
@@ -14,9 +14,9 @@
 // Ownership/Lifetime:
 //   - Operates on mutable MIR owned by the caller.
 //   - No dynamic resources allocated beyond temporary vectors.
-// Links: codegen/x86_64/Peephole.cpp,
-//        codegen/x86_64/MachineIR.hpp,
-//        codegen/x86_64/TargetX64.hpp
+// Links: src/codegen/x86_64/Peephole.cpp,
+//        src/codegen/x86_64/MachineIR.hpp,
+//        src/codegen/x86_64/TargetX64.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,6 +24,16 @@
 
 #include "MachineIR.hpp"
 #include "TargetX64.hpp"
+
+/**
+ * @file
+ * @brief Declares the composed post-allocation x86-64 peephole pipeline.
+ *
+ * The driver combines arithmetic simplification, move folding, frame-memory
+ * forwarding, dead-code elimination, branch cleanup, trace layout, and cold
+ * block placement. Repeated local and branch phases are bounded to guarantee
+ * termination even if future rewrites interact unexpectedly.
+ */
 
 namespace zanna::codegen::x64 {
 

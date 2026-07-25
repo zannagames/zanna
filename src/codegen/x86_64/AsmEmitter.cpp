@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/AsmEmitter.cpp
+// File: src/codegen/x86_64/AsmEmitter.cpp
 // Purpose: Materialise textual x86-64 assembly from Machine IR functions while
 //          maintaining deterministic literal pools for read-only data.
 // Key invariants:
@@ -21,6 +21,16 @@
 //        codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file AsmEmitter.cpp
+ * @brief Implements deterministic AT&T-syntax emission for x86-64 Machine IR.
+ *
+ * Generated encoding tables select mnemonic and operand policy, while explicit
+ * handlers cover control-flow tables, width-sensitive registers, calls, and
+ * conditions. The accompanying literal pool interns strings and f64 bit
+ * patterns and emits format-appropriate read-only-data directives.
+ */
 
 #include "AsmEmitter.hpp"
 #include "asmfmt/Format.hpp"
@@ -109,6 +119,10 @@ constexpr std::array<std::array<const char *, 16>, 3> kGprAliasNames = {{
 ///          resulting @c count field reflects the true arity. Used by the
 ///          encoding table to express what shape of operand list a given
 ///          encoding row accepts.
+/// @param first First operand constraint.
+/// @param second Optional second operand constraint.
+/// @param third Optional third operand constraint.
+/// @return Pattern whose count ends at the first `None` slot.
 constexpr OperandPattern makePattern(OperandKind first = OperandKind::None,
                                      OperandKind second = OperandKind::None,
                                      OperandKind third = OperandKind::None) noexcept {
@@ -132,12 +146,18 @@ constexpr OperandPattern makePattern(OperandKind first = OperandKind::None,
 /// @details The enum is a bitflag set; this operator allows compact
 ///          composition of flag combinations (e.g.
 ///          @c RequiresModRM | UsesImm32 | REXW).
+/// @param lhs Left flag set.
+/// @param rhs Right flag set.
+/// @return Bitwise union of both sets.
 constexpr EncodingFlag operator|(EncodingFlag lhs, EncodingFlag rhs) noexcept {
     return static_cast<EncodingFlag>(static_cast<std::uint32_t>(lhs) |
                                      static_cast<std::uint32_t>(rhs));
 }
 
-/// @brief Checks if flag exists.
+/// @brief Test whether an encoding flag set contains a flag.
+/// @param value Flag set to inspect.
+/// @param flag Flag or combined mask to require.
+/// @return `true` when all bits in @p flag are present.
 [[maybe_unused]] constexpr bool hasFlag(EncodingFlag value, EncodingFlag flag) noexcept {
     return (static_cast<std::uint32_t>(value) & static_cast<std::uint32_t>(flag)) != 0U;
 }
@@ -150,6 +170,9 @@ constexpr EncodingFlag operator|(EncodingFlag lhs, EncodingFlag rhs) noexcept {
 ///          @c RegOrMem, @c LabelOrRegOrMem — this helper decodes those
 ///          choices into the appropriate @c std::holds_alternative checks
 ///          against the variant operand.
+/// @param kind Pattern constraint.
+/// @param operand Variant operand to inspect.
+/// @return `true` when @p operand satisfies @p kind.
 [[nodiscard]] bool matchesOperandKind(OperandKind kind, const Operand &operand) noexcept {
     switch (kind) {
         case OperandKind::None:
@@ -183,6 +206,9 @@ constexpr EncodingFlag operator|(EncodingFlag lhs, EncodingFlag rhs) noexcept {
 /// @details First verifies arity then kind by kind. Used by the encoding
 ///          lookup to disambiguate rows that share an opcode (e.g. ADDri
 ///          vs. ADDrr).
+/// @param pattern Expected operand count and per-slot kinds.
+/// @param operands Actual instruction operands.
+/// @return `true` when arity and all slot constraints match.
 [[nodiscard]] bool matchesPattern(const OperandPattern &pattern,
                                   std::span<const Operand> operands) noexcept {
     if (static_cast<std::size_t>(pattern.count) != operands.size()) {
@@ -196,6 +222,10 @@ constexpr EncodingFlag operator|(EncodingFlag lhs, EncodingFlag rhs) noexcept {
     return true;
 }
 
+/// @brief Test whether exactly one operand satisfies a supplied predicate.
+/// @param operands Operand sequence to scan.
+/// @param predicate Non-null operand-kind predicate.
+/// @return `true` when precisely one operand matches.
 [[nodiscard]] bool hasSingleOperandKind(std::span<const Operand> operands,
                                         bool (*predicate)(const Operand &)) noexcept {
     bool found = false;
@@ -209,14 +239,23 @@ constexpr EncodingFlag operator|(EncodingFlag lhs, EncodingFlag rhs) noexcept {
     return found;
 }
 
+/// @brief Recognize an immediate condition-code operand.
+/// @param operand Variant operand to inspect.
+/// @return `true` for an immediate.
 [[maybe_unused]] [[nodiscard]] bool isConditionOperand(const Operand &operand) noexcept {
     return std::holds_alternative<OpImm>(operand);
 }
 
+/// @brief Recognize a direct label operand.
+/// @param operand Variant operand to inspect.
+/// @return `true` for @ref OpLabel.
 [[nodiscard]] bool isLabelOperand(const Operand &operand) noexcept {
     return std::holds_alternative<OpLabel>(operand);
 }
 
+/// @brief Recognize a legal SETcc register-or-memory destination.
+/// @param operand Variant operand to inspect.
+/// @return `true` for register or memory operands.
 [[nodiscard]] bool isSetccDestinationOperand(const Operand &operand) noexcept {
     return std::holds_alternative<OpReg>(operand) || std::holds_alternative<OpMem>(operand);
 }
@@ -226,6 +265,9 @@ constexpr EncodingFlag operator|(EncodingFlag lhs, EncodingFlag rhs) noexcept {
 ///          `{dst, cc}` for SETcc, and both `{cc, label}` and `{label, cc}` for
 ///          JCC. The opcode-specific emitters below already select operands by
 ///          kind, so the table lookup must allow the same shapes through.
+/// @param op Conditional opcode being matched.
+/// @param operands Two operands in either accepted order.
+/// @return `true` for a supported JCC or SETcc condition shape.
 [[nodiscard]] bool matchesFlexibleConditionPattern(MOpcode op,
                                                    std::span<const Operand> operands) noexcept {
     if (operands.size() != 2)
@@ -247,6 +289,7 @@ template <typename... Ts> struct Overload : Ts... {
     using Ts::operator()...;
 };
 
+/// @brief Deduction guide for constructing an @ref Overload visitor from lambdas.
 template <typename... Ts> Overload(Ts...) -> Overload<Ts...>;
 
 enum : std::uint16_t {
@@ -266,10 +309,15 @@ enum : std::uint16_t {
     kFmtMovsx16 = 1U << 13U,  ///< 16-bit source register, 64-bit destination (movswq).
 };
 
+/// @brief Compact generated textual-format descriptor for one opcode.
 struct OpFmt {
+    ///< Machine opcode handled by the row.
     MOpcode opc;
+    ///< AT&T mnemonic.
     const char *mnemonic;
+    ///< Required explicit operand count.
     std::uint8_t operandCount;
+    ///< Internal formatting-policy bit set.
     std::uint16_t flags;
 };
 
@@ -280,6 +328,7 @@ struct OpFmt {
 /// @details Used to size the constexpr lookup table at compile time so
 ///          opcode -> @ref OpFmt resolution is O(1) regardless of how
 ///          many entries are present.
+/// @return Highest numeric opcode value present in the generated table.
 consteval std::size_t maxOpFmtOpcodeIndex() {
     std::size_t maxIndex = 0;
     for (const auto &fmt : kOpFmt)
@@ -292,6 +341,7 @@ constexpr std::size_t kOpFmtLookupSize = maxOpFmtOpcodeIndex() + 1;
 
 /// @brief Build a compile-time lookup table mapping MOpcode -> index in kOpFmt.
 /// @details Returns kOpFmt.size() (invalid index) for opcodes not in the table.
+/// @return Fully initialized opcode-to-row-index table.
 constexpr std::array<std::size_t, kOpFmtLookupSize> buildOpFmtLookup() noexcept {
     std::array<std::size_t, kOpFmtLookupSize> lookup{};
     // Initialize all to invalid index
@@ -311,6 +361,8 @@ static constexpr auto kOpFmtLookup = buildOpFmtLookup();
 
 /// @brief Retrieves fmt value using O(1) lookup table.
 /// @details Direct array indexing instead of linear search for better performance.
+/// @param opc Machine opcode to resolve.
+/// @return Pointer to its formatting row, or null when absent/out of range.
 const OpFmt *getFmt(MOpcode opc) noexcept {
     const auto idx = static_cast<std::size_t>(opc);
     if (idx >= kOpFmtLookupSize)
@@ -321,13 +373,17 @@ const OpFmt *getFmt(MOpcode opc) noexcept {
     return &kOpFmt[tableIdx];
 }
 
-/// @brief Forward declaration: convert an @c OpReg to its asmfmt index.
+/// @brief Convert an @ref OpReg to the signed index convention used by asmfmt.
+/// @param reg Physical or virtual register operand.
+/// @return Nonnegative physical index or negative virtual encoding.
 [[nodiscard]] int encodeRegister(const OpReg &reg) noexcept;
 
 /// @brief Predicate: would @p name be a Mach-O "local" symbol?
 /// @details Mach-O distinguishes local labels by a leading @c '.' or by
 ///          known prefixes such as @c L./@c Ltmp/@c LBB. Local symbols are
 ///          not given the standard underscore prefix when formatted.
+/// @param name Candidate symbol spelling.
+/// @return `true` when Darwin treats the name as local.
 [[nodiscard]] bool isDarwinLocalSymbol(std::string_view name) noexcept {
     return !name.empty() && (name.front() == '.' || name.rfind("L.", 0) == 0 ||
                              name.rfind("Ltmp", 0) == 0 || name.rfind("LBB", 0) == 0);
@@ -336,6 +392,9 @@ const OpFmt *getFmt(MOpcode opc) noexcept {
 /// @brief Format a symbol reference, applying Mach-O underscore prefixing.
 /// @details On Mach-O targets non-local symbols carry a leading underscore
 ///          in the textual assembly. ELF/COFF use the raw name.
+/// @param name Logical symbol spelling.
+/// @param format Target object format.
+/// @return Assembly-safe symbol reference.
 [[nodiscard]] std::string formatSymbolReference(std::string_view name, objfile::ObjFormat format) {
     std::string symbol = asmfmt::format_label(name);
     if (format == objfile::ObjFormat::MachO && !symbol.empty() && !isDarwinLocalSymbol(symbol))
@@ -346,6 +405,9 @@ const OpFmt *getFmt(MOpcode opc) noexcept {
 /// @brief Format a symbol reference as a RIP-relative memory operand.
 /// @details Delegates to @ref formatSymbolReference then appends @c "(%rip)"
 ///          so the resulting string can be used directly in a load/store.
+/// @param name Logical symbol spelling.
+/// @param format Target object format.
+/// @return Format-adjusted symbol followed by `(%rip)`.
 [[nodiscard]] std::string formatRipSymbolReference(std::string_view name,
                                                    objfile::ObjFormat format) {
     std::string result = formatSymbolReference(name, format);
@@ -389,7 +451,12 @@ void emitOperand(const Operand &operand,
 }
 
 template <typename Out>
-/// @brief Emits operands.
+/// @brief Emit a comma-separated operand sequence.
+/// @tparam Out Output sink supporting stream insertion.
+/// @param operands Ordered MIR operands.
+/// @param out Destination text sink.
+/// @param target Target register information.
+/// @param format Object format controlling symbol spelling.
 void emitOperands(std::span<const Operand> operands,
                   Out &out,
                   const TargetInfo &target,
@@ -399,13 +466,18 @@ void emitOperands(std::span<const Operand> operands,
         if (!first) {
             out << ", ";
         }
-        /// @brief Emits operand.
         emitOperand(operand, out, target, format);
         first = false;
     }
 }
 
-/// @brief Emits rodatapool.
+/// @brief Emit all literal-pool entries into the target's read-only-data section.
+/// @param stringLiterals String byte payloads in label-index order.
+/// @param stringLengths Recorded byte lengths used to validate pool consistency.
+/// @param f64Literals Floating values in label-index order.
+/// @param format Object format selecting the section directive.
+/// @param os Output stream receiving assembly.
+/// @throws std::runtime_error when string payload and length metadata disagree.
 void emitRoDataPool(std::span<const std::string> stringLiterals,
                     std::span<const std::size_t> stringLengths,
                     std::span<const double> f64Literals,
@@ -465,6 +537,7 @@ void emitRoDataPool(std::span<const std::string> stringLiterals,
 ///          virtual registers map to @c -(idOrPhys+1) so the sign bit alone
 ///          distinguishes the two namespaces (and vreg 0 stays distinct from
 ///          physical reg 0).
+/// @param reg Register operand to encode.
 /// @return Non-negative for physical regs, negative for virtual regs.
 [[nodiscard]] int encodeRegister(const OpReg &reg) noexcept {
     if (reg.isPhys) {
@@ -559,11 +632,11 @@ std::string AsmEmitter::RoDataPool::f64Label(int index) const {
 ///          directives for each pooled string and floating literal. The method
 ///          preserves insertion order so indices map consistently to labels.
 /// @param os Output stream receiving assembly text.
+/// @param format Object format selecting the read-only-data section directive.
 void AsmEmitter::RoDataPool::emit(std::ostream &os, objfile::ObjFormat format) const {
     if (empty()) {
         return;
     }
-    /// @brief Emits rodatapool.
     emitRoDataPool(std::span<const std::string>{stringLiterals_},
                    std::span<const std::size_t>{stringLengths_},
                    std::span<const double>{f64Literals_},
@@ -580,6 +653,7 @@ bool AsmEmitter::RoDataPool::empty() const noexcept {
 /// @brief Construct an emitter bound to a shared read-only data pool.
 /// @param pool Pool responsible for owning literal buffers referenced by the
 ///             emitted assembly.
+/// @param format Object format controlling Darwin symbol and section spelling.
 AsmEmitter::AsmEmitter(RoDataPool &pool, objfile::ObjFormat format) noexcept
     : pool_{&pool}, format_{format} {}
 
@@ -608,11 +682,9 @@ void AsmEmitter::emitFunction(std::ostream &os,
         const bool isEntry = (i == 0U && block.label == func.name);
         if (isEntry) {
             for (const auto &instr : block.instructions) {
-                /// @brief Emits instruction.
                 emitInstruction(os, instr, target, format_);
             }
         } else {
-            /// @brief Emits block.
             emitBlock(os, block, target, format_);
         }
         if (i + 1 < func.blocks.size()) {
@@ -649,6 +721,7 @@ void AsmEmitter::emitRoData(std::ostream &os) const {
 /// @param os Output stream receiving the assembly.
 /// @param block Machine basic block to serialise.
 /// @param target Target lowering information controlling operand formatting.
+/// @param format Object format controlling symbol spelling.
 void AsmEmitter::emitBlock(std::ostream &os,
                            const MBasicBlock &block,
                            const TargetInfo &target,
@@ -657,7 +730,6 @@ void AsmEmitter::emitBlock(std::ostream &os,
         os << formatSymbolReference(block.label, format) << ":\n";
     }
     for (const auto &instr : block.instructions) {
-        /// @brief Emits instruction.
         emitInstruction(os, instr, target, format);
     }
 }
@@ -669,6 +741,7 @@ void AsmEmitter::emitBlock(std::ostream &os,
 /// @param os Output stream receiving the assembly.
 /// @param instr Instruction to serialise.
 /// @param target Target lowering information controlling operand formatting.
+/// @param format Object format controlling symbol spelling.
 void AsmEmitter::emitInstruction(std::ostream &os,
                                  const MInstr &instr,
                                  const TargetInfo &target,
@@ -752,10 +825,10 @@ void AsmEmitter::emitInstruction(std::ostream &os,
                                  std::to_string(operands.size()) + " operand(s)");
     }
 
-    /// @brief Emits _from_row.
     emit_from_row(*row, operands, os, target, format);
 }
 
+/// @copydoc AsmEmitter::emit_from_row
 void AsmEmitter::emit_from_row(const EncodingRow &row,
                                std::span<const Operand> operands,
                                std::ostream &os,
@@ -771,7 +844,6 @@ void AsmEmitter::emit_from_row(const EncodingRow &row,
     if (!fmt) {
         if (!operands.empty()) {
             os << ' ';
-            /// @brief Emits operands.
             emitOperands(operands, os, target, format);
         }
         os << '\n';
@@ -1092,12 +1164,12 @@ void AsmEmitter::emit_from_row(const EncodingRow &row,
 ///          labels.
 /// @param operand Operand to print.
 /// @param target Target lowering information controlling register names.
+/// @param format Object format controlling symbol spelling.
 /// @return Textual representation of the operand.
 std::string AsmEmitter::formatOperand(const Operand &operand,
                                       const TargetInfo &target,
                                       objfile::ObjFormat format) {
     std::ostringstream buffer;
-    /// @brief Emits operand.
     emitOperand(operand, buffer, target, format);
     return std::move(buffer).str();
 }
@@ -1113,6 +1185,7 @@ std::string AsmEmitter::formatReg(const OpReg &reg, const TargetInfo &) {
     return asmfmt::fmt_reg(encodeRegister(reg));
 }
 
+/// @copydoc AsmEmitter::formatReg8
 std::string AsmEmitter::formatReg8(const OpReg &reg, const TargetInfo &target) {
     if (!reg.isPhys) {
         std::ostringstream os;
@@ -1125,6 +1198,7 @@ std::string AsmEmitter::formatReg8(const OpReg &reg, const TargetInfo &target) {
     return formatReg(reg, target);
 }
 
+/// @copydoc AsmEmitter::formatReg32
 std::string AsmEmitter::formatReg32(const OpReg &reg, const TargetInfo &target) {
     if (!reg.isPhys) {
         std::ostringstream os;
@@ -1137,6 +1211,7 @@ std::string AsmEmitter::formatReg32(const OpReg &reg, const TargetInfo &target) 
     return formatReg(reg, target);
 }
 
+/// @copydoc AsmEmitter::formatReg16
 std::string AsmEmitter::formatReg16(const OpReg &reg, const TargetInfo &target) {
     if (!reg.isPhys) {
         std::ostringstream os;
@@ -1177,6 +1252,7 @@ std::string AsmEmitter::formatMem(const OpMem &mem, const TargetInfo &target) {
 
 /// @brief Format a label operand.
 /// @param label Label operand to print.
+/// @param format Object format controlling Darwin underscore prefixing.
 /// @return Raw label text.
 [[maybe_unused]] std::string AsmEmitter::formatLabel(const OpLabel &label,
                                                      objfile::ObjFormat format) {
@@ -1185,6 +1261,7 @@ std::string AsmEmitter::formatMem(const OpMem &mem, const TargetInfo &target) {
 
 /// @brief Format a RIP-relative label operand.
 /// @param label RIP-relative label to print.
+/// @param format Object format controlling Darwin underscore prefixing.
 /// @return Label text suffixed with the RIP-relative addressing mode.
 std::string AsmEmitter::formatRipLabel(const OpRipLabel &label, objfile::ObjFormat format) {
     return formatRipSymbolReference(label.name, format);
@@ -1193,6 +1270,7 @@ std::string AsmEmitter::formatRipLabel(const OpRipLabel &label, objfile::ObjForm
 /// @brief Format a shift count operand, rewriting RCX to CL when required.
 /// @param operand Operand describing the shift count.
 /// @param target Target lowering context for fallback formatting.
+/// @param format Object format controlling any symbolic fallback.
 /// @return Assembly string for the shift count operand.
 std::string AsmEmitter::formatShiftCount(const Operand &operand,
                                          const TargetInfo &target,
@@ -1215,6 +1293,7 @@ std::string AsmEmitter::formatShiftCount(const Operand &operand,
 ///          immediate addresses are encoded on x86-64.
 /// @param operand Operand supplying the effective address computation.
 /// @param target Target lowering context for register/memory formatting.
+/// @param format Object format controlling symbol spelling.
 /// @return Assembly string representing the effective address source.
 std::string AsmEmitter::formatLeaSource(const Operand &operand,
                                         const TargetInfo &target,
@@ -1239,6 +1318,7 @@ std::string AsmEmitter::formatLeaSource(const Operand &operand,
 ///          while direct labels are passed through verbatim.
 /// @param operand Operand describing the call target.
 /// @param target Target lowering context for register/memory formatting.
+/// @param format Object format controlling direct-symbol spelling.
 /// @return Assembly string representing the call target.
 std::string AsmEmitter::formatCallTarget(const Operand &operand,
                                          const TargetInfo &target,

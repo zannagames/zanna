@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/OperandUtils.hpp
+// File: src/codegen/x86_64/OperandUtils.hpp
 // Purpose: Provide shared utility functions for Machine IR operand manipulation.
 // Key invariants:
 //   - Type-check helpers (isReg, isImm, etc.) are side-effect free.
@@ -14,8 +14,8 @@
 // Ownership/Lifetime:
 //   - Helpers operate on values or const references; callers retain ownership
 //     of all operands passed in.
-// Links: codegen/x86_64/MachineIR.hpp,
-//        codegen/x86_64/TargetX64.hpp
+// Links: src/codegen/x86_64/MachineIR.hpp,
+//        src/codegen/x86_64/TargetX64.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,6 +27,16 @@
 #include <limits>
 #include <stdexcept>
 #include <variant>
+
+/**
+ * @file
+ * @brief Defines header-only helpers for inspecting and constructing MIR operands.
+ *
+ * The utilities provide explicit value cloning, safe variant predicates and
+ * nullable accessors, exact register-identity comparison, physical-register
+ * construction, and overflow-checked integer/size alignment used by frame and
+ * call layout.
+ */
 
 namespace zanna::codegen::x64 {
 

@@ -11,20 +11,46 @@
 //   - Standalone translation unit; no cross-layer dependencies.
 // Ownership/Lifetime:
 //   - No long-lived state; all allocations are scoped to the run.
-// Links: docs/codemap.md
+// Links: examples/il/benchmarks/mixed_stress.il, docs/internals/testing.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file misc/benchmarks/reference/c/mixed_stress.c
+ * @brief Native reference implementation of the mixed-workload benchmark.
+ *
+ * @details
+ * The kernel combines arithmetic dependencies, a helper call, and divisibility
+ * branches over roughly ten million iterations. Its process exit value is the
+ * low byte of the signed 64-bit accumulator, matching the corresponding IL
+ * program without adding output overhead to the timed region.
+ */
 
 /* mixed_stress.c — Mixed workload benchmark (10M iterations).
    Equivalent to examples/il/benchmarks/mixed_stress.il */
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * @brief Apply the affine transform used by both conditional paths.
+ * @param x Signed 64-bit input.
+ * @return `3 * x + 7`.
+ * @pre The multiplication and addition fit in `int64_t`.
+ */
 static int64_t helper(int64_t x)
 {
     return x * 3 + 7;
 }
 
+/**
+ * @brief Execute the mixed arithmetic, call, and branch workload.
+ * @param argc Hosted argument count. Each user argument adds one iteration.
+ * @param argv Hosted argument vector; its contents are intentionally unused.
+ * @return The accumulated results reduced to the least-significant eight bits.
+ *
+ * @pre `argc >= 1`, and the derived iteration count keeps all intermediate and
+ *      accumulated arithmetic representable by `int64_t`.
+ */
 int main(int argc, char **argv)
 {
     (void)argv;

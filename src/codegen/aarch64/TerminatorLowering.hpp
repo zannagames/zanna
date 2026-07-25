@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/TerminatorLowering.hpp
+// File: src/codegen/aarch64/TerminatorLowering.hpp
 // Purpose: Terminator instruction lowering for IL→MIR conversion
 //          (br, cbr, trap, switch).
 //
@@ -17,9 +17,9 @@
 // Ownership/Lifetime:
 //   - Stateless free function; borrows all maps and builders for the call.
 //
-// Links: codegen/aarch64/TerminatorLowering.cpp,
-//        codegen/aarch64/LoweringContext.hpp,
-//        codegen/aarch64/passes/LoweringPass.cpp
+// Links: src/codegen/aarch64/TerminatorLowering.cpp,
+//        src/codegen/aarch64/LoweringContext.hpp,
+//        src/codegen/aarch64/passes/LoweringPass.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,21 +32,43 @@
 #include <unordered_map>
 #include <vector>
 
+/**
+ * @file
+ * @brief Declares the function-wide AArch64 IL terminator-lowering pass.
+ *
+ * Terminators are handled after ordinary instructions so operand mappings and
+ * phi metadata are complete. The pass may append edge blocks, switch dispatch
+ * blocks, spill/reload sequences, and terminal runtime calls.
+ */
+
 namespace zanna::codegen::aarch64 {
 
-/// @brief Lower control-flow terminators for all blocks in a function.
-/// @details This must be called AFTER all other instructions have been lowered,
-///          to ensure branches appear after the values they depend on are computed.
-/// @param fn The IL function being lowered
-/// @param mf The output MIR function
-/// @param ti Target info for ABI register mappings
-/// @param fb Frame builder for stack allocation
-/// @param phiVregId Block label -> vreg IDs for phi parameters
-/// @param phiRegClass Block label -> register classes for phi parameters
-/// @param phiSpillOffset Block label -> spill offsets for phi parameters
-/// @param blockTempVRegSnapshot Per-block tempVReg snapshots for correct vreg mappings
-/// @param tempRegClass Temp ID -> register class mapping
-/// @param nextVRegId Counter for vreg ID allocation
+/**
+ * @brief Lowers control-flow terminators for every original IL block.
+ *
+ * Branch arguments become phi spill stores. Conditional branches may fuse
+ * their comparison producer and use edge blocks when arguments differ by
+ * successor. Switches select a linear chain, dense jump table, or recursive
+ * binary-search tree; traps become non-returning runtime calls.
+ *
+ * @param fn Source IL function, borrowed without modification.
+ * @param[in,out] mf MIR function whose first `fn.blocks.size()` blocks
+ *        correspond by index to @p fn; auxiliary blocks may be appended.
+ * @param ti Target register/ABI metadata used during value materialization.
+ * @param[in,out] fb Frame allocator for phi and switch spill slots.
+ * @param phiVregId Phi virtual-register mapping retained for interface
+ *        compatibility; the current terminator implementation does not consult it.
+ * @param phiRegClass Register class of each phi parameter by destination label.
+ * @param phiSpillOffset Frame offset of each phi parameter by destination label.
+ * @param[in,out] blockTempVRegSnapshot Per-original-block temporary mappings.
+ * @param[in,out] tempRegClass Function-wide temporary register classes.
+ * @param[in,out] nextVRegId Ordinary virtual-register allocator state.
+ * @pre Ordinary instruction lowering and phi-slot allocation are complete.
+ * @pre `mf.blocks.size() >= fn.blocks.size()` and
+ *      `blockTempVRegSnapshot.size() >= fn.blocks.size()`.
+ * @throws std::runtime_error If a handled terminator is malformed, its values
+ *         cannot be materialized, phi metadata disagrees, or ID ranges overflow.
+ */
 void lowerTerminators(const il::core::Function &fn,
                       MFunction &mf,
                       const TargetInfo &ti,

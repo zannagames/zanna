@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/ra/ArchTraits.hpp
+// File: src/codegen/common/ra/ArchTraits.hpp
 // Purpose: Defines the ArchTraits concept for register allocator abstractions.
 //          Backend-specific traits structs implement this interface to enable
 //          shared algorithms (victim selection, spill cost, liveness queries)
@@ -22,6 +22,11 @@
 //        plans/audit-08-shared-regalloc.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ArchTraits.hpp
+ * @brief Documents shared register-allocation traits and victim heuristics.
+ */
 
 #pragma once
 
@@ -44,7 +49,7 @@ namespace zanna::codegen::ra {
 ///     // ... implement all methods below ...
 /// };
 ///
-/// auto victim = selectFurthestVictim<AArch64Traits>(activeSet, nextUseMap);
+/// auto victim = selectFurthestVictim(activeSet, nextUseMap);
 /// @endcode
 ///
 /// Required type aliases:
@@ -56,9 +61,11 @@ namespace zanna::codegen::ra {
 ///     given vreg. Returns UINT_MAX if no future use exists.
 ///
 struct ArchTraitsDocumentation {
+    /// @brief Canonical virtual-register identifier type.
     using RegId = uint16_t;
 
     // Not instantiated — this struct exists only for documentation.
+    /// @brief Prevent construction of this documentation-only interface sketch.
     ArchTraitsDocumentation() = delete;
 };
 
@@ -107,7 +114,7 @@ uint16_t selectFurthestVictim(const std::vector<uint16_t> &activeSet, GetNextUse
 /// @tparam GetLastUse Callable: (uint16_t vregId) -> unsigned lastUseIdx.
 /// @param activeSet The set of currently active vreg IDs.
 /// @param getLastUse Callable providing the last-use position for each vreg.
-/// @return The vreg ID that was used least recently.
+/// @return The vreg ID that was used least recently, or zero for an empty set.
 template <typename GetLastUse>
 uint16_t selectLRUVictim(const std::vector<uint16_t> &activeSet, GetLastUse getLastUse) {
     if (activeSet.empty())

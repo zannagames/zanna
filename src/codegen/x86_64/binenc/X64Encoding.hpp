@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/binenc/X64Encoding.hpp
+// File: src/codegen/x86_64/binenc/X64Encoding.hpp
 // Purpose: Maps PhysReg enum values to hardware register encoding (3-bit number
 //          + REX extension bit) and provides condition-code-to-x86-CC-nibble
 //          translation for the binary encoder.
@@ -16,8 +16,8 @@
 // Ownership/Lifetime:
 //   - Stateless; helpers are constexpr where invalid input cannot occur,
 //     otherwise checked inline functions.
-// Links: codegen/x86_64/TargetX64.hpp,
-//        codegen/x86_64/binenc/X64BinaryEncoder.hpp
+// Links: src/codegen/x86_64/TargetX64.hpp,
+//        src/codegen/x86_64/binenc/X64BinaryEncoder.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,18 +29,27 @@
 #include <cstdint>
 #include <stdexcept>
 
+/// @file
+/// @brief Defines checked x86-64 register, prefix, opcode, and addressing encodings.
+
 namespace zanna::codegen::x64::binenc {
 
-/// Hardware register encoding: 3-bit number + REX extension bit.
+/// @brief Hardware register encoding split across an instruction field and REX.
+/// @details The low field occupies ModR/M or SIB bits and @c rexBit extends it
+///          to address registers 8 through 15.
 struct HwReg {
     uint8_t bits3;  ///< Low 3 bits of register number (0-7).
     uint8_t rexBit; ///< 1 if register requires REX.R/B/X extension, 0 otherwise.
 };
 
-/// Map a PhysReg to its x86_64 hardware encoding.
-///
-/// The PhysReg enum order (RAX=0, RBX=1, RCX=2, ...) does NOT match
-/// hardware (RAX=0, RCX=1, RDX=2, RBX=3, ...). This table bridges the gap.
+/// @brief Maps a backend physical register to its x86-64 hardware encoding.
+/// @details The @ref PhysReg order does not match the architectural numbering
+///          of the general-purpose bank. A complete table bridges that gap and
+///          also supplies the shared low-three-bit/extension representation for
+///          XMM registers.
+/// @param reg Physical register to encode.
+/// @return Three-bit instruction field and corresponding REX extension bit.
+/// @throws std::out_of_range If @p reg is outside the declared enumeration.
 inline HwReg hwEncode(PhysReg reg) {
     // Index: static_cast<int>(PhysReg)
     // Layout: {bits3, rexBit}
@@ -84,10 +93,9 @@ inline HwReg hwEncode(PhysReg reg) {
     return kTable[idx];
 }
 
-/// Map a Zanna condition code (0-13) to the x86_64 CC nibble used in
-/// JCC (0F 8x) and SETcc (0F 9x) second opcode bytes.
-///
-/// The mapping follows the Intel SDM condition code encoding:
+/// @brief Maps a Zanna condition code to the architectural x86 condition nibble.
+/// @details The result occupies the low nibble of @c JCC and @c SETcc opcode
+///          bytes. The mapping follows the Intel condition-code encoding:
 ///   Zanna 0 (eq)  -> x86 4 (E)     Zanna 7 (ae) -> x86 3 (AE/NB)
 ///   Zanna 1 (ne)  -> x86 5 (NE)    Zanna 8 (b)  -> x86 2 (B/C)
 ///   Zanna 2 (lt)  -> x86 C (L)     Zanna 9 (be) -> x86 6 (BE/NA)
@@ -95,6 +103,9 @@ inline HwReg hwEncode(PhysReg reg) {
 ///   Zanna 4 (gt)  -> x86 F (G)     Zanna 11 (np)-> x86 B (NP/PO)
 ///   Zanna 5 (ge)  -> x86 D (GE)    Zanna 12 (o) -> x86 0 (O)
 ///   Zanna 6 (a)   -> x86 7 (A/NBE) Zanna 13 (no)-> x86 1 (NO)
+/// @param zannaCC Backend condition code in the inclusive range 0 through 13.
+/// @return Architectural four-bit condition selector.
+/// @throws std::out_of_range If @p zannaCC is outside the supported range.
 inline uint8_t x86CC(int zannaCC) {
     constexpr uint8_t kTable[] = {
         0x4, // 0: eq  -> E
@@ -119,18 +130,30 @@ inline uint8_t x86CC(int zannaCC) {
 
 // === ModR/M + SIB construction helpers ===
 
-/// Build a ModR/M byte: mod(2) | reg(3) | rm(3).
+/// @brief Builds a ModR/M byte from its three logical fields.
+/// @param mod Two-bit addressing-mode selector.
+/// @param reg3 Register number or opcode extension; only the low three bits are used.
+/// @param rm3 Register or addressing selector; only the low three bits are used.
+/// @return Packed byte in @c mod:reg:r/m bit order.
+/// @pre @p mod is in the inclusive range 0 through 3.
 inline constexpr uint8_t makeModRM(uint8_t mod, uint8_t reg3, uint8_t rm3) {
     return static_cast<uint8_t>((mod << 6) | ((reg3 & 7) << 3) | (rm3 & 7));
 }
 
-/// Build a SIB byte: scale(2) | index(3) | base(3).
+/// @brief Builds a scale-index-base byte from its three logical fields.
+/// @param scale Two-bit logarithmic scale encoding.
+/// @param index3 Index-register field; only the low three bits are used.
+/// @param base3 Base-register field; only the low three bits are used.
+/// @return Packed byte in @c scale:index:base bit order.
+/// @pre @p scale is in the inclusive range 0 through 3.
 inline constexpr uint8_t makeSIB(uint8_t scale, uint8_t index3, uint8_t base3) {
     return static_cast<uint8_t>((scale << 6) | ((index3 & 7) << 3) | (base3 & 7));
 }
 
-/// Compute the SIB scale encoding from an integer scale factor.
-///   1 -> 0, 2 -> 1, 4 -> 2, 8 -> 3.
+/// @brief Computes the SIB field for an architectural integer scale factor.
+/// @param scale Effective-address multiplier, which must be 1, 2, 4, or 8.
+/// @return Logarithmic SIB encoding: 1→0, 2→1, 4→2, or 8→3.
+/// @throws std::invalid_argument If @p scale is not architecturally encodable.
 inline uint8_t scaleLog2(uint8_t scale) {
     switch (scale) {
         case 1:
@@ -146,8 +169,14 @@ inline uint8_t scaleLog2(uint8_t scale) {
     }
 }
 
-/// Compute a REX prefix byte (0x40 | W<<3 | R<<2 | X<<1 | B).
-/// Returns 0 if no REX byte is needed.
+/// @brief Constructs a REX prefix byte from its W, R, X, and B flags.
+/// @param w Whether to select 64-bit operand width.
+/// @param r Extension bit for the ModR/M register field.
+/// @param x Extension bit for the SIB index field.
+/// @param b Extension bit for the ModR/M r/m or SIB base field.
+/// @return Byte @c 0x40|(W<<3)|(R<<2)|(X<<1)|B.
+/// @note With all flags false this returns the valid bare REX byte @c 0x40;
+///       use @ref needsRex to decide whether a prefix is required.
 inline constexpr uint8_t computeRex(bool w, bool r, bool x, bool b) {
     uint8_t rex = 0x40;
     if (w)
@@ -161,23 +190,32 @@ inline constexpr uint8_t computeRex(bool w, bool r, bool x, bool b) {
     return rex;
 }
 
-/// Whether a REX prefix is needed given the WRXB flags.
+/// @brief Tests whether any requested flag requires emission of a REX prefix.
+/// @param w Requested REX.W flag.
+/// @param r Requested REX.R flag.
+/// @param x Requested REX.X flag.
+/// @param b Requested REX.B flag.
+/// @return @c true when at least one argument is true.
+/// @note Byte-register encodings may require a bare REX prefix even when this
+///       helper returns false; those call sites handle that rule explicitly.
 inline constexpr bool needsRex(bool w, bool r, bool x, bool b) {
     return w || r || x || b;
 }
 
 // === RegReg ALU opcode table ===
 
-/// Primary opcode byte for reg-reg ALU instructions.
-/// Indexed by MOpcode enum value for the subset of RegReg instructions.
-/// Returns 0 for opcodes that don't use this simple pattern.
+/// @brief Describes opcode bytes and operand direction for a reg-reg instruction.
 struct RegRegOp {
     uint8_t primary;   ///< Primary opcode byte (or 0x0F escape prefix).
     uint8_t secondary; ///< Secondary byte after 0F (0 if single-byte opcode).
     bool regIsDst;     ///< True if ModR/M reg field is the destination.
 };
 
-/// Lookup the opcode bytes for a reg-reg GPR instruction.
+/// @brief Looks up the encoding descriptor for a register-register GPR opcode.
+/// @param op Supported register-register MIR opcode.
+/// @return Primary byte, optional secondary byte, and ModR/M operand direction.
+/// @pre @p op is one of the register-register opcodes handled by this table.
+/// @note Violating the precondition reports an internal compiler error and aborts.
 inline RegRegOp regRegOpcode(MOpcode op) {
     switch (op) {
         case MOpcode::MOVrr:
@@ -227,7 +265,11 @@ inline RegRegOp regRegOpcode(MOpcode op) {
     }
 }
 
-/// /ext field in ModR/M reg bits for reg-imm ALU (opcode 81/83).
+/// @brief Looks up the ModR/M opcode extension for an immediate ALU form.
+/// @param op Supported register-immediate ALU opcode.
+/// @return Three-bit extension used with opcode @c 0x81 or @c 0x83.
+/// @pre @p op is handled by the register-immediate encoder.
+/// @note Violating the precondition reports an internal compiler error and aborts.
 inline uint8_t regImmExt(MOpcode op) {
     switch (op) {
         case MOpcode::ADDri:
@@ -247,7 +289,11 @@ inline uint8_t regImmExt(MOpcode op) {
     }
 }
 
-/// /ext field in ModR/M reg bits for shift instructions (opcode C1/D3).
+/// @brief Looks up the ModR/M opcode extension for a shift form.
+/// @param op Supported immediate-count or @c CL-count shift opcode.
+/// @return Three-bit extension used with opcode @c 0xc1 or @c 0xd3.
+/// @pre @p op is handled by the shift encoder.
+/// @note Violating the precondition reports an internal compiler error and aborts.
 inline uint8_t shiftExt(MOpcode op) {
     switch (op) {
         case MOpcode::SHLri:
@@ -264,7 +310,7 @@ inline uint8_t shiftExt(MOpcode op) {
     }
 }
 
-/// SSE instruction descriptor for scalar double operations.
+/// @brief Describes prefixes, opcode, direction, and width for an SSE operation.
 struct SseOp {
     uint8_t prefix; ///< Mandatory prefix: 0xF2, 0x66, or 0 (none for MOVUPS).
     uint8_t opcode; ///< Opcode byte after 0F.
@@ -273,9 +319,13 @@ struct SseOp {
 };
 
 /// @brief Return the SSE2 encoding descriptor for a scalar-double MIR opcode.
-/// @details Maps FADD/FSUB/FMUL/FDIV, the FP compares, and the int<->double
-///          conversions/moves to their (prefix, 0F-opcode, operand-direction,
-///          REX.W) tuple. Opcodes with no SSE form fall through to the default.
+/// @details Maps arithmetic, unordered comparison, integer/double conversions,
+///          bitwise register moves, and scalar or unaligned memory moves to
+///          their prefix, post-@c 0x0f opcode, operand-direction, and REX.W tuple.
+/// @param op Supported SSE MIR opcode.
+/// @return Complete table descriptor consumed by the SSE encoders.
+/// @pre @p op has an SSE encoding in this table.
+/// @note Violating the precondition reports an internal compiler error and aborts.
 inline SseOp sseOpcode(MOpcode op) {
     switch (op) {
         case MOpcode::FADD:

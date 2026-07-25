@@ -5,19 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/CallLowering.hpp
+// File: src/codegen/x86_64/CallLowering.hpp
 // Purpose: Declare utilities that translate high-level call descriptions into
-//          Machine IR sequences following SysV AMD64 ABI conventions.
+//          Machine IR argument-setup sequences for the selected x86-64 ABI.
 // Key invariants:
-//   - Integer arguments use RDI,RSI,RDX,RCX,R8,R9 in order; FP args use
-//     XMM0–XMM7; excess arguments spill to the stack.
-//   - %rax holds integer returns; %xmm0 holds FP returns.
+//   - Register and stack placement comes from TargetInfo and CallArgLayout.
+//   - Argument setup is inserted before an existing CALL pseudo.
+//   - FrameInfo records the maximum frame-resident outgoing argument area.
 // Ownership/Lifetime:
 //   - Callers retain ownership of Machine IR structures and frame info;
 //     lowerCall mutates block in-place.
-// Links: codegen/x86_64/CallLowering.cpp,
-//        codegen/x86_64/MachineIR.hpp,
-//        codegen/x86_64/TargetX64.hpp
+// Links: src/codegen/x86_64/CallLowering.cpp,
+//        src/codegen/x86_64/MachineIR.hpp,
+//        src/codegen/x86_64/TargetX64.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,30 +30,61 @@
 
 #include <cstddef>
 
+/**
+ * @file
+ * @brief Declares x86-64 ABI lowering for the arguments of a planned call.
+ *
+ * Call planning and ABI-neutral argument layout live in the common codegen
+ * layer. This header exposes those common plan types in the x86-64 namespace
+ * and declares the target-specific step that materializes argument registers,
+ * stack stores, variadic metadata, and outgoing-frame requirements.
+ */
+
 namespace zanna::codegen::x64 {
 
+/// @brief Stack-frame summary updated by call lowering.
 struct FrameInfo;
 
+/// @name ABI-neutral call-planning aliases
+/// @{
+/// @brief Description of one source-level call argument.
 using CallArg = zanna::codegen::common::CallArg;
+/// @brief Register-bank classification assigned to an argument.
 using CallArgClass = zanna::codegen::common::CallArgClass;
+/// @brief Scalar or aggregate kind carried by an argument.
 using CallArgKind = zanna::codegen::common::CallArgKind;
+/// @brief Complete ABI placement calculated for a call's arguments.
 using CallArgLayout = zanna::codegen::common::CallArgLayout;
+/// @brief Placement of one scalar argument or aggregate chunk.
 using CallArgLocation = zanna::codegen::common::CallArgLocation;
+/// @brief ABI constraints supplied to the common layout planner.
 using CallArgLayoutConfig = zanna::codegen::common::CallArgLayoutConfig;
+/// @brief Lowering metadata associated with a placeholder CALL instruction.
 using CallLoweringPlan = zanna::codegen::common::CallLoweringPlan;
+/// @brief Policy for independent versus position-shared register banks.
 using CallSlotModel = zanna::codegen::common::CallSlotModel;
+/// @brief ABI strategy used to pass an aggregate value.
 using AggregatePassKind = zanna::codegen::common::AggregatePassKind;
+/// @}
 
-/// \brief Emit Machine IR that prepares arguments and issues a call instruction.
-///
-/// Translates a high-level call description into a sequence of register moves,
-/// stack spills, and a CALL pseudo-instruction conforming to the SysV AMD64 ABI.
-///
-/// @param block     The basic block into which instructions are inserted.
-/// @param insertIdx Position within @p block at which the first instruction is placed.
-/// @param plan      Describes the callee, arguments, and return convention.
-/// @param target    ABI metadata (argument registers, callee-saved sets, etc.).
-/// @param frame     Stack frame information updated with any new spill slots.
+/**
+ * @brief Insert ABI-specific argument preparation before a placeholder call.
+ *
+ * The routine computes argument locations from @p target, copies scalar and
+ * aggregate values into ABI registers or frame-resident outgoing stack slots,
+ * and emits the required SysV or Win64 variadic metadata. The CALL instruction
+ * itself already exists in @p block and is not inserted or replaced here.
+ *
+ * @param block Basic block that owns the existing call and receives setup MIR.
+ * @param insertIdx Index immediately before which the first setup instruction
+ *        is inserted.
+ * @param plan Argument values, aggregate metadata, and variadic-call policy.
+ * @param target ABI register orders, capacities, and shadow-space size.
+ * @param frame Frame summary updated with the maximum outgoing argument area.
+ * @throws std::out_of_range If @p insertIdx is beyond the instruction vector.
+ * @throws std::invalid_argument If an aggregate chunk is described as immediate.
+ * @throws std::length_error If an outgoing area or displacement is unrepresentable.
+ */
 void lowerCall(MBasicBlock &block,
                std::size_t insertIdx,
                const CallLoweringPlan &plan,

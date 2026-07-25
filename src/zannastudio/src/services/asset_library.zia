@@ -1,0 +1,579 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/asset_library.zia
+// Purpose: Load, validate, and transactionally edit one workspace root's
+//          optional asset-library.json (tags and import settings).
+// Key invariants:
+//   - A malformed, oversized, or racing file publishes no partial entries.
+//   - Entry paths are root-relative and case-insensitively unique; entries
+//     whose file is missing are retained and reported, never dropped.
+//   - Every accepted edit writes one complete parser-validated file state
+//     through an expected-bytes-guarded atomic replacement.
+//   - Unknown version-1 members are preserved on the root and every entry.
+// Ownership/Lifetime: Callers own returned library records; one session owns
+//                     the bounded 20-snapshot file history per root.
+// Links: zannastudio/src/ui/scene_asset_browser.zia,
+//        docs/adr/0180-workspace-asset-library.md
+//
+//===----------------------------------------------------------------------===//
+
+module asset_library;
+
+bind "safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+
+// ============================================================================
+// MODULE: asset_library
+// PURPOSE: Keep asset tagging/import-settings persistence outside the browser
+//          widgets, mirroring the scene-components.json transaction model.
+//
+// WHERE-THIS-FITS: scene_asset_browser filters and edits through this service;
+//          runtimes and games never read the library (ADR 0180).
+//
+// TEACHING-NOTE: The library annotates discovery — it never replaces it. A
+//          missing file therefore only loses tags and defaults, nothing else.
+// ============================================================================
+
+final LIBRARY_FILE_NAME: String = "asset-library.json";
+final LIBRARY_VERSION: Integer = 1;
+final MAX_LIBRARY_BYTES: Integer = 1000000;
+final MAX_LIBRARY_ENTRIES: Integer = 4096;
+final MAX_TAGS_PER_ENTRY: Integer = 32;
+final MAX_TAG_CHARS: Integer = 64;
+final MAX_NOTES_CHARS: Integer = 1024;
+final MAX_GRID_DIMENSION: Integer = 4096;
+final MAX_LIBRARY_HISTORY: Integer = 20;
+
+/// @brief One validated library entry describing a workspace asset.
+class AssetLibraryEntry {
+    expose String path;
+    expose List[String] tags;
+    expose Integer tileWidth;
+    expose Integer tileHeight;
+    expose String notes;
+
+    expose func init() {
+        path = "";
+        tags = [];
+        tileWidth = 0;
+        tileHeight = 0;
+        notes = "";
+    }
+
+    /// @brief Return whether one exact lowercase tag is present.
+    expose func HasTag(tag: String) -> Boolean {
+        var folded = Str.ToLower(Str.Trim(tag));
+        var index = 0;
+        while index < tags.count() {
+            if Str.ToLower(tags.get(index)) == folded { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+}
+
+/// @brief Complete fail-closed result of loading one root's library.
+class AssetLibrary {
+    expose Boolean found;
+    expose Boolean valid;
+    expose String sourcePath;
+    expose String error;
+    expose List[AssetLibraryEntry] entries;
+
+    expose func init() {
+        found = false;
+        valid = true;
+        sourcePath = "";
+        error = "";
+        entries = [];
+    }
+
+    /// @brief Find one entry by case-insensitive root-relative path.
+    expose func EntryForPath(relativePath: String) -> AssetLibraryEntry {
+        var folded = Str.ToLower(Str.Trim(relativePath));
+        var index = 0;
+        while index < entries.count() {
+            var entry = entries.get(index);
+            if Str.ToLower(entry.path) == folded { return entry; }
+            index = index + 1;
+        }
+        return null;
+    }
+}
+
+/// @brief Return the fixed library path beneath a workspace root.
+expose func PathForRoot(root: String) -> String {
+    if root == "" { return ""; }
+    return Path.Join(root, LIBRARY_FILE_NAME);
+}
+
+/// @brief Load one bounded library path without propagating IO failures.
+expose func LoadPath(path: String) -> AssetLibrary {
+    var empty = new AssetLibrary();
+    empty.sourcePath = path;
+    if path == "" { return empty; }
+    var exists = false;
+    try {
+        exists = File.Exists(path);
+    } catch {
+        empty.found = true;
+        return Reject(empty, "Could not inspect the asset library file.");
+    }
+    if exists == false { return empty; }
+    empty.found = true;
+    var read = safe_io.ReadAllTextBounded(path, MAX_LIBRARY_BYTES);
+    if read.ok == false {
+        return Reject(
+            empty, "Could not read the asset library within the 1 MB limit.");
+    }
+    return ParseText(read.text, path);
+}
+
+/// @brief Parse one complete library string into staged value records.
+expose func ParseText(text: String, sourcePath: String) -> AssetLibrary {
+    var library = new AssetLibrary();
+    library.found = true;
+    library.sourcePath = sourcePath;
+    if Str.get_Length(text) > MAX_LIBRARY_BYTES {
+        return Reject(library, "Asset library exceeds the 1 MB limit.");
+    }
+    if Json.IsValid(text) == false {
+        return Reject(library, "Asset library is not valid JSON.");
+    }
+    var root = Json.Parse(text);
+    if Json.TypeOf(root) != "object" {
+        return Reject(library, "Asset library root must be an object.");
+    }
+    if Map.Has(root, "version") == false
+       or Json.TypeOf(Map.Get(root, "version")) != "number" {
+        return Reject(library, "Asset library requires numeric version 1.");
+    }
+    var version = Parse.TryInt(Json.Format(Map.Get(root, "version")));
+    if version.IsNone or version.UnwrapI64() != LIBRARY_VERSION {
+        return Reject(library, "Unsupported asset library version.");
+    }
+    var rawEntries = Map.Get(root, "entries");
+    if rawEntries == null or Json.TypeOf(rawEntries) != "array" {
+        return Reject(library, "Asset library requires an entries array.");
+    }
+    if Seq.get_Count(rawEntries) > MAX_LIBRARY_ENTRIES {
+        return Reject(library, "Asset library exceeds 4,096 entries.");
+    }
+    var seenPaths = Map.New();
+    var index = 0;
+    while index < Seq.get_Count(rawEntries) {
+        var raw = Seq.Get(rawEntries, index);
+        var entry = ParseEntry(raw, index, seenPaths, library);
+        if entry == null { return library; }
+        library.entries.add(entry);
+        index = index + 1;
+    }
+    library.valid = true;
+    library.error = "";
+    return library;
+}
+
+/// @brief Apply one entry create/update to the raw file text.
+/// @return The complete next parser-validated text, or empty with an error.
+expose func UpsertEntryText(text: String,
+                            relativePath: String,
+                            tagsCsv: String,
+                            tileWidth: Integer,
+                            tileHeight: Integer,
+                            notes: String,
+                            errorOut: List[String]) -> String {
+    var base = text;
+    if Str.Trim(base) == "" {
+        base = "{\n  \"version\": 1,\n  \"entries\": []\n}\n";
+    }
+    if Json.IsValid(base) == false {
+        errorOut.add("The asset library is not valid JSON.");
+        return "";
+    }
+    var root = Json.Parse(base);
+    var entries = Map.Get(root, "entries");
+    if entries == null or Json.TypeOf(entries) != "array" {
+        errorOut.add("The asset library needs an entries array.");
+        return "";
+    }
+    var cleanPath = Str.Trim(relativePath);
+    var raw = FindRawEntry(entries, cleanPath);
+    if raw == null {
+        if Seq.get_Count(entries) >= MAX_LIBRARY_ENTRIES {
+            errorOut.add("The asset library already has 4,096 entries.");
+            return "";
+        }
+        raw = Map.New();
+        Map.SetStr(raw, "path", cleanPath);
+        Seq.Push(entries, raw);
+    }
+    var tags = Json.Parse("[]");
+    var parts = Str.Split(Str.Trim(tagsCsv), ",");
+    var partIndex = 0;
+    while partIndex < Seq.get_Count(parts) {
+        var tag = Str.Trim(Seq.GetStr(parts, partIndex));
+        partIndex = partIndex + 1;
+        if tag == "" { continue; }
+        Seq.Push(tags, tag);
+    }
+    if Seq.get_Count(tags) > 0 {
+        Map.Set(raw, "tags", tags);
+    } else if Map.Has(raw, "tags") {
+        Map.Remove(raw, "tags");
+    }
+    if tileWidth > 0 and tileHeight > 0 {
+        Map.SetInt(raw, "tileWidth", tileWidth);
+        Map.SetInt(raw, "tileHeight", tileHeight);
+    } else {
+        if Map.Has(raw, "tileWidth") { Map.Remove(raw, "tileWidth"); }
+        if Map.Has(raw, "tileHeight") { Map.Remove(raw, "tileHeight"); }
+    }
+    if Str.Trim(notes) != "" {
+        Map.SetStr(raw, "notes", Str.Trim(notes));
+    } else if Map.Has(raw, "notes") {
+        Map.Remove(raw, "notes");
+    }
+    var next = Json.FormatPretty(root, 2) + "\n";
+    var validated = ParseText(next, "authoring");
+    if validated.valid == false {
+        errorOut.add(validated.error);
+        return "";
+    }
+    return next;
+}
+
+/// @brief Remove one entry from the raw file text.
+expose func RemoveEntryText(text: String,
+                            relativePath: String,
+                            errorOut: List[String]) -> String {
+    if Json.IsValid(text) == false {
+        errorOut.add("The asset library is not valid JSON.");
+        return "";
+    }
+    var root = Json.Parse(text);
+    var entries = Map.Get(root, "entries");
+    if entries == null or Json.TypeOf(entries) != "array" {
+        errorOut.add("The asset library needs an entries array.");
+        return "";
+    }
+    var folded = Str.ToLower(Str.Trim(relativePath));
+    var index = 0;
+    while index < Seq.get_Count(entries) {
+        var raw = Seq.Get(entries, index);
+        if raw != null and Json.TypeOf(raw) == "object"
+           and Str.ToLower(Str.Trim(Map.GetStr(raw, "path"))) == folded {
+            Seq.RemoveAt(entries, index);
+            var next = Json.FormatPretty(root, 2) + "\n";
+            var validated = ParseText(next, "authoring");
+            if validated.valid == false {
+                errorOut.add(validated.error);
+                return "";
+            }
+            return next;
+        }
+        index = index + 1;
+    }
+    errorOut.add("No library entry exists for that path.");
+    return "";
+}
+
+/// @brief Bounded conflict-aware owner of one library file's edit history.
+class AssetLibrarySession {
+    expose String path;
+    expose Boolean found;
+    expose String currentText;
+    expose String error;
+    hide List[String] undoStack;
+    hide List[String] redoStack;
+
+    expose func init() {
+        path = "";
+        found = false;
+        currentText = "";
+        error = "";
+        undoStack = [];
+        redoStack = [];
+    }
+
+    /// @brief Load one library path and reset incompatible history.
+    expose func Load(nextPath: String) -> Boolean {
+        path = nextPath;
+        undoStack = [];
+        redoStack = [];
+        return ReadCurrent();
+    }
+
+    expose func CanUndo() -> Boolean { return undoStack.count() > 0; }
+    expose func CanRedo() -> Boolean { return redoStack.count() > 0; }
+
+    /// @brief Persist one complete validated next text as one transition.
+    expose func Apply(nextText: String) -> Boolean {
+        error = "";
+        if path == "" {
+            error = "No asset library path is available.";
+            return false;
+        }
+        if DiskMatchesCurrent() == false {
+            error = "asset-library.json changed outside this editor. Reload.";
+            return false;
+        }
+        if Persist(nextText) == false { return false; }
+        undoStack.add(currentText);
+        if undoStack.count() > MAX_LIBRARY_HISTORY { undoStack.removeAt(0); }
+        redoStack = [];
+        currentText = nextText;
+        found = true;
+        return true;
+    }
+
+    /// @brief Restore the preceding exact file state.
+    expose func Undo() -> Boolean {
+        return Step(undoStack, redoStack);
+    }
+
+    /// @brief Reapply the next exact file state.
+    expose func Redo() -> Boolean {
+        return Step(redoStack, undoStack);
+    }
+
+    /// @brief Accept current disk bytes and clear stale history.
+    expose func Reload() -> Boolean {
+        undoStack = [];
+        redoStack = [];
+        return ReadCurrent();
+    }
+
+    hide func Step(fromStack: List[String],
+                   toStack: List[String]) -> Boolean {
+        error = "";
+        if fromStack.count() == 0 { return false; }
+        if DiskMatchesCurrent() == false {
+            error = "asset-library.json changed outside this editor. Reload.";
+            return false;
+        }
+        var index = fromStack.count() - 1;
+        var target = fromStack.get(index);
+        if Persist(target) == false { return false; }
+        fromStack.removeAt(index);
+        toStack.add(currentText);
+        if toStack.count() > MAX_LIBRARY_HISTORY { toStack.removeAt(0); }
+        currentText = target;
+        found = true;
+        return true;
+    }
+
+    hide func ReadCurrent() -> Boolean {
+        error = "";
+        found = false;
+        currentText = "";
+        if path == "" { return false; }
+        var exists = false;
+        try {
+            exists = File.Exists(path);
+        } catch {
+            error = "Could not inspect asset-library.json.";
+            return false;
+        }
+        if exists == false { return true; }
+        var read = safe_io.ReadAllTextBounded(path, MAX_LIBRARY_BYTES);
+        if read.ok == false {
+            error = "Could not read asset-library.json within 1 MB.";
+            return false;
+        }
+        found = true;
+        currentText = read.text;
+        return true;
+    }
+
+    hide func DiskMatchesCurrent() -> Boolean {
+        if path == "" { return false; }
+        var exists = false;
+        try {
+            exists = File.Exists(path);
+        } catch {
+            return false;
+        }
+        if found == false { return exists == false; }
+        if exists == false { return false; }
+        var read = safe_io.ReadAllTextBounded(path, MAX_LIBRARY_BYTES);
+        return read.ok and read.text == currentText;
+    }
+
+    hide func Persist(nextText: String) -> Boolean {
+        if Str.get_Length(nextText) > MAX_LIBRARY_BYTES {
+            error = "Asset library exceeds the 1 MB limit.";
+            return false;
+        }
+        if found == false {
+            if safe_io.CreateTextFile(path, nextText) == false {
+                error = "Could not atomically create asset-library.json.";
+                return false;
+            }
+            return true;
+        }
+        var staged = path + ".tmp";
+        if safe_io.CreateTextFile(staged, nextText) == false {
+            error = "Could not stage the asset library replacement.";
+            return false;
+        }
+        var moved = false;
+        try {
+            File.MoveOver(staged, path);
+            moved = true;
+        } catch {}
+        if moved == false {
+            safe_io.DeleteFile(path + ".tmp");
+            error = "Could not atomically replace asset-library.json.";
+            return false;
+        }
+        return true;
+    }
+}
+
+/// @brief Parse and validate one library entry without publishing it.
+func ParseEntry(raw: Any,
+                index: Integer,
+                seenPaths: Any,
+                library: AssetLibrary) -> AssetLibraryEntry {
+    if raw == null or Json.TypeOf(raw) != "object" {
+        Reject(library, "Library entry " + index + " must be an object.");
+        return null;
+    }
+    var entry = new AssetLibraryEntry();
+    entry.path = Str.Trim(Map.GetStr(raw, "path"));
+    if entry.path == "" or Path.IsAbsolute(entry.path) {
+        Reject(
+            library,
+            "Library entry " + index
+                + " requires a root-relative path.");
+        return null;
+    }
+    var folded = Str.ToLower(entry.path);
+    if Map.Has(seenPaths, folded) {
+        Reject(library, "Duplicate library path \"" + entry.path + "\".");
+        return null;
+    }
+    Map.SetBool(seenPaths, folded, true);
+
+    if Map.Has(raw, "tags") {
+        var rawTags = Map.Get(raw, "tags");
+        if Json.TypeOf(rawTags) != "array"
+           or Seq.get_Count(rawTags) > MAX_TAGS_PER_ENTRY {
+            Reject(
+                library,
+                "Entry \"" + entry.path + "\" tags must be at most 32.");
+            return null;
+        }
+        var tagIndex = 0;
+        while tagIndex < Seq.get_Count(rawTags) {
+            var value = Seq.Get(rawTags, tagIndex);
+            if value == null or Json.TypeOf(value) != "string" {
+                Reject(
+                    library,
+                    "Entry \"" + entry.path + "\" tags must be strings.");
+                return null;
+            }
+            var tag = Str.Trim(Seq.GetStr(rawTags, tagIndex));
+            if tag == "" or Str.get_Length(tag) > MAX_TAG_CHARS {
+                Reject(
+                    library,
+                    "Entry \"" + entry.path
+                        + "\" tags must contain 1 to 64 characters.");
+                return null;
+            }
+            entry.tags.add(tag);
+            tagIndex = tagIndex + 1;
+        }
+    }
+    if ReadGrid(raw, "tileWidth", entry, library) == false { return null; }
+    if ReadGrid(raw, "tileHeight", entry, library) == false { return null; }
+    if (entry.tileWidth > 0 and entry.tileHeight <= 0)
+       or (entry.tileHeight > 0 and entry.tileWidth <= 0) {
+        Reject(
+            library,
+            "Entry \"" + entry.path
+                + "\" needs both tileWidth and tileHeight, or neither.");
+        return null;
+    }
+    if Map.Has(raw, "notes") {
+        if Json.TypeOf(Map.Get(raw, "notes")) != "string" {
+            Reject(
+                library,
+                "Entry \"" + entry.path + "\" notes must be a string.");
+            return null;
+        }
+        entry.notes = Map.GetStr(raw, "notes");
+        if Str.get_Length(entry.notes) > MAX_NOTES_CHARS {
+            Reject(
+                library,
+                "Entry \"" + entry.path
+                    + "\" notes exceed 1,024 characters.");
+            return null;
+        }
+    }
+    return entry;
+}
+
+/// @brief Read one optional bounded grid dimension.
+func ReadGrid(raw: Any,
+              key: String,
+              entry: AssetLibraryEntry,
+              library: AssetLibrary) -> Boolean {
+    if Map.Has(raw, key) == false { return true; }
+    if Json.TypeOf(Map.Get(raw, key)) != "number" {
+        Reject(
+            library,
+            "Entry \"" + entry.path + "\" " + key + " must be a number.");
+        return false;
+    }
+    var parsed = Parse.TryInt(Json.Format(Map.Get(raw, key)));
+    if parsed.IsNone or parsed.UnwrapI64() < 1
+       or parsed.UnwrapI64() > MAX_GRID_DIMENSION {
+        Reject(
+            library,
+            "Entry \"" + entry.path + "\" " + key
+                + " must be between 1 and 4096.");
+        return false;
+    }
+    if key == "tileWidth" {
+        entry.tileWidth = parsed.UnwrapI64();
+    } else {
+        entry.tileHeight = parsed.UnwrapI64();
+    }
+    return true;
+}
+
+/// @brief Find one raw entry object by case-insensitive path.
+func FindRawEntry(entries: Any, relativePath: String) -> Any {
+    var folded = Str.ToLower(Str.Trim(relativePath));
+    var index = 0;
+    while index < Seq.get_Count(entries) {
+        var raw = Seq.Get(entries, index);
+        if raw != null and Json.TypeOf(raw) == "object"
+           and Str.ToLower(Str.Trim(Map.GetStr(raw, "path"))) == folded {
+            return raw;
+        }
+        index = index + 1;
+    }
+    return null;
+}
+
+/// @brief Invalidate a library and erase any staged entry state.
+func Reject(library: AssetLibrary, message: String) -> AssetLibrary {
+    library.valid = false;
+    library.error = message;
+    library.entries = [];
+    return library;
+}

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/ExeWriterUtil.hpp
+// File: src/codegen/common/linker/ExeWriterUtil.hpp
 // Purpose: Shared utilities for executable file writers (ELF, Mach-O, PE).
 //          Provides endianness encoding, padding, and entry point resolution.
 // Key invariants:
@@ -14,12 +14,19 @@
 //   - Big-endian: used for Mach-O code signature (network byte order)
 //   - ULEB128: unsigned LEB128 encoding for Mach-O bind/rebase opcodes
 // Ownership/Lifetime:
-//   - Stateless inline utilities — no allocation or side effects
+//   - Stateless inline utilities; encoding mutates caller-owned buffers and
+//     the file helper creates and replaces filesystem entries.
 // Links: codegen/common/linker/ElfExeWriter.cpp,
 //        codegen/common/linker/MachOExeWriter.cpp,
 //        codegen/common/linker/PeExeWriter.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ExeWriterUtil.hpp
+ * @brief Supplies byte encoding, section grouping, entry lookup, and safe
+ *        output replacement shared by executable writers.
+ */
 
 #pragma once
 
@@ -45,13 +52,17 @@ namespace zanna::codegen::linker {
 /// @brief Little-endian and big-endian encoding utilities for binary writers.
 namespace encoding {
 
-/// Append a 16-bit value in little-endian byte order.
+/// @brief Appends a 16-bit value in little-endian byte order.
+/// @param buf Destination byte buffer.
+/// @param v Value to encode.
 inline void writeLE16(std::vector<uint8_t> &buf, uint16_t v) {
     buf.push_back(static_cast<uint8_t>(v));
     buf.push_back(static_cast<uint8_t>(v >> 8));
 }
 
-/// Append a 32-bit value in little-endian byte order.
+/// @brief Appends a 32-bit value in little-endian byte order.
+/// @param buf Destination byte buffer.
+/// @param v Value to encode.
 inline void writeLE32(std::vector<uint8_t> &buf, uint32_t v) {
     buf.push_back(static_cast<uint8_t>(v));
     buf.push_back(static_cast<uint8_t>(v >> 8));
@@ -59,13 +70,17 @@ inline void writeLE32(std::vector<uint8_t> &buf, uint32_t v) {
     buf.push_back(static_cast<uint8_t>(v >> 24));
 }
 
-/// Append a 64-bit value in little-endian byte order.
+/// @brief Appends a 64-bit value in little-endian byte order.
+/// @param buf Destination byte buffer.
+/// @param v Value to encode.
 inline void writeLE64(std::vector<uint8_t> &buf, uint64_t v) {
     for (int i = 0; i < 8; ++i)
         buf.push_back(static_cast<uint8_t>(v >> (i * 8)));
 }
 
-/// Append a 32-bit value in big-endian byte order (network byte order).
+/// @brief Appends a 32-bit value in big-endian network byte order.
+/// @param buf Destination byte buffer.
+/// @param v Value to encode.
 inline void writeBE32(std::vector<uint8_t> &buf, uint32_t v) {
     buf.push_back(static_cast<uint8_t>(v >> 24));
     buf.push_back(static_cast<uint8_t>(v >> 16));
@@ -73,13 +88,17 @@ inline void writeBE32(std::vector<uint8_t> &buf, uint32_t v) {
     buf.push_back(static_cast<uint8_t>(v));
 }
 
-/// Append a 64-bit value in big-endian byte order.
+/// @brief Appends a 64-bit value in big-endian byte order.
+/// @param buf Destination byte buffer.
+/// @param v Value to encode.
 inline void writeBE64(std::vector<uint8_t> &buf, uint64_t v) {
     writeBE32(buf, static_cast<uint32_t>(v >> 32));
     writeBE32(buf, static_cast<uint32_t>(v));
 }
 
-/// Append an unsigned LEB128-encoded value (used by Mach-O bind/rebase opcodes).
+/// @brief Appends an unsigned LEB128 value.
+/// @param buf Destination byte buffer.
+/// @param val Value to encode, consumed a group at a time.
 inline void writeULEB128(std::vector<uint8_t> &buf, uint64_t val) {
     do {
         uint8_t byte = val & 0x7F;
@@ -90,7 +109,9 @@ inline void writeULEB128(std::vector<uint8_t> &buf, uint64_t val) {
     } while (val != 0);
 }
 
-/// Append a signed LEB128-encoded value (used by DWARF line number deltas).
+/// @brief Appends a signed LEB128 value.
+/// @param buf Destination byte buffer.
+/// @param val Value to encode.
 inline void writeSLEB128(std::vector<uint8_t> &buf, int64_t val) {
     bool more = true;
     while (more) {
@@ -104,12 +125,18 @@ inline void writeSLEB128(std::vector<uint8_t> &buf, int64_t val) {
     }
 }
 
-/// Append \p count zero bytes.
+/// @brief Appends a requested number of zero bytes.
+/// @param buf Destination byte buffer.
+/// @param count Number of padding bytes.
 inline void writePad(std::vector<uint8_t> &buf, size_t count) {
     buf.insert(buf.end(), count, 0);
 }
 
-/// Append a null-terminated string, padded to \p maxLen bytes.
+/// @brief Appends a C string into a zero-padded fixed-width field.
+/// @param buf Destination byte buffer.
+/// @param s NUL-terminated source string.
+/// @param maxLen Exact field width in bytes; the terminator itself is not copied.
+/// @throws std::length_error If the source contains more than @p maxLen bytes.
 inline void writeStr(std::vector<uint8_t> &buf, const char *s, size_t maxLen) {
     size_t len = std::strlen(s);
     if (len > maxLen)
@@ -119,8 +146,10 @@ inline void writeStr(std::vector<uint8_t> &buf, const char *s, size_t maxLen) {
         writePad(buf, maxLen - len);
 }
 
-/// Pad the buffer with zeros until it reaches \p targetSize bytes.
-/// No-op if the buffer is already at or beyond the target.
+/// @brief Pads a buffer with zeros until it reaches a target size.
+/// @param buf Destination byte buffer.
+/// @param targetSize Desired minimum size.
+/// @details Does nothing when the buffer is already at or beyond @p targetSize.
 inline void padTo(std::vector<uint8_t> &buf, size_t targetSize) {
     if (buf.size() < targetSize)
         buf.insert(buf.end(), targetSize - buf.size(), 0);
@@ -129,6 +158,7 @@ inline void padTo(std::vector<uint8_t> &buf, size_t targetSize) {
 } // namespace encoding
 
 /// Resolve the "main" or "_main" entry point symbol from the layout.
+/// @param layout Link layout containing the resolved global symbol table.
 /// @return The resolved virtual address, or 0 if not found.
 inline uint64_t resolveMainAddress(const LinkLayout &layout) {
     auto it = layout.globalSyms.find("main");
@@ -140,8 +170,14 @@ inline uint64_t resolveMainAddress(const LinkLayout &layout) {
     return 0;
 }
 
-/// Partition layout section indices into text/rodata and data-segment groups.
-/// Only includes allocatable sections with a non-zero memory footprint.
+/// @brief Partitions allocatable, nonempty sections into read-only and data groups.
+/// @details Writable, explicitly data-segment, zero-fill, and TLS sections go
+///          to @p dataIndices; other allocatable sections go to
+///          @p textIndices. Existing vector contents are preserved and new
+///          indices are appended.
+/// @param layout Layout whose sections are classified.
+/// @param textIndices Receives executable/read-only section indices.
+/// @param dataIndices Receives writable/data/TLS section indices.
 inline void classifySections(const LinkLayout &layout,
                              std::vector<size_t> &textIndices,
                              std::vector<size_t> &dataIndices) {
@@ -158,10 +194,15 @@ inline void classifySections(const LinkLayout &layout,
     }
 }
 
-/// Compute the VA span of a set of sections within a single segment.
-/// Returns the byte distance from the first section's VA to the end of the last section.
-/// Handles VA gaps between sections (e.g., page-aligned subsections).
-/// Returns 0 if the index list is empty.
+/// @brief Computes the virtual-address span occupied by a section group.
+/// @details Uses the first indexed section as the segment base and includes VA
+///          gaps when finding the furthest section end.
+/// @param layout Layout containing the indexed sections.
+/// @param indices Ordered section indices belonging to one segment.
+/// @return Byte distance from the first section's VA to the furthest end, or
+///         zero when @p indices is empty.
+/// @throws std::length_error If a section precedes the selected base or an
+///         address/range cannot be represented.
 inline size_t computeSegmentSpan(const LinkLayout &layout, const std::vector<size_t> &indices) {
     if (indices.empty())
         return 0;
@@ -185,10 +226,17 @@ inline size_t computeSegmentSpan(const LinkLayout &layout, const std::vector<siz
     return span;
 }
 
-/// Write a binary file by creating a fresh temporary inode in the destination
-/// directory and renaming it into place. This avoids in-place executable
-/// mutation, which can leave macOS launch services and code-sign validation
-/// observing stale vnode state for native binaries.
+/// @brief Writes a binary through a protected temporary directory and replaces the target.
+/// @details A same-directory rename supplies atomic replacement where the host
+///          supports it. If direct replacement is refused, the implementation
+///          moves the old target aside, installs the new file, and attempts to
+///          restore the old target on failure. Temporary paths are retried with
+///          unique nonces and cleaned on every completed attempt.
+/// @param path UTF-8 destination path.
+/// @param data Complete file bytes.
+/// @param makeExecutable Whether POSIX execute permissions should be applied.
+/// @param err Stream that receives file, permission, and replacement diagnostics.
+/// @return `true` only when the final path names the complete new file.
 inline bool writeBinaryFileAtomically(const std::string &path,
                                       const std::vector<uint8_t> &data,
                                       bool makeExecutable,
@@ -200,6 +248,8 @@ inline bool writeBinaryFileAtomically(const std::string &path,
     ///          larger than std::streamsize can represent before narrowing. On
     ///          non-Windows hosts it also reports chmod-style permission failures
     ///          instead of silently returning a non-executable binary.
+    /// @param target Temporary file path to create or truncate.
+    /// @return `true` after all bytes and requested permissions are installed.
     auto writeDirect = [&](const fs::path &target) -> bool {
         if (data.size() > static_cast<size_t>(std::numeric_limits<std::streamsize>::max())) {
             err << "error: output file '" << zanna::filesystem::pathToUtf8(target)
@@ -249,6 +299,9 @@ inline bool writeBinaryFileAtomically(const std::string &path,
     ///          platform refuses to replace an existing target, this falls back to
     ///          moving the old file aside, installing the temp file, and restoring
     ///          the old file if installation fails.
+    /// @param tempPath Complete new output file.
+    /// @param finalPath Destination to replace.
+    /// @return `true` when @p finalPath names the new file.
     auto replaceWithTemp = [&](const fs::path &tempPath, const fs::path &finalPath) -> bool {
         std::error_code renameEc;
         fs::rename(tempPath, finalPath, renameEc);
@@ -315,6 +368,7 @@ inline bool writeBinaryFileAtomically(const std::string &path,
             return false;
         }
 
+        /// Removes the current attempt's temporary directory on a best-effort basis.
         auto cleanupTempDir = [&]() {
             std::error_code cleanupEc;
             fs::remove_all(tempDir, cleanupEc);

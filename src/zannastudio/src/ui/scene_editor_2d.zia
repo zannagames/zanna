@@ -76,7 +76,9 @@ bind "scene_component_palette";
 bind "scene_component_schema";
 bind "scene_hierarchy_search";
 bind "scene_layout_2d";
+bind "scene_camera_lighting_2d";
 bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
 bind "scene_selection";
 bind "scene_tileset_2d";
 bind "scene_tileset_inspector_2d";
@@ -92,6 +94,8 @@ bind Fmt = Zanna.Text.Fmt;
 bind Seq = Zanna.Collections.Seq;
 bind Path = Zanna.IO.Path;
 bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
 
 // ============================================================================
 // MODULE: scene_editor_2d
@@ -210,6 +214,13 @@ class SceneEditor2D {
     expose GUI.Button rectangleButton;
     expose GUI.Button fillButton;
     expose GUI.Button pickerButton;
+    expose GUI.Button previewButton;
+    expose GUI.Button runSceneButton;
+    hide Boolean previewActive;
+    hide Integer previewLastTickMs;
+    hide Integer previewElapsedMs;
+    hide String previewFrameStamp;
+    hide Boolean runSceneRequested;
     expose GUI.Button objectButton;
     expose GUI.Spinner tileSpinner;
     expose GUI.Button zoomOutButton;
@@ -241,6 +252,8 @@ class SceneEditor2D {
         sceneProperties;
     expose scene_tileset_inspector_2d.SceneTilesetInspector2D
         tilesetInspector;
+    expose scene_tile_behavior_2d.SceneTileBehavior2D tileBehavior;
+    expose scene_camera_lighting_2d.SceneCameraLighting2D cameraLighting;
     expose GUI.TextInput hierarchySearchInput;
     expose GUI.Button hierarchySearchPreviousButton;
     expose GUI.Button hierarchySearchNextButton;
@@ -364,6 +377,13 @@ class SceneEditor2D {
         rectangleButton = null;
         fillButton = null;
         pickerButton = null;
+        previewButton = null;
+        runSceneButton = null;
+        previewActive = false;
+        previewLastTickMs = -1;
+        previewElapsedMs = 0;
+        previewFrameStamp = "";
+        runSceneRequested = false;
         objectButton = null;
         tileSpinner = null;
         zoomOutButton = null;
@@ -395,6 +415,9 @@ class SceneEditor2D {
             new scene_property_inspector_2d.ScenePropertyInspector2D();
         tilesetInspector =
             new scene_tileset_inspector_2d.SceneTilesetInspector2D();
+        tileBehavior = new scene_tile_behavior_2d.SceneTileBehavior2D();
+        cameraLighting =
+            new scene_camera_lighting_2d.SceneCameraLighting2D();
         hierarchySearchInput = null;
         hierarchySearchPreviousButton = null;
         hierarchySearchNextButton = null;
@@ -548,6 +571,13 @@ class SceneEditor2D {
         fillButton.SetTooltip(
             "Replace the clicked four-connected active-layer region");
         pickerButton = GUI.Button.New(toolbar, "Pick");
+        previewButton = GUI.Button.New(toolbar, "Preview");
+        previewButton.SetTooltip(
+            "Play authored tile animations and framing overlays without "
+            + "changing the scene");
+        runSceneButton = GUI.Button.New(toolbar, "Run Scene");
+        runSceneButton.SetTooltip(
+            "Run the owning project with this saved scene's path appended");
         pickerButton.SetTooltip(
             "Sample one active-layer tile and return to Paint");
         objectButton = GUI.Button.New(toolbar, "Object");
@@ -649,6 +679,7 @@ class SceneEditor2D {
         sceneInfoLabel.SetWordWrap(true);
 
         sceneProperties.Setup(inspector);
+        cameraLighting.Setup(inspector);
 
         GUI.Label.New(inspector, "Layers");
         layerList = GUI.ListBox.New(inspector);
@@ -671,6 +702,7 @@ class SceneEditor2D {
             "Reference a PNG, JPEG, BMP, or GIF tileset for this layer");
 
         tilesetInspector.Setup(inspector, guiApp);
+        tileBehavior.Setup(inspector);
 
         GUI.Label.New(inspector, "Objects");
         var hierarchySearchRow = GUI.HBox.New();
@@ -900,6 +932,8 @@ class SceneEditor2D {
         if importButton.WasClicked() {
             changed = ImportTiled() or changed;
         }
+        tiledAssetBrowser.SetLibraryRoot(ComponentSchemaRoot());
+        tilesetInspector.assetBrowser.SetLibraryRoot(ComponentSchemaRoot());
         var projectImportPath = tiledAssetBrowser.Pump(
             projectManager, currentDoc != null);
         if projectImportPath != "" {
@@ -910,6 +944,18 @@ class SceneEditor2D {
         var projectLayerAssetPath = tilesetInspector.assetBrowser.Pump(
             projectManager, canChooseLayerAsset);
         if projectLayerAssetPath != "" {
+            var libraryEntry = tilesetInspector.assetBrowser
+                .LibraryEntryForAbsolutePath(projectLayerAssetPath);
+            if libraryEntry != null and scene != null
+               and libraryEntry.tileWidth > 0
+               and (libraryEntry.tileWidth != scene.TileWidth
+                    or libraryEntry.tileHeight != scene.TileHeight) {
+                detailLabel.SetText(
+                    "Library grid for this asset is "
+                    + libraryEntry.tileWidth + "x" + libraryEntry.tileHeight
+                    + "; the scene uses " + scene.TileWidth + "x"
+                    + scene.TileHeight + ". The scene was not resized.");
+            }
             changed = ApplyLayerAssetPath(
                 activeLayer,
                 PortableLayerAssetPath(projectLayerAssetPath)) or changed;
@@ -934,6 +980,11 @@ class SceneEditor2D {
         if rectangleButton.WasClicked() { SetMode(MODE_RECTANGLE); }
         if fillButton.WasClicked() { SetMode(MODE_FILL); }
         if pickerButton.WasClicked() { SetMode(MODE_PICKER); }
+        if previewButton.WasClicked() {
+            SetPreviewActive(previewActive == false);
+        }
+        if runSceneButton.WasClicked() { runSceneRequested = true; }
+        PumpPreviewClock();
         if objectButton.WasClicked() { SetMode(MODE_OBJECT); }
         if zoomOutButton.WasClicked() {
             zoomPercent = ClampInt(zoomPercent - 25,
@@ -961,6 +1012,8 @@ class SceneEditor2D {
         changed = PumpLayerControls() or changed;
         changed = PumpObjectControls() or changed;
         changed = PumpComponentControls() or changed;
+        changed = PumpTileBehaviorControls() or changed;
+        changed = PumpCameraLightingControls() or changed;
         PumpTilesetPalette();
         changed = PumpCanvas() or changed;
         changed = PumpCanvasKeyboard() or changed;
@@ -1115,6 +1168,7 @@ class SceneEditor2D {
         }
         state.inspectorRequestedVisible = inspectorRequestedVisible;
         state.compactInspectorShown = compactInspectorShown;
+        state.previewActive = previewActive;
         state.undoStack = undoStack;
         state.redoStack = redoStack;
         state.cleanSerialized = cleanSerialized;
@@ -1176,6 +1230,8 @@ class SceneEditor2D {
             state.inspectorScrollY, 0.0, 1000000.0);
         inspectorRequestedVisible = state.inspectorRequestedVisible;
         compactInspectorShown = state.compactInspectorShown;
+        previewActive = state.previewActive;
+        RefreshPreviewButton();
         restoreScrollPending = true;
         fitPending = false;
         UpdateModeButtons();
@@ -1210,12 +1266,14 @@ class SceneEditor2D {
     hide func ApplyResponsiveChrome() {
         if compactLayout {
             // Flex measurement cannot infer wrapped cross-axis height before
-            // its parent assigns a width. Reserve both compact action rows so
-            // the inspector toggle remains inside the view toolbar.
-            toolbar.SetPreferredSize(0.0, 64.0);
+            // its parent assigns a width. Reserve all three compact action
+            // rows (the tool row wraps twice with Preview and Run Scene) so
+            // every action remains inside its toolbar.
+            toolbar.SetPreferredSize(0.0, 100.0);
             viewToolbar.SetPreferredSize(0.0, 64.0);
             newSceneButton.SetText("New");
             importButton.SetText("Import...");
+            runSceneButton.SetText("Run");
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
         } else {
@@ -1223,6 +1281,7 @@ class SceneEditor2D {
             viewToolbar.SetPreferredSize(0.0, 0.0);
             newSceneButton.SetText("New Scene");
             importButton.SetText("Import Tiled...");
+            runSceneButton.SetText("Run Scene");
             toolbarStatus.SetVisible(true);
             viewStatusLabel.SetVisible(true);
         }
@@ -3170,6 +3229,683 @@ class SceneEditor2D {
         return true;
     }
 
+    /// @brief Route tile-behavior inspector intents into canonical history.
+    hide func PumpTileBehaviorControls() -> Boolean {
+        if scene == null or tileBehavior == null { return false; }
+        tileBehavior.Pump(scene);
+        var tile = Convert.NumToInt(tileSpinner.Value);
+        var changed = false;
+        var collisionKind = tileBehavior.TakeCollisionKind();
+        if collisionKind >= 0 {
+            changed = SetTileBehaviorCollision(tile, collisionKind) or changed;
+        }
+        if tileBehavior.TakePropertySetRequested() {
+            changed = SetTileBehaviorProperty(
+                tile,
+                tileBehavior.propertyKeyInput.Text,
+                tileBehavior.SelectedPropertyKind(),
+                tileBehavior.propertyValueInput.Text) or changed;
+        }
+        if tileBehavior.TakePropertyRemoveRequested() {
+            changed = RemoveTileBehaviorProperty(
+                tile, tileBehavior.SelectedPropertyKey()) or changed;
+        }
+        if tileBehavior.TakeAnimSetRequested() {
+            changed = SetTileBehaviorAnim(
+                tile,
+                tileBehavior.animFramesInput.Text,
+                tileBehavior.animDurationsInput.Text) or changed;
+        }
+        if tileBehavior.TakeAnimClearRequested() {
+            changed = ClearTileBehaviorAnim(tile) or changed;
+        }
+        if tileBehavior.TakeAutotileSetRequested() {
+            changed = SetTileBehaviorAutotile(
+                tile, tileBehavior.autotileInput.Text) or changed;
+        }
+        if tileBehavior.TakeAutotileClearRequested() {
+            changed = ClearTileBehaviorAutotile(tile) or changed;
+        }
+        return changed;
+    }
+
+    /// @brief Author one tile's collision kind through canonical history.
+    expose func SetTileBehaviorCollision(tile: Integer,
+                                         kind: Integer) -> Boolean {
+        if scene == null { return false; }
+        if TileBehaviorTileValid(tile) == false { return false; }
+        if kind < 0 or kind > 2 {
+            detailLabel.SetText("Collision kind must be 0, 1, or 2.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        scene.SetTileCollision(tile, kind);
+        if scene.TileCollision(tile) != kind {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText("The scene model rejected the collision edit.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Tile collision is already up to date.");
+            return false;
+        }
+        if CommitScene("Updated collision for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Author one typed tile property through canonical history.
+    expose func SetTileBehaviorProperty(tile: Integer,
+                                        key: String,
+                                        kind: String,
+                                        value: String) -> Boolean {
+        if scene == null { return false; }
+        if TileBehaviorTileValid(tile) == false { return false; }
+        var nextKey = Str.Trim(key);
+        if nextKey == "" {
+            detailLabel.SetText("Enter a tile property key.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        if kind == "bool" {
+            var parsedBool = Parse.TryBool(Str.Trim(value));
+            if parsedBool.IsNone {
+                detailLabel.SetText(
+                    "Enter true/false, yes/no, on/off, or 1/0.");
+                return false;
+            }
+            scene.SetTilePropertyBool(tile, nextKey, parsedBool.UnwrapI1());
+        } else {
+            var parsedInt = Parse.TryInt(Str.Trim(value));
+            if parsedInt.IsNone {
+                detailLabel.SetText("Enter a valid whole number.");
+                return false;
+            }
+            scene.SetTilePropertyInt(tile, nextKey, parsedInt.UnwrapI64());
+        }
+        if scene.TilePropertyKind(tile, nextKey) != kind {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The tile property was rejected. Keys are limited to 128 "
+                + "bytes, 64 properties per tile, and 4,096 per scene.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Tile property is already up to date.");
+            return false;
+        }
+        if CommitScene("Updated tile " + tile + " property " + nextKey)
+           == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Remove one typed tile property through canonical history.
+    expose func RemoveTileBehaviorProperty(tile: Integer,
+                                           key: String) -> Boolean {
+        if scene == null or key == "" { return false; }
+        if scene.TilePropertyKind(tile, key) == "" { return false; }
+        var snapshot = scene.ToJson();
+        scene.RemoveTileProperty(tile, key);
+        if scene.TilePropertyKind(tile, key) != "" {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene model rejected the tile property removal.");
+            return false;
+        }
+        if CommitScene("Removed tile " + tile + " property " + key) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Author one per-frame tile animation through canonical history.
+    expose func SetTileBehaviorAnim(tile: Integer,
+                                    framesCsv: String,
+                                    durationsCsv: String) -> Boolean {
+        if scene == null { return false; }
+        if TileBehaviorTileValid(tile) == false { return false; }
+        var frames = ParseCsvIntegers(framesCsv);
+        var durations = ParseCsvIntegers(durationsCsv);
+        if frames == null or durations == null
+           or Seq.get_Count(frames) == 0
+           or Seq.get_Count(frames) != Seq.get_Count(durations) {
+            detailLabel.SetText(
+                "Enter matching comma-separated frame ids and positive "
+                + "durations.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        scene.SetTileAnim(tile, frames, durations);
+        if Seq.get_Count(scene.TileAnimFrames(tile))
+           != Seq.get_Count(frames) {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene model rejected the animation. Use 1 to 4,096 "
+                + "frames with positive millisecond durations.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Tile animation is already up to date.");
+            return false;
+        }
+        if CommitScene("Updated animation for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Remove one tile animation through canonical history.
+    expose func ClearTileBehaviorAnim(tile: Integer) -> Boolean {
+        if scene == null { return false; }
+        if Seq.get_Count(scene.TileAnimFrames(tile)) == 0 { return false; }
+        var snapshot = scene.ToJson();
+        scene.RemoveTileAnim(tile);
+        if CommitScene("Removed animation for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Author one 16-variant autotile rule through canonical history.
+    expose func SetTileBehaviorAutotile(tile: Integer,
+                                        variantsCsv: String) -> Boolean {
+        if scene == null { return false; }
+        if TileBehaviorTileValid(tile) == false { return false; }
+        var variants = ParseCsvIntegers(variantsCsv);
+        if variants == null or Seq.get_Count(variants) != 16 {
+            detailLabel.SetText(
+                "Enter exactly 16 comma-separated variant tile ids.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        scene.SetAutotileRule(tile, variants);
+        if Seq.get_Count(scene.AutotileVariants(tile)) != 16 {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText("The scene model rejected the autotile rule.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Autotile rule is already up to date.");
+            return false;
+        }
+        if CommitScene("Updated autotile rule for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Remove one autotile rule through canonical history.
+    expose func ClearTileBehaviorAutotile(tile: Integer) -> Boolean {
+        if scene == null { return false; }
+        if Seq.get_Count(scene.AutotileVariants(tile)) == 0 { return false; }
+        var snapshot = scene.ToJson();
+        scene.RemoveAutotileRule(tile);
+        if CommitScene("Removed autotile rule for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Draw one object's authored sprite frame, or return false.
+    /// @details `editor.sprite` wins, then a loadable `sprite` property, per
+    ///          ADR 0179. Resolution shares the layer-image budgets and never
+    ///          mutates scene content, history, revision, or dirty state.
+    hide func DrawObjectSpritePreview(objectIndex: Integer,
+                                      x: Integer,
+                                      y: Integer) -> Boolean {
+        var path = Str.Trim(
+            scene.ObjectGetStr(objectIndex, "editor.sprite", ""));
+        var frame = scene.ObjectGetInt(objectIndex, "editor.frame", 0);
+        if path != ""
+           and tilesets.DrawSpriteFrame(
+               framePixels, path, frame, x, y, displayCellSize) {
+            return true;
+        }
+        path = Str.Trim(scene.ObjectGetStr(objectIndex, "sprite", ""));
+        return path != ""
+            and tilesets.DrawSpriteFrame(
+                framePixels, path, frame, x, y, displayCellSize);
+    }
+
+    /// @brief Draw workspace-only polylines for route objects (ADR 0179).
+    /// @details A route is an object of type `route`; its waypoints are its
+    ///          direct children in sibling order. At most 256 waypoints per
+    ///          route are drawn; the full list stays editable in the tree.
+    hide func DrawRoutePolylines() {
+        var routeIndex = 0;
+        while routeIndex < scene.ObjectCount() {
+            if scene.ObjectType(routeIndex) != "route" {
+                routeIndex = routeIndex + 1;
+                continue;
+            }
+            var lineColor = Color.RGB(120, 132, 150);
+            if scene_selection.Contains(selectedObjects, routeIndex) {
+                lineColor = Color.RGB(104, 220, 255);
+            }
+            var fromX = scene.ObjectX(routeIndex) * displayCellSize
+                / scene.TileWidth + displayCellSize / 2;
+            var fromY = scene.ObjectY(routeIndex) * displayCellSize
+                / scene.TileHeight + displayCellSize / 2;
+            var drawn = 0;
+            var childIndex = 0;
+            while childIndex < scene.ObjectCount() and drawn < 256 {
+                if scene.ObjectParent(childIndex) == routeIndex {
+                    var toX = scene.ObjectX(childIndex) * displayCellSize
+                        / scene.TileWidth + displayCellSize / 2;
+                    var toY = scene.ObjectY(childIndex) * displayCellSize
+                        / scene.TileHeight + displayCellSize / 2;
+                    framePixels.DrawLine(fromX, fromY, toX, toY, lineColor);
+                    fromX = toX;
+                    fromY = toY;
+                    drawn = drawn + 1;
+                }
+                childIndex = childIndex + 1;
+            }
+            routeIndex = routeIndex + 1;
+        }
+    }
+
+    /// @brief Report and reject behavior edits outside Tilemap's tile range.
+    hide func TileBehaviorTileValid(tile: Integer) -> Boolean {
+        if tile >= 1 and tile <= 4095 { return true; }
+        detailLabel.SetText("Behavior applies to tile ids 1 through 4095.");
+        return false;
+    }
+
+    /// @brief Route camera/lighting form intents into canonical history.
+    hide func PumpCameraLightingControls() -> Boolean {
+        if scene == null or cameraLighting == null { return false; }
+        var changed = false;
+        if cameraLighting.TakeCameraApplyRequested() {
+            changed = ApplyCameraSection(
+                cameraLighting.DraftCameraMode(),
+                cameraLighting.cameraMinXInput.Text,
+                cameraLighting.cameraMinYInput.Text,
+                cameraLighting.cameraMaxXInput.Text,
+                cameraLighting.cameraMaxYInput.Text,
+                cameraLighting.cameraDeadzoneWidthInput.Text,
+                cameraLighting.cameraDeadzoneHeightInput.Text,
+                cameraLighting.cameraLerpInput.Text,
+                cameraLighting.cameraZoomInput.Text) or changed;
+        }
+        if cameraLighting.TakeCameraClearRequested() {
+            changed = ClearCameraSection() or changed;
+        }
+        if cameraLighting.TakeLightingApplyRequested() {
+            changed = ApplyLightingSection(
+                cameraLighting.lightingDarknessInput.Text,
+                cameraLighting.lightingTintInput.Text,
+                cameraLighting.lightingPlayerRadiusInput.Text,
+                cameraLighting.lightingPlayerColorInput.Text) or changed;
+        }
+        if cameraLighting.TakeLightingClearRequested() {
+            changed = ClearLightingSection() or changed;
+        }
+        return changed;
+    }
+
+    /// @brief Author the complete camera section as one history transaction.
+    /// @details Blank drafts remove their field; bounds must be authored as a
+    ///          complete group of four or left completely blank (ADR 0177).
+    expose func ApplyCameraSection(mode: String,
+                                   minX: String,
+                                   minY: String,
+                                   maxX: String,
+                                   maxY: String,
+                                   deadzoneWidth: String,
+                                   deadzoneHeight: String,
+                                   lerpPct: String,
+                                   zoomPct: String) -> Boolean {
+        if scene == null { return false; }
+        var boundsFilled = 0;
+        if Str.Trim(minX) != "" { boundsFilled = boundsFilled + 1; }
+        if Str.Trim(minY) != "" { boundsFilled = boundsFilled + 1; }
+        if Str.Trim(maxX) != "" { boundsFilled = boundsFilled + 1; }
+        if Str.Trim(maxY) != "" { boundsFilled = boundsFilled + 1; }
+        if boundsFilled != 0 and boundsFilled != 4 {
+            detailLabel.SetText(
+                "Camera bounds need all four values, or none.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        if mode == "" {
+            scene.CameraRemove("mode");
+        } else {
+            scene.CameraSetStr("mode", mode);
+        }
+        var applied = mode == "" or scene.CameraGetStr("mode", "") == mode;
+        applied = applied and ApplyCameraIntField("minX", minX);
+        applied = applied and ApplyCameraIntField("minY", minY);
+        applied = applied and ApplyCameraIntField("maxX", maxX);
+        applied = applied and ApplyCameraIntField("maxY", maxY);
+        applied = applied
+            and ApplyCameraIntField("deadzoneWidth", deadzoneWidth);
+        applied = applied
+            and ApplyCameraIntField("deadzoneHeight", deadzoneHeight);
+        applied = applied and ApplyCameraIntField("followLerpPct", lerpPct);
+        applied = applied and ApplyCameraIntField("zoomPct", zoomPct);
+        if applied == false {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The camera settings were rejected. Check the documented "
+                + "field ranges.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Camera settings are already up to date.");
+            return false;
+        }
+        if CommitScene("Updated camera settings") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Author the complete lighting section as one history transaction.
+    expose func ApplyLightingSection(darkness: String,
+                                     tint: String,
+                                     playerLightRadius: String,
+                                     playerLightColor: String) -> Boolean {
+        if scene == null { return false; }
+        var snapshot = scene.ToJson();
+        var applied = ApplyLightingIntField("darkness", darkness);
+        applied = applied and ApplyLightingIntField("tint", tint);
+        applied = applied
+            and ApplyLightingIntField("playerLightRadius", playerLightRadius);
+        applied = applied
+            and ApplyLightingIntField("playerLightColor", playerLightColor);
+        if applied == false {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The lighting settings were rejected. Check the documented "
+                + "field ranges.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Lighting settings are already up to date.");
+            return false;
+        }
+        if CommitScene("Updated lighting settings") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Remove every authored camera field as one history transaction.
+    expose func ClearCameraSection() -> Boolean {
+        if scene == null { return false; }
+        var keys = scene.CameraKeys();
+        if Seq.get_Count(keys) == 0 { return false; }
+        var snapshot = scene.ToJson();
+        var index = 0;
+        while index < Seq.get_Count(keys) {
+            scene.CameraRemove(Seq.GetStr(keys, index));
+            index = index + 1;
+        }
+        if CommitScene("Cleared camera settings") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Remove every authored lighting field as one history transaction.
+    expose func ClearLightingSection() -> Boolean {
+        if scene == null { return false; }
+        var keys = scene.LightingKeys();
+        if Seq.get_Count(keys) == 0 { return false; }
+        var snapshot = scene.ToJson();
+        var index = 0;
+        while index < Seq.get_Count(keys) {
+            scene.LightingRemove(Seq.GetStr(keys, index));
+            index = index + 1;
+        }
+        if CommitScene("Cleared lighting settings") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Apply one camera integer draft; blank removes the field.
+    hide func ApplyCameraIntField(key: String, draft: String) -> Boolean {
+        var text = Str.Trim(draft);
+        if text == "" {
+            scene.CameraRemove(key);
+            return scene.CameraFieldKind(key) == "";
+        }
+        var parsed = Parse.TryInt(text);
+        if parsed.IsNone { return false; }
+        var value = parsed.UnwrapI64();
+        scene.CameraSetInt(key, value);
+        return scene.CameraGetInt(key, value + 1) == value;
+    }
+
+    /// @brief Apply one lighting integer draft; blank removes the field.
+    hide func ApplyLightingIntField(key: String, draft: String) -> Boolean {
+        var text = Str.Trim(draft);
+        if text == "" {
+            scene.LightingRemove(key);
+            return scene.LightingFieldKind(key) == "";
+        }
+        var parsed = Parse.TryInt(text);
+        if parsed.IsNone { return false; }
+        var value = parsed.UnwrapI64();
+        scene.LightingSetInt(key, value);
+        return scene.LightingGetInt(key, value + 1) == value;
+    }
+
+    /// @brief Consume the toolbar Run Scene intent for the command layer.
+    expose func TakeRunSceneRequested() -> Boolean {
+        var requested = runSceneRequested;
+        runSceneRequested = false;
+        return requested;
+    }
+
+    /// @brief Return whether animated preview mode is active for this tab.
+    expose func PreviewActive() -> Boolean {
+        return previewActive;
+    }
+
+    /// @brief Toggle workspace-only preview playback for the active tab.
+    expose func SetPreviewActive(active: Boolean) {
+        previewActive = active;
+        previewLastTickMs = -1;
+        previewElapsedMs = 0;
+        previewFrameStamp = "";
+        RefreshPreviewButton();
+        renderDirty = true;
+    }
+
+    /// @brief Deterministically advance the preview clock (probes and tests).
+    expose func AdvancePreviewClock(deltaMs: Integer) {
+        if previewActive == false or deltaMs <= 0 { return; }
+        previewElapsedMs = previewElapsedMs + deltaMs;
+        previewLastTickMs = Clock.NowMs();
+        previewFrameStamp = "";
+        renderDirty = true;
+    }
+
+    /// @brief Keep the Preview toggle's label truthful.
+    hide func RefreshPreviewButton() {
+        if previewButton == null { return; }
+        if previewActive {
+            previewButton.SetText("Preview: on");
+        } else {
+            previewButton.SetText("Preview");
+        }
+    }
+
+    /// @brief Advance the bounded preview clock and repaint on frame changes.
+    /// @details Workspace-only: canonical bytes, history, revision, and dirty
+    ///          state never change, and edits behave identically while active.
+    hide func PumpPreviewClock() {
+        if previewActive == false or scene == null { return; }
+        var now = Clock.NowMs();
+        if previewLastTickMs >= 0 {
+            var delta = now - previewLastTickMs;
+            if delta > 0 and delta < 10000 {
+                previewElapsedMs = previewElapsedMs + delta;
+            }
+        }
+        previewLastTickMs = now;
+        var stamp = "";
+        var bases = scene.TileAnimBases();
+        var index = 0;
+        while index < Seq.get_Count(bases) {
+            var base = Box.ToI64(Seq.Get(bases, index));
+            stamp = stamp + base + ":"
+                + PreviewFrameForBase(base) + ";";
+            index = index + 1;
+        }
+        if stamp != previewFrameStamp {
+            previewFrameStamp = stamp;
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Resolve one tile through preview animation state when active.
+    hide func PreviewResolvedTile(tile: Integer) -> Integer {
+        if previewActive == false or scene == null or tile <= 0 {
+            return tile;
+        }
+        var frames = scene.TileAnimFrames(tile);
+        if Seq.get_Count(frames) == 0 { return tile; }
+        var frame = PreviewFrameForBase(tile);
+        if frame < 0 or frame >= Seq.get_Count(frames) { return tile; }
+        return Box.ToI64(Seq.Get(frames, frame));
+    }
+
+    /// @brief Return one base tile's current frame index from durations.
+    /// @details Matches Tilemap playback: elapsed time cycles through the
+    ///          authored per-frame durations in order.
+    hide func PreviewFrameForBase(base: Integer) -> Integer {
+        var durations = scene.TileAnimDurations(base);
+        var count = Seq.get_Count(durations);
+        if count <= 0 { return -1; }
+        var total = 0;
+        var index = 0;
+        while index < count {
+            total = total + Box.ToI64(Seq.Get(durations, index));
+            index = index + 1;
+        }
+        if total <= 0 { return 0; }
+        var cycle = previewElapsedMs % total;
+        index = 0;
+        while index < count {
+            cycle = cycle - Box.ToI64(Seq.Get(durations, index));
+            if cycle < 0 { return index; }
+            index = index + 1;
+        }
+        return 0;
+    }
+
+    /// @brief Draw the follow-mode deadzone at the player start while previewing.
+    hide func DrawPreviewDeadzoneOverlay() {
+        if previewActive == false
+           or scene.CameraGetStr("mode", "") != "follow"
+           or scene.CameraFieldKind("deadzoneWidth") != "int"
+           or scene.CameraFieldKind("deadzoneHeight") != "int"
+           or scene.PropertyKind("playerStartX") != "int"
+           or scene.PropertyKind("playerStartY") != "int" {
+            return;
+        }
+        var centerX = scene.GetInt("playerStartX", 0) * displayCellSize
+            / scene.TileWidth;
+        var centerY = scene.GetInt("playerStartY", 0) * displayCellSize
+            / scene.TileHeight;
+        var halfWidth = scene.CameraGetInt("deadzoneWidth", 0)
+            * displayCellSize / scene.TileWidth / 2;
+        var halfHeight = scene.CameraGetInt("deadzoneHeight", 0)
+            * displayCellSize / scene.TileHeight / 2;
+        if halfWidth <= 0 or halfHeight <= 0 { return; }
+        framePixels.DrawFrame(
+            centerX - halfWidth,
+            centerY - halfHeight,
+            halfWidth * 2,
+            halfHeight * 2,
+            Color.RGB(150, 220, 170));
+    }
+
+    /// @brief Draw the authored camera bounds rectangle (workspace-only).
+    hide func DrawCameraBoundsOverlay() {
+        if scene.CameraFieldKind("minX") != "int"
+           or scene.CameraFieldKind("minY") != "int"
+           or scene.CameraFieldKind("maxX") != "int"
+           or scene.CameraFieldKind("maxY") != "int" {
+            return;
+        }
+        var canvasWidth = renderedColumns * displayCellSize;
+        var canvasHeight = renderedRows * displayCellSize;
+        var x0 = ClampInt(
+            scene.CameraGetInt("minX", 0) * displayCellSize / scene.TileWidth,
+            0, canvasWidth);
+        var y0 = ClampInt(
+            scene.CameraGetInt("minY", 0) * displayCellSize / scene.TileHeight,
+            0, canvasHeight);
+        var x1 = ClampInt(
+            scene.CameraGetInt("maxX", 0) * displayCellSize / scene.TileWidth,
+            0, canvasWidth);
+        var y1 = ClampInt(
+            scene.CameraGetInt("maxY", 0) * displayCellSize / scene.TileHeight,
+            0, canvasHeight);
+        if x1 <= x0 or y1 <= y0 { return; }
+        framePixels.DrawFrame(
+            x0, y0, x1 - x0 + 1, y1 - y0 + 1, Color.RGB(233, 140, 220));
+    }
+
+    /// @brief Parse comma-separated integers, or null for malformed drafts.
+    hide func ParseCsvIntegers(text: String) -> Any {
+        var out = Seq.New();
+        var trimmed = Str.Trim(text);
+        if trimmed == "" { return out; }
+        var parts = Str.Split(trimmed, ",");
+        var count = Seq.get_Count(parts);
+        var index = 0;
+        while index < count {
+            var part = Str.Trim(Seq.GetStr(parts, index));
+            var parsed = Parse.TryInt(part);
+            if parsed.IsNone { return null; }
+            Seq.Push(out, Box.I64(parsed.UnwrapI64()));
+            index = index + 1;
+        }
+        return out;
+    }
+
     /// @brief Verify one just-written scene property without string coercion.
     hide func ScenePropertyMatches(key: String,
                                    kind: String,
@@ -3488,7 +4224,7 @@ class SceneEditor2D {
                 var field = component.fields.get(fieldIndex);
                 if scene.ObjectHas(objectIndex, field.key) {
                     if scene.ObjectPropertyKind(objectIndex, field.key)
-                       != field.kind {
+                       != scene_component_schema.ValueKind(field.kind) {
                         detailLabel.SetText(
                             "Component \"" + component.label
                             + "\" conflicts with property \"" + field.key
@@ -3556,24 +4292,25 @@ class SceneEditor2D {
         var intValue = 0;
         var floatValue = 0.0;
         var boolValue = false;
-        if field.kind == "string" {
+        var kind = scene_component_schema.ValueKind(field.kind);
+        if kind == "string" {
             scene.ObjectSetStr(index, field.key, field.defaultText);
-        } else if field.kind == "int" {
+        } else if kind == "int" {
             var parsedInt = Parse.TryInt(field.defaultText);
             if parsedInt.IsNone { return false; }
             intValue = parsedInt.UnwrapI64();
             scene.ObjectSetInt(index, field.key, intValue);
-        } else if field.kind == "float" {
+        } else if kind == "float" {
             var parsedFloat = Parse.TryDouble(field.defaultText);
             if parsedFloat.IsNone { return false; }
             floatValue = parsedFloat.UnwrapF64();
             scene.ObjectSetFloat(index, field.key, floatValue);
-        } else if field.kind == "bool" {
+        } else if kind == "bool" {
             var parsedBool = Parse.TryBool(field.defaultText);
             if parsedBool.IsNone { return false; }
             boolValue = parsedBool.UnwrapI1();
             scene.ObjectSetBool(index, field.key, boolValue);
-        } else if field.kind == "null" {
+        } else if kind == "null" {
             scene.ObjectSetNull(index, field.key);
         } else {
             return false;
@@ -3581,7 +4318,7 @@ class SceneEditor2D {
         return BatchPropertyMatches(
             index,
             field.key,
-            field.kind,
+            kind,
             field.defaultText,
             intValue,
             floatValue,
@@ -3936,6 +4673,7 @@ class SceneEditor2D {
         sceneProperties.Refresh(
             scene, editorControlsEnabled, selectedSceneProperty);
         selectedSceneProperty = sceneProperties.selectedProperty;
+        cameraLighting.Refresh(scene, editorControlsEnabled);
         if scene == null {
             selectedObject = -1;
             selectedObjects = [];
@@ -4464,10 +5202,51 @@ class SceneEditor2D {
     /// @brief Refresh the active layer's scrollable visual tile chooser.
     hide func RefreshTilesetPalette() {
         if tilesetInspector == null or tileSpinner == null { return; }
-        tilesetInspector.Refresh(
+        tilesetInspector.RefreshMarked(
             tilesets,
             activeLayer,
-            Convert.NumToInt(tileSpinner.Value));
+            Convert.NumToInt(tileSpinner.Value),
+            BehaviorMarkedTiles(),
+            revision);
+        RefreshTileBehavior();
+    }
+
+    /// @brief Collect palette-range tile ids carrying any authored behavior.
+    hide func BehaviorMarkedTiles() -> List[Integer] {
+        var marked: List[Integer] = [];
+        if scene == null { return marked; }
+        AddMarkedTiles(marked, scene.CollisionTiles());
+        AddMarkedTiles(marked, scene.TilePropertyTiles());
+        AddMarkedTiles(marked, scene.TileAnimBases());
+        AddMarkedTiles(marked, scene.AutotileBases());
+        return marked;
+    }
+
+    /// @brief Append bounded unique palette-range ids from one runtime list.
+    hide func AddMarkedTiles(marked: List[Integer], tiles: Any) {
+        var count = Seq.get_Count(tiles);
+        var index = 0;
+        while index < count {
+            var tile = Box.ToI64(Seq.Get(tiles, index));
+            index = index + 1;
+            if tile < 1 or tile > 512 { continue; }
+            var existing = 0;
+            var found = false;
+            while existing < marked.count() {
+                if marked.get(existing) == tile { found = true; }
+                existing = existing + 1;
+            }
+            if found == false { marked.add(tile); }
+        }
+    }
+
+    /// @brief Rebuild the tile-behavior inspector from canonical scene state.
+    hide func RefreshTileBehavior() {
+        if tileBehavior == null or tileSpinner == null { return; }
+        tileBehavior.Refresh(
+            scene,
+            Convert.NumToInt(tileSpinner.Value),
+            editorControlsEnabled);
     }
 
     /// @brief Route a palette click into the same tile selection as the spinner.
@@ -4558,7 +5337,9 @@ class SceneEditor2D {
                     if scene.ObjectHas(objectIndex, field.key) == false {
                         missing = missing + 1;
                     } else if scene.ObjectPropertyKind(
-                                  objectIndex, field.key) == field.kind {
+                                  objectIndex, field.key)
+                               == scene_component_schema.ValueKind(
+                                      field.kind) {
                         present = present + 1;
                     } else {
                         conflicts = conflicts + 1;
@@ -4598,14 +5379,16 @@ class SceneEditor2D {
                 index = index + 1;
             }
             if scene.ObjectPropertyKind(selectedObject, field.key)
-               == field.kind {
+               == scene_component_schema.ValueKind(field.kind) {
                 value = PropertyValueText(
-                    selectedObject, field.key, field.kind);
+                    selectedObject,
+                    field.key,
+                    scene_component_schema.ValueKind(field.kind));
             }
         }
 
         objectPropertyKeyInput.SetText(field.key);
-        SelectPropertyType(field.kind);
+        SelectPropertyType(scene_component_schema.ValueKind(field.kind));
         objectPropertyValueInput.SetText(value);
         UpdatePropertyValueControl();
         if field.kind == "null" {
@@ -5945,7 +6728,8 @@ class SceneEditor2D {
                 while y < renderedRows {
                     var x = 0;
                     while x < renderedColumns {
-                        var tile = scene.GetTile(layer, x, y);
+                        var tile = PreviewResolvedTile(
+                            scene.GetTile(layer, x, y));
                         if tile > 0 {
                             var drewAsset = tilesets.DrawTile(
                                 framePixels,
@@ -5987,6 +6771,9 @@ class SceneEditor2D {
             y = y + 1;
         }
 
+        DrawCameraBoundsOverlay();
+        DrawPreviewDeadzoneOverlay();
+        DrawRoutePolylines();
         var objectIndex = 0;
         while objectIndex < scene.ObjectCount() {
             var objectX = scene.ObjectX(objectIndex) * displayCellSize
@@ -6000,10 +6787,22 @@ class SceneEditor2D {
             if objectIndex == selectedObject {
                 objectColor = Color.RGB(170, 242, 255);
             }
-            framePixels.DrawDisc(objectX + displayCellSize / 2,
-                                 objectY + displayCellSize / 2,
-                                 ClampInt(displayCellSize / 4, 2, 10),
-                                 objectColor);
+            var drewSprite = DrawObjectSpritePreview(
+                objectIndex, objectX, objectY);
+            if drewSprite == false {
+                framePixels.DrawDisc(objectX + displayCellSize / 2,
+                                     objectY + displayCellSize / 2,
+                                     ClampInt(displayCellSize / 4, 2, 10),
+                                     objectColor);
+            }
+            if scene.ObjectPropertyKind(objectIndex, "light.radius")
+               == "int" {
+                framePixels.DrawRing(
+                    objectX + displayCellSize / 2,
+                    objectY + displayCellSize / 2,
+                    ClampInt(displayCellSize / 2 + 3, 5, 24),
+                    Color.RGB(255, 236, 150));
+            }
             framePixels.DrawFrame(objectX, objectY,
                                   displayCellSize, displayCellSize,
                                   objectColor);

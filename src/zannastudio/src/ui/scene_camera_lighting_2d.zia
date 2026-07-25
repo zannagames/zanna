@@ -1,0 +1,301 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_camera_lighting_2d.zia
+// Purpose: Present scene-global camera and lighting section forms for Studio's
+//          2D scene inspector.
+// Key invariants:
+//   - This presentation object never mutates SceneDocument or Document state.
+//   - Drafts always rebuild from canonical typed section state; blank means
+//     the field is absent.
+//   - Apply and Clear buttons return intent; SceneEditor2D owns validation
+//     and one-transaction history.
+// Ownership/Lifetime: SceneEditor2D owns one inspector; GUI owns its widgets.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        docs/adr/0177-scene-camera-and-lighting-sections.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_camera_lighting_2d;
+
+bind GUI = Zanna.GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Fmt = Zanna.Text.Fmt;
+
+// ============================================================================
+// MODULE: scene_camera_lighting_2d
+// PURPOSE: Keep camera/lighting section widgets and draft presentation outside
+//          the already-large SceneEditor2D document coordinator.
+//
+// WHERE-THIS-FITS: SceneDocument owns typed camera/lighting truth (ADR 0177).
+//          SceneEditor2D owns validation, mutation, dirty state, and history.
+//
+// TEACHING-NOTE: One Apply reads the complete form so the whole section edit
+//          is a single undoable transaction; a blank field means "absent",
+//          keeping the canonical file free of default-value noise.
+// ============================================================================
+
+final CAMERA_MODE_UNSET: Integer = 0;
+final CAMERA_MODE_FOLLOW: Integer = 1;
+final CAMERA_MODE_FIXED: Integer = 2;
+
+/// @brief Presentation-only camera/lighting forms embedded in the inspector.
+class SceneCameraLighting2D {
+    expose GUI.GroupBox cameraGroup;
+    expose GUI.Dropdown cameraModeDropdown;
+    expose GUI.TextInput cameraMinXInput;
+    expose GUI.TextInput cameraMinYInput;
+    expose GUI.TextInput cameraMaxXInput;
+    expose GUI.TextInput cameraMaxYInput;
+    expose GUI.TextInput cameraDeadzoneWidthInput;
+    expose GUI.TextInput cameraDeadzoneHeightInput;
+    expose GUI.TextInput cameraLerpInput;
+    expose GUI.TextInput cameraZoomInput;
+    expose GUI.Button cameraApplyButton;
+    expose GUI.Button cameraClearButton;
+    expose GUI.GroupBox lightingGroup;
+    expose GUI.TextInput lightingDarknessInput;
+    expose GUI.TextInput lightingTintInput;
+    expose GUI.TextInput lightingPlayerRadiusInput;
+    expose GUI.TextInput lightingPlayerColorInput;
+    expose GUI.Button lightingApplyButton;
+    expose GUI.Button lightingClearButton;
+
+    expose func init() {
+        cameraGroup = null;
+        cameraModeDropdown = null;
+        cameraMinXInput = null;
+        cameraMinYInput = null;
+        cameraMaxXInput = null;
+        cameraMaxYInput = null;
+        cameraDeadzoneWidthInput = null;
+        cameraDeadzoneHeightInput = null;
+        cameraLerpInput = null;
+        cameraZoomInput = null;
+        cameraApplyButton = null;
+        cameraClearButton = null;
+        lightingGroup = null;
+        lightingDarknessInput = null;
+        lightingTintInput = null;
+        lightingPlayerRadiusInput = null;
+        lightingPlayerColorInput = null;
+        lightingApplyButton = null;
+        lightingClearButton = null;
+    }
+
+    /// @brief Build both bounded section forms.
+    expose func Setup(parent: GUI.VBox) {
+        cameraGroup = GUI.GroupBox.New(parent, "Camera");
+        var cameraSummary = GUI.Label.New(
+            cameraGroup,
+            "Scene-global framing settings for the game camera adapter. "
+            + "Blank fields stay absent.");
+        cameraSummary.SetWordWrap(true);
+
+        var modeRow = GUI.HBox.New();
+        modeRow.SetSpacing(4.0);
+        cameraGroup.AddChild(modeRow);
+        GUI.Label.New(modeRow, "Mode");
+        cameraModeDropdown = GUI.Dropdown.New(modeRow);
+        cameraModeDropdown.SetAccessibleName("Camera mode");
+        cameraModeDropdown.AddItem("Unset");
+        cameraModeDropdown.AddItem("Follow");
+        cameraModeDropdown.AddItem("Fixed");
+        cameraModeDropdown.SetSelected(CAMERA_MODE_UNSET);
+
+        GUI.Label.New(cameraGroup, "Bounds (world px: minX, minY, maxX, maxY)");
+        var boundsRow = GUI.HBox.New();
+        boundsRow.SetSpacing(4.0);
+        cameraGroup.AddChild(boundsRow);
+        cameraMinXInput = BoundsInput(boundsRow, "Camera bounds min X");
+        cameraMinYInput = BoundsInput(boundsRow, "Camera bounds min Y");
+        cameraMaxXInput = BoundsInput(boundsRow, "Camera bounds max X");
+        cameraMaxYInput = BoundsInput(boundsRow, "Camera bounds max Y");
+
+        GUI.Label.New(cameraGroup, "Deadzone (w, h) / follow lerp % / zoom %");
+        var tuningRow = GUI.HBox.New();
+        tuningRow.SetSpacing(4.0);
+        cameraGroup.AddChild(tuningRow);
+        cameraDeadzoneWidthInput = BoundsInput(tuningRow, "Camera deadzone width");
+        cameraDeadzoneHeightInput =
+            BoundsInput(tuningRow, "Camera deadzone height");
+        cameraLerpInput = BoundsInput(tuningRow, "Camera follow lerp percent");
+        cameraZoomInput = BoundsInput(tuningRow, "Camera zoom percent");
+
+        var cameraActions = GUI.HBox.New();
+        cameraActions.SetSpacing(4.0);
+        cameraGroup.AddChild(cameraActions);
+        cameraApplyButton = GUI.Button.New(cameraActions, "Apply Camera");
+        cameraApplyButton.SetTooltip(
+            "Author the complete camera section as one undoable edit");
+        cameraClearButton = GUI.Button.New(cameraActions, "Clear Camera");
+        cameraClearButton.SetTooltip(
+            "Remove every camera field as one undoable edit");
+
+        lightingGroup = GUI.GroupBox.New(parent, "Lighting");
+        var lightingSummary = GUI.Label.New(
+            lightingGroup,
+            "Scene-global atmosphere for the game lighting adapter. Point "
+            + "lights are objects with a light component.");
+        lightingSummary.SetWordWrap(true);
+
+        GUI.Label.New(
+            lightingGroup, "Darkness 0-255 / tint ARGB / radius px / color ARGB");
+        var lightingRow = GUI.HBox.New();
+        lightingRow.SetSpacing(4.0);
+        lightingGroup.AddChild(lightingRow);
+        lightingDarknessInput = BoundsInput(lightingRow, "Lighting darkness");
+        lightingTintInput = BoundsInput(lightingRow, "Lighting tint color");
+        lightingPlayerRadiusInput =
+            BoundsInput(lightingRow, "Player light radius");
+        lightingPlayerColorInput =
+            BoundsInput(lightingRow, "Player light color");
+
+        var lightingActions = GUI.HBox.New();
+        lightingActions.SetSpacing(4.0);
+        lightingGroup.AddChild(lightingActions);
+        lightingApplyButton = GUI.Button.New(lightingActions, "Apply Lighting");
+        lightingApplyButton.SetTooltip(
+            "Author the complete lighting section as one undoable edit");
+        lightingClearButton = GUI.Button.New(lightingActions, "Clear Lighting");
+        lightingClearButton.SetTooltip(
+            "Remove every lighting field as one undoable edit");
+
+        SetEnabled(false);
+    }
+
+    /// @brief Rebuild every draft from canonical typed section state.
+    expose func Refresh(scene: SceneDocument, enabled: Boolean) {
+        var usable = enabled and scene != null;
+        SetEnabled(usable);
+        if usable == false {
+            cameraModeDropdown.SetSelected(CAMERA_MODE_UNSET);
+            ClearDrafts();
+            return;
+        }
+        var mode = scene.CameraGetStr("mode", "");
+        if mode == "follow" {
+            cameraModeDropdown.SetSelected(CAMERA_MODE_FOLLOW);
+        } else if mode == "fixed" {
+            cameraModeDropdown.SetSelected(CAMERA_MODE_FIXED);
+        } else {
+            cameraModeDropdown.SetSelected(CAMERA_MODE_UNSET);
+        }
+        SetDraft(cameraMinXInput, scene, "camera", "minX");
+        SetDraft(cameraMinYInput, scene, "camera", "minY");
+        SetDraft(cameraMaxXInput, scene, "camera", "maxX");
+        SetDraft(cameraMaxYInput, scene, "camera", "maxY");
+        SetDraft(cameraDeadzoneWidthInput, scene, "camera", "deadzoneWidth");
+        SetDraft(cameraDeadzoneHeightInput, scene, "camera", "deadzoneHeight");
+        SetDraft(cameraLerpInput, scene, "camera", "followLerpPct");
+        SetDraft(cameraZoomInput, scene, "camera", "zoomPct");
+        SetDraft(lightingDarknessInput, scene, "lighting", "darkness");
+        SetDraft(lightingTintInput, scene, "lighting", "tint");
+        SetDraft(
+            lightingPlayerRadiusInput, scene, "lighting", "playerLightRadius");
+        SetDraft(
+            lightingPlayerColorInput, scene, "lighting", "playerLightColor");
+    }
+
+    /// @brief Consume the camera Apply intent.
+    expose func TakeCameraApplyRequested() -> Boolean {
+        return cameraApplyButton.WasClicked();
+    }
+
+    /// @brief Consume the camera Clear intent.
+    expose func TakeCameraClearRequested() -> Boolean {
+        return cameraClearButton.WasClicked();
+    }
+
+    /// @brief Consume the lighting Apply intent.
+    expose func TakeLightingApplyRequested() -> Boolean {
+        return lightingApplyButton.WasClicked();
+    }
+
+    /// @brief Consume the lighting Clear intent.
+    expose func TakeLightingClearRequested() -> Boolean {
+        return lightingClearButton.WasClicked();
+    }
+
+    /// @brief Return the drafted camera mode token: "", "follow", or "fixed".
+    expose func DraftCameraMode() -> String {
+        if cameraModeDropdown.Selected == CAMERA_MODE_FOLLOW {
+            return "follow";
+        }
+        if cameraModeDropdown.Selected == CAMERA_MODE_FIXED { return "fixed"; }
+        return "";
+    }
+
+    /// @brief Reconcile all controls with scene validity.
+    expose func SetEnabled(enabled: Boolean) {
+        if cameraGroup == null { return; }
+        cameraModeDropdown.SetEnabled(enabled);
+        cameraMinXInput.SetEnabled(enabled);
+        cameraMinYInput.SetEnabled(enabled);
+        cameraMaxXInput.SetEnabled(enabled);
+        cameraMaxYInput.SetEnabled(enabled);
+        cameraDeadzoneWidthInput.SetEnabled(enabled);
+        cameraDeadzoneHeightInput.SetEnabled(enabled);
+        cameraLerpInput.SetEnabled(enabled);
+        cameraZoomInput.SetEnabled(enabled);
+        cameraApplyButton.SetEnabled(enabled);
+        cameraClearButton.SetEnabled(enabled);
+        lightingDarknessInput.SetEnabled(enabled);
+        lightingTintInput.SetEnabled(enabled);
+        lightingPlayerRadiusInput.SetEnabled(enabled);
+        lightingPlayerColorInput.SetEnabled(enabled);
+        lightingApplyButton.SetEnabled(enabled);
+        lightingClearButton.SetEnabled(enabled);
+    }
+
+    /// @brief Build one compact numeric draft input.
+    hide func BoundsInput(row: GUI.HBox, accessibleName: String) -> GUI.TextInput {
+        var input = GUI.TextInput.New(row);
+        input.SetAccessibleName(accessibleName);
+        input.SetPlaceholder("—");
+        input.SetFlex(1.0);
+        return input;
+    }
+
+    /// @brief Load one integer field draft, or blank when absent.
+    hide func SetDraft(input: GUI.TextInput,
+                       scene: SceneDocument,
+                       section: String,
+                       key: String) {
+        var kind = "";
+        if section == "camera" {
+            kind = scene.CameraFieldKind(key);
+            if kind == "int" {
+                input.SetText(Fmt.Int(scene.CameraGetInt(key, 0)));
+                return;
+            }
+        } else {
+            kind = scene.LightingFieldKind(key);
+            if kind == "int" {
+                input.SetText(Fmt.Int(scene.LightingGetInt(key, 0)));
+                return;
+            }
+        }
+        input.SetText("");
+    }
+
+    /// @brief Blank every numeric draft.
+    hide func ClearDrafts() {
+        cameraMinXInput.SetText("");
+        cameraMinYInput.SetText("");
+        cameraMaxXInput.SetText("");
+        cameraMaxYInput.SetText("");
+        cameraDeadzoneWidthInput.SetText("");
+        cameraDeadzoneHeightInput.SetText("");
+        cameraLerpInput.SetText("");
+        cameraZoomInput.SetText("");
+        lightingDarknessInput.SetText("");
+        lightingTintInput.SetText("");
+        lightingPlayerRadiusInput.SetText("");
+        lightingPlayerColorInput.SetText("");
+    }
+}

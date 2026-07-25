@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/CodegenPipeline.hpp
+// File: src/codegen/aarch64/CodegenPipeline.hpp
 // Purpose: Entry point for the modular AArch64 code-generation pipeline.
 //          Wires together all AArch64 passes via the PassManager and
 //          replaces the monolithic per-function loop in the CLI driver.
@@ -20,10 +20,21 @@
 //   - The pipeline operates on a caller-owned AArch64Module reference.
 //   - The pipeline does not own the IL module or TargetInfo.
 //
-// Links: codegen/aarch64/passes/PassManager.hpp (types),
-//        tools/zanna/cmd_codegen_arm64.cpp (caller)
+// Links: src/codegen/aarch64/passes/PassManager.hpp (types),
+//        src/tools/zanna/cmd_codegen_arm64.cpp (caller)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares pass-level and end-to-end AArch64 code-generation drivers.
+ *
+ * `runCodegenPipeline` operates on a prepared module and runs MIR passes.
+ * `CodegenPipeline` additionally owns CLI-style options and orchestrates module
+ * loading, IL verification/optimization, object emission, linking, and optional
+ * execution while capturing user-visible output.
+ */
+
 #pragma once
 
 #include "codegen/aarch64/passes/PassManager.hpp"
@@ -59,6 +70,8 @@ struct PipelineOptions {
 /// Wraps the full AArch64 pipeline (IL parse → IL opt → MIR lower → RA →
 /// peephole → sched → emit → assemble → link) behind a single `run()` entry
 /// point used by the `zanna` CLI driver.
+/// @invariant `opts_` is immutable configuration from the caller's perspective
+///            for the duration of each run.
 class CodegenPipeline {
   public:
     /// @brief Which assembler to use for translating emitted .s files to .o files.
@@ -105,6 +118,7 @@ class CodegenPipeline {
     };
 
     /// @brief Construct a pipeline with the given options.
+    /// @param opts Configuration moved into the pipeline.
     explicit CodegenPipeline(Options opts);
 
     /// @brief Run the pipeline reading the IL module from Options::input_il_path.
@@ -115,6 +129,7 @@ class CodegenPipeline {
     /// @param module The IL module to compile (consumed).
     /// @param debugSourcePath Source path string embedded in debug info (optional).
     /// @param moduleAlreadyVerified Skip IL verification when true.
+    /// @return Captured output and a zero exit code on success.
     [[nodiscard]] PipelineResult runWithModule(il::core::Module module,
                                                std::string debugSourcePath = {},
                                                bool moduleAlreadyVerified = false);

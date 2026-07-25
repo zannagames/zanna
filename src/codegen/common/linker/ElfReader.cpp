@@ -5,15 +5,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/ElfReader.cpp
+// File: src/codegen/common/linker/ElfReader.cpp
 // Purpose: ELF 64-bit relocatable object file reader.
 // Key invariants:
 //   - Handles both x86_64 (EM_X86_64=62) and AArch64 (EM_AARCH64=183)
-//   - Uses explicit addend from .rela sections (not .rel)
+//   - Uses explicit addends from .rela and decodes implicit addends from .rel
 //   - Section name from .shstrtab, symbol names from .strtab
 // Links: codegen/common/linker/ObjFileReader.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ElfReader.cpp
+ * @brief Implements bounded ELF64 relocatable-object parsing for x86-64 and AArch64.
+ *
+ * The reader handles extended section indices, multiple symbol tables, COMDAT
+ * groups, `SHT_NOBITS`, common/absolute/weak symbols, and both RELA and REL
+ * relocation encodings without depending on host ELF headers.
+ */
 
 #include "codegen/common/linker/ObjFileReader.hpp"
 #include "codegen/common/linker/RelocConstants.hpp"
@@ -61,6 +70,7 @@ static constexpr uint16_t SHN_XINDEX = 0xFFFF;
 static constexpr uint16_t SHN_ABS = 0xFFF1;
 static constexpr uint16_t SHN_COMMON = 0xFFF2;
 
+/// @brief Host-independent in-memory spelling of an ELF64 file header.
 struct Elf64_Ehdr {
     uint8_t e_ident[16];
     uint16_t e_type;
@@ -78,6 +88,7 @@ struct Elf64_Ehdr {
     uint16_t e_shstrndx;
 };
 
+/// @brief Host-independent in-memory spelling of an ELF64 section header.
 struct Elf64_Shdr {
     uint32_t sh_name;
     uint32_t sh_type;
@@ -91,6 +102,7 @@ struct Elf64_Shdr {
     uint64_t sh_entsize;
 };
 
+/// @brief Host-independent in-memory spelling of an ELF64 symbol record.
 struct Elf64_Sym {
     uint32_t st_name;
     uint8_t st_info;
@@ -100,12 +112,14 @@ struct Elf64_Sym {
     uint64_t st_size;
 };
 
+/// @brief ELF64 relocation record carrying an explicit addend.
 struct Elf64_Rela {
     uint64_t r_offset;
     uint64_t r_info;
     int64_t r_addend;
 };
 
+/// @brief ELF64 relocation record whose addend remains at the patch site.
 struct Elf64_Rel {
     uint64_t r_offset;
     uint64_t r_info;
@@ -114,7 +128,12 @@ struct Elf64_Rel {
 } // namespace elf
 
 /// @brief Bounds-checked struct copy at @p offset within a byte buffer.
-/// @return nullopt when reading sizeof(T) bytes at @p offset would exceed @p size.
+/// @tparam T Trivially copyable record type.
+/// @param data Base of the input buffer.
+/// @param size Total input-buffer size.
+/// @param offset Byte offset at which the record begins.
+/// @return Copied record, or `std::nullopt` when `sizeof(T)` bytes would exceed
+///         @p size.
 template <typename T>
 static std::optional<T> readStruct(const uint8_t *data, size_t size, size_t offset) {
     if (offset > size || sizeof(T) > size - offset)
@@ -124,6 +143,9 @@ static std::optional<T> readStruct(const uint8_t *data, size_t size, size_t offs
     return value;
 }
 
+/// @brief Tests ELF's valid section-alignment domain.
+/// @param value Alignment field to validate.
+/// @return `true` when the value is zero or an exact power of two.
 static bool isPowerOfTwoOrZero(uint64_t value) {
     return value == 0 || (value & (value - 1)) == 0;
 }
@@ -132,6 +154,9 @@ static bool isPowerOfTwoOrZero(uint64_t value) {
 /// @details The ELF64 format can represent offsets and lengths that a 32-bit
 ///          host process cannot address. Reader code uses this helper before
 ///          passing format fields to size_t-based range checks.
+/// @param value ELF64 offset or size.
+/// @param out Receives the host-sized value when representable.
+/// @return `true` on successful narrowing.
 static bool checkedU64ToSize(uint64_t value, size_t &out) {
     if (value > static_cast<uint64_t>(std::numeric_limits<size_t>::max()))
         return false;
@@ -143,6 +168,10 @@ static bool checkedU64ToSize(uint64_t value, size_t &out) {
 /// @details Section, symbol, and relocation table spans are derived from
 ///          format counts. This helper prevents wraparound before checkedRange()
 ///          validates the resulting byte range.
+/// @param lhs Left factor.
+/// @param rhs Right factor.
+/// @param out Receives the product when representable.
+/// @return `true` on success; `false` on overflow.
 static bool checkedMulSize(size_t lhs, size_t rhs, size_t &out) {
     if (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs)
         return false;
@@ -151,6 +180,9 @@ static bool checkedMulSize(size_t lhs, size_t rhs, size_t &out) {
 }
 
 /// @brief Sign-extend the low @p bits of @p value to a 64-bit signed integer.
+/// @param value Unsigned bit pattern containing the field.
+/// @param bits Width of the signed field.
+/// @return Sign-extended field value.
 static int64_t signExtend(uint64_t value, unsigned bits) {
     const uint64_t signBit = uint64_t{1} << (bits - 1);
     const uint64_t mask = (uint64_t{1} << bits) - 1;
@@ -165,6 +197,12 @@ static int64_t signExtend(uint64_t value, unsigned bits) {
 ///          documents for each relocation type. ELF x86_64 uses a literal
 ///          32/64-bit slot read; AArch64 BR/B.cond/ADRP/ADD-imm decode their
 ///          immediate fields and rescale by their natural shift.
+/// @param machine ELF machine identifier.
+/// @param relocType Architecture-specific relocation type.
+/// @param sectionData Bytes of the relocation's target section.
+/// @param offset Patch-site offset within @p sectionData.
+/// @param out Receives the decoded signed addend.
+/// @return `true` when the type is supported and its complete operand is in bounds.
 static bool extractRelAddend(uint16_t machine,
                              uint32_t relocType,
                              const std::vector<uint8_t> &sectionData,
@@ -262,9 +300,13 @@ static bool extractRelAddend(uint16_t machine,
 }
 
 /// @brief Read a NUL-terminated string from an ELF string table (SHT_STRTAB).
-/// @details Returns an empty string when @p strTabOff + @p strTabSize would
-///          escape the buffer, when @p nameOff is past the end of the table,
-///          or when no NUL terminator is found before the table boundary.
+/// @param data Base of the object-file bytes.
+/// @param size Size of the object-file buffer.
+/// @param strTabOff Byte offset of the string table.
+/// @param strTabSize String-table size in bytes.
+/// @param nameOff Offset of the requested string within the table.
+/// @return The decoded string, or `std::nullopt` when the table/range is
+///         invalid or no terminator appears before its boundary.
 static std::optional<std::string> readStringOpt(
     const uint8_t *data, size_t size, size_t strTabOff, size_t strTabSize, uint32_t nameOff) {
     if (!checkedRange(strTabOff, strTabSize, size) || nameOff >= strTabSize)
@@ -280,6 +322,17 @@ static std::optional<std::string> readStringOpt(
     return std::string(reinterpret_cast<const char *>(begin), static_cast<const char *>(nul));
 }
 
+/// @brief Parses an ELF64 relocatable object into the neutral linker model.
+/// @details Validates header/table ranges and resource limits, materializes
+///          supported sections, translates every referenced symbol table, and
+///          attaches decoded RELA/REL relocations to their target sections.
+///          The destination may contain partial results after failure.
+/// @param data Pointer to complete object-file bytes.
+/// @param size Size of @p data.
+/// @param name Display name used in diagnostics and stored in @p obj.
+/// @param obj Destination object representation.
+/// @param err Stream that receives the first hard parse diagnostic.
+/// @return `true` when the object is supported and fully parsed.
 bool readElfObj(
     const uint8_t *data, size_t size, const std::string &name, ObjFile &obj, std::ostream &err) {
     const auto ehdrValue = readStruct<elf::Elf64_Ehdr>(data, size, 0);
@@ -369,11 +422,13 @@ bool readElfObj(
         }
     }
 
+    /// @brief Temporarily records an ELF COMDAT signature and member indices.
     struct ElfComdatGroup {
         std::string signature;
         std::vector<uint32_t> members;
     };
 
+    /// Reads one signature name through a specified symbol table and its string table.
     auto readSymbolNameFromTable = [&](uint32_t symtabIndex,
                                        uint32_t symIndex) -> std::optional<std::string> {
         if (symtabIndex >= shnum)
@@ -554,6 +609,7 @@ bool readElfObj(
     // symbol table they reference, so keeping only the first SHT_SYMTAB can
     // misresolve otherwise valid objects.
     std::vector<std::vector<uint32_t>> symMapsBySection(shnum);
+    /// Parses one symbol table and records its raw-to-neutral index mapping.
     auto parseSymtab = [&](size_t symShIndex) -> bool {
         const auto *symSh = &shdrs[symShIndex];
         if (symSh->sh_link >= shnum || shdrs[symSh->sh_link].sh_type != elf::SHT_STRTAB) {

@@ -31,6 +31,7 @@
 namespace zanna::common {
 namespace {
 
+/// Prefix reserving the reversible escaped-symbol namespace.
 constexpr std::string_view kReservedPrefix = "vpr_";
 
 /// @brief Return whether @p ch is an ASCII decimal digit.
@@ -60,7 +61,8 @@ constexpr std::string_view kReservedPrefix = "vpr_";
 /// @brief Return whether @p normalized is a plain symbol that can remain unescaped.
 /// @details Plain symbols are readable linker identifiers whose lowercase spelling
 ///          does not begin with the reserved escape prefix.
-/// @param normalized Already-lowercased ASCII candidate symbol.
+/// @param normalized Candidate after ASCII case folding; non-ASCII and other
+///                   unsupported bytes cause the check to fail.
 /// @return True when @p normalized can be emitted without the reserved encoding.
 [[nodiscard]] bool can_emit_plain(std::string_view normalized) noexcept {
     if (normalized.empty() || normalized.rfind(kReservedPrefix, 0) == 0) {
@@ -81,6 +83,7 @@ constexpr std::string_view kReservedPrefix = "vpr_";
 /// @brief Append a two-character lowercase hexadecimal byte escape.
 /// @param out Destination symbol buffer.
 /// @param ch Byte to encode after an @c _x escape introducer.
+/// @post Exactly two lowercase hexadecimal characters are appended to @p out.
 void append_hex_byte(std::string &out, unsigned char ch) {
     constexpr char digits[] = "0123456789abcdef";
     out.push_back(digits[(ch >> 4U) & 0x0FU]);
@@ -105,14 +108,7 @@ void append_hex_byte(std::string &out, unsigned char ch) {
 
 } // namespace
 
-/// @brief Convert a dotted qualified name into a safe linker symbol.
-/// @details The transformation lowercases ASCII letters. Plain safe identifiers
-///          are emitted directly, while qualified or unsafe names are encoded
-///          with the reserved @c vpr_ prefix.  Escapes are reversible:
-///          @c _d represents '.', @c _u represents '_', and @c _xHH represents
-///          any other byte.
-/// @param qualified Qualified name such as "A.B.Func" or "Klass.__ctor".
-/// @return Mangled ASCII symbol safe to pass to the native toolchain.
+/// @copydoc MangleLink()
 std::string MangleLink(std::string_view qualified) {
     std::string normalized;
     normalized.reserve(qualified.size());
@@ -142,12 +138,7 @@ std::string MangleLink(std::string_view qualified) {
     return out;
 }
 
-/// @brief Best-effort conversion from a mangled linker symbol to dotted form.
-/// @details Decodes the reserved @c vpr_ escape form.  Unprefixed symbols are
-///          returned unchanged, except for legacy @c '@'-prefixed symbols where
-///          underscores are still rendered as dots for diagnostics.
-/// @param symbol Mangled symbol such as "vpr_a_db" or "main".
-/// @return A dotted identifier such as "a.b" or "main".
+/// @copydoc DemangleLink()
 std::string DemangleLink(std::string_view symbol) {
     if (symbol.rfind(kReservedPrefix, 0) == 0) {
         std::string out;

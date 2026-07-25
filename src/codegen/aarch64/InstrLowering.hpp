@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/InstrLowering.hpp
+// File: src/codegen/aarch64/InstrLowering.hpp
 // Purpose: Opcode-specific lowering handlers for IL->MIR conversion.
 // Key invariants:
 //   - Each handler returns true on success and false on unrecoverable error.
@@ -14,10 +14,20 @@
 // Ownership/Lifetime:
 //   - Handlers are stateless free functions; mutable state is accessed
 //     solely through the LoweringContext reference.
-// Links: codegen/aarch64/InstrLowering.cpp,
-//        codegen/aarch64/LoweringContext.hpp
+// Links: src/codegen/aarch64/InstrLowering.cpp,
+//        src/codegen/aarch64/LoweringContext.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares AArch64 IL value materialization and opcode lowering helpers.
+ *
+ * Handlers append machine IR to a caller-provided block and share allocation,
+ * frame, type, and literal metadata through `LoweringContext`. A `false`
+ * result means the input shape could not be lowered safely and no caller
+ * should continue with assumptions about output operands.
+ */
 
 #pragma once
 
@@ -44,7 +54,8 @@ namespace zanna::codegen::aarch64 {
 /// @param nextVRegId Counter for vreg ID allocation
 /// @param outVReg [out] The vreg ID assigned to this value
 /// @param outCls [out] The register class of the vreg
-/// @returns true if successful, false if the value couldn't be materialized
+/// @param stringLiteralByteLengths Optional literal-label byte-length metadata.
+/// @return true if successful, false if the value couldn't be materialized
 bool materializeValueToVReg(
     const il::core::Value &v,
     const il::core::BasicBlock &bb,
@@ -131,7 +142,8 @@ uint16_t emitConstStrGlobalToVReg(
 /// @param tempVReg Map from temp ID to vreg ID
 /// @param tempRegClass Map from temp ID to register class (GPR/FPR)
 /// @param nextVRegId Counter for vreg ID allocation
-/// @returns true if successful
+/// @param knownVarArgNamedArgCounts Optional fixed-prefix arities for variadic callees.
+/// @return true if successful
 bool lowerCallWithArgs(
     const il::core::Instr &callI,
     const il::core::BasicBlock &bb,

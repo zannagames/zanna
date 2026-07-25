@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/LoweringPass.hpp
+// File: src/codegen/aarch64/passes/LoweringPass.hpp
 // Purpose: Declare the IL-to-MIR lowering pass for the AArch64 codegen pipeline.
 // Key invariants: Populates AArch64Module::mir from AArch64Module::ilMod.
 //                 ilMod and ti must be non-null before this pass runs.
@@ -18,16 +18,25 @@
 
 #include "codegen/aarch64/passes/PassManager.hpp"
 
+/**
+ * @file
+ * @brief Declares module-wide AArch64 IL-to-MIR lowering.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
-/// @brief Lower all IL functions in AArch64Module::ilMod to MIR, storing
-///        results in AArch64Module::mir.
+/**
+ * @brief Lowers an IL module into independently generated AArch64 MIR functions.
+ */
 class LoweringPass final : public Pass {
   public:
-    /// @brief Run the lowering pass for all functions in the IL module.
-    /// @param module Module state; ilMod and ti must be non-null.
-    /// @param diags  Diagnostic sink for lowering errors.
-    /// @return True if all functions were lowered successfully.
+    /**
+     * @brief Rebuilds module MIR, literal metadata, and sanitized local labels.
+     * @param[in,out] module Module whose prior codegen products are cleared and
+     *        whose IL functions are lowered.
+     * @param[in,out] diags Sink receiving missing-input or lowering failures.
+     * @return `true` when every function lowers successfully.
+     */
     bool run(AArch64Module &module, Diagnostics &diags) override;
 };
 

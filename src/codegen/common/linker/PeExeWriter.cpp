@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/PeExeWriter.cpp
+// File: src/codegen/common/linker/PeExeWriter.cpp
 // Purpose: Write PE32+ executables from a linked layout.
 // Key invariants:
 //   - Existing section RVAs from SectionMerger are preserved
@@ -17,6 +17,11 @@
 // Links: codegen/common/linker/PeExeWriter.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file PeExeWriter.cpp
+ * @brief Implements PE32+ headers, sections, imports, TLS, resources, and startup shims.
+ */
 
 #include "codegen/common/linker/PeExeWriter.hpp"
 
@@ -56,6 +61,7 @@ static constexpr uint16_t kImageRelBasedAbsolute = 0;
 static constexpr uint16_t kImageRelBasedDir64 = 10;
 static constexpr uint32_t kRelocSectionChars = 0x42000040; // INIT_DATA | DISCARDABLE | READ
 
+/// @brief Owns synthesized import tables and their PE data-directory ranges.
 struct ImportLayout {
     std::vector<uint8_t> data;
     uint32_t importDirRva = 0;
@@ -81,29 +87,34 @@ void appendFixedNameField(std::vector<uint8_t> &file, std::string_view name, siz
     }
 }
 
+/// @brief Owns a synthesized PE TLS directory and callback terminator.
 struct TlsLayout {
     std::vector<uint8_t> data;
     uint32_t directoryRva = 0;
     uint32_t directorySize = 0;
 };
 
+/// @brief Describes the published exception-function table range.
 struct ExceptionLayout {
     uint32_t directoryRva = 0;
     uint32_t directorySize = 0;
 };
 
+/// @brief Owns base-relocation blocks and their data-directory range.
 struct BaseRelocLayout {
     std::vector<uint8_t> data;
     uint32_t directoryRva = 0;
     uint32_t directorySize = 0;
 };
 
+/// @brief Owns the default manifest resource tree and directory range.
 struct ResourceLayout {
     std::vector<uint8_t> data;
     uint32_t directoryRva = 0;
     uint32_t directorySize = 0;
 };
 
+/// @brief Planned PE section header plus a non-owning data-buffer reference.
 struct PeSection {
     std::string name;
     const std::vector<uint8_t> *data = nullptr;
@@ -123,12 +134,16 @@ using zanna::codegen::objfile::putLE32;
 using zanna::codegen::objfile::putLE64;
 
 /// @brief Append a little-endian uint16 to @p buf.
+/// @param buf Destination byte buffer.
+/// @param val Value to append.
 void appendLE16(std::vector<uint8_t> &buf, uint16_t val) {
     buf.push_back(static_cast<uint8_t>(val & 0xFF));
     buf.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
 }
 
 /// @brief Append a little-endian uint32 to @p buf.
+/// @param buf Destination byte buffer.
+/// @param val Value to append.
 void appendLE32(std::vector<uint8_t> &buf, uint32_t val) {
     buf.push_back(static_cast<uint8_t>(val & 0xFF));
     buf.push_back(static_cast<uint8_t>((val >> 8) & 0xFF));
@@ -140,6 +155,11 @@ void appendLE32(std::vector<uint8_t> &buf, uint32_t val) {
 /// @details Picks code/data/rwdata/discardable bits based on the section's
 ///          allocate/exec/write/zerofill attributes. Discardable applies to
 ///          non-allocatable sections (.debug_*) so the loader can skip them.
+/// @param executable Whether code execution is allowed.
+/// @param writable Whether writes are allowed.
+/// @param alloc Whether the section belongs in the memory image.
+/// @param zeroFill Whether storage is uninitialized fileless data.
+/// @return Combined `IMAGE_SCN_*` characteristics.
 uint32_t sectionChars(bool executable, bool writable, bool alloc, bool zeroFill = false) {
     if (!alloc)
         return 0x42000040; // CNT_INITIALIZED_DATA | MEM_DISCARDABLE | MEM_READ
@@ -162,7 +182,9 @@ uint32_t sectionChars(bool executable, bool writable, bool alloc, bool zeroFill 
 /// @param imports          DLL import groups to serialise.
 /// @param sectionRva       RVA at which the resulting buffer will be placed.
 /// @param externalSlotRvas Optional symbol→RVA map for IAT slot reuse.
-/// @return true on success; @p result receives the blob plus IDT/IAT range descriptors.
+/// @param result Receives the blob, IDT/IAT ranges, and external-slot initializers.
+/// @param err Diagnostic output stream.
+/// @return `true` on success.
 bool buildImportTables(const std::vector<DllImport> &imports,
                        uint32_t sectionRva,
                        const std::unordered_map<std::string, uint32_t> &externalSlotRvas,
@@ -172,6 +194,7 @@ bool buildImportTables(const std::vector<DllImport> &imports,
     if (imports.empty())
         return true;
 
+    /// Narrows an import-table value with a contextual diagnostic.
     auto checkedLocalU32 = [&](uint64_t value, const char *what, uint32_t &out) -> bool {
         if (value > std::numeric_limits<uint32_t>::max()) {
             err << "error: PE import table " << what << " exceeds 32-bit file format limit\n";
@@ -180,6 +203,7 @@ bool buildImportTables(const std::vector<DllImport> &imports,
         out = static_cast<uint32_t>(value);
         return true;
     };
+    /// Adds import-table offsets with overflow checking.
     auto checkedAddLocal = [&](uint32_t lhs, uint32_t rhs, const char *what, uint32_t &out) {
         if (lhs > std::numeric_limits<uint32_t>::max() - rhs) {
             err << "error: PE import table " << what << " overflows 32-bit file format limit\n";
@@ -188,6 +212,7 @@ bool buildImportTables(const std::vector<DllImport> &imports,
         out = lhs + rhs;
         return true;
     };
+    /// Aligns an import-table offset and converts exceptions to diagnostics.
     auto checkedAlignLocal =
         [&](uint32_t value, uint32_t alignment, const char *what, uint32_t &out) {
             size_t aligned = 0;
@@ -200,6 +225,7 @@ bool buildImportTables(const std::vector<DllImport> &imports,
             }
             return checkedLocalU32(aligned, what, out);
         };
+    /// Computes bytes for @p count entries plus a terminating record.
     auto checkedCountBytes = [&](size_t count, uint32_t elemSize, const char *what, uint32_t &out) {
         const uint64_t count64 = static_cast<uint64_t>(count);
         if (count64 > (std::numeric_limits<uint64_t>::max() / elemSize) - 1) {
@@ -389,15 +415,26 @@ bool buildImportTables(const std::vector<DllImport> &imports,
 }
 
 /// @brief Test whether @p value fits in a signed 32-bit field (PE PC-rel reach).
+/// @param value Signed displacement.
+/// @return `true` when representable as `int32_t`.
 bool fitsInt32(int64_t value) {
     return value >= static_cast<int64_t>(INT32_MIN) && value <= static_cast<int64_t>(INT32_MAX);
 }
 
 /// @brief Test whether @p value starts with the C-string @p prefix.
+/// @param value String to inspect.
+/// @param prefix NUL-terminated prefix.
+/// @return `true` on a prefix match.
 bool hasPrefix(const std::string &value, const char *prefix) {
     return value.rfind(prefix, 0) == 0;
 }
 
+/// @brief Narrows a PE format field with diagnostics.
+/// @param value Value to narrow.
+/// @param what Field description.
+/// @param err Diagnostic output stream.
+/// @param out Receives the value.
+/// @return `true` when representable.
 bool checkedU32(uint64_t value, const char *what, std::ostream &err, uint32_t &out) {
     if (value > std::numeric_limits<uint32_t>::max()) {
         err << "error: PE " << what << " exceeds 32-bit file format limit\n";
@@ -407,6 +444,12 @@ bool checkedU32(uint64_t value, const char *what, std::ostream &err, uint32_t &o
     return true;
 }
 
+/// @brief Narrows a host size to a PE 32-bit field.
+/// @param value Host size.
+/// @param what Field description.
+/// @param err Diagnostic output stream.
+/// @param out Receives the value.
+/// @return `true` when representable.
 bool checkedSizeU32(size_t value, const char *what, std::ostream &err, uint32_t &out) {
     if (value > std::numeric_limits<uint32_t>::max()) {
         err << "error: PE " << what << " exceeds 32-bit file format limit\n";
@@ -416,6 +459,13 @@ bool checkedSizeU32(size_t value, const char *what, std::ostream &err, uint32_t 
     return true;
 }
 
+/// @brief Adds two PE 32-bit offsets with diagnostics.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param what Operation description.
+/// @param err Diagnostic output stream.
+/// @param out Receives the sum.
+/// @return `true` on success.
 bool checkedAddU32(uint32_t lhs, uint32_t rhs, const char *what, std::ostream &err, uint32_t &out) {
     if (lhs > std::numeric_limits<uint32_t>::max() - rhs) {
         err << "error: PE " << what << " overflows 32-bit file format limit\n";
@@ -425,6 +475,13 @@ bool checkedAddU32(uint32_t lhs, uint32_t rhs, const char *what, std::ostream &e
     return true;
 }
 
+/// @brief Converts an absolute virtual address to a checked 32-bit RVA.
+/// @param imageBase PE image base.
+/// @param virtualAddr Absolute address.
+/// @param what Section description.
+/// @param err Diagnostic output stream.
+/// @param out Receives the RVA.
+/// @return `true` when the address is at/above the base and within range.
 bool checkedRva(uint64_t imageBase,
                 uint64_t virtualAddr,
                 const std::string &what,
@@ -441,11 +498,20 @@ bool checkedRva(uint64_t imageBase,
 /// @details SectionMerger normally seeds LinkLayout::imageBase before assigning
 ///          virtual addresses. Hand-built tests may leave it zero; in that case
 ///          the writer keeps the historical Windows default.
+/// @param layout Link layout.
+/// @return Explicit layout base or the conventional Windows default.
 uint64_t peImageBaseForLayout(const LinkLayout &layout) {
     return layout.imageBase != 0 ? layout.imageBase
                                  : defaultImageBaseForPlatform(LinkPlatform::Windows);
 }
 
+/// @brief Aligns a value and narrows it to a PE 32-bit field.
+/// @param value Value to align.
+/// @param alignment Required alignment.
+/// @param what Field description.
+/// @param err Diagnostic output stream.
+/// @param out Receives the aligned value.
+/// @return `true` when valid and representable.
 bool checkedAlignUpU32(
     uint64_t value, uint32_t alignment, const char *what, std::ostream &err, uint32_t &out) {
     if (value > std::numeric_limits<size_t>::max()) {
@@ -465,6 +531,8 @@ bool checkedAlignUpU32(
 /// @brief Encode a power-of-two alignment as the COFF section-alignment bit field.
 /// @details COFF stores alignment in bits 20-23 of Characteristics. A value of
 ///          1 means 1-byte (no alignment), 2 means 2-byte, etc. up to 8192.
+/// @param alignment Required byte alignment.
+/// @return Encoded characteristics bits.
 uint32_t encodeCoffAlignment(uint32_t alignment) {
     if (alignment <= 1)
         return 0;
@@ -480,6 +548,8 @@ uint32_t encodeCoffAlignment(uint32_t alignment) {
 
 /// @brief Detect whether the layout contains any TLS-section data.
 /// @details Used to gate emission of the IMAGE_DIRECTORY_ENTRY_TLS data directory.
+/// @param layout Final merged layout.
+/// @return `true` for at least one nonempty allocated TLS section.
 bool layoutHasTls(const LinkLayout &layout) {
     for (const auto &sec : layout.sections) {
         if (sec.alloc && sec.tls && !sec.data.empty())
@@ -494,6 +564,12 @@ bool layoutHasTls(const LinkLayout &layout) {
 ///          with main's return value as the exit code. Must reach both
 ///          @p entryAddr and @p exitProcessIatRva via 32-bit PC-relative
 ///          displacement, which the caller checks with @c fitsInt32.
+/// @param imageBase PE image base.
+/// @param entryAddr Absolute address of `main`.
+/// @param stubRva RVA assigned to the shim.
+/// @param exitProcessIatRva RVA of the `ExitProcess` IAT slot.
+/// @param err Diagnostic output stream.
+/// @return Encoded shim, or an empty vector when either target is unreachable.
 std::vector<uint8_t> buildX64StartupStub(uint64_t imageBase,
                                          uint64_t entryAddr,
                                          uint32_t stubRva,
@@ -539,6 +615,13 @@ std::vector<uint8_t> buildX64StartupStub(uint64_t imageBase,
     return stub;
 }
 
+/// @brief Synthesizes an AArch64 entry shim that calls `main` then branches to ExitProcess.
+/// @param imageBase PE image base.
+/// @param entryAddr Absolute address of `main`.
+/// @param stubRva RVA assigned to the shim.
+/// @param exitProcessIatRva RVA of the `ExitProcess` IAT slot.
+/// @param err Diagnostic output stream.
+/// @return Encoded shim, or an empty vector when an ADRP target is unreachable.
 std::vector<uint8_t> buildAArch64StartupStub(uint64_t imageBase,
                                              uint64_t entryAddr,
                                              uint32_t stubRva,
@@ -554,6 +637,7 @@ std::vector<uint8_t> buildAArch64StartupStub(uint64_t imageBase,
         0x00, 0x00, 0x20, 0xD4, // brk  #0
     };
 
+    /// Patches one ADRP to the page containing an absolute target.
     auto patchAdrp = [&](size_t offset, uint64_t targetVa) {
         const uint64_t pcVa = imageBase + stubRva + static_cast<uint32_t>(offset);
         const uint64_t pageTarget = targetVa & ~0xFFFULL;
@@ -573,6 +657,7 @@ std::vector<uint8_t> buildAArch64StartupStub(uint64_t imageBase,
         return true;
     };
 
+    /// Patches an ADD immediate with a target's low twelve address bits.
     auto patchAddLo12 = [&](size_t offset, uint64_t targetVa) {
         const uint32_t pageOff = static_cast<uint32_t>(targetVa & 0xFFFULL);
         uint32_t insn = 0x91000210U;
@@ -580,6 +665,7 @@ std::vector<uint8_t> buildAArch64StartupStub(uint64_t imageBase,
         putLE32(stub, offset, insn);
     };
 
+    /// Patches a 64-bit LDR scaled offset with a target's page offset.
     auto patchLdrLo12 = [&](size_t offset, uint64_t targetVa) {
         const uint32_t pageOff = static_cast<uint32_t>((targetVa & 0xFFFULL) >> 3);
         uint32_t insn = 0xF9400210U;
@@ -598,6 +684,9 @@ std::vector<uint8_t> buildAArch64StartupStub(uint64_t imageBase,
     return stub;
 }
 
+/// @brief Maps a neutral output section to its canonical short PE name.
+/// @param sec Output section and attributes.
+/// @return `.tls`, `.bss`, metadata name, `.text`, `.data`, or `.rdata`.
 std::string sectionNameFor(const OutputSection &sec) {
     if (sec.tls)
         return ".tls";
@@ -614,6 +703,12 @@ std::string sectionNameFor(const OutputSection &sec) {
     return ".rdata";
 }
 
+/// @brief Builds the PE TLS directory spanning all allocated TLS sections.
+/// @param imageBase PE image base.
+/// @param layout Final sections and `_tls_index` symbol.
+/// @param sectionRva RVA where the synthesized directory will be placed.
+/// @param err Diagnostic output stream.
+/// @return TLS bytes/range, or an empty layout when absent or invalid.
 TlsLayout buildTlsDirectory(uint64_t imageBase,
                             const LinkLayout &layout,
                             uint32_t sectionRva,
@@ -674,6 +769,10 @@ TlsLayout buildTlsDirectory(uint64_t imageBase,
     return tls;
 }
 
+/// @brief Locates and sizes the `.pdata` exception-function table.
+/// @param sections Planned PE sections.
+/// @param arch Target architecture controlling record width.
+/// @return Directory range trimmed to a whole number of runtime-function records.
 ExceptionLayout findExceptionDirectory(const std::vector<PeSection> &sections, LinkArch arch) {
     // RUNTIME_FUNCTION is 12 bytes on x64 (begin/end/unwind RVAs) and 8 bytes on
     // ARM64 (function RVA + xdata/packed word). RtlLookupFunctionEntry divides the
@@ -692,6 +791,10 @@ ExceptionLayout findExceptionDirectory(const std::vector<PeSection> &sections, L
     return result;
 }
 
+/// @brief Encodes page-grouped `IMAGE_REL_BASED_DIR64` relocation blocks.
+/// @param rvas Absolute-pointer RVAs, accepted in any order.
+/// @param forceNonEmpty Whether to emit an empty eight-byte block when no RVAs exist.
+/// @return Deduplicated, sorted base-relocation section bytes.
 std::vector<uint8_t> buildBaseRelocationBlocks(std::vector<uint32_t> rvas, bool forceNonEmpty) {
     std::sort(rvas.begin(), rvas.end());
     rvas.erase(std::unique(rvas.begin(), rvas.end()), rvas.end());
@@ -725,6 +828,9 @@ std::vector<uint8_t> buildBaseRelocationBlocks(std::vector<uint32_t> rvas, bool 
     return data;
 }
 
+/// @brief Builds a three-level resource tree containing an as-invoker UTF-8 manifest.
+/// @param sectionRva RVA assigned to the resource section.
+/// @return Resource bytes and data-directory range.
 ResourceLayout buildDefaultManifestResource(uint32_t sectionRva) {
     static constexpr uint16_t kRtManifest = 24;
     static constexpr uint16_t kExeManifestId = 1;
@@ -754,6 +860,7 @@ ResourceLayout buildDefaultManifestResource(uint32_t sectionRva) {
     const uint32_t totalSize = static_cast<uint32_t>(alignUp(manifestOff + manifestSize, 4));
 
     std::vector<uint8_t> data(totalSize, 0);
+    /// Initializes one resource-directory header with ID-only children.
     auto putDir = [&](uint32_t off, uint16_t idEntryCount) {
         putLE16(data, off + 12, 0);            // NumberOfNamedEntries
         putLE16(data, off + 14, idEntryCount); // NumberOfIdEntries
@@ -784,6 +891,7 @@ ResourceLayout buildDefaultManifestResource(uint32_t sectionRva) {
 
 } // namespace
 
+/// @copydoc writePeExe(const std::string &, const LinkLayout &, LinkArch, const std::vector<DllImport> &, const std::unordered_map<std::string, uint32_t> &, bool, std::size_t, std::ostream &)
 bool writePeExe(const std::string &path,
                 const LinkLayout &layout,
                 LinkArch arch,
@@ -876,6 +984,7 @@ bool writePeExe(const std::string &path,
             return false;
         generatedImportData = importLayout.data;
 
+        /// Writes a loader hint-name thunk into a preallocated external IAT slot.
         auto patchExternalIatSlot = [&](uint32_t slotRva, uint64_t thunkValue) -> bool {
             for (auto &sec : sections) {
                 if (!sec.alloc || !sec.writable || sec.data == nullptr)
@@ -1115,6 +1224,7 @@ bool writePeExe(const std::string &path,
             return false;
     }
 
+    /// Orders sections by RVA while retaining deterministic order for ties.
     std::stable_sort(sections.begin(), sections.end(), [](const PeSection &a, const PeSection &b) {
         if (a.alloc != b.alloc)
             return a.alloc > b.alloc;

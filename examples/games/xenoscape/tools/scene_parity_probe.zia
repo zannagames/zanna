@@ -1,0 +1,232 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape/tools/scene_parity_probe.zia
+// Purpose: Prove every exported region scene reproduces the code-built level
+//          exactly: tiles, behavior, spawns, interactions, and anchors.
+// Key invariants:
+//   - Every cell of every region compares tile-for-tile.
+//   - Spawn, pickup, and interaction lists compare record-for-record in order.
+//   - Built-tilemap collision, tile properties, and lava animation resolve
+//     identically between the code registry and the scene sections.
+// Ownership/Lifetime:
+//   - The probe owns one Level and one SceneDocument per region pass.
+// Links: tools/export_scenes.zia, ../level.zia,
+//        ../../xenoscape-scenes/level.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_parity_probe;
+
+bind "../config";
+bind "../level";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Terminal = Zanna.Terminal;
+
+final SCENES_ROOT: String = "../xenoscape-scenes/assets/scenes";
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func ScenePath(num: Integer) -> String {
+    var suffix = "" + num;
+    if num < 10 { suffix = "0" + num; }
+    return SCENES_ROOT + "/region-" + suffix + ".scene";
+}
+
+func CheckRegion(num: Integer) -> Boolean {
+    var region = new Level();
+    region.loadLevel(num);
+    var loaded = SceneDocument.LoadResult(ScenePath(num));
+    if loaded.IsOk == false {
+        fail("region " + num + " scene did not load");
+        return false;
+    }
+    var scene = loaded.Unwrap() as SceneDocument;
+    if scene.Width != region.levelWidth
+       or scene.Height != region.levelHeight
+       or scene.TileWidth != TILE_SIZE
+       or scene.GetInt("theme", -1) != region.levelTheme
+       or scene.GetInt("playerStartX", -1) != region.playerStartX
+       or scene.GetInt("playerStartY", -1) != region.playerStartY {
+        fail("region " + num + " dimensions or properties differ");
+        return false;
+    }
+
+    var y = 0;
+    while y < region.levelHeight {
+        var x = 0;
+        while x < region.levelWidth {
+            if scene.GetTile(0, x, y) != region.getTile(x, y) {
+                fail("region " + num + " tile " + x + "," + y + " differs");
+                return false;
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+
+    // The scene-built tilemap must reproduce the code registry exactly.
+    var built = scene.BuildTilemap();
+    var tileId = 1;
+    while tileId <= TILE_GRAPPLE_ANCHOR {
+        if built.GetCollision(tileId) != region.tilemap.GetCollision(tileId) {
+            fail("region " + num + " collision differs for tile " + tileId);
+            return false;
+        }
+        var keys = ["hazard", "surface", "quicksand", "conveyor", "steam",
+                    "save", "lore", "crumble", "grapple"];
+        var keyIndex = 0;
+        while keyIndex < keys.count() {
+            var key = keys.get(keyIndex);
+            if built.GetTileProperty(tileId, key, -424242)
+               != region.tilemap.GetTileProperty(tileId, key, -424242) {
+                fail("region " + num + " property " + key
+                     + " differs for tile " + tileId);
+                return false;
+            }
+            keyIndex = keyIndex + 1;
+        }
+        tileId = tileId + 1;
+    }
+    built.UpdateAnims(LAVA_ANIM_MS + LAVA_ANIM_MS / 2);
+    region.tilemap.UpdateAnims(LAVA_ANIM_MS + LAVA_ANIM_MS / 2);
+    if built.ResolveAnimTile(TILE_LAVA)
+       != region.tilemap.ResolveAnimTile(TILE_LAVA) {
+        fail("region " + num + " lava animation resolves differently");
+        return false;
+    }
+
+    // Spawn, pickup, and interaction lists compare in exact record order.
+    var enemySeen = 0;
+    var pickupSeen = 0;
+    var interactionSeen = 0;
+    var objectIndex = 0;
+    while objectIndex < scene.ObjectCount() {
+        var kind = scene.ObjectType(objectIndex);
+        if kind == "enemy" {
+            if enemySeen >= region.enemyTypes.count()
+               or scene.ObjectX(objectIndex)
+                  != region.enemyX.get(enemySeen)
+               or scene.ObjectY(objectIndex)
+                  != region.enemyY.get(enemySeen)
+               or scene.ObjectGetInt(objectIndex, "enemy.type", -1)
+                  != region.enemyTypes.get(enemySeen) {
+                fail("region " + num + " enemy " + enemySeen + " differs");
+                return false;
+            }
+            enemySeen = enemySeen + 1;
+        } else if kind == "pickup" {
+            if pickupSeen >= region.pickupTypes.count()
+               or scene.ObjectX(objectIndex)
+                  != region.pickupX.get(pickupSeen)
+               or scene.ObjectY(objectIndex)
+                  != region.pickupY.get(pickupSeen)
+               or scene.ObjectGetInt(objectIndex, "pickup.type", -1)
+                  != region.pickupTypes.get(pickupSeen) {
+                fail("region " + num + " pickup " + pickupSeen + " differs");
+                return false;
+            }
+            pickupSeen = pickupSeen + 1;
+        } else if kind == "interaction" {
+            if interactionSeen >= region.interactionTypes.count()
+               or scene.ObjectX(objectIndex)
+                  != region.interactionCols.get(interactionSeen) * TILE_SIZE
+               or scene.ObjectY(objectIndex)
+                  != region.interactionRows.get(interactionSeen) * TILE_SIZE
+               or scene.ObjectGetInt(objectIndex, "interaction.type", -1)
+                  != region.interactionTypes.get(interactionSeen)
+               or scene.ObjectGetInt(objectIndex, "interaction.id", -1)
+                  != region.interactionIds.get(interactionSeen)
+               or scene.ObjectGetInt(objectIndex, "interaction.channel",
+                                     -999999)
+                  != region.interactionChannels.get(interactionSeen)
+               or scene.ObjectGetInt(objectIndex, "interaction.payload",
+                                     -999999)
+                  != region.interactionPayloads.get(interactionSeen) {
+                fail("region " + num + " interaction " + interactionSeen
+                     + " differs");
+                return false;
+            }
+            interactionSeen = interactionSeen + 1;
+        } else if kind == "boss" {
+            if region.hasBoss == false
+               or scene.ObjectX(objectIndex) != region.bossX
+               or scene.ObjectY(objectIndex) != region.bossY
+               or scene.ObjectGetInt(objectIndex, "boss.type", -1)
+                  != region.bossType {
+                fail("region " + num + " boss differs");
+                return false;
+            }
+        } else if kind == "checkpoint" {
+            if region.hasCheckpoint == false
+               or scene.ObjectX(objectIndex) != region.checkpointX
+               or scene.ObjectY(objectIndex) != region.checkpointY {
+                fail("region " + num + " checkpoint differs");
+                return false;
+            }
+        }
+        objectIndex = objectIndex + 1;
+    }
+    if enemySeen != region.enemyTypes.count()
+       or pickupSeen != region.pickupTypes.count()
+       or interactionSeen != region.interactionTypes.count() {
+        fail("region " + num + " spawn counts differ: enemies "
+             + enemySeen + "/" + region.enemyTypes.count());
+        return false;
+    }
+
+    // Structural anchors round-trip through marker objects.
+    if MarkerCol(scene, "landmark") != region.landmarkCol
+       or MarkerCol(scene, "tutorial") != region.tutorialStartCol
+       or MarkerCol(scene, "mastery") != region.masteryStartCol
+       or MarkerCol(scene, "setpiece") != region.setPieceCol
+       or SecretCount(scene) != region.secretCols.count() {
+        fail("region " + num + " structural anchors differ");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Return one anchor marker's column, or -1 when absent.
+func MarkerCol(scene: SceneDocument, kind: String) -> Integer {
+    var index = 0;
+    while index < scene.ObjectCount() {
+        if scene.ObjectType(index) == "marker"
+           and scene.ObjectGetStr(index, "marker.kind", "") == kind {
+            return scene.ObjectX(index) / TILE_SIZE;
+        }
+        index = index + 1;
+    }
+    return -1;
+}
+
+/// @brief Count exported secret markers.
+func SecretCount(scene: SceneDocument) -> Integer {
+    var count = 0;
+    var index = 0;
+    while index < scene.ObjectCount() {
+        if scene.ObjectType(index) == "marker"
+           and scene.ObjectGetStr(index, "marker.kind", "") == "secret" {
+            count = count + 1;
+        }
+        index = index + 1;
+    }
+    return count;
+}
+
+func main() {
+    var num = 1;
+    while num <= 10 {
+        if CheckRegion(num) == false { return; }
+        Terminal.Say("Region " + num + " matches exactly.");
+        num = num + 1;
+    }
+    Terminal.Say("RESULT: ok");
+}

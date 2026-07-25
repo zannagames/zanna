@@ -5,12 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/ra/RegClassify.hpp
+// File: src/codegen/aarch64/ra/RegClassify.hpp
 // Purpose: Register classification predicates for the AArch64 register
 //          allocator (allocatable GPR test, argument register test).
 //
 // Key invariants:
-//   - isAllocatableGPR excludes X29, X30, SP, X18, X9, and X16 (scratch).
+//   - isAllocatableGPR excludes X29, X30, SP, X18, and X9/X16/X17 (scratch).
 //   - isArgRegister checks both integer and FP argument orders.
 //
 // Ownership/Lifetime:
@@ -25,13 +25,17 @@
 
 #include "codegen/aarch64/TargetAArch64.hpp"
 
+/// @file
+/// @brief Defines physical-register eligibility and ABI argument queries.
+
 namespace zanna::codegen::aarch64::ra {
 
-/// @brief Check if a GPR is available for register allocation.
-/// @param r The physical register to check.
-/// @return True if the register can be allocated to virtual registers.
-/// @details Excludes frame pointer (X29), link register (X30), stack pointer (SP),
-///          platform reserved (X18), and the global scratch registers (X9/X16/X17).
+/// @brief Test whether a physical GPR may hold an allocated virtual register.
+/// @details Excludes the frame pointer, link register, stack pointer,
+///          platform-reserved X18, and global scratch registers X9/X16/X17.
+///          FPRs and invalid enum values also return false.
+/// @param r Physical register to classify.
+/// @return `true` only for an unreserved GPR.
 inline bool isAllocatableGPR(PhysReg r) {
     switch (r) {
         case PhysReg::X29:
@@ -48,10 +52,10 @@ inline bool isAllocatableGPR(PhysReg r) {
     }
 }
 
-/// @brief Check if a register is used for argument passing.
-/// @param r The physical register to check.
-/// @param ti Target information containing the ABI's argument register lists.
-/// @return True if the register is in the integer or floating-point argument order.
+/// @brief Test whether a physical register belongs to either ABI argument sequence.
+/// @param r Physical register to query.
+/// @param ti Target description containing ordered integer and FP argument sets.
+/// @return `true` when @p r occurs in `intArgOrder` or `f64ArgOrder`.
 inline bool isArgRegister(PhysReg r, const TargetInfo &ti) {
     for (auto ar : ti.intArgOrder)
         if (ar == r)

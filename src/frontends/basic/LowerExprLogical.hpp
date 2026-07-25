@@ -26,7 +26,7 @@ namespace il::frontends::basic {
 ///          eager forms emit bitwise operations on BASIC's logical word type.
 struct LogicalExprLowering {
     /// @brief Bind the logical lowering helper to a lowerer instance.
-    /// @param lowerer Active lowering engine used to emit IL.
+    /// @param lowerer Borrowed lowering engine; it must outlive this helper.
     explicit LogicalExprLowering(Lowerer &lowerer) noexcept;
 
     /// @brief Lower a logical binary expression into IL.
@@ -39,6 +39,7 @@ struct LogicalExprLowering {
 
   private:
     /// @brief Borrowed lowering engine used for emission and diagnostics.
+    /// @invariant Non-null throughout the helper's lifetime.
     Lowerer *lowerer_{nullptr};
 };
 

@@ -14,9 +14,24 @@
 //                     for the duration of the process. Callers must ensure any
 //                     itable slot arrays passed to bind are live for as long as
 //                     the class remains loaded.
-// Links: docs/oop.md, docs/grammar.md, docs/CHANGELOG.md
+// Links: docs/specs/object-layout.md, src/runtime/oop/rt_oop.h,
+//        src/runtime/oop/rt_type_registry.c
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file include/zanna/runtime/rt_oop.h
+ * @brief Declares the public C ABI for interface registration and runtime casts.
+ *
+ * @details
+ * This installed façade exposes the subset of the object runtime needed to
+ * register interface metadata, associate class/interface method tables, query
+ * dynamic class relationships, and perform null-on-failure casts.
+ *
+ * Type and interface identifiers are meaningful only within the active runtime
+ * registry. Objects passed to query functions must obey the Zanna object-layout
+ * ABI, with a registered vtable pointer stored at payload offset zero.
+ */
 
 #pragma once
 
@@ -27,63 +42,103 @@ extern "C"
 {
 #endif
 
-    /// @brief Interface metadata used during registration.
-    /// @details Describes a single interface so the runtime can allocate
-    ///          dispatch slots and validate binding requests.
+    /**
+     * @brief Describes one interface to the runtime type registry.
+     *
+     * The descriptor itself is inspected synchronously and may be transient.
+     * The registry retains the `qname` pointer rather than copying its bytes, so
+     * that character storage must remain valid for the registry lifetime.
+     */
     typedef struct rt_iface_reg
     {
-        int iface_id;      ///< Process-local stable interface id.
-        const char *qname; ///< Fully-qualified interface name (e.g., "Ns.IFace").
-        int slot_count;    ///< Number of method slots in the interface.
+        int iface_id;      ///< Non-negative, process-local interface identifier.
+        const char *qname; ///< Persistent fully-qualified name, such as `Ns.IFace`.
+        int slot_count;    ///< Non-negative number of itable method slots.
     } rt_iface_reg;
 
-    /// @brief Register interface metadata with the runtime.
-    /// @details Establishes a stable interface identity and slot count for binding.
-    ///          Inserts or verifies an entry keyed by @c iface_id and @c qname.
-    ///          Re-registering an already known interface is idempotent.
-    /// @param iface Pointer to interface registration descriptor (must not be NULL).
+    /**
+     * @brief Register or verify an interface descriptor.
+     *
+     * Registration is idempotent when an existing identifier has the same name
+     * and slot count. Conflicting duplicate identifiers, negative metadata, and
+     * registration after the registry is sealed raise a runtime trap.
+     *
+     * @param iface Borrowed descriptor. A null pointer is ignored.
+     *
+     * @pre `iface->qname` remains valid for the lifetime of the active registry
+     *      when a new entry is installed.
+     */
     void rt_register_interface(const rt_iface_reg *iface);
 
-    /// @brief Bind a class to an interface implementation.
-    /// @details Associates @p itable_slots (size must equal registered @c slot_count)
-    ///          with the (type_id, iface_id) pair in the runtime registry, enabling
-    ///          interface dispatch to resolve to the class's method table.
-    /// @param type_id  Process-local type identifier for the class.
-    /// @param iface_id Interface identifier previously registered via rt_register_interface.
-    /// @param itable_slots Array of function pointers implementing the interface slots;
-    ///                     must remain live for the lifetime of the class registration.
+    /**
+     * @brief Bind a registered class to an interface implementation table.
+     *
+     * A repeated binding is idempotent only when it supplies the same table
+     * pointer. Unknown class or interface identifiers, conflicting duplicate
+     * bindings, and mutation after registry sealing raise a runtime trap.
+     *
+     * @param type_id Process-local identifier of a registered class.
+     * @param iface_id Identifier previously passed to
+     *                 `rt_register_interface`.
+     * @param itable_slots Borrowed array containing the interface's declared
+     *                     number of function-pointer slots. Null is ignored.
+     *
+     * @pre `itable_slots` remains valid for the lifetime of the active registry.
+     */
     void rt_bind_interface(int type_id, int iface_id, void **itable_slots);
 
-    /// @brief Resolve the dynamic type id of @p obj.
-    /// @details Reads the vptr/type metadata embedded at object offset 0 to enable
-    ///          RTTI queries and interface dispatch at runtime.
-    /// @param obj Pointer to the object instance; may be NULL.
-    /// @return The process-local type id of the object, 0 for NULL instances,
-    ///         or -1 when the object's vtable is not registered.
+    /**
+     * @brief Resolve an object's dynamic class identifier from its vtable.
+     * @param obj Borrowed object payload with a vtable pointer at offset zero,
+     *            or null.
+     * @return The registered type identifier, zero for a null object, or
+     *         negative one when the object has no registered vtable.
+     */
     int rt_typeid_of(void *obj);
 
-    /// @brief Test whether @p type_id is the same as or derived from @p test_type_id.
-    /// @param type_id      Type identifier to test.
-    /// @param test_type_id Base type identifier to compare against.
-    /// @return Non-zero when @p type_id is-a @p test_type_id; 0 otherwise.
+    /**
+     * @brief Test a same-class or derived-class relationship.
+     * @param type_id Registered dynamic or candidate class identifier.
+     * @param test_type_id Registered target class identifier.
+     * @return Nonzero when `type_id` equals or transitively derives from
+     *         `test_type_id`; otherwise zero.
+     *
+     * @note Negative and unknown identifiers compare false.
+     */
     int rt_type_is_a(int type_id, int test_type_id);
 
-    /// @brief Test whether the given type implements an interface.
-    /// @param type_id  Type identifier to query.
-    /// @param iface_id Interface identifier to check.
-    /// @return Non-zero when @p type_id implements @p iface_id; 0 otherwise.
+    /**
+     * @brief Test whether a class or one of its ancestors binds an interface.
+     * @param type_id Registered class identifier to query.
+     * @param iface_id Registered interface identifier to locate.
+     * @return Nonzero when the class inheritance chain supplies a binding;
+     *         otherwise zero.
+     *
+     * @note Negative and unknown identifiers compare false.
+     */
     int rt_type_implements(int type_id, int iface_id);
 
-    /// @brief Safe downcast: returns @p obj when is-a holds, NULL on failure.
-    /// @param obj             Pointer to the object instance; may be NULL.
-    /// @param target_type_id  Desired target type identifier.
-    /// @return @p obj if its dynamic type is-a @p target_type_id; NULL otherwise.
+    /**
+     * @brief Perform a null-on-failure cast to a target class.
+     * @param obj Borrowed object payload, or null.
+     * @param target_type_id Desired registered class identifier.
+     * @return The unchanged borrowed `obj` pointer when its dynamic class is the
+     *         target or derives from it; otherwise null.
+     *
+     * @note A successful cast does not retain or otherwise change ownership.
+     */
     void *rt_cast_as(void *obj, int target_type_id);
 
-    /// @brief Safe interface cast: returns @p obj when interface binding exists, NULL on failure.
-    /// @param obj      Pointer to the object instance; may be NULL.
-    /// @param iface_id Desired interface identifier.
-    /// @return @p obj if its dynamic type implements @p iface_id; NULL otherwise.
+    /**
+     * @brief Perform a null-on-failure cast to an implemented interface.
+     * @param obj Borrowed object payload, or null.
+     * @param iface_id Desired registered interface identifier.
+     * @return The unchanged borrowed `obj` pointer when its dynamic class or an
+     *         ancestor binds the interface; otherwise null.
+     *
+     * @note A successful cast does not return an itable and does not change
+     *       ownership; dispatch resolves the table separately.
+     */
     void *rt_cast_as_iface(void *obj, int iface_id);
 
 #ifdef __cplusplus

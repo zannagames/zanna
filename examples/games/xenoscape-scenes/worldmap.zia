@@ -1,0 +1,305 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/worldmap.zia
+// Purpose: Renders discovered regions and gated routes from WorldGraph.
+// Key invariants:
+//   - Topology is read from world_graph.zia and is never duplicated in UI data.
+//   - Undiscovered nodes and their connecting routes remain visually hidden.
+// Ownership/Lifetime:
+//   - Game owns one WorldMap; it owns layout lists and one immutable WorldGraph.
+// Links: world_graph.zia, world_state.zia, game.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+//
+// TUTORIAL — A METROIDVANIA NEEDS A MAP
+// -------------------------------------
+// One of the reasons metroidvanias (Metroid, Hollow Knight,
+// Ori, this game) feel *rich* is the interconnected world —
+// areas loop back, shortcuts open later, and ability-gates
+// block certain paths until you've earned the power to pass.
+//
+// The world map screen (usually summoned on a pause-menu tab)
+// is the player-facing representation of that structure.
+// It shows:
+//
+//   * every level as a node,
+//   * the connections between them (edges),
+//   * which nodes you've beaten,
+//   * which node you're currently in,
+//   * which edges are locked behind abilities you haven't got.
+//
+// This file is the whole map screen in 150 lines.  It is
+// *not* procedural — node positions are hard-coded to read
+// cleanly on the intended 1280×720 render target:
+//
+//     [1]--[2]--[3]        Crash Site – Fungal – Crystal
+//      |    |    |
+//     [4]--[5]--[6]        Ruins      – Lake   – Thermal
+//      |         |
+//     [7]--[8]--[9]        Overgrowth – Frozen – Corrupted
+//                 |
+//                [10]       The Core
+//
+// The *shape* of the graph is what matters — the exact (x, y)
+// pixels are just what renders nicely.  If you add a node or
+// change the layout, edit the parallel arrays in `initMap`
+// and the `draw` code needs no changes.
+//
+// PARALLEL-LIST GRAPH REPRESENTATION
+// ----------------------------------
+// Zia's `List` isn't a hashmap, so we store the graph with two
+// techniques this codebase uses repeatedly:
+//
+//   * **Parallel lists** for per-node data: `nodeX[i]`,
+//     `nodeY[i]`, `nodeNames[i]` describe node `i`.
+//   * **Parallel-list edge table** for edges: `connFrom[i]`,
+//     `connTo[i]`, `connGate[i]` describe edge `i`.
+//
+// It's the simplest possible graph representation in Zia and
+// scales fine to tens or hundreds of nodes.  If you had
+// thousands you'd want an adjacency list; for a ten-level
+// metroidvania, this is perfect.
+//
+// WHERE THIS FITS
+// ---------------
+//     menu.zia  ──►  when the player presses "Map" from the
+//                    pause menu, it calls `worldmap.draw(
+//                        canvas, currentLevel, bossMask,
+//                        abilityManager)`.
+//
+//     abilities.zia  ──►  supplies `canPassGate(gateFlag)` so
+//                         the draw knows which edges are
+//                         locked for the current ability set.
+//
+// =============================================================================
+
+module worldmap;
+
+bind Zanna.Graphics;
+bind "./config";
+bind "./palette";
+bind "./accessibility";
+bind "./abilities";
+bind "./world_graph";
+bind "./world_state";
+
+/// @brief Total nodes on the map.  Keep in step with the
+///        parallel arrays in `initMap`.
+final MAP_NODES = WORLD_REGION_COUNT;
+
+// -----------------------------------------------------------------------------
+// Layout (reference, for reading the code):
+//
+//     [1]--[2]--[3]
+//      |    |    |
+//     [4]--[5]--[6]
+//      |         |
+//     [7]--[8]--[9]
+//                 |
+//                [10]
+//
+// -----------------------------------------------------------------------------
+
+/// @brief The map-screen object.  One instance lives on `Game`.
+class WorldMap {
+    /// @brief Stub.  Real setup is `initMap(palette)` — same
+    ///        two-phase idiom as the other subsystems.
+    expose func init() {}
+    hide Palette pal;
+    hide WorldGraph graph;
+    hide Integer accessibilityUiScale;
+    hide Boolean accessibilityLargeText;
+    hide Boolean accessibilityHighContrast;
+
+    // Per-node parallel arrays.
+    hide List[Integer] nodeX;
+    hide List[Integer] nodeY;
+
+    /// @brief Populate node positions, names, edges, gates.
+    ///        Called once at Game setup.  Edit this function if
+    ///        the world changes — no other file needs to know.
+    expose func initMap(p: Palette) {
+        pal = p;
+        graph = new WorldGraph();
+        accessibilityUiScale = 100;
+        accessibilityLargeText = false;
+        accessibilityHighContrast = false;
+        // Wide nodes keep complete region labels from spilling into routes.
+        nodeX = [120, 500, 880,   120, 500, 880,   120, 500, 880,   880];
+        nodeY = [145, 145, 145,   320, 320, 320,   495, 495, 495,   615];
+    }
+
+    /// @brief Apply live map scale, text-size, and contrast preferences.
+    /// @param uiScale Advertised 100, 125, or 150 percent scale.
+    /// @param largeText True for compact two-scale region labels.
+    /// @param highContrast True for maximum backdrop opacity.
+    /// @return Nothing. Mutates presentation state only.
+    expose func setAccessibility(uiScale: Integer, largeText: Boolean,
+                                 highContrast: Boolean) {
+        accessibilityUiScale = uiScale;
+        accessibilityLargeText = largeText;
+        accessibilityHighContrast = highContrast;
+    }
+
+    /// @brief Draw the whole map screen.
+    ///
+    /// @param currentLevel      one-based index of the level the player is
+    ///                          currently in — rendered with a bright
+    ///                          highlight.
+    /// @param bossesDefeated    power-of-two bitmask of defeated bosses.
+    ///                          Defeated levels get a green tint + "OK" check.
+    /// @param discoveryMask     one bit per visited region; undiscovered names
+    ///                          and their connecting edges remain hidden.
+    /// @param abilities         ability manager, consulted for
+    ///                          each gated edge so the lock icon
+    ///                          disappears once the player has
+    ///                          the required power.
+    ///
+    /// Draw order:
+    ///   1. Dark semi-transparent backdrop (so the paused game
+    ///      is still visible behind it).
+    ///   2. Title text.
+    ///   3. Edges (first so they sit behind nodes).
+    ///   4. Nodes.
+    ///   5. Legend.
+    /// @return Nothing. Draws only and does not mutate graph/discovery state.
+    expose func draw(canvas: Canvas, currentLevel: Integer,
+                     bossesDefeated: Integer, discoveryMask: Integer,
+                     abilities: AbilityManager) {
+        // Translucent dim layer — classic pause-screen trick.
+        canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(0, 0, 10),
+                        accessiblePanelAlpha(accessibilityHighContrast));
+
+        var titleScale = accessibleTextScale(
+            2, accessibilityUiScale, accessibilityLargeText);
+        if titleScale > 3 { titleScale = 3; }
+        canvas.TextCenteredScaled(30, "XENOSCAPE — WORLD MAP",
+                                  Color.RGB(200, 200, 220), titleScale);
+        var currentIdx = currentLevel - 1;
+        if currentIdx < 0 { currentIdx = 0; }
+        if currentIdx >= MAP_NODES { currentIdx = MAP_NODES - 1; }
+
+        // ---- Edges ----
+        var c = 0;
+        while c < graph.getEdgeCount() {
+            // Anchor each line at the center of the wide node card.
+            var from = graph.getEdgeFrom(c);
+            var to = graph.getEdgeTo(c);
+            var fx = nodeX.get(from) + 90;
+            var fy = nodeY.get(from) + 22;
+            var tx = nodeX.get(to) + 90;
+            var ty = nodeY.get(to) + 22;
+            var gate = graph.getEdgeGate(c);
+
+            if worldStateMaskHas(discoveryMask, from) and
+               worldStateMaskHas(discoveryMask, to) {
+                if gate == GATE_NONE or abilities.canPassGate(gate) {
+                    canvas.Line(fx, fy, tx, ty, Color.RGB(100, 100, 120));
+                } else {
+                    canvas.Line(fx, fy, tx, ty, Color.RGB(80, 30, 30));
+                    var mx = (fx + tx) / 2;
+                    var my = (fy + ty) / 2;
+                    canvas.Box(mx - 6, my - 6, 12, 12, Color.RGB(200, 50, 50));
+                    canvas.Text(mx - 3, my - 4, "X", Color.RGB(255, 255, 255));
+                }
+            }
+            c = c + 1;
+        }
+
+        // ---- Nodes ----
+        var i = 0;
+        while i < MAP_NODES {
+            var nx = nodeX.get(i);
+            var ny = nodeY.get(i);
+            var nodeW = 180;
+            var nodeH = 44;
+
+            // Colour triple (bg, border, text) picked per state.
+            // Start with a neutral slate-grey.
+            var bgColor = Color.RGB(18, 18, 28);
+            var borderColor = Color.RGB(80, 80, 100);
+            var textColor = Color.RGB(160, 160, 180);
+
+            var discovered = worldStateMaskHas(discoveryMask, i);
+            if discovered { bgColor = Color.RGB(40, 40, 60); }
+
+            if defeated(bossesDefeated, i) {
+                bgColor = Color.RGB(30, 60, 40);
+                borderColor = Color.RGB(60, 120, 80);
+                textColor = Color.RGB(180, 255, 200);
+            }
+
+            // "Current level" overrides "defeated" so the
+            // player always sees where they are.
+            if i == currentIdx {
+                bgColor = Color.RGB(50, 50, 90);
+                borderColor = Color.RGB(100, 150, 255);
+                textColor = Color.RGB(255, 255, 255);
+            }
+
+            canvas.Box(nx, ny, nodeW, nodeH, bgColor);
+            canvas.Frame(nx, ny, nodeW, nodeH, borderColor);
+            var nodeLabel = "????";
+            if discovered {
+                nodeLabel = graph.getRegionName(i);
+                if accessibilityLargeText { nodeLabel = shortRegionName(i); }
+            }
+            var nodeScale = accessibleTextScale(
+                1, accessibilityUiScale, accessibilityLargeText);
+            if nodeScale > 2 { nodeScale = 2; }
+            canvas.TextScaled(nx + 10, ny + 12, nodeLabel,
+                              nodeScale, textColor);
+
+            if defeated(bossesDefeated, i) {
+                canvas.Text(nx + nodeW - 26, ny + 3, "OK",
+                            Color.RGB(100, 255, 100));
+            }
+
+            i = i + 1;
+        }
+
+        // ---- Legend ----
+        canvas.Text(40, SCREEN_H - 60, "Current: [highlighted]   Completed: [OK]", Color.RGB(120, 120, 140));
+        canvas.Text(40, SCREEN_H - 40, "Red X = Locked (need ability)", Color.RGB(120, 120, 140));
+    }
+
+    /// @brief Compact labels used when Large Text is active.
+    hide func shortRegionName(region: Integer) -> String {
+        if region == 0 { return "Crash"; }
+        if region == 1 { return "Fungal"; }
+        if region == 2 { return "Crystal"; }
+        if region == 3 { return "Ruins"; }
+        if region == 4 { return "Lake"; }
+        if region == 5 { return "Thermal"; }
+        if region == 6 { return "Overgrowth"; }
+        if region == 7 { return "Frozen"; }
+        if region == 8 { return "Corrupted"; }
+        if region == 9 { return "Core"; }
+        return "????";
+    }
+
+    /// @brief Read a defeated-boss bit from the campaign bitmask.
+    ///
+    /// Zia code in this demo represents bitmasks with integer division by a
+    /// power-of-two flag.  Node index 0 maps to bit 1, index 1 maps to bit 2,
+    /// index 2 maps to bit 4, and so on.
+    ///
+    /// @param mask Defeated-boss mask stored by Game.
+    /// @param nodeIndex Zero-based world-map node index.
+    /// @return True when the matching boss/level bit is set.
+    hide func defeated(mask: Integer, nodeIndex: Integer) -> Boolean {
+        var flag = 1;
+        var i = 0;
+        while i < nodeIndex {
+            flag = flag * 2;
+            i = i + 1;
+        }
+        return (mask / flag) % 2 == 1;
+    }
+}

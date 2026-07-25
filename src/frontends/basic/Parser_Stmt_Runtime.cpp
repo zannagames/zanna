@@ -22,7 +22,7 @@
 
 #include <cstdio>
 
-/// @file
+/// @file Parser_Stmt_Runtime.cpp
 /// @brief Runtime statement parsing helpers for the BASIC front end.
 /// @details These member functions extend @ref il::frontends::basic::Parser with
 ///          routines capable of recognising statements that interact with the
@@ -59,9 +59,11 @@ void Parser::registerRuntimeParsers(StatementParserRegistry &registry) {
 
 /// @brief Parse an @c ON ERROR GOTO statement.
 /// @details Consumes the @c ON, @c ERROR, and @c GOTO keywords, parses the
-///          numeric label target, and builds an @ref OnErrorGoto AST node.  The
-///          helper records whether the statement targets line zero so the
-///          lowerer can emit a @c RESUME 0 semantic.
+///          numeric or named label target, and builds an @ref OnErrorGoto AST
+///          node. Named labels receive a stable synthetic number and record a
+///          reference. The `toZero` flag distinguishes a valid numeric zero
+///          target; invalid or missing numbers recover with target zero but do
+///          not set that flag.
 /// @return Newly constructed statement node.
 StmtPtr Parser::parseOnErrorGotoStatement() {
     auto loc = peek().loc;
@@ -108,8 +110,10 @@ StmtPtr Parser::parseEndStatement() {
 }
 
 /// @brief Parse a @c RESUME statement.
-/// @details Handles the optional @c NEXT keyword or numeric label.  When neither
-///          is present the statement resumes at the point of the original error.
+/// @details Handles @c NEXT or a numeric/named label when the following token
+///          is not a statement boundary or statement introducer. Named labels
+///          are registered as references. With no target, the default mode
+///          resumes at the point of the original error.
 /// @return Newly constructed statement node.
 StmtPtr Parser::parseResumeStatement() {
     auto loc = peek().loc;
@@ -145,16 +149,19 @@ StmtPtr Parser::parseResumeStatement() {
 }
 
 /// @brief Parse a @c DIM statement.
-/// @details Captures the declared name, optional array bounds, and optional type
-///          annotation.  Array declarations update the parser's array tracking so
-///          later phases can generate runtime allocation requests. Supports optional
-///          initializer syntax: DIM name = value
-/// @return Newly constructed statement node.
+/// @details Parses one or more comma-separated declarations with suffix-derived
+///          or explicit primitive/object types. Parenthesized expressions create
+///          array bounds and register the name for later call/reference
+///          disambiguation. `AS NEW` and `= expression` scalar initializers are
+///          represented as a DIM plus LET inside a StmtList.
+/// @return One DIM node, a DIM/LET list, or a list containing comma-separated declarations.
 StmtPtr Parser::parseDimStatement() {
     auto loc = peek().loc;
     consume(); // DIM
 
-    // Parse a single DIM item: <name> [ ( <size> ) ] [ AS <type> ] [ = <expr> ]
+    /// Parse one DIM item, optionally using an already-consumed name token.
+    /// @param firstNameTok Optional name token supplied by a caller.
+    /// @return DIM node or DIM/LET statement list for an initializer.
     auto parseOne = [&](Token firstNameTok = Token{}) -> StmtPtr {
         // BUG-OOP-042 fix: Use the global isSoftIdentToken() function which includes
         // all soft keywords (BASE, FLOOR, RANDOM, NEXT, etc.) for variable names.
@@ -323,7 +330,8 @@ StmtPtr Parser::parseDimStatement() {
 
 /// @brief Parse a @c STATIC statement.
 /// @details Declares a persistent procedure-local variable with module-level storage.
-///          Supports: STATIC name [AS type]
+///          The type comes from the name suffix unless an optional primitive
+///          `AS` annotation overrides it.
 /// @return Newly constructed statement node.
 StmtPtr Parser::parseStaticStatement() {
     auto loc = peek().loc;
@@ -366,8 +374,9 @@ StmtPtr Parser::parseSharedStatement() {
 }
 
 /// @brief Parse a @c REDIM statement.
-/// @details Re-sizes an existing array and records the declaration in the parser's
-///          array set so later passes know the symbol represents an array.
+/// @details Optionally consumes PRESERVE, parses one or more bound expressions,
+///          stores a single bound in the compatibility `size` field or multiple
+///          bounds in `dimensions`, and records the name in the parser's array set.
 /// @return Newly constructed statement node.
 StmtPtr Parser::parseReDimStatement() {
     auto loc = peek().loc;

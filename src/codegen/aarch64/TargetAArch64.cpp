@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/TargetAArch64.cpp
+// File: src/codegen/aarch64/TargetAArch64.cpp
 // Purpose: AArch64 target description — register classification, calling
 //          convention tables, and register name lookup for all three OS targets
 //          (Darwin, Linux ELF, Windows PE/COFF).
@@ -17,17 +17,31 @@
 // Ownership/Lifetime:
 //   - darwinTarget(), linuxTarget(), windowsTarget() return references to
 //     file-static objects that live for the duration of the program.
-// Links: codegen/aarch64/TargetAArch64.hpp
+// Links: src/codegen/aarch64/TargetAArch64.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "TargetAArch64.hpp"
 
+/**
+ * @file
+ * @brief Implements AArch64 target singletons, register classification, and names.
+ *
+ * One fully populated Darwin description provides the common modeled register
+ * convention; Linux and Windows variants copy it and adjust object-format,
+ * hardening, and variadic-tail policies. Singleton accessors return immutable
+ * references with process lifetime.
+ */
+
 namespace zanna::codegen::aarch64 {
 namespace {
 
-/// @brief Build the Darwin/macOS AArch64 TargetInfo with AAPCS64 register tables,
-///        BTI (branch target identification) and PAC (return-address signing) enabled.
+/**
+ * @brief Builds the Darwin AArch64 register and ABI description.
+ *
+ * @return Fully populated target metadata with Mach-O format, BTI/PAC enabled,
+ *         and anonymous variadic arguments assigned to the stack.
+ */
 TargetInfo makeDarwinTarget() {
     TargetInfo info{};
     // Caller-saved GPRs (AArch64 AAPCS64 / macOS): x0-x17 are call-clobbered; x18 is reserved;
@@ -107,9 +121,12 @@ TargetInfo makeDarwinTarget() {
     return info;
 }
 
-/// @brief Build the Linux AArch64 target.
-/// Same AAPCS64 register convention as Darwin; only the assembly output
-/// format differs (no underscore prefix, ELF .type/.size directives).
+/**
+ * @brief Derives the Linux ELF target from the common register convention.
+ *
+ * @return Linux-format metadata with BTI/PAC emission and Darwin-style
+ *         variadic stack tails disabled.
+ */
 static TargetInfo makeLinuxTarget() {
     TargetInfo info = makeDarwinTarget();
     info.abiFormat = ABIFormat::Linux;
@@ -119,9 +136,12 @@ static TargetInfo makeLinuxTarget() {
     return info;
 }
 
-/// @brief Build the Windows ARM64 target.
-/// Identical AAPCS64 register convention to Linux; PE/COFF assembly format
-/// (no underscore symbol prefix, no ELF .type/.size directives).
+/**
+ * @brief Derives the Windows ARM64 PE/COFF target from the common register convention.
+ *
+ * @return Windows-format metadata with BTI/PAC emission and Darwin-style
+ *         variadic stack tails disabled.
+ */
 static TargetInfo makeWindowsTarget() {
     TargetInfo info = makeDarwinTarget();
     info.abiFormat = ABIFormat::Windows;
@@ -137,28 +157,35 @@ TargetInfo windowsTargetInstance = makeWindowsTarget();
 
 } // namespace
 
-/// @brief Get the singleton TargetInfo instance for Darwin/macOS AArch64.
-/// @return Reference to the pre-configured Darwin target information.
+/**
+ * @brief Returns the initialized Darwin AArch64 target description.
+ * @return Immutable reference with static storage duration.
+ */
 const TargetInfo &darwinTarget() noexcept {
     return darwinTargetInstance;
 }
 
-/// @brief Get the singleton TargetInfo instance for Linux AArch64 (ELF).
-/// @return Reference to the pre-configured Linux target information.
+/**
+ * @brief Returns the initialized Linux AArch64 target description.
+ * @return Immutable reference with static storage duration.
+ */
 const TargetInfo &linuxTarget() noexcept {
     return linuxTargetInstance;
 }
 
-/// @brief Get the singleton TargetInfo instance for Windows ARM64 (PE/COFF).
-/// Identical AAPCS64 register convention to Linux; only assembly syntax differs.
-/// @return Reference to the pre-configured Windows ARM64 target information.
+/**
+ * @brief Returns the initialized Windows ARM64 target description.
+ * @return Immutable reference with static storage duration.
+ */
 const TargetInfo &windowsTarget() noexcept {
     return windowsTargetInstance;
 }
 
-/// @brief Check if a physical register is a general-purpose register (GPR).
-/// @param reg The physical register to check.
-/// @return True if the register is X0-X30 or SP, false otherwise.
+/**
+ * @brief Classifies a physical-register enumerator as a GPR.
+ * @param reg Register value to classify.
+ * @return `true` for `X0` through `X30` and `SP`.
+ */
 bool isGPR(PhysReg reg) noexcept {
     switch (reg) {
         case PhysReg::X0:
@@ -199,9 +226,11 @@ bool isGPR(PhysReg reg) noexcept {
     }
 }
 
-/// @brief Check if a physical register is a floating-point/SIMD register (FPR).
-/// @param reg The physical register to check.
-/// @return True if the register is V0-V31, false otherwise.
+/**
+ * @brief Classifies a physical-register enumerator as an FP/SIMD register.
+ * @param reg Register value to classify.
+ * @return `true` for `V0` through `V31`.
+ */
 bool isFPR(PhysReg reg) noexcept {
     switch (reg) {
         case PhysReg::V0:
@@ -242,9 +271,11 @@ bool isFPR(PhysReg reg) noexcept {
     }
 }
 
-/// @brief Get the assembly name for a physical register.
-/// @param reg The physical register to get the name for.
-/// @return The lowercase assembly name string (e.g., "x0", "sp", "v0").
+/**
+ * @brief Maps a physical-register enumerator to its lowercase base spelling.
+ * @param reg Register value to name.
+ * @return Static `xN`, `sp`, or `vN` text; invalid values return `"unknown"`.
+ */
 const char *regName(PhysReg reg) noexcept {
     switch (reg) {
         case PhysReg::X0:

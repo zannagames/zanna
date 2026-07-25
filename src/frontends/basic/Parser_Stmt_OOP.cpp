@@ -16,13 +16,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
+/// @file Parser_Stmt_OOP.cpp
 /// @brief BASIC statement parser extensions for object-oriented constructs.
-/// @details Declares the helper routines that recognise `CLASS`, `TYPE`, and
-///          `DELETE` statements.  Keeping the implementations separate from the
-///          core statement parser preserves readability while ensuring the
-///          object-oriented grammar shares the same recovery behaviour and type
-///          inference shims as procedural code.
+/// @details Implements CLASS members and properties, user-defined TYPE and ENUM
+///          declarations, INTERFACE signatures, and DELETE. Keeping these
+///          routines separate preserves the core dispatcher's readability while
+///          sharing token recovery and primitive-type parsing.
 
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/IdentifierUtil.hpp"
@@ -37,15 +36,12 @@ namespace il::frontends::basic {
 
 /// @brief Parse a BASIC `CLASS` declaration from the current token stream.
 /// @details The parser consumes the opening keyword, captures the class name,
-///          and then iteratively processes field and member declarations until
-///          the matching `END CLASS` terminator is encountered.  During the
-///          field pass the helper tolerates optional line numbers, recognises
-///          explicit `AS` type annotations, and defaults unspecified members to
-///          integer types to preserve legacy semantics.  For the member pass the
-///          routine recognises constructors (`SUB NEW`), methods, functions with
-///          suffix-driven return types, and destructors.  Each body is delegated
-///          to the general procedure parser so control-flow, locals, and
-///          recovery all remain consistent with non-OOP procedures.
+///          optional single base class after `:`, and an optional comma-separated
+///          IMPLEMENTS list. It then delegates the leading field region and
+///          remaining property/procedure region to dedicated helpers before
+///          requiring `END CLASS`. The active-class pointer enables expression
+///          parsing to rewrite unqualified intra-class method calls and is
+///          cleared before return.
 /// @return Newly allocated @ref ClassDecl describing the parsed declaration.
 StmtPtr Parser::parseClassDecl() {
     auto loc = peek().loc;
@@ -135,10 +131,20 @@ StmtPtr Parser::parseClassDecl() {
     return decl;
 }
 
+/// @brief Parse the leading field-only region of a CLASS body.
+/// @details Recognizes shorthand and DIM forms, optional single-use access and
+///          STATIC modifiers, and array extents. Extents must resolve to integer
+///          literals, foldable expressions, or previously tracked integer
+///          constants. Primitive AS types use the shared type parser; other
+///          dotted names are retained as object-class spellings. Parsing stops
+///          at the first token sequence that does not look like a field.
+/// @param declRef Class declaration receiving owned field records.
+/// @param curAccess Pending access prefix; consumed fields reset it, while a
+///        prefix immediately before a non-field is preserved for member parsing.
 void Parser::parseClassFieldSection(ClassDecl &declRef, std::optional<Access> &curAccess) {
     ClassDecl *decl = &declRef;
 
-    // Helper to optionally consume PUBLIC/PRIVATE and return it.
+    /// Consume a PUBLIC or PRIVATE prefix when present.
     auto parseAccessPrefix = [&]() -> std::optional<Access> {
         if (at(TokenKind::KeywordPublic)) {
             consume();
@@ -326,6 +332,15 @@ void Parser::parseClassFieldSection(ClassDecl &declRef, std::optional<Access> &c
     }
 }
 
+/// @brief Parse properties and procedure-like members after the field region.
+/// @details Applies single-use access, STATIC, and virtual-dispatch modifiers;
+///          parses PROPERTY GET/SET bodies, `SUB NEW` constructors, SUB and
+///          FUNCTION methods, and destructors; and delegates executable bodies
+///          to @ref parseProcedureBody. Duplicate virtual modifiers and invalid
+///          constructor/property combinations are diagnosed while partial
+///          member nodes remain available for recovery.
+/// @param declRef Class declaration receiving owned member nodes.
+/// @param curAccess Pending access prefix carried from field parsing.
 void Parser::parseClassMemberSection(ClassDecl &declRef, std::optional<Access> curAccess) {
     ClassDecl *decl = &declRef;
 
@@ -347,7 +362,7 @@ void Parser::parseClassMemberSection(ClassDecl &declRef, std::optional<Access> c
             }
         }
 
-        // Parse optional access and method modifiers prefix.
+        /// Consume a PUBLIC or PRIVATE prefix for the next class member.
         auto parseAccessPrefix2 = [&]() -> std::optional<Access> {
             if (at(TokenKind::KeywordPublic)) {
                 consume();
@@ -370,13 +385,19 @@ void Parser::parseClassMemberSection(ClassDecl &declRef, std::optional<Access> c
             pendingStaticMember = true;
         }
 
+        /// @brief Single-use virtual-dispatch modifiers for the next member.
         struct Modifiers {
+            /// VIRTUAL was present.
             bool virt = false;
+            /// OVERRIDE was present.
             bool over = false;
+            /// ABSTRACT was present.
             bool abstr = false;
+            /// FINAL was present.
             bool fin = false;
         } mods;
 
+        /// Test whether the next token is a recognized member modifier.
         auto seenAnyModifier = [&]() {
             return at(TokenKind::KeywordVirtual) || at(TokenKind::KeywordOverride) ||
                    at(TokenKind::KeywordAbstract) || at(TokenKind::KeywordFinal);
@@ -443,6 +464,7 @@ void Parser::parseClassMemberSection(ClassDecl &declRef, std::optional<Access> c
             bool seenGet = false;
             bool seenSet = false;
 
+            /// Compare identifier tokens to contextual accessor keywords.
             auto isIdentEq = [&](const Token &t, std::string_view s) {
                 if (t.kind == TokenKind::Identifier) {
                     return string_utils::iequals(t.lexeme, s);
@@ -478,11 +500,13 @@ void Parser::parseClassMemberSection(ClassDecl &declRef, std::optional<Access> c
                     prop->get.access = acc.value_or(prop->access);
                     auto ctx = statementSequencer();
                     ctx.collectStatements(
+                        /// Stop the getter body at END GET.
                         [&](int, il::support::SourceLoc) {
                             return at(TokenKind::KeywordEnd) &&
                                    (peek(1).kind == TokenKind::KeywordGet ||
                                     isIdentEq(peek(1), "GET"));
                         },
+                        /// Consume the END GET token pair.
                         [&](int, il::support::SourceLoc, StatementSequencer::TerminatorInfo &) {
                             consume();
                             consume();
@@ -524,11 +548,13 @@ void Parser::parseClassMemberSection(ClassDecl &declRef, std::optional<Access> c
                     }
                     auto ctx = statementSequencer();
                     ctx.collectStatements(
+                        /// Stop the setter body at END SET.
                         [&](int, il::support::SourceLoc) {
                             return at(TokenKind::KeywordEnd) &&
                                    (peek(1).kind == TokenKind::KeywordSet ||
                                     isIdentEq(peek(1), "SET"));
                         },
+                        /// Consume the END SET token pair.
                         [&](int, il::support::SourceLoc, StatementSequencer::TerminatorInfo &) {
                             consume();
                             consume();
@@ -749,11 +775,9 @@ void Parser::parseClassMemberSection(ClassDecl &declRef, std::optional<Access> c
 /// @details After consuming the opening keyword the helper gathers the record
 ///          name and then iterates over the member list, tolerating optional
 ///          line numbers and blank lines between entries.  Each field must
-///          supply an explicit `AS` clause; `parseTypeKeyword` bridges to the
-///          shared type parsing routine so suffixes, aliases, and BOOLEAN
-///          keywords are handled uniformly with the non-OOP parser.  Trailing
-///          trivia is skipped before the closing `END TYPE` pair is enforced to
-///          guarantee deterministic error recovery locations.
+///          supply an explicit `AS` primitive type. PUBLIC or PRIVATE prefixes
+///          are diagnosed and their source line is skipped. Trailing trivia is
+///          skipped before the closing `END TYPE` pair is required.
 /// @return Newly allocated @ref TypeDecl describing the record type.
 StmtPtr Parser::parseTypeDecl() {
     auto loc = peek().loc;
@@ -836,12 +860,11 @@ StmtPtr Parser::parseTypeDecl() {
 }
 
 /// @brief Check whether a token can serve as a user-defined name.
-/// @details BASIC's lexer uppercases all identifiers, so names like COLOR
-///          collide with keywords.  In contexts where a user-defined name is
-///          expected (enum names, member names) we accept any token whose
-///          lexeme begins with an alphabetic character — this covers both
-///          identifiers and keyword tokens while excluding operators and
-///          punctuation.
+/// @details Accepts Identifier unconditionally; other token kinds are accepted
+///          when their non-empty lexeme begins with an alphabetic byte. This
+///          permits keyword tokens such as COLOR in ENUM naming positions.
+/// @param tok Candidate token.
+/// @return `true` when the token passes the identifier-or-alphabetic test.
 static bool canBeUsedAsName(const Token &tok) {
     if (tok.kind == TokenKind::Identifier)
         return true;
@@ -850,8 +873,9 @@ static bool canBeUsedAsName(const Token &tok) {
 
 /// @brief Parse an ENUM declaration.
 /// @details Parses `ENUM Name ... END ENUM` including named members with optional
-///          explicit integer values. Members without explicit values auto-increment
-///          from the previous value (starting at 0).
+///          signed decimal integer values. Members without `=` retain an empty
+///          optional value for semantic processing. Names may be identifier or
+///          alphabetic keyword tokens, and optional numeric line labels are skipped.
 /// @return Newly allocated @ref EnumDecl representing the parsed declaration.
 StmtPtr Parser::parseEnumDecl() {
     auto loc = peek().loc;
@@ -937,9 +961,11 @@ StmtPtr Parser::parseEnumDecl() {
 }
 
 /// @brief Parse an INTERFACE declaration.
-/// @details Parses `INTERFACE Name ... END INTERFACE` including abstract method
-///          signatures (SUB/FUNCTION declarations without bodies). Interface methods
-///          are implicitly abstract and don't have implementation bodies.
+/// @details Parses a dotted interface name followed by SUB and FUNCTION
+///          signatures without bodies. Parameters accept optional BYVAL/BYREF
+///          and primitive AS types; FUNCTION may add a primitive return type.
+///          Unrecognized body tokens are consumed one at a time until
+///          `END INTERFACE`, permitting recovery.
 /// @return Newly allocated @ref InterfaceDecl representing the parsed declaration.
 StmtPtr Parser::parseInterfaceDecl() {
     auto loc = peek().loc;

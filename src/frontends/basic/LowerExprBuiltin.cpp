@@ -44,6 +44,7 @@ using IlType = il::core::Type;
 using IlKind = IlType::Kind;
 
 namespace {
+/// Diagnostic code emitted when a builtin ordinal has no dispatch entry.
 constexpr std::string_view kDiagMissingBuiltinEmitter = "B4004";
 
 /// @brief Translate a builtin enumerator into its dense table index.
@@ -71,12 +72,14 @@ constexpr auto makeBuiltinEmitterTable() {
     return table;
 }
 
+/// Dense immutable dispatcher indexed by BuiltinCallExpr::Builtin.
 constexpr auto kBuiltinEmitters = makeBuiltinEmitterTable();
 } // namespace
 
 /// @brief Construct a lowering facade bound to a specific lowering driver.
 ///
-/// @param lowerer Owning lowering engine responsible for emitting IL.
+/// @param lowerer Borrowed lowering engine responsible for emitting IL; it must
+///                outlive this facade.
 BuiltinExprLowering::BuiltinExprLowering(Lowerer &lowerer) noexcept : lowerer_(&lowerer) {}
 
 /// @brief Lower a builtin call by dispatching to the correct emitter.
@@ -104,7 +107,7 @@ Lowerer::RVal BuiltinExprLowering::lower(const BuiltinCallExpr &expr) {
 ///          delegates to a focused helper, while unregistered names fall back
 ///          to the generic rule-driven lowering routine.
 ///
-/// @param lowerer Owning lowering engine.
+/// @param lowerer Borrowed lowering engine.
 /// @param call AST node representing the builtin invocation.
 /// @return Lowered r-value implementing the builtin semantics.
 Lowerer::RVal BuiltinExprLowering::emitRuleDrivenBuiltin(Lowerer &lowerer,
@@ -115,12 +118,13 @@ Lowerer::RVal BuiltinExprLowering::emitRuleDrivenBuiltin(Lowerer &lowerer,
 /// @brief Lower the LOF builtin, handling runtime error propagation.
 ///
 /// @details LOF queries the runtime for the length of an open file channel.
-///          The lowering routine normalises the channel argument, emits the
-///          runtime call, and synthesises control flow that traps when the
-///          runtime reports an error code.  The resulting value is the length on
-///          success.
+///          A missing argument returns zero. Otherwise the channel is normalized
+///          to `i32`, the runtime's `i32` result is sign-extended manually, and
+///          an active function/block receives fail and continuation blocks.
+///          Negative results trap with their negated runtime error code; the
+///          success value is widened to `i64`.
 ///
-/// @param lowerer Owning lowering engine.
+/// @param lowerer Borrowed lowering engine.
 /// @param expr AST node describing the builtin invocation.
 /// @return Lowered r-value representing the file length.
 Lowerer::RVal BuiltinExprLowering::emitLofBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr) {
@@ -200,12 +204,13 @@ Lowerer::RVal BuiltinExprLowering::emitLofBuiltin(Lowerer &lowerer, const Builti
 
 /// @brief Lower the EOF builtin with structured error handling.
 ///
-/// @details EOF returns a boolean flag but can also signal runtime errors via
-///          sentinel values.  The lowering routine emits the runtime call,
-///          constructs control flow that traps on error, and widens the result
-///          back to I64 to satisfy BASIC semantics.
+/// @details A missing argument returns zero. Otherwise the channel is normalized
+///          and the runtime's `i32` result is sign-extended. Within an active
+///          function/block, zero and -1 are accepted as false/true while every
+///          other value branches through emitTrapFromErr(); the continuation
+///          exposes the original result as `i64`.
 ///
-/// @param lowerer Owning lowering engine.
+/// @param lowerer Borrowed lowering engine.
 /// @param expr AST node describing the builtin invocation.
 /// @return Lowered r-value representing the EOF flag.
 Lowerer::RVal BuiltinExprLowering::emitEofBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr) {
@@ -296,11 +301,12 @@ Lowerer::RVal BuiltinExprLowering::emitEofBuiltin(Lowerer &lowerer, const Builti
 
 /// @brief Lower the LOC builtin that reports the current file position.
 ///
-/// @details LOC mirrors LOF's control-flow handling: it normalises the channel
-///          number, emits the runtime call, and traps when the helper returns an
-///          error.  The resulting value is the current record pointer.
+/// @details A missing argument returns zero. Otherwise LOC mirrors LOF's
+///          channel normalization and manual sign extension. When an active
+///          function/block exists, negative returns branch to a trap using the
+///          negated error number and nonnegative returns continue as `i64`.
 ///
-/// @param lowerer Owning lowering engine.
+/// @param lowerer Borrowed lowering engine.
 /// @param expr AST node describing the builtin invocation.
 /// @return Lowered r-value representing the current file position.
 Lowerer::RVal BuiltinExprLowering::emitLocBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr) {
@@ -378,11 +384,12 @@ Lowerer::RVal BuiltinExprLowering::emitLocBuiltin(Lowerer &lowerer, const Builti
 
 /// @brief Lower the ERR builtin that returns the current error code.
 ///
-/// @details ERR extracts the error code from the handler block's %err parameter
-///          using the err.get_code instruction.  This builtin can only be called
-///          from within an error handler context; calling it elsewhere returns 0.
+/// @details When the current block's first parameter has Error type, ERR ensures
+///          that parameter has a serializable function value name, extracts its
+///          `i32` code, and manually sign-extends it to `i64`. A missing function,
+///          block, or leading Error parameter yields constant zero.
 ///
-/// @param lowerer Owning lowering engine.
+/// @param lowerer Borrowed lowering engine.
 /// @param expr AST node describing the builtin invocation.
 /// @return Lowered r-value representing the error code as I64.
 Lowerer::RVal BuiltinExprLowering::emitErrBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr) {
@@ -434,10 +441,11 @@ Lowerer::RVal BuiltinExprLowering::emitErrBuiltin(Lowerer &lowerer, const Builti
 
 /// @brief Fallback emitter used when no lowering rule exists for a builtin.
 ///
-/// @details Emits a diagnostic (when possible) so missing emitters surface
-///          during compilation and returns a dummy integer value.
+/// @details Emits B4004 when a diagnostic sink is installed, then asks
+///          BuiltinLowerContext for a zero result of the expected shape so
+///          lowering can remain structurally valid.
 ///
-/// @param lowerer Owning lowering engine.
+/// @param lowerer Borrowed lowering engine.
 /// @param expr AST node describing the builtin invocation.
 /// @return Placeholder integer result.
 Lowerer::RVal BuiltinExprLowering::emitUnsupportedBuiltin(Lowerer &lowerer,

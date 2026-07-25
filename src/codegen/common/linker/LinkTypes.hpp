@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/LinkTypes.hpp
+// File: src/codegen/common/linker/LinkTypes.hpp
 // Purpose: Core types used throughout the native linker: OutputSection,
 //          InputChunk, LinkLayout, GlobalSymEntry, and platform enums.
 // Key invariants:
@@ -13,10 +13,19 @@
 //   - Virtual addresses assigned during layout phase
 //   - Page alignment differs per platform: macOS arm64=16KB, others=4KB
 // Ownership/Lifetime:
-//   - All types are value types owned by NativeLinker
+//   - All types are value types owned by their caller
 // Links: codegen/common/linker/ObjFileReader.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file LinkTypes.hpp
+ * @brief Defines the platform-neutral data model shared by native linker stages.
+ *
+ * These types carry input provenance, merged section contents and permissions,
+ * symbol resolution state, loader fixups, and finalized image layout between
+ * readers, optimization passes, relocation application, and executable writers.
+ */
 
 #pragma once
 
@@ -32,20 +41,21 @@
 
 namespace zanna::codegen::linker {
 
-/// Target platform for the linker.
+/// @brief Target operating-system ABI and executable format.
 enum class LinkPlatform : uint8_t {
     Linux,
     macOS,
     Windows,
 };
 
-/// Target architecture for the linker.
+/// @brief Target instruction-set architecture.
 enum class LinkArch : uint8_t {
     X86_64,
     AArch64,
 };
 
-/// Detect host link platform.
+/// @brief Detects the current build host's native link platform.
+/// @return macOS, Windows, or Linux according to generated platform capabilities.
 constexpr LinkPlatform detectLinkPlatform() {
     if constexpr (zanna::platform::kHostMacOS)
         return LinkPlatform::macOS;
@@ -60,13 +70,17 @@ constexpr LinkPlatform detectLinkPlatform() {
 ///          that backend is the only valid default. Multi-backend builds keep
 ///          x86_64 as the historical conservative default; callers that need a
 ///          specific target architecture should set NativeLinkerOptions::arch.
+/// @return The sole compiled native backend, or x86-64 for multi-backend builds.
 constexpr LinkArch detectLinkArch() {
     if constexpr (zanna::platform::kNativeLinkAArch64 && !zanna::platform::kNativeLinkX86_64)
         return LinkArch::AArch64;
     return LinkArch::X86_64;
 }
 
-/// Conventional image base address used by the native linker for each platform.
+/// @brief Returns the native linker's conventional fixed image base.
+/// @param platform Target executable platform.
+/// @return `0x100000000` for macOS, `0x140000000` for Windows, or
+///         `0x400000` for Linux.
 constexpr uint64_t defaultImageBaseForPlatform(LinkPlatform platform) {
     switch (platform) {
         case LinkPlatform::macOS:
@@ -79,7 +93,7 @@ constexpr uint64_t defaultImageBaseForPlatform(LinkPlatform platform) {
     }
 }
 
-/// A chunk of data from one input section within an output section.
+/// @brief Records provenance and placement for one merged input-section chunk.
 struct InputChunk {
     size_t inputObjIndex = 0; ///< Index into the linker's object file list.
     size_t inputSecIndex = 0; ///< Index into that ObjFile's sections.
@@ -88,17 +102,24 @@ struct InputChunk {
     bool synthetic = false;   ///< True when the bytes were created by the linker.
 };
 
-/// Hashable key for maps indexed by an input object/section pair.
+/// @brief Hashable identity of an input section within an object collection.
 struct InputSectionKey {
     size_t objIndex = 0;
     size_t secIndex = 0;
 
+    /// @brief Compares both the object and section indices.
+    /// @param other Key to compare.
+    /// @return `true` when both keys identify the same input section.
     bool operator==(const InputSectionKey &other) const noexcept {
         return objIndex == other.objIndex && secIndex == other.secIndex;
     }
 };
 
+/// @brief Hash adapter for `InputSectionKey` associative containers.
 struct InputSectionKeyHash {
+    /// @brief Combines object and section indices.
+    /// @param key Input-section identity.
+    /// @return Host-sized hash value.
     size_t operator()(const InputSectionKey &key) const noexcept {
         size_t h = std::hash<size_t>{}(key.objIndex);
         h ^= std::hash<size_t>{}(key.secIndex) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
@@ -106,7 +127,7 @@ struct InputSectionKeyHash {
     }
 };
 
-/// A merged output section.
+/// @brief Owns one merged output section and its source-chunk provenance.
 struct OutputSection {
     std::string name;
     std::vector<uint8_t> data;      ///< Concatenated section bytes.
@@ -129,11 +150,14 @@ struct OutputSection {
     bool tlvDescriptors = false;
 };
 
+/// @brief Returns the complete in-memory footprint of an output section.
+/// @param sec Section whose materialized and logical sizes are compared.
+/// @return The greater of file-backed byte count and declared memory size.
 inline size_t outputSectionMemSize(const OutputSection &sec) {
     return std::max(sec.data.size(), sec.memSize);
 }
 
-/// Section classification for merging.
+/// @brief Canonical merge class assigned to an input section.
 enum class SectionClass : uint8_t {
     Text,      ///< Executable code.
     Rodata,    ///< Read-only data.
@@ -148,6 +172,8 @@ enum class SectionClass : uint8_t {
 
 /// Check whether a Mach-O section name is ObjC metadata that must be preserved.
 /// The ObjC runtime locates classes, selectors, protocols, etc. by section name.
+/// @param name Mach-O `segment,section` name.
+/// @return `true` for recognized Objective-C metadata namespaces.
 inline bool isObjCSection(const std::string &name) {
     return name.rfind("__DATA,__objc_", 0) == 0 || name.rfind("__DATA_CONST,__objc_", 0) == 0 ||
            name.rfind("__TEXT,__objc_", 0) == 0 || name.rfind("__OBJC,", 0) == 0;
@@ -156,16 +182,24 @@ inline bool isObjCSection(const std::string &name) {
 /// Check whether a Windows PE/COFF metadata section name must be preserved.
 /// The PE loader and unwinder expect these sections to remain separately
 /// addressable so the exe writer can publish the matching data directories.
+/// @param name COFF section name.
+/// @return `true` for `.pdata*` or `.xdata*`.
 inline bool isWindowsMetadataSection(const std::string &name) {
     return name.rfind(".pdata", 0) == 0 || name.rfind(".xdata", 0) == 0;
 }
 
+/// @brief Tests for ELF unwind, exception, or note metadata requiring name preservation.
+/// @param name ELF section name.
+/// @return `true` for `.eh_frame*`, `.gcc_except_table*`, or `.note*`.
 inline bool isElfMetadataSection(const std::string &name) {
     return name == ".eh_frame" || name.rfind(".eh_frame.", 0) == 0 || name == ".gcc_except_table" ||
            name.rfind(".gcc_except_table.", 0) == 0 || name.rfind(".note.", 0) == 0 ||
            name == ".note";
 }
 
+/// @brief Tests for Mach-O constant/authenticated data segments.
+/// @param name Mach-O `segment,section` name.
+/// @return `true` for `__DATA_CONST` or `__AUTH_CONST` contributions.
 inline bool isMachOConstDataSection(const std::string &name) {
     return name.rfind("__DATA_CONST,", 0) == 0 || name.rfind("__AUTH_CONST,", 0) == 0;
 }
@@ -173,6 +207,8 @@ inline bool isMachOConstDataSection(const std::string &name) {
 /// Check whether a Mach-O section contains dyld-discovered module initializer
 /// or terminator pointers. These names and their section-type flags must
 /// survive section merging so dyld invokes C/C++ global lifetime functions.
+/// @param name Mach-O `segment,section` name.
+/// @return `true` for exact `__mod_init_func` or `__mod_term_func` sections.
 inline bool isMachOModInitTermSection(const std::string &name) {
     const auto comma = name.find(',');
     if (comma == std::string::npos)
@@ -182,6 +218,9 @@ inline bool isMachOModInitTermSection(const std::string &name) {
            name.compare(sectionOffset, std::string::npos, "__mod_term_func") == 0;
 }
 
+/// @brief Tests whether any supported platform requires a section's original name.
+/// @param name Input section name in its object-format spelling.
+/// @return `true` when section merging must retain the name and identity.
 inline bool isPreservedNamedSection(const std::string &name) {
     return isObjCSection(name) || isWindowsMetadataSection(name) || isElfMetadataSection(name) ||
            isMachOConstDataSection(name) || isMachOModInitTermSection(name);
@@ -189,15 +228,23 @@ inline bool isPreservedNamedSection(const std::string &name) {
 
 /// Symbols synthesized by the Windows native linker rather than imported from
 /// a DLL or provided by a runtime archive.
+/// @param name COFF symbol name.
+/// @return `true` for MSVC local stdio option-storage symbols.
 inline bool isWindowsStdioOptionsStorageSymbol(const std::string &name) {
     return name.find("__local_stdio_printf_options") != std::string::npos ||
            name.find("__local_stdio_scanf_options") != std::string::npos;
 }
 
+/// @brief Tests for an MSVC thread-safe static-initialization guard symbol.
+/// @param name COFF decorated symbol name.
+/// @return `true` when the name begins with the `?$TSS` guard prefix.
 inline bool isMsvcThreadSafeStaticGuardSymbol(const std::string &name) {
     return name.rfind("?$TSS", 0) == 0;
 }
 
+/// @brief Tests for a Windows ABI helper synthesized by the native linker.
+/// @param name COFF symbol name.
+/// @return `true` when the symbol belongs to the linker's built-in helper surface.
 inline bool isWindowsLinkerHelperSymbol(const std::string &name) {
     return name == "_fltused" || name == "__ImageBase" || name == "__security_cookie" ||
            name == "__security_check_cookie" || name == "__security_init_cookie" ||
@@ -220,7 +267,16 @@ inline bool isWindowsLinkerHelperSymbol(const std::string &name) {
            name == "rt_audio_shutdown";
 }
 
-/// Classify a section by name and attributes.
+/// @brief Classifies an input section for merging and output placement.
+/// @details TLS and platform-preserved metadata take precedence over generic
+///          permissions. Writable zero-fill becomes BSS; otherwise executable
+///          flags and narrowly recognized text names determine code placement.
+/// @param name Object-format section name.
+/// @param executable Whether the input marks the section executable.
+/// @param writable Whether the input marks the section writable.
+/// @param tls Whether the input contains thread-local storage.
+/// @param zeroFill Whether the section occupies memory without file bytes.
+/// @return Canonical merge class.
 inline SectionClass classifySection(
     const std::string &name, bool executable, bool writable, bool tls, bool zeroFill) {
     if (tls) {
@@ -253,7 +309,7 @@ inline SectionClass classifySection(
     return SectionClass::Rodata;
 }
 
-/// Global symbol table entry.
+/// @brief Tracks one global name from resolution through final address assignment.
 struct GlobalSymEntry {
     std::string name;
 
@@ -276,27 +332,27 @@ struct GlobalSymEntry {
     size_t commonAlignment = 1; ///< Maximum requested tentative definition alignment.
 };
 
-/// A GOT entry for dynamic symbol binding.
+/// @brief Records a loader-populated global-offset-table slot.
 struct GotEntry {
     std::string symbolName; ///< External symbol name (e.g., "printf").
     uint64_t gotAddr = 0;   ///< Virtual address of this GOT slot.
 };
 
-/// A location in the output that contains an absolute pointer needing ASLR rebase.
+/// @brief Records an absolute output pointer requiring an ASLR rebase.
 struct RebaseEntry {
     size_t sectionIndex = 0; ///< Index into LinkLayout::sections.
     size_t offset = 0;       ///< Byte offset within the output section.
 };
 
-/// A data-pointer location that must be bound to a dynamic symbol at load time.
-/// Used for non-GOT references (e.g., ObjC classrefs) to external symbols.
+/// @brief Records a non-GOT output pointer requiring loader symbol binding.
+/// @details Used for references such as Objective-C class pointers to external symbols.
 struct BindEntry {
     std::string symbolName;  ///< External symbol name (e.g., "OBJC_CLASS_$_NSColor").
     size_t sectionIndex = 0; ///< Index into LinkLayout::sections.
     size_t offset = 0;       ///< Byte offset within the output section.
 };
 
-/// Complete memory layout for the linked output.
+/// @brief Owns the complete finalized memory and loader-fixup layout.
 struct LinkLayout {
     std::vector<OutputSection> sections;                        ///< Merged output sections.
     std::unordered_map<std::string, GlobalSymEntry> globalSyms; ///< All resolved symbols.

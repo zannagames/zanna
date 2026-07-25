@@ -27,11 +27,11 @@
 // For each procedure, the registry stores:
 // - Name: Procedure identifier (case-insensitive in BASIC)
 // - Parameters: List of parameter types (Integer, Long, Single, Double, String)
-// - Return type: For FUNCTION declarations, the return type; SUB has Void
+// - Return type: For FUNCTION declarations, the return type; SUB is empty
 // - Declaration location: Source location for error reporting
 //
 // Call Validation:
-// When validating a procedure call, the registry checks:
+// Semantic analysis uses registry signatures to check:
 // - The procedure name is defined
 // - The argument count matches the parameter count
 // - Argument types are compatible with parameter types
@@ -44,12 +44,18 @@
 // - No AST ownership: The registry only stores signature metadata
 //
 // Design Notes:
-// - Procedure names are stored in canonical form (uppercase) for
-//   case-insensitive lookup
+// - Canonical procedure keys provide case-insensitive lookup
 // - Each procedure name maps to exactly one signature; redefinitions are errors
-// - The registry does not own AST nodes; it only references declaration metadata
+// - The registry copies signature/location metadata and does not own AST nodes
 //
 //===----------------------------------------------------------------------===//
+/// @file ProcRegistry.hpp
+/// @brief Declares BASIC procedure signature registration and lookup.
+/// @details ProcRegistry owns copied signature and entry metadata, borrows only
+///          SemanticDiagnostics, and pre-seeds supported dotted runtime
+///          functions. User declarations are canonicalized for case-insensitive
+///          lookup and checked against existing user and builtin names.
+
 #pragma once
 
 #include "il/runtime/RuntimeSignatures.hpp"
@@ -69,22 +75,34 @@ namespace il::frontends::basic {
 
 /// @brief Hash functor for heterogeneous string lookup (C++20).
 struct ProcStringHash {
+    /// Marker enabling heterogeneous lookup in compatible unordered containers.
     using is_transparent = void;
 
+    /// @brief Hash a string-like key through its `std::string_view` representation.
+    /// @tparam T Type constructible as `std::string_view`.
+    /// @param key String-like value to hash.
+    /// @return Standard-library hash of the character sequence.
     template <typename T> [[nodiscard]] std::size_t operator()(const T &key) const noexcept {
         return std::hash<std::string_view>{}(std::string_view(key));
     }
 };
 
+/// @brief Semantic call signature stored for a BASIC or runtime procedure.
 struct ProcSignature {
+    /// @brief Whether the callable produces a value.
     enum class Kind { Function, Sub } kind{Kind::Function};
+    /// BASIC return type for functions; empty for subroutines.
     std::optional<Type> retType;
 
+    /// @brief One parameter's BASIC type and array classification.
     struct Param {
+        /// Scalar or element type.
         Type type{Type::I64};
+        /// Whether the declaration passes an array.
         bool is_array{false};
     };
 
+    /// Parameters in declaration order.
     std::vector<Param> params;
 
     /// @brief True when this signature was imported from the runtime catalog.
@@ -113,55 +131,98 @@ struct ProcSignature {
     std::vector<bool> objectParams;
 };
 
+/// Signature map supporting heterogeneous string lookup.
 using ProcTable = std::unordered_map<std::string, ProcSignature, ProcStringHash, std::equal_to<>>;
 
+/// @brief Owns procedure signatures and qualified conflict metadata.
+/// @details Runtime builtins are inserted at construction and after @ref clear.
+///          The registry retains no AST pointers for normal registration;
+///          diagnostics are emitted through the borrowed service.
 class ProcRegistry {
   public:
+    /// @brief Construct a registry and seed supported runtime procedures.
+    /// @param d Diagnostic service borrowed for this object's lifetime.
+    /// @pre @p d outlives the registry.
     explicit ProcRegistry(SemanticDiagnostics &d);
 
+    /// @brief Remove current entries and reseed supported runtime procedures.
     void clear();
 
+    /// @brief Origin classification for a qualified registry entry.
     enum class ProcKind : std::uint8_t { User, BuiltinExtern };
 
+    /// @brief Conflict and runtime back-pointer metadata for one canonical name.
     struct ProcEntry {
+        /// Reserved non-owning declaration pointer; currently null for inserted entries.
         const void *node{nullptr};
+        /// Declaration or registration location.
         il::support::SourceLoc loc{};
+        /// Whether the entry is user-defined or runtime-seeded.
         ProcKind kind{ProcKind::User};
-        // Back-pointer to runtime signature id when BuiltinExtern.
+        /// Runtime signature ID for a builtin entry when one is available.
         std::optional<il::runtime::RtSig> runtimeSigId{};
     };
 
+    /// @brief Register a user FUNCTION signature.
+    /// @param f Declaration whose signature is copied; no AST pointer is retained.
     void registerProc(const FunctionDecl &f);
 
+    /// @brief Register a user SUB signature.
+    /// @param s Declaration whose signature is copied; no AST pointer is retained.
     void registerProc(const SubDecl &s);
 
+    /// @brief Access all display and canonical signature entries.
+    /// @return Const reference to registry-owned signature storage.
     const ProcTable &procs() const;
 
+    /// @brief Look up a display spelling, then its canonicalized equivalent.
+    /// @param name Qualified or unqualified procedure spelling.
+    /// @return Pointer to a registry-owned signature, or null when absent/invalid.
     const ProcSignature *lookup(std::string_view name) const;
 
-    // P1.3 API additions
+    /// @brief Register a FUNCTION through the legacy pointer-based API.
+    /// @param fn Declaration to copy, or null for no operation.
+    /// @param loc Registration location overriding the declaration location.
     void AddProc(const FunctionDecl *fn, il::support::SourceLoc loc);
+    /// @brief Probe the qualified-entry table without canonicalization.
+    /// @param qualified Exact table key.
+    /// @return Pointer to registry-owned entry metadata, or null when absent.
     const ProcEntry *LookupExact(std::string_view qualified) const;
 
-    // Seed registry with builtin extern procedures from runtime signatures.
+    /// @brief Add supported dotted runtime signatures not already registered.
     void seedRuntimeBuiltins();
 
   private:
+    /// @brief Borrowed view of declaration data used by shared registration.
     struct ProcDescriptor {
+        /// Function or subroutine classification.
         ProcSignature::Kind kind{ProcSignature::Kind::Function};
+        /// Optional BASIC return type.
         std::optional<Type> retType;
+        /// Borrowed parameter sequence valid for the registration call.
         std::span<const Param> params;
+        /// Source location carried with the descriptor.
         il::support::SourceLoc loc;
     };
 
+    /// @brief Validate parameters and copy a descriptor into a stored signature.
+    /// @param descriptor Borrowed procedure description.
+    /// @return Owned signature value.
     ProcSignature buildSignature(const ProcDescriptor &descriptor);
 
+    /// @brief Canonicalize, conflict-check, and store one procedure descriptor.
+    /// @param name Display or dotted procedure spelling.
+    /// @param descriptor Procedure data to validate and copy.
+    /// @param loc Location used for diagnostics and qualified entry metadata.
     void registerProcImpl(std::string_view name,
                           const ProcDescriptor &descriptor,
                           il::support::SourceLoc loc);
 
+    /// Borrowed semantic diagnostic service.
     SemanticDiagnostics &de;
+    /// Owned signatures indexed by display and canonical spellings.
     ProcTable procs_;
+    /// Owned conflict/runtime metadata indexed by canonical qualified key.
     std::unordered_map<std::string, ProcEntry, ProcStringHash, std::equal_to<>> byQualified_;
 };
 

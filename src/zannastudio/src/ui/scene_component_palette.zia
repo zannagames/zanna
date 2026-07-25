@@ -35,6 +35,8 @@ final AUTHOR_KIND_INT: Integer = 1;
 final AUTHOR_KIND_FLOAT: Integer = 2;
 final AUTHOR_KIND_BOOL: Integer = 3;
 final AUTHOR_KIND_NULL: Integer = 4;
+final AUTHOR_KIND_ENUM: Integer = 5;
+final AUTHOR_KIND_ASSET: Integer = 6;
 
 /// @brief Presentation-only component picker shared by both scene inspectors.
 class SceneComponentPalette {
@@ -69,6 +71,10 @@ class SceneComponentPalette {
     expose GUI.TextInput fieldLabelInput;
     expose GUI.Dropdown fieldTypeDropdown;
     expose GUI.TextInput fieldDefaultInput;
+    expose GUI.TextInput fieldOptionsInput;
+    expose GUI.Label migrationLabel;
+    expose GUI.Button migrateButton;
+    expose GUI.Button migrationDismissButton;
     expose GUI.TextInput fieldDescriptionInput;
     expose GUI.Button saveFieldButton;
     expose GUI.Button deleteFieldButton;
@@ -113,6 +119,10 @@ class SceneComponentPalette {
         fieldLabelInput = null;
         fieldTypeDropdown = null;
         fieldDefaultInput = null;
+        fieldOptionsInput = null;
+        migrationLabel = null;
+        migrateButton = null;
+        migrationDismissButton = null;
         fieldDescriptionInput = null;
         saveFieldButton = null;
         deleteFieldButton = null;
@@ -256,10 +266,16 @@ class SceneComponentPalette {
         fieldTypeDropdown.AddItem("Float");
         fieldTypeDropdown.AddItem("Boolean");
         fieldTypeDropdown.AddItem("Null");
+        fieldTypeDropdown.AddItem("Enum");
+        fieldTypeDropdown.AddItem("Asset");
         fieldTypeDropdown.SetSelected(AUTHOR_KIND_STRING);
         fieldDefaultInput = GUI.TextInput.New(fieldValueRow);
         fieldDefaultInput.SetPlaceholder("Typed default");
         fieldDefaultInput.SetFlex(1.0);
+        fieldOptionsInput = GUI.TextInput.New(schemaEditorGroup);
+        fieldOptionsInput.SetAccessibleName("Field choices or asset kinds");
+        fieldOptionsInput.SetPlaceholder(
+            "Enum choices or asset kinds (comma-separated)");
         fieldDescriptionInput = GUI.TextInput.New(schemaEditorGroup);
         fieldDescriptionInput.SetPlaceholder(
             "Field description (optional)");
@@ -270,6 +286,21 @@ class SceneComponentPalette {
         deleteFieldButton = GUI.Button.New(fieldSaveRow, "Delete Field");
         deleteFieldButton.SetTooltip(
             "Remove this field from the template, not from existing scenes");
+
+        migrationLabel = GUI.Label.New(schemaEditorGroup, "");
+        migrationLabel.SetWordWrap(true);
+        migrationLabel.SetVisible(false);
+        var migrationRow = GUI.HBox.New();
+        migrationRow.SetSpacing(4.0);
+        schemaEditorGroup.AddChild(migrationRow);
+        migrateButton = GUI.Button.New(migrationRow, "Scan Scenes");
+        migrateButton.SetTooltip(
+            "Explicitly scan, review, then migrate workspace scenes");
+        migrateButton.SetVisible(false);
+        migrationDismissButton = GUI.Button.New(migrationRow, "Dismiss");
+        migrationDismissButton.SetTooltip(
+            "Keep existing scene values exactly as authored");
+        migrationDismissButton.SetVisible(false);
 
         schemaEditorGroup.SetVisible(false);
         SetAuthoringState(false, false, false, "");
@@ -655,7 +686,41 @@ class SceneComponentPalette {
         if fieldTypeDropdown.Selected == AUTHOR_KIND_NULL {
             return "null";
         }
+        if fieldTypeDropdown.Selected == AUTHOR_KIND_ENUM {
+            return "enum";
+        }
+        if fieldTypeDropdown.Selected == AUTHOR_KIND_ASSET {
+            return "asset";
+        }
         return "string";
+    }
+
+    /// @brief Publish or clear the explicit migration offer (ADR 0178).
+    /// @details An empty action label shows a report with only Dismiss.
+    expose func SetMigrationOffer(text: String, actionLabel: String) {
+        if migrationLabel == null { return; }
+        var visible = text != "";
+        migrationLabel.SetText(text);
+        migrationLabel.SetVisible(visible);
+        migrationDismissButton.SetVisible(visible);
+        migrateButton.SetVisible(visible and actionLabel != "");
+        if actionLabel != "" { migrateButton.SetText(actionLabel); }
+    }
+
+    /// @brief Consume the explicit migration scan/confirm intent.
+    expose func TakeMigrateRequested() -> Boolean {
+        return migrateButton != null and migrateButton.WasClicked();
+    }
+
+    /// @brief Consume the migration dismissal intent.
+    expose func TakeMigrationDismissRequested() -> Boolean {
+        return migrationDismissButton != null
+            and migrationDismissButton.WasClicked();
+    }
+
+    /// @brief Return the drafted comma-separated choices or asset kinds.
+    expose func DraftFieldOptions() -> String {
+        return fieldOptionsInput.Text;
     }
 
     /// @brief Publish file-history state and contextual authoring feedback.
@@ -710,6 +775,7 @@ class SceneComponentPalette {
             fieldDefaultInput.SetText(field.defaultText);
             fieldDescriptionInput.SetText(field.description);
         }
+        RefreshFieldOptionsDraft(field);
         UpdateAuthoringDefaultControl();
     }
 
@@ -730,11 +796,14 @@ class SceneComponentPalette {
         if kind == "float" { selected = AUTHOR_KIND_FLOAT; }
         if kind == "bool" { selected = AUTHOR_KIND_BOOL; }
         if kind == "null" { selected = AUTHOR_KIND_NULL; }
+        if kind == "enum" { selected = AUTHOR_KIND_ENUM; }
+        if kind == "asset" { selected = AUTHOR_KIND_ASSET; }
         fieldTypeDropdown.SetSelected(selected);
     }
 
     hide func UpdateAuthoringDefaultControl() {
-        var isNull = DraftFieldKind() == "null";
+        var kind = DraftFieldKind();
+        var isNull = kind == "null";
         fieldDefaultInput.SetEnabled(isNull == false);
         if isNull {
             fieldDefaultInput.SetText("");
@@ -742,6 +811,36 @@ class SceneComponentPalette {
         } else {
             fieldDefaultInput.SetPlaceholder("Typed default");
         }
+        fieldOptionsInput.SetEnabled(kind == "enum" or kind == "asset");
+        if kind == "enum" {
+            fieldOptionsInput.SetPlaceholder(
+                "Choices, e.g. grunt, ranged, elite");
+        } else if kind == "asset" {
+            fieldOptionsInput.SetPlaceholder(
+                "Asset kinds: image, audio, scene, or any");
+        } else {
+            fieldOptionsInput.SetPlaceholder(
+                "Enum choices or asset kinds (comma-separated)");
+        }
+    }
+
+    /// @brief Refill the options draft from one selected authored field.
+    hide func RefreshFieldOptionsDraft(
+        field: scene_component_schema.SceneComponentField) {
+        if field == null {
+            fieldOptionsInput.SetText("");
+            return;
+        }
+        var values = field.choices;
+        if field.kind == "asset" { values = field.assetKinds; }
+        var out = "";
+        var index = 0;
+        while index < values.count() {
+            if index > 0 { out = out + ", "; }
+            out = out + values.get(index);
+            index = index + 1;
+        }
+        fieldOptionsInput.SetText(out);
     }
 
     hide func RefreshAuthoringAvailability() {
@@ -801,9 +900,13 @@ class SceneComponentPalette {
             and component != null and component.fields.count() > 1);
         if field != null {
             UpdateAuthoringDefaultControl();
-            if canEdit == false { fieldDefaultInput.SetEnabled(false); }
+            if canEdit == false {
+                fieldDefaultInput.SetEnabled(false);
+                fieldOptionsInput.SetEnabled(false);
+            }
         } else {
             fieldDefaultInput.SetEnabled(false);
+            fieldOptionsInput.SetEnabled(false);
         }
 
         var statusText = authoringMessage;

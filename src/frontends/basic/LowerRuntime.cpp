@@ -60,6 +60,7 @@ void RuntimeHelperTracker::reset() {
 ///          helper must be emitted when declarations are synthesised.
 ///
 /// @param feature Feature whose helper must be available.
+/// @pre @p feature is a valid value below RuntimeFeature::Count.
 void RuntimeHelperTracker::requestHelper(RuntimeFeature feature) {
     requested_.set(static_cast<std::size_t>(feature));
 }
@@ -75,10 +76,10 @@ bool RuntimeHelperTracker::isHelperNeeded(RuntimeFeature feature) const {
 }
 
 /// @brief Record a runtime helper as used and maintain declaration ordering.
-/// @details Ensures the helper is marked as requested and, if it has not been
-///          seen before, appends it to the ordered replay list.  The ordered
-///          list guarantees deterministic extern emission even when requests
-///          arise out of order during lowering.
+/// @details Always marks the feature requested. If its registry descriptor is
+///          a feature-lowered helper, the feature is deduplicated; ordered
+///          descriptors are also appended on first use to preserve request
+///          order. Missing descriptors are left only in the request bitset.
 ///
 /// @param feature Feature whose helper was touched during lowering.
 void RuntimeHelperTracker::trackRuntime(RuntimeFeature feature) {
@@ -102,6 +103,11 @@ void RuntimeHelperTracker::trackRuntime(RuntimeFeature feature) {
     }
 }
 
+/// @brief Record the exact spelling emitted at a runtime call site.
+/// @details Copies @p name into a deduplicated set without validating it
+///          against the runtime registry. Declaration selection later uses the
+///          set to distinguish canonical names from aliases.
+/// @param name Callee spelling as emitted into IL.
 void RuntimeHelperTracker::trackCalleeName(std::string_view name) {
     usedNames_.insert(std::string(name));
 }
@@ -121,17 +127,19 @@ void declareRuntimeExtern(build::IRBuilder &b, const il::runtime::RuntimeDescrip
 } // namespace
 
 /// @brief Declare every runtime helper required by the current lowering run.
-/// @details Walks the runtime descriptor registry, emitting helpers that are
-///          always needed plus those gated behind feature flags or bounds-check
-///          settings.  The ordered feature list captured via @ref trackRuntime is
-///          replayed afterwards to guarantee deterministic declaration ordering
-///          for helpers that opted into sequencing.
+/// @details Walks the registry for always-on, bounds-gated, and unordered
+///          requested descriptors, then replays ordered features. Signature
+///          aliases are collapsed toward an explicitly used spelling or,
+///          absent one, a canonical dotted name; Terminal names are preferred
+///          over Console aliases. Finally, directly used non-`rt_` manual
+///          descriptors are declared. A per-call set prevents duplicate names.
 ///
 /// @param b IR builder used to register extern declarations.
 /// @param boundsChecks Whether array bounds helpers should be declared.
 void RuntimeHelperTracker::declareRequiredRuntime(build::IRBuilder &b, bool boundsChecks) const {
     std::unordered_set<std::string> declared;
 
+    /// Apply alias policy and declare one registry descriptor at most once.
     auto tryDeclare = [&](const il::runtime::RuntimeDescriptor &d) {
         // If any variant (alias/canonical) of this signature id was used at a
         // call site, declare only that used spelling and skip the others.
@@ -250,10 +258,9 @@ void RuntimeHelperTracker::declareRequiredRuntime(build::IRBuilder &b, bool boun
 }
 
 /// @brief Mark a manual runtime helper as required.
-/// @details Manual helpers are not described in the runtime registry and
-///          instead have dedicated toggles in the lowering pipeline.  This
-///          function flips the boolean flag corresponding to the helper so
-///          @ref declareRequiredRuntime can emit it.
+/// @details Manual helpers use dedicated toggles rather than feature-lowering
+///          metadata. This function flips the flag at the enum's table index so
+///          @ref declareRequiredRuntime can resolve and emit its descriptor.
 ///
 /// @param helper Manual helper whose declaration should be emitted.
 void Lowerer::setManualHelperRequired(ManualRuntimeHelper helper) {
@@ -440,27 +447,32 @@ void Lowerer::requireArrayStrLen() {
     setManualHelperRequired(ManualRuntimeHelper::ArrayStrLen);
 }
 
-// --- Object array helper require hooks ---
+/// @brief Request the manual helper that allocates an object array.
 void Lowerer::requireArrayObjNew() {
     setManualHelperRequired(ManualRuntimeHelper::ArrayObjNew);
 }
 
+/// @brief Request the manual helper that reads an object array's length.
 void Lowerer::requireArrayObjLen() {
     setManualHelperRequired(ManualRuntimeHelper::ArrayObjLen);
 }
 
+/// @brief Request the manual helper that loads an object-array element.
 void Lowerer::requireArrayObjGet() {
     setManualHelperRequired(ManualRuntimeHelper::ArrayObjGet);
 }
 
+/// @brief Request the manual helper that stores an object-array element.
 void Lowerer::requireArrayObjPut() {
     setManualHelperRequired(ManualRuntimeHelper::ArrayObjPut);
 }
 
+/// @brief Request the manual helper that resizes an object array.
 void Lowerer::requireArrayObjResize() {
     setManualHelperRequired(ManualRuntimeHelper::ArrayObjResize);
 }
 
+/// @brief Request the manual helper that releases an object-array reference.
 void Lowerer::requireArrayObjRelease() {
     setManualHelperRequired(ManualRuntimeHelper::ArrayObjRelease);
 }
@@ -500,9 +512,9 @@ void Lowerer::requireWriteChErr() {
     setManualHelperRequired(ManualRuntimeHelper::WriteChErr);
 }
 
-/// @brief Request the helper that prints a character with error handling.
-/// @details Marks the newline-print helper used for PRINT# statements that
-///          append a terminator.
+/// @brief Request the helper that writes a newline-terminated channel record.
+/// @details Marks the PRINT# helper used for statements that append a line
+///          terminator and propagate channel errors.
 void Lowerer::requirePrintlnChErr() {
     setManualHelperRequired(ManualRuntimeHelper::PrintlnChErr);
 }
@@ -536,23 +548,27 @@ void Lowerer::requireLocCh() {
     setManualHelperRequired(ManualRuntimeHelper::LocCh);
 }
 
-// Module-level globals helpers
+/// @brief Request address lookup for an `i64` module variable.
 void Lowerer::requireModvarAddrI64() {
     setManualHelperRequired(ManualRuntimeHelper::ModvarAddrI64);
 }
 
+/// @brief Request address lookup for an `f64` module variable.
 void Lowerer::requireModvarAddrF64() {
     setManualHelperRequired(ManualRuntimeHelper::ModvarAddrF64);
 }
 
+/// @brief Request address lookup for an `i1` module variable.
 void Lowerer::requireModvarAddrI1() {
     setManualHelperRequired(ManualRuntimeHelper::ModvarAddrI1);
 }
 
+/// @brief Request address lookup for a pointer module variable.
 void Lowerer::requireModvarAddrPtr() {
     setManualHelperRequired(ManualRuntimeHelper::ModvarAddrPtr);
 }
 
+/// @brief Request address lookup for a string module variable.
 void Lowerer::requireModvarAddrStr() {
     setManualHelperRequired(ManualRuntimeHelper::ModvarAddrStr);
 }
@@ -588,6 +604,7 @@ void Lowerer::requireTimerMs() {
 /// @brief Forward a runtime feature request to the shared tracker.
 /// @details Invokes @ref RuntimeHelperTracker::requestHelper so the
 ///          feature-specific helper is considered during extern emission.
+/// @param feature Registry feature to mark as needed.
 void Lowerer::requestHelper(RuntimeFeature feature) {
     runtimeTracker.requestHelper(feature);
 }
@@ -596,6 +613,8 @@ void Lowerer::requestHelper(RuntimeFeature feature) {
 /// @details Pass-through convenience wrapper around
 ///          @ref RuntimeHelperTracker::isHelperNeeded used by lowering code to
 ///          gate feature-dependent behaviour.
+/// @param feature Registry feature to query.
+/// @return True when the feature's request bit is set.
 bool Lowerer::isHelperNeeded(RuntimeFeature feature) const {
     return runtimeTracker.isHelperNeeded(feature);
 }
@@ -604,6 +623,7 @@ bool Lowerer::isHelperNeeded(RuntimeFeature feature) const {
 /// @details Calls @ref RuntimeHelperTracker::trackRuntime so that ordered
 ///          helpers are replayed deterministically when declarations are
 ///          emitted.
+/// @param feature Registry feature observed during lowering.
 void Lowerer::trackRuntime(RuntimeFeature feature) {
     runtimeTracker.trackRuntime(feature);
 }
@@ -611,16 +631,21 @@ void Lowerer::trackRuntime(RuntimeFeature feature) {
 /// @brief Emit extern declarations for all helpers requested via the tracker or manual toggles.
 /// @details Delegates feature-driven helpers to @ref RuntimeHelperTracker and
 ///          then walks the manual helper table, declaring any entries whose
-///          toggles were flipped earlier in lowering.
+///          toggles were flipped earlier in lowering. Used alias spellings and
+///          explicitly referenced bounds/feature descriptors receive a final
+///          module-level deduplication pass.
+/// @param b Builder receiving extern declarations.
 void Lowerer::declareRequiredRuntime(build::IRBuilder &b) {
     runtimeTracker.declareRequiredRuntime(b, boundsChecks);
 
+    /// Maps one manual requirement bit to its default runtime symbol and hook.
     struct ManualHelperDescriptor {
         std::string_view name;
         ManualRuntimeHelper helper{ManualRuntimeHelper::Trap};
         [[maybe_unused]] void (Lowerer::*requireHook)() = nullptr;
     };
 
+    /// Exhaustive table indexed indirectly by ManualRuntimeHelper values.
     static constexpr std::array<ManualHelperDescriptor, manualRuntimeHelperCount> manualHelpers{{
         {"rt_trap_string", ManualRuntimeHelper::Trap, &Lowerer::requireTrap},
         {"rt_arr_i32_new", ManualRuntimeHelper::ArrayI32New, &Lowerer::requireArrayI32New},
@@ -695,6 +720,7 @@ void Lowerer::declareRequiredRuntime(build::IRBuilder &b) {
         {"rt_timer_ms", ManualRuntimeHelper::TimerMs, &Lowerer::requireTimerMs},
     }};
 
+    /// Declare a manual helper under a used alias or its default spelling.
     auto declareManual = [&](std::string_view name) {
         // Prefer the spelling observed at call sites when available so extern
         // declarations match emitted calls (avoids alias duplicates under
@@ -765,6 +791,7 @@ void Lowerer::declareRequiredRuntime(build::IRBuilder &b) {
         }
     }
 
+    /// Add a known extern unless the bound module already contains its name.
     auto ensureExtern = [&](std::string_view name) {
         if (!mod)
             return;

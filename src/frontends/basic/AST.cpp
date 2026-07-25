@@ -5,9 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Provides the out-of-line accept/dispatch helpers for BASIC AST nodes.  The
-// translation unit exists so the header remains lightweight while still
-// centralising visitor entry points for every concrete node type.
+// File: src/frontends/basic/AST.cpp
+// Purpose: Provide out-of-line accept/dispatch helpers for BASIC AST nodes.
+//          The translation unit keeps the node headers lightweight while
+//          centralising visitor entry points for every concrete node type.
+// Ownership/Lifetime: Dispatch borrows both nodes and visitors for each call.
+// Links: src/frontends/basic/AST.hpp,
+//        src/frontends/basic/ast/ExprNodes.hpp,
+//        src/frontends/basic/ast/StmtNodesAll.hpp
 //
 //===----------------------------------------------------------------------===//
 //
@@ -44,6 +49,9 @@ namespace il::frontends::basic {
 //   void NodeType::accept(VisitorType &v) [const] { v.visit(*this); }
 
 /// @brief Define accept methods for expression nodes.
+/// @details Each invocation emits the const ExprVisitor overload and mutable
+///          MutExprVisitor overload. Both borrow the visitor and immediately
+///          call its matching `visit(NodeType&)` overload with `*this`.
 /// @param NodeType The concrete expression class name.
 #define DEFINE_EXPR_ACCEPT(NodeType)                                                               \
     void NodeType::accept(ExprVisitor &visitor) const {                                            \
@@ -54,6 +62,9 @@ namespace il::frontends::basic {
     }
 
 /// @brief Define accept methods for statement nodes.
+/// @details Each invocation emits the const StmtVisitor overload and mutable
+///          MutStmtVisitor overload. Both borrow the visitor and immediately
+///          call its matching `visit(NodeType&)` overload with `*this`.
 /// @param NodeType The concrete statement class name.
 #define DEFINE_STMT_ACCEPT(NodeType)                                                               \
     void NodeType::accept(StmtVisitor &visitor) const {                                            \

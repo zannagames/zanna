@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/Parallelism.hpp
+// File: src/codegen/common/Parallelism.hpp
 // Purpose: Shared worker-count policy for codegen passes.
 // Key invariants:
 //   - Codegen parallel loops use one bounded policy rather than each pass
@@ -25,6 +25,9 @@
 #include <cstdlib>
 #include <limits>
 #include <thread>
+
+/// @file
+/// @brief Defines the shared bounded worker-count policy for native codegen.
 
 namespace zanna::codegen::common {
 

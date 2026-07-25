@@ -37,6 +37,10 @@ bind Fmt = Zanna.Text.Fmt;
 
 final SCHEMA_FILE_NAME: String = "scene-components.json";
 final SCHEMA_VERSION: Integer = 1;
+final SCHEMA_VERSION_MAX: Integer = 2;
+final MAX_ENUM_CHOICES: Integer = 64;
+final MAX_ENUM_CHOICE_CHARS: Integer = 64;
+final MAX_ASSET_KINDS: Integer = 4;
 final TARGET_2D_OBJECT: String = "2d-object";
 final TARGET_3D_NODE: String = "3d-node";
 final TARGET_BOTH: String = "both";
@@ -57,6 +61,8 @@ class SceneComponentField {
     expose String kind;
     expose String defaultText;
     expose String description;
+    expose List[String] choices;
+    expose List[String] assetKinds;
 
     expose func init() {
         key = "";
@@ -64,6 +70,18 @@ class SceneComponentField {
         kind = "";
         defaultText = "";
         description = "";
+        choices = [];
+        assetKinds = [];
+    }
+
+    /// @brief Return whether one exact value is a declared enum choice.
+    expose func HasChoice(value: String) -> Boolean {
+        var index = 0;
+        while index < choices.count() {
+            if choices.get(index) == value { return true; }
+            index = index + 1;
+        }
+        return false;
     }
 }
 
@@ -106,6 +124,7 @@ class SceneComponentSchema {
     expose Boolean valid;
     expose String sourcePath;
     expose String error;
+    expose Integer version;
     expose List[SceneComponentDefinition] components;
 
     expose func init() {
@@ -113,6 +132,7 @@ class SceneComponentSchema {
         valid = true;
         sourcePath = "";
         error = "";
+        version = SCHEMA_VERSION;
         components = [];
     }
 
@@ -224,9 +244,11 @@ expose func ParseText(text: String,
     var parsedVersion =
         Parse.TryInt(Json.Format(Map.Get(root, "version")));
     if parsedVersion.IsNone
-       or parsedVersion.UnwrapI64() != SCHEMA_VERSION {
+       or parsedVersion.UnwrapI64() < SCHEMA_VERSION
+       or parsedVersion.UnwrapI64() > SCHEMA_VERSION_MAX {
         return Reject(schema, "Unsupported component schema version.");
     }
+    schema.version = parsedVersion.UnwrapI64();
 
     var rawComponents = Map.Get(root, "components");
     if rawComponents == null or Json.TypeOf(rawComponents) != "array" {
@@ -401,11 +423,27 @@ func ParseField(raw: Any,
     Map.SetBool(seenKeys, field.key, true);
 
     field.kind = Str.ToLower(Str.Trim(Map.GetStr(raw, "type")));
-    if IsScalarKind(field.kind) == false {
+    var versionTwoKind = field.kind == "enum" or field.kind == "asset";
+    if versionTwoKind and schema.version < 2 {
         Reject(
             schema,
             "Field \"" + field.key
-                + "\" type must be string, int, float, bool, or null.");
+                + "\" uses type " + field.kind
+                + ", which requires schema version 2.");
+        return null;
+    }
+    if IsScalarKind(field.kind) == false and versionTwoKind == false {
+        Reject(
+            schema,
+            "Field \"" + field.key
+                + "\" type must be string, int, float, bool, null, enum, "
+                + "or asset.");
+        return null;
+    }
+    if field.kind == "enum" and ParseEnumChoices(raw, field, schema) == false {
+        return null;
+    }
+    if field.kind == "asset" and ParseAssetKinds(raw, field, schema) == false {
         return null;
     }
 
@@ -456,6 +494,117 @@ func ParseField(raw: Any,
     return field;
 }
 
+/// @brief Parse and validate one enum field's declared choice list (ADR 0178).
+func ParseEnumChoices(raw: Any,
+                      field: SceneComponentField,
+                      schema: SceneComponentSchema) -> Boolean {
+    var rawChoices = Map.Get(raw, "choices");
+    if rawChoices == null or Json.TypeOf(rawChoices) != "array" {
+        Reject(
+            schema,
+            "Field \"" + field.key + "\" requires a choices array.");
+        return false;
+    }
+    var count = Seq.get_Count(rawChoices);
+    if count <= 0 or count > MAX_ENUM_CHOICES {
+        Reject(
+            schema,
+            "Field \"" + field.key
+                + "\" requires between 1 and 64 choices.");
+        return false;
+    }
+    var seen = Map.New();
+    var index = 0;
+    while index < count {
+        var value = Seq.Get(rawChoices, index);
+        if value == null or Json.TypeOf(value) != "string" {
+            Reject(
+                schema,
+                "Field \"" + field.key + "\" choices must be strings.");
+            return false;
+        }
+        var choice = Str.Trim(Seq.GetStr(rawChoices, index));
+        if PortableIdentifier(choice, MAX_ENUM_CHOICE_CHARS) == false {
+            Reject(
+                schema,
+                "Field \"" + field.key
+                    + "\" choices must be portable identifiers of at most "
+                    + "64 characters.");
+            return false;
+        }
+        var folded = Str.ToLower(choice);
+        if Map.Has(seen, folded) {
+            Reject(
+                schema,
+                "Field \"" + field.key + "\" has duplicate choice \""
+                    + choice + "\".");
+            return false;
+        }
+        Map.SetBool(seen, folded, true);
+        field.choices.add(choice);
+        index = index + 1;
+    }
+    return true;
+}
+
+/// @brief Parse one asset field's optional browser-kind filter (ADR 0178).
+func ParseAssetKinds(raw: Any,
+                     field: SceneComponentField,
+                     schema: SceneComponentSchema) -> Boolean {
+    if Map.Has(raw, "assetKinds") == false {
+        field.assetKinds.add("any");
+        return true;
+    }
+    var rawKinds = Map.Get(raw, "assetKinds");
+    if Json.TypeOf(rawKinds) != "array" {
+        Reject(
+            schema,
+            "Field \"" + field.key + "\" assetKinds must be an array.");
+        return false;
+    }
+    var count = Seq.get_Count(rawKinds);
+    if count <= 0 or count > MAX_ASSET_KINDS {
+        Reject(
+            schema,
+            "Field \"" + field.key
+                + "\" assetKinds needs between 1 and 4 entries.");
+        return false;
+    }
+    var index = 0;
+    while index < count {
+        var value = Seq.Get(rawKinds, index);
+        if value == null or Json.TypeOf(value) != "string" {
+            Reject(
+                schema,
+                "Field \"" + field.key + "\" assetKinds must be strings.");
+            return false;
+        }
+        var kind = Str.ToLower(Str.Trim(Seq.GetStr(rawKinds, index)));
+        if kind != "image" and kind != "audio" and kind != "scene"
+           and kind != "any" {
+            Reject(
+                schema,
+                "Field \"" + field.key
+                    + "\" assetKinds must be image, audio, scene, or any.");
+            return false;
+        }
+        var existing = 0;
+        while existing < field.assetKinds.count() {
+            if field.assetKinds.get(existing) == kind {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" has duplicate asset kind \"" + kind + "\".");
+                return false;
+            }
+            existing = existing + 1;
+        }
+        field.assetKinds.add(kind);
+        index = index + 1;
+    }
+    return true;
+}
+
 /// @brief Validate one optional JSON default and produce exact editor text.
 func CanonicalizeDefault(raw: Any,
                          field: SceneComponentField,
@@ -465,12 +614,27 @@ func CanonicalizeDefault(raw: Any,
             field.defaultText = "0";
         }
         if field.kind == "bool" { field.defaultText = "false"; }
+        if field.kind == "enum" and field.choices.count() > 0 {
+            field.defaultText = field.choices.get(0);
+        }
         return true;
     }
 
     var value = Map.Get(raw, "default");
     var valueType = Json.TypeOf(value);
-    if field.kind == "string" {
+    if field.kind == "enum" {
+        if valueType != "string" { return false; }
+        field.defaultText = Str.Trim(Map.GetStr(raw, "default"));
+        if field.HasChoice(field.defaultText) == false {
+            Reject(
+                schema,
+                "Field \"" + field.key
+                    + "\" default must be one of its declared choices.");
+            return false;
+        }
+        return true;
+    }
+    if field.kind == "string" or field.kind == "asset" {
         if valueType != "string" { return false; }
         field.defaultText = Map.GetStr(raw, "default");
         if Str.get_Length(field.defaultText) > MAX_DEFAULT_STRING_CHARS {
@@ -510,6 +674,20 @@ func CanonicalizeDefault(raw: Any,
 expose func IsScalarKind(kind: String) -> Boolean {
     return kind == "string" or kind == "int" or kind == "float"
         or kind == "bool" or kind == "null";
+}
+
+/// @brief Return the runtime scalar kind one schema field authors (ADR 0178).
+/// @details Enum and asset values are ordinary string properties at runtime;
+///          every other kind maps to itself.
+expose func ValueKind(kind: String) -> String {
+    if kind == "enum" or kind == "asset" { return "string"; }
+    return kind;
+}
+
+/// @brief Return the lowest schema version a field kind requires.
+expose func KindVersion(kind: String) -> Integer {
+    if kind == "enum" or kind == "asset" { return 2; }
+    return SCHEMA_VERSION;
 }
 
 /// @brief Restrict stable schema identities to single-byte portable characters.

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/ElfExeWriter.cpp
+// File: src/codegen/common/linker/ElfExeWriter.cpp
 // Purpose: Writes ELF executables with native static and dynamic-link support.
 // Key invariants:
 //   - ET_EXEC with fixed image base and page-aligned PT_LOAD segments
@@ -15,6 +15,16 @@
 // Links: codegen/common/linker/ElfExeWriter.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ElfExeWriter.cpp
+ * @brief Implements static and loader-assisted ELF64 executable serialization.
+ *
+ * The writer creates program and section headers directly, groups finalized
+ * output sections into W^X-compatible load segments, optionally synthesizes
+ * dynamic-loader tables and startup code, and installs the completed image
+ * without invoking a system linker.
+ */
 
 #include "codegen/common/linker/ElfExeWriter.hpp"
 
@@ -86,6 +96,7 @@ static constexpr uint32_t R_AARCH64_GLOB_DAT = 1025;
 static constexpr const char *kLinuxX8664Interpreter = "/lib64/ld-linux-x86-64.so.2";
 static constexpr const char *kLinuxAArch64Interpreter = "/lib/ld-linux-aarch64.so.1";
 
+/// @brief ELF64 executable file header emitted at file offset zero.
 struct Elf64_Ehdr {
     uint8_t e_ident[16] = {};
     uint16_t e_type = 0;
@@ -103,6 +114,7 @@ struct Elf64_Ehdr {
     uint16_t e_shstrndx = 0;
 };
 
+/// @brief ELF64 program-header record describing one loader segment.
 struct Elf64_Phdr {
     uint32_t p_type = 0;
     uint32_t p_flags = 0;
@@ -114,6 +126,7 @@ struct Elf64_Phdr {
     uint64_t p_align = 0;
 };
 
+/// @brief ELF64 section-header record used for tooling metadata.
 struct Elf64_Shdr {
     uint32_t sh_name = 0;
     uint32_t sh_type = 0;
@@ -127,6 +140,7 @@ struct Elf64_Shdr {
     uint64_t sh_entsize = 0;
 };
 
+/// @brief ELF64 dynamic-symbol table record.
 struct Elf64_Sym {
     uint32_t st_name = 0;
     uint8_t st_info = 0;
@@ -136,17 +150,20 @@ struct Elf64_Sym {
     uint64_t st_size = 0;
 };
 
+/// @brief ELF64 dynamic relocation with an explicit addend.
 struct Elf64_Rela {
     uint64_t r_offset = 0;
     uint64_t r_info = 0;
     int64_t r_addend = 0;
 };
 
+/// @brief Tag/value record in the `.dynamic` section.
 struct Elf64_Dyn {
     int64_t d_tag = 0;
     uint64_t d_val = 0;
 };
 
+/// @brief Planned file and virtual-address extent of one `PT_LOAD` segment.
 struct SegmentInfo {
     size_t fileOffset = 0;
     uint64_t vaddr = 0;
@@ -155,6 +172,7 @@ struct SegmentInfo {
     uint32_t flags = 0;
 };
 
+/// @brief Aggregate extent and alignment of the optional `PT_TLS` segment.
 struct TlsSegmentInfo {
     bool present = false;
     size_t fileOffset = 0;
@@ -164,11 +182,13 @@ struct TlsSegmentInfo {
     uint64_t align = 1;
 };
 
+/// @brief File placement of one non-allocating layout section.
 struct NonAllocInfo {
     size_t layoutIdx = 0;
     size_t fileOffset = 0;
 };
 
+/// @brief Owns synthesized dynamic-linking strings, tables, relocations, and placement.
 struct DynamicInfo {
     bool enabled = false;
     bool hasTextRel = false;
@@ -198,6 +218,7 @@ struct DynamicInfo {
     uint64_t rwVaddr = 0;
 };
 
+/// @brief Owns an optional synthesized `_start` shim and its placement.
 struct StartupStubInfo {
     bool enabled = false;
     std::vector<uint8_t> bytes;
@@ -205,6 +226,7 @@ struct StartupStubInfo {
     uint64_t vaddr = 0;
 };
 
+/// @brief Describes one synthesized section-header entry.
 struct SyntheticSectionRef {
     const char *name = nullptr;
     uint32_t type = 0;
@@ -218,6 +240,12 @@ struct SyntheticSectionRef {
     uint64_t entsize = 0;
 };
 
+/// @brief Copies a binary record into a buffer at a fixed offset.
+/// @tparam T ELF record type to serialize.
+/// @param buf Destination file buffer, grown and zero-filled as needed.
+/// @param off Byte offset at which to write the record.
+/// @param value Record value to copy.
+/// @throws std::length_error If `off + sizeof(T)` overflows `size_t`.
 template <typename T> void writeStruct(std::vector<uint8_t> &buf, size_t off, const T &value) {
     if (off > std::numeric_limits<size_t>::max() - sizeof(T))
         throw std::length_error("ELF write offset overflow");
@@ -227,7 +255,13 @@ template <typename T> void writeStruct(std::vector<uint8_t> &buf, size_t off, co
     std::memcpy(buf.data() + off, &value, sizeof(T));
 }
 
-/// @brief Pad @p buf to @p align then append a raw struct copy of @p value.
+/// @brief Pads a buffer to an alignment and appends a binary record.
+/// @tparam T ELF record type to serialize.
+/// @param buf Destination buffer.
+/// @param value Record value to append.
+/// @param align Required power-of-two byte alignment.
+/// @throws std::invalid_argument If @p align is not zero or a power of two.
+/// @throws std::length_error If alignment or record growth overflows.
 template <typename T>
 void appendStruct(std::vector<uint8_t> &buf, const T &value, uint64_t align = alignof(T)) {
     buf.resize(alignUp(buf.size(), align), 0);
@@ -236,7 +270,13 @@ void appendStruct(std::vector<uint8_t> &buf, const T &value, uint64_t align = al
     std::memcpy(buf.data() + off, &value, sizeof(T));
 }
 
-/// @brief Pad @p buf to @p align, write its size to @p outOff, then concat @p src.
+/// @brief Pads a buffer, records the append offset, and concatenates source bytes.
+/// @param buf Destination aggregate buffer.
+/// @param src Bytes to append.
+/// @param outOff Receives the aligned starting offset within @p buf.
+/// @param align Required power-of-two byte alignment.
+/// @throws std::invalid_argument If @p align is not zero or a power of two.
+/// @throws std::length_error If alignment overflows.
 void appendBytes(std::vector<uint8_t> &buf,
                  const std::vector<uint8_t> &src,
                  size_t &outOff,
@@ -246,6 +286,12 @@ void appendBytes(std::vector<uint8_t> &buf,
     buf.insert(buf.end(), src.begin(), src.end());
 }
 
+/// @brief Narrows an ELF count or offset to a 32-bit format field.
+/// @param value Value to narrow.
+/// @param what Field description used in diagnostics.
+/// @param err Diagnostic output stream.
+/// @param out Receives the narrowed value.
+/// @return `true` when @p value fits in `uint32_t`.
 bool checkedU32(uint64_t value, const char *what, std::ostream &err, uint32_t &out) {
     if (value > std::numeric_limits<uint32_t>::max()) {
         err << "error: ELF " << what << " exceeds 32-bit file format limit\n";
@@ -255,6 +301,13 @@ bool checkedU32(uint64_t value, const char *what, std::ostream &err, uint32_t &o
     return true;
 }
 
+/// @brief Adds two ELF virtual-address values with diagnostics on overflow.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param what Operation description used in diagnostics.
+/// @param err Diagnostic output stream.
+/// @param out Receives the sum.
+/// @return `true` when the sum is representable.
 bool checkedAddU64(uint64_t lhs, uint64_t rhs, const char *what, std::ostream &err, uint64_t &out) {
     if (lhs > std::numeric_limits<uint64_t>::max() - rhs) {
         err << "error: ELF " << what << " overflows 64-bit address range\n";
@@ -264,6 +317,13 @@ bool checkedAddU64(uint64_t lhs, uint64_t rhs, const char *what, std::ostream &e
     return true;
 }
 
+/// @brief Adds two host file sizes with diagnostics on overflow.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param what Operation description used in diagnostics.
+/// @param err Diagnostic output stream.
+/// @param out Receives the sum.
+/// @return `true` when the sum is representable.
 bool checkedAddSize(size_t lhs, size_t rhs, const char *what, std::ostream &err, size_t &out) {
     if (lhs > std::numeric_limits<size_t>::max() - rhs) {
         err << "error: ELF " << what << " overflows addressable size\n";
@@ -273,6 +333,13 @@ bool checkedAddSize(size_t lhs, size_t rhs, const char *what, std::ostream &err,
     return true;
 }
 
+/// @brief Aligns a host size while converting alignment exceptions to diagnostics.
+/// @param value Size to round upward.
+/// @param alignment Required alignment.
+/// @param what Operation description used in diagnostics.
+/// @param err Diagnostic output stream.
+/// @param out Receives the aligned result.
+/// @return `true` when alignment is valid and representable.
 bool checkedAlignUpSize(
     size_t value, size_t alignment, const char *what, std::ostream &err, size_t &out) {
     try {
@@ -284,7 +351,12 @@ bool checkedAlignUpSize(
     return true;
 }
 
-/// @brief Append a NUL-terminated string to a string table; return its offset.
+/// @brief Appends a NUL-terminated string and reports its 32-bit table offset.
+/// @param strtab Mutable string-table bytes.
+/// @param s String payload without its terminator.
+/// @param out Receives the starting table offset.
+/// @param err Diagnostic output stream.
+/// @return `true` when the offset and table growth are representable.
 bool addString(std::vector<uint8_t> &strtab,
                const std::string &s,
                uint32_t &out,
@@ -303,15 +375,23 @@ bool addString(std::vector<uint8_t> &strtab,
 
 /// @brief Compose an ELF r_info value from the symbol index and reloc type.
 /// @details Matches the ELF64 layout: high 32 bits = symbol index, low 32 = type.
+/// @param symIndex Dynamic symbol-table index.
+/// @param type Architecture-specific relocation type.
+/// @return Packed ELF64 `r_info` field.
 uint64_t dynInfoForSym(uint32_t symIndex, uint32_t type) {
     return (static_cast<uint64_t>(symIndex) << 32) | type;
 }
 
 /// @brief Test whether @p value fits in a signed 32-bit field (PC-relative reach check).
+/// @param value Signed displacement to test.
+/// @return `true` when no narrowing would change the value.
 bool fitsInt32(int64_t value) {
     return value >= -2147483648LL && value <= 2147483647LL;
 }
 
+/// @brief Converts output-section permissions to ELF `PF_*` flags.
+/// @param sec Output section to classify.
+/// @return Read permission plus execute and/or write permissions as applicable.
 uint32_t segmentFlagsForSection(const OutputSection &sec) {
     uint32_t flags = PF_R;
     if (sec.executable)
@@ -321,6 +401,10 @@ uint32_t segmentFlagsForSection(const OutputSection &sec) {
     return flags;
 }
 
+/// @brief Counts contiguous permission groups that require separate load segments.
+/// @param layout Layout containing the indexed sections.
+/// @param loadableIndices VA-ordered allocatable section indices.
+/// @return Number of runs with identical ELF segment flags.
 size_t countLoadSegments(const LinkLayout &layout, const std::vector<size_t> &loadableIndices) {
     size_t count = 0;
     bool haveCurrent = false;
@@ -341,6 +425,8 @@ using zanna::codegen::objfile::putLE32;
 /// @brief Compute the SVR4 ELF hash (`DT_HASH`) of a symbol name.
 /// @details The original Bourne-shell-era PJW hash, specified by the System V
 ///          ABI as the function used to populate `.hash` (DT_HASH) sections.
+/// @param name Dynamic symbol name.
+/// @return 32-bit System V hash value.
 uint32_t elfHash(std::string_view name) {
     uint32_t h = 0;
     for (unsigned char c : name) {
@@ -356,6 +442,11 @@ uint32_t elfHash(std::string_view name) {
 /// @brief Find the highest virtual address occupied by any allocatable section.
 /// @details Used as the placement floor for synthesised sections (.dynstr,
 ///          .dynsym, .hash, .rela.dyn) added after layout finalisation.
+/// @param layout Finalized link layout.
+/// @param maxEnd Receives the greatest checked section-end address, or zero
+///               when no allocatable section is nonempty.
+/// @param err Diagnostic output stream.
+/// @return `true` when every section range is representable.
 bool maxAllocEndAddr(const LinkLayout &layout, uint64_t &maxEnd, std::ostream &err) {
     maxEnd = 0;
     for (const auto &sec : layout.sections) {
@@ -379,6 +470,11 @@ bool maxAllocEndAddr(const LinkLayout &layout, uint64_t &maxEnd, std::ostream &e
 ///          code via the SYS_exit_group syscall (60), and traps if the syscall
 ///          returns. Used when the linker is producing a fully static binary
 ///          without crt1.o / glibc startup.
+/// @param stubVa Virtual address at which the stub will be mapped.
+/// @param entryAddr Virtual address of the program entry function.
+/// @param err Diagnostic output stream.
+/// @return Encoded stub bytes, or an empty vector when the relative call is
+///         out of range.
 std::vector<uint8_t> buildLinuxX64StartupStub(uint64_t stubVa,
                                               uint64_t entryAddr,
                                               std::ostream &err) {
@@ -402,8 +498,13 @@ std::vector<uint8_t> buildLinuxX64StartupStub(uint64_t stubVa,
 }
 
 /// @brief Synthesise an AArch64 _start stub: BL entry; MOV x8,#93; SVC #0; BRK.
-/// @details Tail-calls main, then issues SYS_exit (93) with the return value
+/// @details Calls main, then issues SYS_exit (93) with the return value
 ///          in x0. Bails if the entry point is not within ±128 MB BL range.
+/// @param stubVa Virtual address at which the stub will be mapped.
+/// @param entryAddr Virtual address of the program entry function.
+/// @param err Diagnostic output stream.
+/// @return Encoded stub bytes, or an empty vector for misalignment or an
+///         out-of-range branch.
 std::vector<uint8_t> buildLinuxAArch64StartupStub(uint64_t stubVa,
                                                   uint64_t entryAddr,
                                                   std::ostream &err) {
@@ -434,7 +535,14 @@ std::vector<uint8_t> buildLinuxAArch64StartupStub(uint64_t stubVa,
 ///          GOT/import slot found in the layout. The synthesised buffers are
 ///          page-aligned and placed contiguously after the existing alloc
 ///          sections by the caller.
-/// @return false on overflow / unrecoverable layout errors (writes to @p err).
+/// @param layout Finalized sections, GOT entries, and direct bind entries.
+/// @param arch Target architecture controlling interpreter and relocation types.
+/// @param neededLibs Ordered `DT_NEEDED` dependency names.
+/// @param dynSyms Loader-resolved symbols to place in `.dynsym`.
+/// @param pageSize Target page alignment used for synthesized placement.
+/// @param info Destination dynamic-linking buffers and placement metadata.
+/// @param err Diagnostic output stream.
+/// @return `true` on success, including a no-op for an empty @p dynSyms set.
 bool buildDynamicInfo(const LinkLayout &layout,
                       LinkArch arch,
                       const std::vector<std::string> &neededLibs,
@@ -509,6 +617,7 @@ bool buildDynamicInfo(const LinkLayout &layout,
     for (uint32_t chain : chains)
         encoding::writeLE32(info.hash, chain);
 
+    /// Appends one loader-applied relocation to the synthesized `.rela.dyn`.
     auto emitRela = [&](uint64_t offset, uint32_t symIndex, uint32_t type) {
         Elf64_Rela rela{};
         rela.r_offset = offset;
@@ -528,6 +637,7 @@ bool buildDynamicInfo(const LinkLayout &layout,
     }
 
     std::vector<BindEntry> bindEntries = layout.bindEntries;
+    /// Orders direct bind relocations reproducibly by location and symbol name.
     std::sort(bindEntries.begin(), bindEntries.end(), [](const BindEntry &a, const BindEntry &b) {
         if (a.sectionIndex != b.sectionIndex)
             return a.sectionIndex < b.sectionIndex;
@@ -593,6 +703,7 @@ bool buildDynamicInfo(const LinkLayout &layout,
         return false;
     info.rwVaddr = rwBaseSize;
 
+    /// Computes a checked virtual address within the synthesized read-only blob.
     auto dynSectionVA = [&](size_t off, const char *what, uint64_t &out) {
         return checkedAddU64(info.roVaddr, off, what, err, out);
     };
@@ -630,6 +741,7 @@ bool buildDynamicInfo(const LinkLayout &layout,
 
 } // anonymous namespace
 
+/// @copydoc writeElfExe(const std::string &, const LinkLayout &, LinkArch, const std::vector<std::string> &, const std::unordered_set<std::string> &, std::size_t, bool, std::ostream &)
 bool writeElfExe(const std::string &path,
                  const LinkLayout &layout,
                  LinkArch arch,

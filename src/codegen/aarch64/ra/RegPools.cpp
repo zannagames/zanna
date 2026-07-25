@@ -5,13 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/ra/RegPools.cpp
+// File: src/codegen/aarch64/ra/RegPools.cpp
 // Purpose: Implementation of physical register pool management for the
 //          AArch64 register allocator.
 //
 // Key invariants:
 //   - build() populates free lists with caller-saved first, then callee-saved.
-//   - Argument registers are excluded from initial free lists.
+//   - Argument registers participate unless the function-specific exclusion
+//     set marks an incoming value live before definition.
 //
 // Ownership/Lifetime:
 //   - Owned by LinearAllocator; one instance per allocation run.
@@ -28,8 +29,12 @@
 #include <algorithm>
 #include <stdexcept>
 
+/// @file
+/// @brief Implements validated AArch64 physical-register pool operations.
+
 namespace zanna::codegen::aarch64::ra {
 
+/// @copydoc RegPools::build
 void RegPools::build(const TargetInfo &ti, const std::array<bool, 64> &excluded) {
     gprFree.clear();
     fprFree.clear();
@@ -45,12 +50,14 @@ void RegPools::build(const TargetInfo &ti, const std::array<bool, 64> &excluded)
     for (auto r : ti.calleeSavedFPR)
         calleeSavedFPRSet[static_cast<std::size_t>(r)] = true;
 
+    /// Add an unreserved, non-excluded GPR to this function's eligible pool.
     const auto admitGPR = [&](PhysReg r) {
         if (!isAllocatableGPR(r) || excluded[static_cast<std::size_t>(r)])
             return;
         gprFree.push_back(r);
         poolEligible[static_cast<std::size_t>(r)] = true;
     };
+    /// Add a non-scratch, non-excluded FPR to this function's eligible pool.
     const auto admitFPR = [&](PhysReg r) {
         if (r == kScratchFPR || r == kScratchFPR2 || excluded[static_cast<std::size_t>(r)])
             return;
@@ -72,6 +79,7 @@ void RegPools::build(const TargetInfo &ti, const std::array<bool, 64> &excluded)
         admitFPR(r);
 }
 
+/// @copydoc RegPools::takeGPR
 PhysReg RegPools::takeGPR() {
     if (gprFree.empty())
         throw std::runtime_error("AArch64 register allocator: GPR pool exhausted — "
@@ -95,6 +103,7 @@ PhysReg RegPools::takeGPR() {
     return r;
 }
 
+/// @copydoc RegPools::takeGPRPreferCalleeSaved
 PhysReg RegPools::takeGPRPreferCalleeSaved(const TargetInfo & /*ti*/) {
     if (gprFree.empty())
         throw std::runtime_error("AArch64 register allocator: GPR pool exhausted — "
@@ -115,6 +124,7 @@ PhysReg RegPools::takeGPRPreferCalleeSaved(const TargetInfo & /*ti*/) {
     return r;
 }
 
+/// @copydoc RegPools::releaseGPR
 void RegPools::releaseGPR(PhysReg r, const TargetInfo &ti) {
     (void)ti;
     if (!poolEligible[static_cast<std::size_t>(r)])
@@ -126,6 +136,7 @@ void RegPools::releaseGPR(PhysReg r, const TargetInfo &ti) {
     gprFree.push_back(r);
 }
 
+/// @copydoc RegPools::takeFPR
 PhysReg RegPools::takeFPR() {
     if (fprFree.empty())
         throw std::runtime_error("AArch64 register allocator: FPR pool exhausted — "
@@ -135,6 +146,7 @@ PhysReg RegPools::takeFPR() {
     return r;
 }
 
+/// @copydoc RegPools::takeFPRPreferCalleeSaved
 PhysReg RegPools::takeFPRPreferCalleeSaved(const TargetInfo & /*ti*/) {
     if (fprFree.empty())
         throw std::runtime_error("AArch64 register allocator: FPR pool exhausted — "
@@ -153,6 +165,7 @@ PhysReg RegPools::takeFPRPreferCalleeSaved(const TargetInfo & /*ti*/) {
     return r;
 }
 
+/// @copydoc RegPools::releaseFPR
 void RegPools::releaseFPR(PhysReg r, const TargetInfo &ti) {
     (void)ti;
     if (!isFPR(r) || !poolEligible[static_cast<std::size_t>(r)])

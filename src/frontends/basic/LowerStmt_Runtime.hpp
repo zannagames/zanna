@@ -14,6 +14,8 @@
 ///          `LowerStmt_Runtime.cpp` forward to @ref RuntimeStatementLowerer,
 ///          keeping the Lowerer interface stable while delegating the heavy
 ///          lifting to the modular runtime statement lowering class.
+/// @note This is a class-body declaration fragment rather than a standalone
+///       namespace-level interface.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,9 +39,9 @@ void lowerLet(const LetStmt &stmt);
 void lowerConst(const ConstStmt &stmt);
 
 /// @brief Lower a STATIC declaration.
-/// @details Ensures static storage is materialized at module scope and emits any
-///          required initialization logic. Implemented as a delegating wrapper
-///          to @ref RuntimeStatementLowerer.
+/// @details Emits no instructions: variable collection has already arranged
+///          module-level storage, and later references resolve to it. Implemented
+///          as a delegating wrapper to @ref RuntimeStatementLowerer.
 /// @param stmt Parsed STATIC statement.
 void lowerStatic(const StaticStmt &stmt);
 
@@ -73,9 +75,10 @@ void assignArrayElement(const ArrayExpr &target, RVal value, il::support::Source
 void lowerDim(const DimStmt &stmt);
 
 /// @brief Lower a REDIM declaration to resize an existing array.
-/// @details Evaluates new bounds, emits runtime reallocation helpers, and
-///          preserves existing contents according to BASIC semantics. Implemented
-///          as a delegating wrapper to @ref RuntimeStatementLowerer.
+/// @details Evaluates and flattens the new inclusive bounds, selects the object,
+///          floating, or integer-array resize helper, replaces the stored handle,
+///          and updates the optional bounds-check length slot. Implemented as a
+///          delegating wrapper to @ref RuntimeStatementLowerer.
 /// @param stmt Parsed REDIM statement.
 void lowerReDim(const ReDimStmt &stmt);
 
@@ -87,9 +90,10 @@ void lowerReDim(const ReDimStmt &stmt);
 void lowerRandomize(const RandomizeStmt &stmt);
 
 /// @brief Lower a SWAP statement.
-/// @details Resolves both l-values, emits the required temporaries, and swaps
-///          the values while respecting type and lifetime rules. Implemented as
-///          a delegating wrapper to @ref RuntimeStatementLowerer.
+/// @details Evaluates both operands, saves the left value in an eight-byte
+///          temporary, and assigns in reverse order when each destination is a
+///          variable or array element. Implemented as a delegating wrapper to
+///          @ref RuntimeStatementLowerer.
 /// @param stmt Parsed SWAP statement.
 void lowerSwap(const SwapStmt &stmt);
 
@@ -141,10 +145,12 @@ void visit(const AltScreenStmt &stmt);
 
 /// @brief Emit a runtime-checked array length value.
 /// @details Adjusts the requested bound to BASIC's inclusive length semantics,
-///          emits overflow-aware arithmetic, and inserts control flow that traps
-///          or reports errors when the bound is invalid. The @p labelBase is used
-///          to derive deterministic block names for the generated checks.
-///          Implemented as a delegating wrapper to @ref RuntimeStatementLowerer.
+///          emits overflow-aware addition, and, when a function and current
+///          block exist, traps on a negative result before passing the length
+///          into a continuation block parameter. Without active control flow it
+///          returns the checked addition directly. The @p labelBase derives
+///          deterministic block names. Implemented as a delegating wrapper to
+///          @ref RuntimeStatementLowerer.
 /// @param bound Upper-bound value provided by the user.
 /// @param loc Source location for diagnostics and emitted instructions.
 /// @param labelBase Prefix used when naming helper blocks.

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/asmfmt/Format.cpp
+// File: src/codegen/x86_64/asmfmt/Format.cpp
 // Purpose: Format operands and data blobs for x86-64 assembly emission.
 // Key invariants:
 //   - Helpers are side-effect free and avoid relying on global state so
@@ -13,8 +13,8 @@
 // Ownership/Lifetime:
 //   - Operates solely on caller-provided views and returns newly constructed
 //     strings; no persistent state.
-// Links: codegen/x86_64/asmfmt/Format.hpp,
-//        codegen/x86_64/TargetX64.hpp
+// Links: src/codegen/x86_64/asmfmt/Format.hpp,
+//        src/codegen/x86_64/TargetX64.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,11 +26,16 @@
 #include <cstddef>
 #include <string>
 
+/// @file
+/// @brief Implements stateless x86-64 assembly text-formatting helpers.
+
 namespace asmfmt {
 namespace {
 /// @brief Determine whether a byte is printable ASCII.
+/// @details Uses the locale-independent inclusive range from space through
+///          tilde, making read-only-data output deterministic on every host.
 /// @param ch Byte to inspect.
-/// @return True when the byte falls within the standard printable ASCII range.
+/// @return @c true when @p ch is in the range @c 0x20 through @c 0x7e.
 [[nodiscard]] bool is_printable(unsigned char ch) noexcept {
     return ch >= 0x20U && ch <= 0x7EU;
 }
@@ -39,6 +44,7 @@ namespace {
 /// @brief Escape embedded quotes and backslashes in an ASCII string.
 /// @details Walks the input bytes and prefixes `"` and `\\` characters with a
 ///          backslash so the result can be embedded in `.ascii` directives.
+///          It intentionally performs no printable-byte validation.
 /// @param bytes Input character sequence to escape.
 /// @return Escaped string suitable for assembly output.
 std::string escape_ascii(std::string_view bytes) {
@@ -61,6 +67,8 @@ std::string format_imm(std::int64_t v) {
 }
 
 /// @brief Convert a label name into an assembly operand.
+/// @details Delegates all character replacement and leading-character handling
+///          to the target-independent label sanitizer.
 /// @param name Label identifier to emit.
 /// @return Sanitized copy of @p name as a standard symbol reference.
 std::string format_label(std::string_view name) {
@@ -68,6 +76,8 @@ std::string format_label(std::string_view name) {
 }
 
 /// @brief Emit a RIP-relative reference to a label.
+/// @details Sanitizes the symbol before attaching the x86-64 program-counter
+///          relative addressing suffix.
 /// @param name Label identifier appearing in the operand.
 /// @return Formatted string using the `symbol(%rip)` syntax.
 std::string format_rip_label(std::string_view name) {
@@ -79,7 +89,7 @@ std::string format_rip_label(std::string_view name) {
 /// @brief Format either a physical or virtual register name.
 /// @details Non-negative values are interpreted as physical registers using the
 ///          backend's name table, while negative values produce virtual register
-///          mnemonics of the form `%vN`.
+///          mnemonics of the form `%vN`, where @c N equals @c -reg-1.
 /// @param reg Encoded register identifier (physical or virtual).
 /// @return Textual register representation for assembly output.
 std::string fmt_reg(int reg) {
@@ -100,7 +110,9 @@ std::string fmt_reg(int reg) {
 /// @brief Render a memory addressing expression.
 /// @details Emits the displacement, base register, and optional index/scale in
 ///          canonical AT&T order.  Missing fields are omitted to avoid
-///          redundant commas.  Uses pre-sized string buffer for efficiency.
+///          redundant commas. The descriptor is assumed to contain a valid
+///          scale and register combination; this presentation helper does not
+///          enforce x86-64 addressing restrictions.
 /// @param a Structured memory operand describing the address.
 /// @return Assembly string representing the effective address.
 std::string format_mem(const MemAddr &a) {
@@ -126,7 +138,8 @@ std::string format_mem(const MemAddr &a) {
 /// @brief Format raw data bytes into `.ascii` and `.byte` directives.
 /// @details Groups printable runs into `.ascii` directives with escaped
 ///          content and emits up to 16 non-printable bytes per `.byte` line.
-///          Uses pre-sized string buffer for efficiency.
+///          Printable bytes end a byte group so subsequent printable runs can
+///          return to the more compact string representation.
 /// @param bytes Raw data blob to render.
 /// @return Multi-line assembly listing representing the data section.
 std::string format_rodata_bytes(std::string_view bytes) {

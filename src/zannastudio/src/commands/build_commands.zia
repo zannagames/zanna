@@ -210,6 +210,52 @@ func handleRun(shell: app_shell.AppShell,
                       saveAllBeforeBuild);
 }
 
+/// @brief Run the owning project with one saved scene path appended.
+/// @details ADR 0181: Studio passes `--scene <path>` after the argument
+///          separator; the project's entry point decides what it means.
+func handleRunScene(shell: app_shell.AppShell,
+                    docMgr: document_manager.DocumentManager,
+                    projMgr: project_manager.ProjectManager,
+                    engine: editor_engine.EditorEngine,
+                    tabs: editor_tabs.EditorTabs,
+                    buildSys: build_system.BuildSystem,
+                    locStore: locations.LocationStore,
+                    saveAllBeforeBuild: Boolean) {
+    if CanStartExecutionJob(shell, buildSys, "start a new run") == false {
+        return;
+    }
+    file_commands.SaveEditorState(docMgr, engine);
+    var sceneDoc = docMgr.GetActive();
+    if sceneDoc == null or sceneDoc!.isNew
+       or file_utils.IsSceneDocumentPath(sceneDoc!.filePath) == false {
+        shell.SetStatusLeft("Save the active scene file before running it");
+        return;
+    }
+    if projMgr == null or projMgr.IsOpen() == false {
+        shell.SetStatusLeft(
+            "Open the scene's project before running it; the game's entry "
+            + "point interprets the scene path");
+        return;
+    }
+    var saveResult = file_commands.handleSaveForExecution(
+        shell, docMgr, engine, tabs, saveAllBeforeBuild);
+    if saveResult.success == false {
+        ReportCanceledExecution(shell, "Run Scene", saveResult);
+        return;
+    }
+    file_commands.SaveEditorState(docMgr, engine);
+    sceneDoc = docMgr.GetActive();
+    if sceneDoc == null or sceneDoc!.isModified {
+        shell.SetStatusLeft("Save the active scene file before running it");
+        return;
+    }
+    var cfg = run_config.ForDocument(run_config.ACTION_RUN, null, projMgr);
+    Seq.Push(cfg.args, "--");
+    Seq.Push(cfg.args, "--scene");
+    Seq.Push(cfg.args, sceneDoc!.filePath);
+    StartExecutionConfig(shell, buildSys, locStore, cfg);
+}
+
 func handleStop(shell: app_shell.AppShell,
                 buildSys: build_system.BuildSystem) {
     if buildSys.Stop() {

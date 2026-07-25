@@ -43,14 +43,17 @@ namespace nr = numeric_rules;
 
 namespace {
 
-// Use shared numeric rules for IL type predicates and promotion.
-// These inline wrappers preserve the original API while delegating
-// to the centralized implementation in NumericRules.hpp.
-
+/// @brief Test whether an IL kind participates in BASIC integer arithmetic.
+/// @param kind IL type kind to classify.
+/// @return True for an integer kind recognized by the shared numeric rules.
 bool isIntegerKind(IlKind kind) {
     return nr::isIlInteger(kind);
 }
 
+/// @brief Select the shared integer promotion kind for two operands.
+/// @param lhsKind IL kind of the left operand.
+/// @param rhsKind IL kind of the right operand.
+/// @return IL type wrapping the promoted integer kind.
 IlType integerArithmeticType(IlKind lhsKind, IlKind rhsKind) {
     return IlType(nr::promoteIlInteger(lhsKind, rhsKind));
 }
@@ -59,17 +62,15 @@ IlType integerArithmeticType(IlKind lhsKind, IlKind rhsKind) {
 
 /// @brief Bind the numeric lowering helper to a concrete lowering engine.
 ///
-/// @param lowerer Owning lowering driver that emits IL.
+/// @param lowerer Borrowed lowering driver; it must outlive this helper.
 NumericExprLowering::NumericExprLowering(Lowerer &lowerer) noexcept : lowerer_(&lowerer) {}
 
-/// @brief Lower integer division or modulus expressions with overflow checks.
+/// @brief Lower integer division or modulus with divide-by-zero checking.
 ///
-/// @details Examines operand types to see whether a narrower integer variant can
-///          be used (to match legacy semantics) and emits the appropriate IL
-///          opcode with divide-by-zero guards. Integer division (\\) and modulus (MOD)
-///          operations use the sdiv.chk0 and srem.chk0 IL instructions, which only
-///          support i64 operands. This function coerces both operands to i64 before
-///          emitting the operation.
+/// @details Eagerly lowers both operands, coerces each to `i64`, and emits
+///          SDivChk0 for integer division or SRemChk0 for MOD. No narrow
+///          integer variant is selected because both checked opcodes require
+///          `i64` operands.
 ///
 /// @param expr Binary expression node representing IDIV or MOD.
 /// @return Lowered r-value carrying the operation result.
@@ -109,6 +110,7 @@ NumericExprLowering::NumericOpConfig NumericExprLowering::normalizeNumericOperan
     // Use shared rule to determine if operator requires float operands
     const bool requiresFloat = nr::requiresFloatOperands(expr.op);
     if (requiresFloat) {
+        /// Promote one operand to `f64`, using its node location when available.
         auto promoteToF64 = [&](Lowerer::RVal &value, const Expr *node) {
             if (value.type.kind == IlKind::F64)
                 return;
@@ -143,10 +145,12 @@ NumericExprLowering::NumericOpConfig NumericExprLowering::normalizeNumericOperan
     const auto *lhsInt = as<const IntExpr>(*expr.lhs);
     const auto *rhsInt = as<const IntExpr>(*expr.rhs);
     if (lhsInt && rhsInt) {
+        /// Test whether an integer literal fits the signed 16-bit range.
         const auto fits16 = [](long long v) {
             return v >= std::numeric_limits<int16_t>::min() &&
                    v <= std::numeric_limits<int16_t>::max();
         };
+        /// Test whether an integer literal fits the signed 32-bit range.
         const auto fits32 = [](long long v) {
             return v >= std::numeric_limits<int32_t>::min() &&
                    v <= std::numeric_limits<int32_t>::max();
@@ -176,9 +180,9 @@ NumericExprLowering::NumericOpConfig NumericExprLowering::normalizeNumericOperan
 
 /// @brief Detect and lower bespoke constant-folding opportunities.
 ///
-/// @details Handles the common `0 - X` negation pattern for integer operands,
-///          producing a direct negation rather than emitting subtraction and a
-///          zero literal.
+/// @details Handles `0 - X` only when the left AST node is literal zero and the
+///          already normalized right operand has `i16` or `i32` type. Other
+///          integer widths, floating-point operands, and operators fall through.
 ///
 /// @param expr Binary expression under consideration.
 /// @param lhs Normalised left-hand operand.
@@ -304,9 +308,11 @@ Lowerer::RVal NumericExprLowering::lowerPowBinary(const BinaryExpr &expr,
 
 /// @brief Lower binary operations when operands are strings.
 ///
-/// @details Supports concatenation via `kStringConcat` and equality/inequality tests
-///          via dedicated runtime helpers that preserve BASIC's string
-///          comparison semantics.
+/// @details Addition calls `kStringConcat`, defers release of the returned
+///          string, and reports a string result. Equality, inequality, and all
+///          four ordering relations call their runtime comparators, widen an
+///          `i1` equality result when necessary, and convert the result to
+///          BASIC's `i64` -1/0 logical convention.
 ///
 /// @param expr AST node for the string operation.
 /// @param lhs Left-hand operand.

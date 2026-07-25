@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/PreRAForwardCopy.hpp
+// File: src/codegen/common/PreRAForwardCopy.hpp
 // Purpose: Shared pre-register-allocation copy cleanup used by both backends:
 //          removes identity copies and forwards virtual-to-virtual copies
 //          whose destination has exactly one direct use before redefinition.
@@ -34,6 +34,9 @@
 #include <optional>
 #include <utility>
 #include <vector>
+
+/// @file
+/// @brief Implements shared pre-allocation identity and single-use copy cleanup.
 
 namespace zanna::codegen::common {
 
@@ -75,6 +78,13 @@ namespace detail {
 ///          copy source is redefined before the use, when more than one use
 ///          exists, when the use sits behind a call (caller-saved clobbers),
 ///          or at non-call block boundaries.
+/// @tparam Traits Backend-specific MIR query and rewrite contract.
+/// @param block Basic block containing the candidate copy.
+/// @param copyIndex Index of the candidate copy instruction.
+/// @param dst Virtual destination whose uses are scanned.
+/// @param src Virtual source whose intervening redefinitions are forbidden.
+/// @return Unique direct-use position, or `std::nullopt` when forwarding is
+///         unsafe or the required use does not exist.
 template <typename Traits>
 std::optional<PreRAUseSite> findSingleDirectUse(const typename Traits::BlockT &block,
                                                 std::size_t copyIndex,
@@ -113,6 +123,9 @@ std::optional<PreRAUseSite> findSingleDirectUse(const typename Traits::BlockT &b
 }
 
 /// @brief Forward each virtual-to-virtual copy whose destination has one use.
+/// @tparam Traits Backend-specific MIR query and rewrite contract.
+/// @param[in,out] block Basic block whose eligible copies are forwarded and removed.
+/// @return Number of copy instructions removed.
 template <typename Traits> std::size_t rewriteSingleUseCopies(typename Traits::BlockT &block) {
     auto &instrs = Traits::instrs(block);
     std::vector<bool> erase(instrs.size(), false);
@@ -160,6 +173,7 @@ template <typename Traits, typename FunctionT> std::size_t runPreRAForwardCopy(F
         const auto oldSize = instrs.size();
         instrs.erase(std::remove_if(instrs.begin(),
                                     instrs.end(),
+                                    /// Select backend-recognized no-op copies.
                                     [](const typename Traits::InstrT &instr) {
                                         return Traits::isIdentityCopy(instr);
                                     }),

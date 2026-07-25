@@ -12,6 +12,8 @@
 ///          but the actual lowering logic (argument coercions, runtime helper
 ///          selection, and error handling) lives in the dedicated I/O lowerer
 ///          implementation.
+/// @invariant The owning Lowerer initializes ioStmtLowerer_ before any forwarding
+///            member is invoked.
 //
 //===----------------------------------------------------------------------===//
 

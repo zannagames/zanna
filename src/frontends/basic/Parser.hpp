@@ -50,6 +50,13 @@
 //   }
 //
 //===----------------------------------------------------------------------===//
+/// @file Parser.hpp
+/// @brief Declares the recursive-descent parser for the BASIC frontend.
+/// @details Parser owns its lexer, lookahead tokens, and in-progress symbol
+///          registries, and transfers ownership of constructed AST nodes to the
+///          returned Program. Source text and optional diagnostic, source
+///          manager, and include-stack services are borrowed.
+
 #pragma once
 
 #include "frontends/basic/DiagnosticEmitter.hpp"
@@ -81,7 +88,8 @@ namespace il::frontends::basic {
  * Supports structured programming constructs, OOP, and file inclusion.
  *
  * @invariant Source text must remain valid throughout parsing.
- * @invariant Emits diagnostics through the provided DiagnosticEmitter.
+ * @invariant Diagnostics use the configured emitter when present and otherwise
+ *            fall back to standard error.
  */
 class Parser {
   public:
@@ -114,7 +122,9 @@ class Parser {
     std::unique_ptr<Program> parseProgram();
 
   private:
+    /// Expected-like result used by parser helpers that return structured errors.
     template <class T> using ErrorOr = il::support::Expected<T>;
+    /// Tri-state statement result: no match, matched error, or owned statement.
     using StmtResult = std::optional<StmtPtr>;
 
     friend class StatementSequencer;
@@ -141,17 +151,20 @@ class Parser {
     size_t tokenStart_ = 0;                  ///< First unconsumed token in @ref tokens_.
     DiagnosticEmitter *emitter_ = nullptr;   ///< Diagnostic sink; not owned.
     std::unordered_set<std::string> arrays_; ///< Names of arrays declared via DIM.
-    // Namespaces seen during parsing (top-level heads). Used to disambiguate
-    // qualified procedure calls like A.F() from object method calls C.M().
+    /// Namespace heads seen while parsing, used to distinguish qualified calls
+    /// such as `A.F()` from object method calls such as `C.M()`.
     std::unordered_set<std::string> knownNamespaces_{};
     std::unordered_set<std::string> knownProcedures_; ///< Procedure identifiers seen so far.
     std::unordered_set<int> usedLabelNumbers_;        ///< Numeric labels already assigned.
 
-    // Tracked constants discovered during parsing (for SELECT CASE label resolution).
-    // Keys are canonicalised via CanonicalizeIdent for case-insensitive lookup.
+    /// Integer constants tracked for SELECT CASE label resolution.
+    /// Keys are canonicalized for case-insensitive lookup.
     std::unordered_map<std::string, int64_t> knownConstInts_{};
+    /// String constants tracked for SELECT CASE label resolution.
+    /// Keys are canonicalized for case-insensitive lookup.
     std::unordered_map<std::string, std::string> knownConstStrs_{};
 
+    /// @brief Definition and first-reference state for one named BASIC label.
     struct NamedLabelEntry {
         int number = 0;                       ///< Synthesised numeric identifier for the label.
         bool defined = false;                 ///< True once the label definition has been seen.
@@ -160,12 +173,31 @@ class Parser {
         il::support::SourceLoc referenceLoc;  ///< First location the label was referenced.
     };
 
+    /// @brief Allocate the next synthetic number not present in the used-label set.
+    /// @return Newly reserved candidate number.
     int allocateSyntheticLabelNumber();
+    /// @brief Return the existing number for @p name or assign a synthetic one.
+    /// @param name Named BASIC label, compared through canonical label keys.
+    /// @return Stable numeric representation of @p name.
     int ensureLabelNumber(const std::string &name);
+    /// @brief Test whether @p name has a registry entry.
+    /// @param name Named BASIC label, compared through canonical label keys.
+    /// @return `true` for either a definition or a forward-reference entry.
     bool hasLabelName(const std::string &name) const;
+    /// @brief Find the numeric representation assigned to @p name.
+    /// @param name Named BASIC label, compared through canonical label keys.
+    /// @return Assigned number, or `std::nullopt` when no entry exists.
     std::optional<int> lookupLabelNumber(const std::string &name) const;
+    /// @brief Record the source definition of a named label.
+    /// @param tok Label token providing spelling and definition location.
+    /// @param labelNumber Numeric representation already assigned to the label.
     void noteNamedLabelDefinition(const Token &tok, int labelNumber);
+    /// @brief Record a named-label reference, preserving its first location.
+    /// @param tok Label token providing spelling and reference location.
+    /// @param labelNumber Numeric representation already assigned to the label.
     void noteNamedLabelReference(const Token &tok, int labelNumber);
+    /// @brief Reserve a numeric label against future synthetic allocation.
+    /// @param labelNumber User-written definition or branch-target number.
     void noteNumericLabelUsage(int labelNumber);
 
     std::unordered_map<std::string, NamedLabelEntry>
@@ -199,34 +231,58 @@ class Parser {
     /// @brief Registry that maps statement-leading tokens to parser callbacks.
     class StatementParserRegistry {
       public:
+        /// Parser callback for a statement whose line number is not forwarded.
         using NoArgHandler = StmtPtr (Parser::*)();
+        /// Parser callback receiving the statement's associated line number.
         using WithLineHandler = StmtPtr (Parser::*)(int);
 
         /// @brief Register handler without an explicit line parameter.
+        /// @param kind Statement-leading token used as the table index.
+        /// @param handler Callback stored in the no-line slot.
         void registerHandler(TokenKind kind, NoArgHandler handler);
 
         /// @brief Register handler that requires the originating line number.
+        /// @param kind Statement-leading token used as the table index.
+        /// @param handler Callback stored in the line-aware slot.
         void registerHandler(TokenKind kind, WithLineHandler handler);
 
         /// @brief Lookup registered handler for @p kind.
-        /// @return Pointer pair containing callbacks if present.
+        /// @param kind Token kind to use as the table index.
+        /// @return Callback pair, or two null pointers when @p kind is out of range.
         [[nodiscard]] std::pair<NoArgHandler, WithLineHandler> lookup(TokenKind kind) const;
 
         /// @brief Check whether @p kind begins a statement according to the registry.
+        /// @param kind Token kind to query.
+        /// @return `true` when either callback slot is populated.
         [[nodiscard]] bool contains(TokenKind kind) const;
 
       private:
+        /// Fixed callback table indexed by the numeric TokenKind value.
         std::array<std::pair<NoArgHandler, WithLineHandler>,
                    static_cast<std::size_t>(TokenKind::Count)>
             entries_{};
     };
 
+    /// @brief Access the lazily initialized process-wide statement registry.
+    /// @return Const reference to the immutable populated registry.
     static const StatementParserRegistry &statementRegistry();
+    /// @brief Construct a registry containing every parser category.
+    /// @return Newly populated registry.
     static StatementParserRegistry buildStatementRegistry();
+    /// @brief Add structured control-flow statement callbacks.
+    /// @param registry Registry receiving callback entries.
     static void registerControlFlowParsers(StatementParserRegistry &registry);
+    /// @brief Add runtime-oriented statement callbacks.
+    /// @param registry Registry receiving callback entries.
     static void registerRuntimeParsers(StatementParserRegistry &registry);
+    /// @brief Add console and file I/O statement callbacks.
+    /// @param registry Registry receiving callback entries.
     static void registerIoParsers(StatementParserRegistry &registry);
+    /// @brief Add core declaration, assignment, and procedure callbacks.
+    /// @param registry Registry receiving callback entries.
     static void registerCoreParsers(StatementParserRegistry &registry);
+    /// @brief Add object-oriented declaration and lifetime callbacks.
+    /// @param registry Registry receiving callback entries.
     static void registerOopParsers(StatementParserRegistry &registry);
 
     /// @brief Result of processing an ADDFILE include.
@@ -244,8 +300,8 @@ class Parser {
 
     /// @brief Common logic for processing an ADDFILE directive.
     /// @details Handles path resolution, include depth/cycle checking, file reading,
-    ///          child parser setup, and parsing. The caller provides the results
-    ///          destination via the merge callbacks.
+    ///          child parser setup, and parsing. The returned state is merged by
+    ///          the caller appropriate to its destination context.
     /// @param kw The ADDFILE keyword token.
     /// @return Result containing parsed subprogram and child parser state on success.
     AddFileResult processAddFileInclude(const Token &kw);
@@ -254,6 +310,7 @@ class Parser {
     /// @details When the current token is ADDFILE and a source manager is available,
     ///          resolves, loads, and parses the included file, then merges its AST
     ///          into @p prog.
+    /// @param prog Program receiving included declarations and main statements.
     /// @return True when a directive was handled (successfully or with diagnostics);
     ///         false when no ADDFILE directive was present.
     bool handleTopLevelAddFile(Program &prog);
@@ -261,20 +318,34 @@ class Parser {
     /// @details When the next token is ADDFILE and a source manager is available,
     ///          reads and parses the included file and appends its statements and
     ///          procedure declarations to @p dst.
+    /// @param dst Owning statement vector receiving all included AST nodes.
     /// @return True when a directive was handled (successfully or with diagnostics);
     ///         false when no ADDFILE directive was present.
     bool handleAddFileInto(std::vector<StmtPtr> &dst);
+    /// @brief Parse a CLASS declaration including fields and members.
+    /// @return Owned class declaration, or null after an unrecoverable syntax error.
     StmtPtr parseClassDecl();
     /// @brief Parse the leading field-declaration section of a CLASS body.
+    /// @param decl Class declaration receiving parsed fields.
     /// @param curAccess Carries the pending PUBLIC/PRIVATE prefix; on return it
     ///        holds any access prefix consumed just before the first non-field
     ///        member (which the member section then applies).
     void parseClassFieldSection(ClassDecl &decl, std::optional<Access> &curAccess);
     /// @brief Parse the method/property/destructor section of a CLASS body.
+    /// @param decl Class declaration receiving parsed members.
+    /// @param curAccess Pending explicit access modifier, if one was consumed.
     void parseClassMemberSection(ClassDecl &decl, std::optional<Access> curAccess);
+    /// @brief Parse an INTERFACE declaration and its method signatures.
+    /// @return Owned interface declaration, or null after an unrecoverable syntax error.
     StmtPtr parseInterfaceDecl();
+    /// @brief Parse a user-defined TYPE declaration.
+    /// @return Owned type declaration, or null after an unrecoverable syntax error.
     StmtPtr parseTypeDecl();
+    /// @brief Parse an ENUM declaration and its members.
+    /// @return Owned enum declaration, or null after an unrecoverable syntax error.
     StmtPtr parseEnumDecl();
+    /// @brief Parse a DELETE statement for an object expression.
+    /// @return Owned delete statement, or null after a syntax error.
     StmtPtr parseDeleteStatement();
     /// @brief Parse a TRY/CATCH statement.
     /// @return Newly constructed TryCatchStmt or nullptr on error.
@@ -388,27 +459,49 @@ class Parser {
         Token terminator;          ///< End-of-line token that closed the inline body.
     };
 
+    /// Diagnostic callback used by SELECT helpers without exposing parser internals.
     using SelectDiagnoseFn =
         std::function<void(il::support::SourceLoc, uint32_t, std::string_view, std::string_view)>;
 
+    /// @brief Mutable state shared across SELECT header and arm phases.
     struct SelectParseState {
+        /// SELECT node under construction.
         std::unique_ptr<SelectCaseStmt> stmt;
+        /// Callback for SELECT-specific diagnostics.
         SelectDiagnoseFn diagnose;
+        /// Location of the opening SELECT token.
         il::support::SourceLoc selectLoc;
+        /// Whether a non-ELSE CASE was parsed.
         bool sawCaseArm = false;
+        /// Whether CASE ELSE was parsed.
         bool sawCaseElse = false;
+        /// Whether END SELECT remains required.
         bool expectEndSelect = true;
     };
 
+    /// @brief Directs the SELECT arm loop after inspecting one directive.
     enum class SelectDispatchAction {
+        /// No recognized directive was consumed.
         None,
+        /// A directive was handled; parse the next arm.
         Continue,
+        /// SELECT parsing reached its terminator.
         Terminate,
     };
 
+    /// @brief Parse the opening SELECT CASE expression and initialize shared state.
+    /// @return State containing the partial statement and diagnostic callback.
     SelectParseState parseSelectHeader();
+    /// @brief Parse CASE directives and bodies into @p state.
+    /// @param state SELECT statement and tracking flags to update.
     void parseSelectArms(SelectParseState &state);
+    /// @brief Parse CASE ELSE when present at the current token.
+    /// @param state SELECT statement and tracking flags to update.
+    /// @return `true` when CASE ELSE was recognized and consumed.
     bool parseSelectElse(SelectParseState &state);
+    /// @brief Handle an END SELECT or other SELECT-level directive.
+    /// @param state SELECT statement and tracking flags to update.
+    /// @return Action directing the enclosing arm loop.
     SelectDispatchAction dispatchSelectDirective(SelectParseState &state);
 
     /// @brief Collect a CASE/CASE ELSE body until the next arm or END SELECT.
@@ -441,11 +534,22 @@ class Parser {
                                         bool &sawCaseElse,
                                         const SelectDiagnoseFn &diagnose);
 
+    /// Token-buffer cursor used to parse CASE label syntax transactionally.
     struct Cursor;
+    /// Syntax-only CASE arm representation produced before semantic lowering.
     struct CaseArmSyntax;
 
+    /// @brief Parse CASE label syntax through a transactional cursor.
+    /// @param cursor Cursor advanced over the CASE label tokens.
+    /// @return Syntax representation or a structured parse error.
     il::support::Expected<CaseArmSyntax> parseCaseArmSyntax(Cursor &cursor);
+    /// @brief Convert syntax-only CASE labels into the AST representation.
+    /// @param syntax Successfully parsed CASE label syntax.
+    /// @return Lowered CASE arm or a structured conversion error.
     il::support::Expected<CaseArm> lowerCaseArm(const CaseArmSyntax &syntax);
+    /// @brief Validate the semantic constraints of a lowered CASE arm.
+    /// @param arm CASE arm to validate.
+    /// @return Success or a structured validation error.
     ErrorOr<void> validateCaseArm(const CaseArm &arm);
 
     /// @brief Parse a CASE arm including label list and statement body.
@@ -457,14 +561,25 @@ class Parser {
     ///         terminating end-of-line.
     std::pair<std::vector<StmtPtr>, il::support::SourceLoc> parseCaseElseBody();
 
+    /// @brief Mutable state shared by IF header, block, and ELSE-chain phases.
     struct IfParseState {
+        /// IF node under construction.
         std::unique_ptr<IfStmt> stmt;
+        /// Source line associated with the opening IF.
         int line = 0;
+        /// Location of the opening IF token.
         il::support::SourceLoc loc;
     };
 
+    /// @brief Parse the IF condition and initialize a statement node.
+    /// @param line Source line associated with the opening IF.
+    /// @return State used by block and ELSE-chain parsing.
     IfParseState parseIfHeader(int line);
+    /// @brief Parse the primary THEN body into @p state.
+    /// @param state IF node and source metadata to update.
     void parseIfBlock(IfParseState &state);
+    /// @brief Parse ELSEIF and ELSE branches into @p state.
+    /// @param state IF node and source metadata to update.
     void parseElseChain(IfParseState &state);
 
     /// @brief Parse a DO ... LOOP statement.
@@ -531,6 +646,7 @@ class Parser {
     /// @return STATIC statement node.
     StmtPtr parseStaticStatement();
     /// @brief Parse a SHARED statement listing variables that map to module-level state.
+    /// @return SHARED declaration statement node.
     StmtPtr parseSharedStatement();
 
     /// @brief Parse a REDIM statement resizing arrays.
@@ -760,6 +876,11 @@ class Parser {
 
   private:
     /// @brief Common helper for diagnostic emission.
+    /// @param sev Diagnostic severity.
+    /// @param code Stable diagnostic identifier.
+    /// @param loc Start of the highlighted source range.
+    /// @param len Highlight length in bytes.
+    /// @param message Human-readable diagnostic text.
     void emitDiagnostic(il::support::Severity sev,
                         std::string_view code,
                         il::support::SourceLoc loc,

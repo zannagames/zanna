@@ -5,14 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the orchestrating pieces of the BASIC AST printer.  This file ties
-// together the high-level `AstPrinter` façade, the `PrintStyle` helpers that
-// inject punctuation, and the recursive dump entry points that hand work off to
-// the expression/statement printers.  The goal is to keep the public API
-// compact: clients construct an `AstPrinter`, call `dump`, and receive a stable
-// textual representation for diagnostics or golden tests.
+// File: src/frontends/basic/AstPrinter.cpp
+// Purpose: Orchestrate the BASIC AST printer facade, indentation, punctuation,
+//          and recursive dispatch into expression and statement visitors.
+// Ownership/Lifetime: All streams and formatting helpers are local to a dump;
+//                     AST nodes are borrowed read-only.
+// Links: src/frontends/basic/AstPrinter.hpp,
+//        src/frontends/basic/AstPrint_Expr.cpp,
+//        src/frontends/basic/AstPrint_Stmt.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file AstPrinter.cpp
+ * @brief Implements BASIC AST printer orchestration and shared formatting.
+ */
 
 #include "frontends/basic/AstPrinter.hpp"
 #include "frontends/basic/BasicTypes.hpp"
@@ -52,6 +59,7 @@ void AstPrinter::PrintStyle::closeBody() const {
 /// comma/space separated lists without manual bookkeeping.
 ///
 /// @param first Indicates whether an element has already been emitted.
+/// @post @p first is false.
 void AstPrinter::PrintStyle::separate(bool &first) const {
     if (!first) {
         printer->os << ' ';
@@ -102,19 +110,24 @@ void AstPrinter::Printer::line(std::string_view text) {
 
 /// @brief Increase indentation level and return RAII guard.
 /// @return Indent object whose destruction restores previous indentation.
+/// @post The indentation depth is incremented by one.
 AstPrinter::Printer::Indent AstPrinter::Printer::push() {
     ++indent;
     return Indent{*this};
 }
 
 /// @brief Restore the indentation level saved at construction time.
+/// @post The associated printer's indentation is decremented by one.
 AstPrinter::Printer::Indent::~Indent() {
     --p.indent;
 }
 
 /// @brief Serialize an entire BASIC program to a printable string.
+/// @details Emits procedure statements first and main-body statements second,
+///          retaining order within both containers. A fresh nested printer
+///          formats each statement after its stored line-number prefix.
 /// @param prog Program whose procedures and main body are dumped.
-/// @returns Concatenated text representation of @p prog.
+/// @return Concatenated text representation of @p prog.
 std::string AstPrinter::dump(const Program &prog) {
     std::ostringstream os;
     Printer p{os};
@@ -138,6 +151,7 @@ std::string AstPrinter::dump(const Program &prog) {
 /// @brief Recursively print a statement node and its children.
 /// @param stmt Statement to dump.
 /// @param p Printer receiving the textual form.
+/// @note Creates a fresh style that borrows @p p for this dispatch.
 void AstPrinter::dump(const Stmt &stmt, Printer &p) {
     PrintStyle style{p};
     printStmt(stmt, p, style);
@@ -146,6 +160,7 @@ void AstPrinter::dump(const Stmt &stmt, Printer &p) {
 /// @brief Print an expression node to the printer.
 /// @param expr Expression to dump.
 /// @param p Printer receiving output.
+/// @note Creates a fresh style that borrows @p p for this dispatch.
 void AstPrinter::dump(const Expr &expr, Printer &p) {
     PrintStyle style{p};
     printExpr(expr, p, style);

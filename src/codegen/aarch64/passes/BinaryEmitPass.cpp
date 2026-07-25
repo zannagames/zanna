@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/BinaryEmitPass.cpp
+// File: src/codegen/aarch64/passes/BinaryEmitPass.cpp
 // Purpose: Encode AArch64 MIR into machine code bytes via A64BinaryEncoder,
 //          producing CodeSection output for direct .o emission.
 // Key invariants:
@@ -14,8 +14,8 @@
 //   - RodataPool entries emitted as raw bytes with NUL terminators (.asciz semantics)
 // Ownership/Lifetime:
 //   - Stateless pass; mutates AArch64Module binary fields
-// Links: codegen/aarch64/binenc/A64BinaryEncoder.hpp
-//        codegen/aarch64/RodataPool.hpp
+// Links: src/codegen/aarch64/binenc/A64BinaryEncoder.hpp,
+//        src/codegen/aarch64/RodataPool.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,12 +34,26 @@
 #include <utility>
 #include <vector>
 
+/**
+ * @file
+ * @brief Implements direct, optionally parallel AArch64 object-section emission.
+ *
+ * String/scalar data sections are seeded before code so address fixups can
+ * resolve same-object symbols. Functions are encoded independently for dead
+ * stripping, then optionally coalesced while preserving deterministic order.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
 namespace {
 
-/// @brief Register the source file for every file_id referenced across all functions.
-/// @param debugSourcePath Path to the original source; "<source>" if empty.
+/**
+ * @brief Seeds file-table slots through the largest source file ID in a MIR module.
+ * @param[in,out] table Debug line table to extend.
+ * @param mir Functions whose instruction locations are scanned.
+ * @param debugSourcePath Source path, normalized when non-empty; empty becomes
+ *        `"<source>"`.
+ */
 void seedDebugFiles(DebugLineTable &table,
                     const std::vector<MFunction> &mir,
                     std::string_view debugSourcePath) {
@@ -63,8 +77,13 @@ void seedDebugFiles(DebugLineTable &table,
         table.addFileSlot(filePath);
 }
 
-/// @brief Register the source file for every file_id referenced in a single function.
-/// @param debugSourcePath Path to the original source; "<source>" if empty.
+/**
+ * @brief Seeds file-table slots through the largest source file ID in one function.
+ * @param[in,out] table Per-function debug line table to extend.
+ * @param fn Function whose instruction locations are scanned.
+ * @param debugSourcePath Source path, normalized when non-empty; empty becomes
+ *        `"<source>"`.
+ */
 void seedDebugFiles(DebugLineTable &table, const MFunction &fn, std::string_view debugSourcePath) {
     uint32_t maxFileId = 1;
     for (const auto &bb : fn.blocks) {
@@ -86,12 +105,14 @@ void seedDebugFiles(DebugLineTable &table, const MFunction &fn, std::string_view
 
 } // namespace
 
-/// @brief Encode AArch64 MIR functions to raw machine code.
-/// @details Validates @p module.ti, allocates a per-function CodeSection,
-///          drives @ref A64BinaryEncoder for each function, and stores the
-///          resulting bytes plus rodata pool into @p module.binaryText* /
-///          binaryRodata for the object-file writer to consume.
-/// @return true on success; on failure records diagnostics via @p diags.
+/**
+ * @brief Encodes module MIR and globals into object-writer-ready sections.
+ *
+ * @param[in,out] module Pipeline module whose prior binary/debug products are
+ *        cleared or replaced.
+ * @param[in,out] diags Sink receiving the first reported encoding failure.
+ * @return `true` on complete emission, including an empty MIR module.
+ */
 bool BinaryEmitPass::run(AArch64Module &module, Diagnostics &diags) {
     if (!module.ti) {
         diags.error("BinaryEmitPass: ti must be non-null");
@@ -137,6 +158,10 @@ bool BinaryEmitPass::run(AArch64Module &module, Diagnostics &diags) {
         seedDebugFiles(debugLines, module.mir, module.debugSourcePath);
     uint64_t debugBias = 0;
 
+    /**
+     * @brief Encodes functions serially while accumulating stable debug-line bias.
+     * @return `false` after reporting the first encoder exception.
+     */
     auto encodeSequentially = [&]() {
         for (const auto &fn : module.mir) {
             // Emit each function into its own CodeSection for per-function dead stripping.
@@ -179,6 +204,7 @@ bool BinaryEmitPass::run(AArch64Module &module, Diagnostics &diags) {
         workers.reserve(workerCount);
 
         for (size_t worker = 0; worker < workerCount; ++worker) {
+            /// @brief Claims and encodes function indices until work ends or a peer fails.
             workers.emplace_back([&]() {
                 while (!failed.load(std::memory_order_relaxed)) {
                     const size_t index = next.fetch_add(1, std::memory_order_relaxed);

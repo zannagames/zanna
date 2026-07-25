@@ -149,6 +149,12 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0172](0172-public-scenenode-light-authoring-and-studio-light-inspector.md) — Expose SceneNode Lights and Add Studio Light Authoring
 - [ADR 0173](0173-graphics3d-transactional-hardening-and-retained-work.md) — Make Graphics3D State Transactional and Retain Reusable Work
 - [ADR 0174](0174-scene-object-authoring-metadata-and-duplication.md) — Make Scene Object Metadata and Duplication Authorable
+- [ADR 0176](0176-typed-tile-behavior-sections.md) — Make Tile Behavior Sections Fully Authorable
+- [ADR 0177](0177-scene-camera-and-lighting-sections.md) — Add Scene Camera and Lighting Section Contracts
+- [ADR 0178](0178-scene-component-schema-v2-enum-asset-fields.md) — Add Enum and Asset Fields to Scene Component Schemas
+- [ADR 0179](0179-2d-object-sprite-preview-and-route-conventions.md) — Add 2D Object Sprite Previews and Route Visualization Conventions
+- [ADR 0180](0180-workspace-asset-library.md) — Add Workspace Asset Libraries
+- [ADR 0181](0181-2d-scene-preview-and-run-scene.md) — Add 2D Scene Preview and Run Scene
 - [ADR 0004](0004-graphics3d-runtime-surface-expansion.md) — Graphics3D Runtime Surface Expansion Uses Registry-Only Semantics
 - [ADR 0046](0046-game3d-prefab-loading-api.md) — Game3D Prefab Loading API
 - [ADR 0059](0059-graphics3d-lookup-option-apis.md) — Graphics3D Lookup Option APIs

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/FrameBuilder.hpp
+// File: src/codegen/aarch64/FrameBuilder.hpp
 // Purpose: AArch64 stack frame layout builder for codegen.
 //          Manages incremental allocation of local variable slots, register
 //          spill slots, and outgoing argument areas per AAPCS64 convention.
@@ -14,14 +14,23 @@
 //   - All offsets are negative (below the frame pointer).
 //   - Stack slots are 8-byte aligned minimum; 16-byte overall frame alignment.
 //   - addLocal() and ensureSpill() must be called before finalize().
-//   - finalize() must be called exactly once before prologue/epilogue emission.
+//   - finalize() is idempotent and must run after all frame requirements are known.
 // Ownership/Lifetime:
 //   - FrameBuilder borrows the MFunction reference; MFunction must outlive it.
-// Links: codegen/aarch64/FrameBuilder.cpp,
-//        codegen/aarch64/MachineIR.hpp,
-//        codegen/common/FrameLayout.hpp
+// Links: src/codegen/aarch64/FrameBuilder.cpp,
+//        src/codegen/aarch64/MachineIR.hpp,
+//        src/codegen/common/FrameLayout.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares incremental AAPCS64 frame-slot allocation and spill reuse.
+ *
+ * The builder resumes from any layout already recorded in its borrowed machine
+ * function. Locals and spills grow downward from `x29`; outgoing arguments and
+ * final stack alignment are folded into the frame size during @ref finalize.
+ */
 
 #pragma once
 
@@ -56,6 +65,7 @@ class FrameBuilder : public common::FrameLayout {
     ///          into the slot cursor so a second builder created after
     ///          register allocation continues allocation past existing slots
     ///          instead of overwriting them.
+    /// @param fn Borrowed machine function that receives all layout records.
     explicit FrameBuilder(MFunction &fn) noexcept : fn_(&fn), slotCursor_(kSlotSizeBytes) {
         // Resume allocation after any locals/spills assigned by an earlier
         // builder instance (for example, when regalloc creates new spill slots).
@@ -121,17 +131,19 @@ class FrameBuilder : public common::FrameLayout {
     void setMaxOutgoingBytes(int bytes);
 
     /// @brief FrameLayout interface: reserve outgoing argument space.
+    /// @param bytes Maximum required outgoing byte count.
     void setMaxOutgoing(int bytes) override {
         setMaxOutgoingBytes(bytes);
     }
 
     /// @brief Finalize frame layout and compute total frame size.
     ///
-    /// Must be called once after all locals and spills are declared.
-    /// Assigns final offsets and ensures proper stack alignment.
+    /// @details May be called repeatedly after all locals and spills are
+    ///          declared; recomputes the same aligned total from recorded state.
     void finalize() override;
 
     /// @brief FrameLayout interface: get the total frame size after finalize().
+    /// @return Aligned local frame size, or zero without a bound function.
     int totalBytes() const override {
         return fn_ ? fn_->localFrameSize : 0;
     }
@@ -141,6 +153,7 @@ class FrameBuilder : public common::FrameLayout {
     /// Increments the block epoch so that spill slots from previous blocks are
     /// never reused in the current block.  Must be called before processing
     /// each basic block during register allocation.
+    /// @post Spill lifetimes from earlier epochs cannot be reused in the new block.
     void beginNewBlock() noexcept {
         ++blockEpoch_;
     }
@@ -171,14 +184,25 @@ class FrameBuilder : public common::FrameLayout {
     std::vector<SlotLifetime> slotLifetimes_;
 
     /// @brief Find the most-recently-allocated spill slot assigned to @p vreg, or nullptr.
+    /// @param vreg Virtual-register identifier.
+    /// @return Mutable borrowed slot record, or null.
     [[nodiscard]] MFunction::SpillSlot *findLatestSpillSlot(uint32_t vreg) noexcept;
     /// @brief Const overload of findLatestSpillSlot().
+    /// @param vreg Virtual-register identifier.
+    /// @return Borrowed slot record, or null.
     [[nodiscard]] const MFunction::SpillSlot *findLatestSpillSlot(uint32_t vreg) const noexcept;
     /// @brief Find the SlotLifetime record for the slot at FP-relative @p offset, or nullptr.
+    /// @param offset Negative FP-relative spill-slot offset.
+    /// @return Mutable lifetime record, or null.
     [[nodiscard]] SlotLifetime *findSlotLifetime(int offset) noexcept;
     /// @brief Const overload of findSlotLifetime().
+    /// @param offset Negative FP-relative spill-slot offset.
+    /// @return Borrowed lifetime record, or null.
     [[nodiscard]] const SlotLifetime *findSlotLifetime(int offset) const noexcept;
     /// @brief Advance slotCursor_ by @p sizeBytes with @p alignBytes alignment; return the offset.
+    /// @param sizeBytes Positive allocation size.
+    /// @param alignBytes Positive power-of-two alignment.
+    /// @return Newly assigned negative FP-relative offset.
     int assignAlignedSlot(int sizeBytes, int alignBytes);
 };
 

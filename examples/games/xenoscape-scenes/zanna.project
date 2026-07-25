@@ -1,0 +1,21 @@
+project xenoscape-scenes
+version 0.3.0
+lang zia
+entry main.zia
+
+# === Package Metadata ===
+package-name "Xenoscape Scenes"
+package-description "The scene-driven recreation of Xenoscape: every region is an authored .scene file editable in Zanna Studio"
+package-identifier org.zanna-lang.xenoscape-scenes
+package-author "Zanna Project"
+package-license GPL-3.0-only
+package-icon packaging/icon.png
+min-os-windows 10.0
+windows-install-scope user
+windows-install-dir XenoscapeScenes
+shortcut-desktop on
+
+# === Assets ===
+asset sounds sounds
+asset assets assets
+asset xenoscape.runtime.json .

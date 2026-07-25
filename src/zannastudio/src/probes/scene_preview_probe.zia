@@ -1,0 +1,129 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_preview_probe.zia
+// Purpose: Verify workspace-only 2D preview playback: authored per-frame
+//          durations drive the canvas without touching canonical content.
+// Key invariants:
+//   - Preview frame resolution follows the authored durations in order.
+//   - Toggling and advancing preview never change bytes, revision, history,
+//     or dirty state, and edits stay available while preview runs.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, document, and editor.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        docs/adr/0181-2d-scene-preview-and-run-scene.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_preview_probe;
+
+// ============================================================================
+// MODULE: scene_preview_probe
+// PURPOSE: Pin the ADR 0181 preview contract deterministically through the
+//          exposed clock instead of real wall time.
+//
+// WHERE-THIS-FITS: RTSceneEditorTests pins runtime animation storage; this
+//          probe pins the editor's playback resolution and neutrality.
+//
+// TEACHING-NOTE: The animated cell's pixel color is compared across a clock
+//          advance, proving playback reaches the canvas through the same
+//          render path the author sees.
+// ============================================================================
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+
+bind Terminal = Zanna.Terminal;
+
+func Fail(shell: app_shell.AppShell, reason: String) {
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func CenterPixel(editor: scene_editor_2d.SceneEditor2D) -> Integer {
+    var d = editor.displayCellSize;
+    return editor.framePixels.GetColor(d / 2, d / 2) % 16777216;
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Scene Preview Probe", 1120, 760);
+    var editor = new scene_editor_2d.SceneEditor2D();
+    editor.Setup(shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+
+    if editor.ReplaceScene(6, 5, 16) == false
+       or editor.SetTileBehaviorAnim(5, "5, 6", "100, 100") == false
+       or editor.ApplyTileRectangle(0, 0, 0, 0, 0, 5) == false {
+        Fail(shell, "animated scene fixture");
+        return;
+    }
+
+    var content = sceneDoc.content;
+    var revision = editor.GetRevision();
+    var undoCount = editor.undoStack.count();
+
+    editor.SetPreviewActive(true);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.PreviewActive() == false or editor.framePixels == null {
+        Fail(shell, "preview activation");
+        return;
+    }
+    var frameZeroPixel = CenterPixel(editor);
+
+    // Advance into the second authored frame; the cell must repaint.
+    editor.AdvancePreviewClock(150);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var frameOnePixel = CenterPixel(editor);
+    if frameOnePixel == frameZeroPixel {
+        Fail(shell, "durations did not advance the rendered frame");
+        return;
+    }
+
+    // A full cycle returns to the first frame deterministically.
+    editor.AdvancePreviewClock(50);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if CenterPixel(editor) != frameZeroPixel {
+        Fail(shell, "playback did not cycle back to the first frame");
+        return;
+    }
+
+    // Preview is workspace-only and leaves editing fully available.
+    if sceneDoc.content != content
+       or editor.GetRevision() != revision
+       or editor.undoStack.count() != undoCount {
+        Fail(shell, "preview mutated canonical state");
+        return;
+    }
+    if editor.SetTileBehaviorCollision(5, 1) == false
+       or editor.GetRevision() != revision + 1 {
+        Fail(shell, "editing was blocked while preview ran");
+        return;
+    }
+
+    editor.SetPreviewActive(false);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.PreviewActive() {
+        Fail(shell, "preview did not deactivate");
+        return;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

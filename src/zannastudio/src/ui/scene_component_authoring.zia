@@ -257,7 +257,8 @@ expose func UpdateField(
     label: String,
     kind: String,
     defaultText: String,
-    description: String) -> SceneComponentEditResult {
+    description: String,
+    options: String) -> SceneComponentEditResult {
     var result = BeginEdit(text);
     var root = ValidRoot(text, result);
     if root == null { return result; }
@@ -279,13 +280,24 @@ expose func UpdateField(
     var canonicalDefault = CanonicalDefaultText(
         nextKind, defaultText, result);
     if result.error != "" { return result; }
+    var nextOptions = SplitOptions(options);
     var defaultChanged = previous.kind != nextKind
         or previous.defaultText != canonicalDefault;
+    var previousOptions = previous.choices;
+    if previous.kind == "asset" { previousOptions = previous.assetKinds; }
+    var optionsChanged = false;
+    if nextKind == "enum" or nextKind == "asset" {
+        optionsChanged = previous.kind != nextKind
+            or SameOptions(previousOptions, nextOptions) == false;
+    } else {
+        optionsChanged = previous.kind == "enum" or previous.kind == "asset";
+    }
     if previous.key == nextKey
        and previous.label == nextLabel
        and previous.kind == nextKind
        and previous.defaultText == canonicalDefault
-       and previous.description == description {
+       and previous.description == description
+       and optionsChanged == false {
         return NoChange(result);
     }
 
@@ -307,6 +319,23 @@ expose func UpdateField(
         SetOptionalTrimmed(raw, "label", label);
     }
     Map.SetStr(raw, "type", nextKind);
+    if nextKind == "enum" {
+        Map.Set(raw, "choices", OptionsJsonArray(nextOptions));
+        if Map.Has(raw, "assetKinds") { Map.Remove(raw, "assetKinds"); }
+        // An enum default must be a declared choice; retarget it when the
+        // prior default is no longer offered so validation stays actionable.
+        if nextOptions.count() > 0
+           and OptionListed(nextOptions, canonicalDefault) == false {
+            Map.SetStr(raw, "default", nextOptions.get(0));
+        }
+    } else if nextKind == "asset" {
+        Map.Set(raw, "assetKinds", OptionsJsonArray(nextOptions));
+        if nextOptions.count() == 0 { Map.Remove(raw, "assetKinds"); }
+        if Map.Has(raw, "choices") { Map.Remove(raw, "choices"); }
+    } else {
+        if Map.Has(raw, "choices") { Map.Remove(raw, "choices"); }
+        if Map.Has(raw, "assetKinds") { Map.Remove(raw, "assetKinds"); }
+    }
     if defaultChanged
        and ApplyRawDefault(
                raw, nextKind, defaultText, result) == false {
@@ -672,6 +701,7 @@ func FinishEdit(root: Any,
                 original: String,
                 result: SceneComponentEditResult)
     -> SceneComponentEditResult {
+    SyncSchemaVersion(root);
     var content = Json.FormatPretty(root, 2) + "\n";
     var parsed =
         scene_component_schema.ParseText(content, "authoring");
@@ -683,6 +713,84 @@ func FinishEdit(root: Any,
     result.error = "";
     result.content = content;
     return result;
+}
+
+/// @brief Write the lowest schema version the authored content requires.
+func SyncSchemaVersion(root: Any) {
+    var required = scene_component_schema.SCHEMA_VERSION;
+    var components = Map.Get(root, "components");
+    if components == null or Json.TypeOf(components) != "array" {
+        Map.SetInt(root, "version", required);
+        return;
+    }
+    var componentIndex = 0;
+    while componentIndex < Seq.get_Count(components) {
+        var component = Seq.Get(components, componentIndex);
+        componentIndex = componentIndex + 1;
+        if component == null or Json.TypeOf(component) != "object" {
+            continue;
+        }
+        var fields = Map.Get(component, "fields");
+        if fields == null or Json.TypeOf(fields) != "array" { continue; }
+        var fieldIndex = 0;
+        while fieldIndex < Seq.get_Count(fields) {
+            var field = Seq.Get(fields, fieldIndex);
+            fieldIndex = fieldIndex + 1;
+            if field == null or Json.TypeOf(field) != "object" { continue; }
+            var kind = Str.ToLower(Str.Trim(Map.GetStr(field, "type")));
+            var kindVersion = scene_component_schema.KindVersion(kind);
+            if kindVersion > required { required = kindVersion; }
+        }
+    }
+    Map.SetInt(root, "version", required);
+}
+
+/// @brief Split one comma-separated draft into trimmed non-empty entries.
+func SplitOptions(options: String) -> List[String] {
+    var out: List[String] = [];
+    var trimmed = Str.Trim(options);
+    if trimmed == "" { return out; }
+    var parts = Str.Split(trimmed, ",");
+    var index = 0;
+    while index < Seq.get_Count(parts) {
+        var part = Str.Trim(Seq.GetStr(parts, index));
+        if part != "" { out.add(part); }
+        index = index + 1;
+    }
+    return out;
+}
+
+/// @brief Compare one parsed option list with one drafted list exactly.
+func SameOptions(previous: List[String],
+                 next: List[String]) -> Boolean {
+    if previous.count() != next.count() { return false; }
+    var index = 0;
+    while index < previous.count() {
+        if previous.get(index) != next.get(index) { return false; }
+        index = index + 1;
+    }
+    return true;
+}
+
+/// @brief Return whether one exact value appears in a drafted option list.
+func OptionListed(options: List[String], value: String) -> Boolean {
+    var index = 0;
+    while index < options.count() {
+        if options.get(index) == value { return true; }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// @brief Build one JSON string array from a drafted option list.
+func OptionsJsonArray(options: List[String]) -> Any {
+    var out = Json.Parse("[]");
+    var index = 0;
+    while index < options.count() {
+        Seq.Push(out, options.get(index));
+        index = index + 1;
+    }
+    return out;
 }
 
 func FindAnyTarget(
@@ -806,8 +914,10 @@ func CanonicalDefaultText(
         return Fmt.Bool(parsedBool.UnwrapI1());
     }
     if kind == "null" { return ""; }
+    if kind == "enum" { return Str.Trim(text); }
+    if kind == "asset" { return text; }
     result.error =
-        "Field type must be string, int, float, bool, or null.";
+        "Field type must be string, int, float, bool, null, enum, or asset.";
     return "";
 }
 
@@ -817,8 +927,12 @@ func ApplyRawDefault(raw: Any,
                      result: SceneComponentEditResult) -> Boolean {
     var canonical = CanonicalDefaultText(kind, text, result);
     if result.error != "" { return false; }
-    if kind == "string" {
+    if kind == "string" or kind == "asset" {
         Map.SetStr(raw, "default", text);
+        return true;
+    }
+    if kind == "enum" {
+        Map.SetStr(raw, "default", canonical);
         return true;
     }
     if kind == "int" {

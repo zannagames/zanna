@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file RuntimeStatementLowerer_Decl.cpp
+/// @brief Implements declaration, allocation, resize, randomization, and SWAP lowering.
+/// @details Inclusive BASIC array bounds are converted to checked lengths;
+///          allocation helpers are selected from symbol element metadata, while
+///          CONST and SWAP reuse the shared lifetime-aware assignment paths.
+
 #include "Lowerer.hpp"
 #include "RuntimeStatementLowerer.hpp"
 #include "frontends/basic/ASTUtils.hpp"
@@ -68,6 +74,7 @@ std::optional<long long> checkedInclusiveExtentProduct(const std::vector<long lo
 ///          as read-only variables at compile-time (semantic analysis prevents reassignment).
 ///
 /// @param stmt Parsed @c CONST statement.
+/// @pre @p stmt has a non-null initializer after successful semantic analysis.
 void RuntimeStatementLowerer::lowerConst(const ConstStmt &stmt) {
     LocationScope loc(lowerer_, stmt.loc);
 
@@ -94,11 +101,9 @@ void RuntimeStatementLowerer::lowerConst(const ConstStmt &stmt) {
 
 /// @brief Lower BASIC @c STATIC statements declaring procedure-local persistent variables.
 ///
-/// @details STATIC variables are allocated at module scope rather than as stack locals.
-///          The actual storage allocation happens during variable collection and is
-///          materialized as a module-level global. This lowering method is a no-op
-///          because the declaration itself doesn't generate runtime code - only
-///          uses of the variable will reference the module-level storage.
+/// @details Variable collection marks STATIC metadata, and each later use
+///          resolves a procedure-qualified address through the runtime modvar
+///          helpers. The declaration itself therefore emits no instruction.
 ///
 /// @param stmt Parsed @c STATIC statement identifying the variable name and type.
 void RuntimeStatementLowerer::lowerStatic(const StaticStmt &stmt) {
@@ -112,14 +117,16 @@ void RuntimeStatementLowerer::lowerStatic(const StaticStmt &stmt) {
 ///
 /// @details Adjusts the requested bound to account for BASIC's inclusive array
 ///          lengths, generates overflow-aware addition, and emits a conditional
-///          branch to the runtime failure path when the bound is invalid.  The
+///          branch to a trap block when the computed length is negative. The
 ///          @p labelBase parameter keeps generated block names deterministic for
-///          debugging and reproducibility.
+///          debugging. An SSA continuation parameter carries the valid length
+///          when an active function and block exist.
 ///
 /// @param bound     Value representing the user-supplied length expression.
 /// @param loc       Source location used for diagnostics and helper emission.
 /// @param labelBase Prefix used when naming generated failure blocks.
-/// @return Validated length value produced by the runtime helper.
+/// @return Continuation block parameter when validation control flow is emitted;
+///         otherwise the checked `bound + 1` result.
 Value RuntimeStatementLowerer::emitArrayLengthCheck(Value bound,
                                                     il::support::SourceLoc loc,
                                                     std::string_view labelBase) {
@@ -326,10 +333,10 @@ void RuntimeStatementLowerer::lowerDim(const DimStmt &stmt) {
 
 /// @brief Lower BASIC @c REDIM statements that resize dynamic arrays.
 ///
-/// @details Reuses @ref emitArrayLengthCheck for bounds validation, requests the
-///          runtime helpers that implement preserving or non-preserving reallocation,
-///          and updates the stored array handle while releasing the previous one
-///          to prevent leaks.
+/// @details Reuses @ref emitArrayLengthCheck for each bound, multiplies
+///          multidimensional lengths with checked IL arithmetic, selects the
+///          object/F64/I64 resize helper from symbol metadata, and replaces the
+///          stored handle. The current parser treats REDIM as preserving by default.
 ///
 /// @param stmt Parsed @c REDIM statement describing the new bounds.
 void RuntimeStatementLowerer::lowerReDim(const ReDimStmt &stmt) {
@@ -400,9 +407,8 @@ void RuntimeStatementLowerer::lowerReDim(const ReDimStmt &stmt) {
 
 /// @brief Lower the BASIC @c RANDOMIZE statement configuring the RNG seed.
 ///
-/// @details Requests the runtime feature that exposes the random subsystem,
-///          evaluates the optional seed expression (defaulting to zero), and
-///          invokes the helper that applies the seed.
+/// @details Evaluates and coerces the optional seed to I64, defaults a missing
+///          seed to zero, and emits `rt_randomize_i64`.
 ///
 /// @param stmt Parsed @c RANDOMIZE statement.
 void RuntimeStatementLowerer::lowerRandomize(const RandomizeStmt &stmt) {
@@ -420,6 +426,8 @@ void RuntimeStatementLowerer::lowerRandomize(const RandomizeStmt &stmt) {
 /// @details Emits IL instructions to: (1) load both lvalues, (2) store first
 ///          value into second location, (3) store second value into first location.
 ///          Uses a temporary slot to hold the first value during the exchange.
+///          Scalar variables and array elements are supported; other lvalue
+///          shapes are left unchanged after evaluation.
 ///
 /// @param stmt Parsed @c SWAP statement.
 void RuntimeStatementLowerer::lowerSwap(const SwapStmt &stmt) {

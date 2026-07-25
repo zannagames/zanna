@@ -18,6 +18,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements the GCC/Clang computed-goto dispatch loop for `BytecodeVM`.
+ *
+ * Opcode behavior deliberately mirrors the portable switch loop in
+ * `BytecodeVM.cpp`. Register-local copies of the program counter, stack
+ * pointer, and locals pointer are synchronized before helpers that can trap,
+ * re-enter bytecode, change frames, or expose debugger state. The dispatch
+ * table is derived from `Bytecode.def`, with every unsupported byte value
+ * routed to the invalid-opcode handler.
+ */
+
 #include "bytecode/BytecodeVM.hpp"
 #include "bytecode/BytecodeSemantics.hpp"
 #include "il/runtime/RuntimeSignatures.hpp"
@@ -47,6 +59,9 @@ namespace bytecode {
 ///          of pc/sp/locals are kept in registers and flushed back to member
 ///          state via SYNC_STATE before any call that may observe or unwind
 ///          the VM. Unmapped opcodes fall through to L_DEFAULT (trap).
+/// @pre A validated function frame is active in `fp_`.
+/// @post Execution leaves the VM halted, trapped, paused, or at a re-entrant
+///       callback boundary, with register-local state flushed to VM members.
 void BytecodeVM::runThreaded() {
     // Dispatch table for computed goto. Keep it local: GCC C++ rejects label
     // addresses in designated initializers, and static post-init mutation races.

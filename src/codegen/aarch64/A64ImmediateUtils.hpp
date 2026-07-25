@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/A64ImmediateUtils.hpp
+// File: src/codegen/aarch64/A64ImmediateUtils.hpp
 // Purpose: Shared AArch64 immediate-classification and legalization helpers.
 //          Classifies integer constants into the encoding forms accepted by the
 //          ISA (ADD/SUB 12-bit shifted immediates, MOVZ/MOVN/MOVK sequences) and
@@ -19,10 +19,20 @@
 // Ownership/Lifetime:
 //   - All helpers are stateless free functions / function templates; no heap
 //     allocation occurs.
-// Links: codegen/aarch64/MachineIR.hpp,
-//        codegen/aarch64/passes/LegalizePass.cpp (primary caller)
+// Links: src/codegen/aarch64/MachineIR.hpp,
+//        src/codegen/aarch64/passes/LegalizePass.cpp (primary caller)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Provides reusable AArch64 immediate classification and legalization.
+ *
+ * These helpers keep immediate-encoding policy consistent between instruction
+ * selection and legalization. Classification is pure; emission helpers append
+ * complete machine instructions to caller-owned blocks and obtain any required
+ * temporary register through a supplied callback.
+ */
 
 #pragma once
 
@@ -87,6 +97,7 @@ struct MoveWideInst {
 /// @tparam EmitFn Callable with signature `void(MoveWideInst)`.
 /// @param imm  The 64-bit immediate to materialise.
 /// @param emit Callback invoked for each MOVE-WIDE instruction in emission order.
+/// @post At least one instruction is emitted, including for zero and all-ones values.
 template <typename EmitFn> inline void forEachMoveWideInst(uint64_t imm, EmitFn &&emit) {
     const std::array<uint16_t, 4> chunks = {
         static_cast<uint16_t>(imm & 0xFFFFULL),
@@ -171,6 +182,8 @@ enum class SignedImmArithKind {
 /// @param addRegOpc MOpcode for the reg+reg ADD variant (used when imm is too large).
 /// @param subRegOpc MOpcode for the reg+reg SUB variant (used when imm is too large).
 /// @param makeTemp  Factory called only when the imm-form is not available.
+/// @post Appends exactly one arithmetic instruction, plus any instructions
+///       emitted internally by @p makeTemp when register materialization is required.
 template <typename MakeTempFn>
 inline void emitLegalizedSignedImmArith(MBasicBlock &out,
                                         const MOperand &dst,

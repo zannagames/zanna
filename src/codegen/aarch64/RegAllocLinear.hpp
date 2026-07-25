@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/RegAllocLinear.hpp
+// File: src/codegen/aarch64/RegAllocLinear.hpp
 // Purpose: Linear-scan register allocator entry point for AArch64 Machine IR.
 //          Maps virtual registers to physical registers, inserting spill/reload
 //          code when register pressure exceeds available registers.
@@ -19,9 +19,9 @@
 //   - Modifies the MFunction in place; caller owns the MFunction.
 //   - Uses TargetInfo for available registers and calling convention.
 //
-// Links: codegen/aarch64/RegAllocLinear.cpp,
-//        codegen/aarch64/ra/Allocator.hpp,
-//        codegen/aarch64/MachineIR.hpp
+// Links: src/codegen/aarch64/RegAllocLinear.cpp,
+//        src/codegen/aarch64/ra/Allocator.hpp,
+//        src/codegen/aarch64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,22 +30,41 @@
 #include "MachineIR.hpp"
 #include "TargetAArch64.hpp"
 
+/**
+ * @file
+ * @brief Declares the public AArch64 linear-scan register-allocation entry point.
+ *
+ * This interface separates the code-generation pipeline from the allocator's
+ * internal liveness, interval, assignment, and spill-rewrite machinery under
+ * `codegen/aarch64/ra`.
+ */
+
 namespace zanna::codegen::aarch64 {
 
-/// @brief Results from register allocation.
+/**
+ * @brief Carries statistics produced by AArch64 register allocation.
+ *
+ * The current `LinearAllocator` returns the default value; the spill-slot field
+ * is retained as the public result shape for allocators that report it.
+ */
 struct AllocationResult {
-    int gprSpillSlots{0}; ///< Number of GPR spill slots allocated.
+    int gprSpillSlots{0}; ///< Reported GPR spill slots; currently left at zero.
 };
 
-/// @brief Perform linear-scan register allocation on a machine function.
-///
-/// Rewrites virtual register operands to physical registers, inserting
-/// spill/reload code as necessary. Updates the function's frame layout
-/// with spill slot information.
-///
-/// @param fn The machine function to allocate registers for (modified in place).
-/// @param ti Target information providing available registers.
-/// @return Allocation statistics.
+/**
+ * @brief Performs linear-scan register allocation on a machine function.
+ *
+ * The allocator computes live intervals, assigns target registers, inserts
+ * spill/reload MIR as necessary, and records used callee-saved registers and
+ * frame spill slots.
+ *
+ * @param[in,out] fn Pre-allocation MIR function to rewrite in place.
+ * @param ti Target register sets and calling-convention information.
+ * @return Allocation statistics supplied by `ra::LinearAllocator::run()`.
+ * @post Every register operand in @p fn names a physical register.
+ * @post `fn.savedGPRs`, `fn.savedFPRs`, and frame spill metadata reflect the
+ *       completed assignment.
+ */
 [[nodiscard]] AllocationResult allocate(MFunction &fn, const TargetInfo &ti);
 
 } // namespace zanna::codegen::aarch64

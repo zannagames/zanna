@@ -1,0 +1,392 @@
+// =============================================================================
+// ai.zia — Shared AI building blocks for every enemy type
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — DESIGNING ENEMY AI AS LEGO BLOCKS
+// --------------------------------------------
+// An early mistake in game programming is to give each enemy
+// type its own bespoke AI function ("a slime just bounces;
+// a bat just dives; a beetle just rolls; ...").  Within a few
+// enemies, the code is full of near-duplicates with subtly
+// different bugs.
+//
+// A better approach is a **library of reusable building blocks**:
+// patrol, chase, aim, check-line-of-sight, pick-state.  Each
+// enemy is then a thin composition of those blocks plus a
+// little type-specific flavour (slime bounces, bat dives, etc.).
+//
+// This file is Xenoscape's block library.  It has zero state:
+// every function takes the inputs it needs and returns a value
+// the caller feeds back into the per-enemy state.  That purity
+// means testing is trivial ("patrol(100, 0, 50, 80, 200, -1)
+// returns 50") and the enemy subsystems in `enemy.zia` read
+// like a cookbook.
+//
+// AI STATE VOCABULARY
+// -------------------
+//     IDLE       → Not aware of the player.  Standing still.
+//     PATROL     → Wandering between bounds.  Still not aware.
+//     ALERT      → Just noticed the player.  Brief wind-up
+//                  (small pause + an exclamation sprite) before
+//                  committing to chase.  Good game feel — the
+//                  player has a moment to react.
+//     CHASE      → Committed; moving toward the player.
+//     ATTACK     → In range; performing an attack.
+//     RETREAT    → Backs off (e.g. after being hit).
+//     HURT       → Just took damage; brief stagger.
+//     DYING      → Playing the death animation.
+//     DEAD       → Reap me.
+//     SPECIAL    → Type-specific behaviour (charge, burrow,
+//                  teleport).  Each enemy interprets this
+//                  differently.
+//
+// WHAT'S IN THIS FILE
+// -------------------
+//   * Distance helpers: `inRange`, `distX`, `distY`, `distSq`.
+//     Square distance avoids a square-root; range checks
+//     compare against `range * range`.
+//   * `hasLineOfSight` — checks for a blocking tile between
+//     two points.  Horizontal-only (Xenoscape's enemies don't
+//     see through ceilings), but fine for a sidescroller.
+//   * `patrol` — pure function returning the next VX given
+//     position, bounds, and facing.
+//   * `atLedge` — "would my next step drop me off a cliff?"
+//     Used by patrol enemies that *don't* walk off ledges.
+//   * `chaseHorizontal` — target-seeking version of patrol.
+//   * `shouldAggro` / `shouldDeaggro` — paired helpers with
+//     **hysteresis** (see note below).
+//   * `aimAt` — integer projectile vector toward target.
+//   * `updateState` — the default state-machine transition
+//     function that most enemies reuse.
+//
+// HYSTERESIS — WHY AGGRO AND DEAGGRO RANGES DIFFER
+// ------------------------------------------------
+// A naive "chase when distance < R; stop chasing when distance
+// >= R" loop *flickers* when the player hovers right at R:
+// CHASE-PATROL-CHASE-PATROL at every frame.
+//
+// The fix: aggro at distance `R1` but only de-aggro at some
+// larger `R2` (say 1.5× R1).  Once aggroed, the enemy
+// commits until the player genuinely escapes.  This is
+// **hysteresis** and it's essential for smooth AI.
+//
+// WHERE THIS FITS
+// ---------------
+//     enemy.zia     ──►  each enemy's per-frame update calls
+//                        these helpers to move/aim/transition
+//                        state.
+//     level.zia     ──►  supplies the `tileGrid` the LOS check
+//                        reads.
+//
+// HOW TO READ THIS FILE
+// ---------------------
+//   1. State constants.
+//   2. Distance helpers.
+//   3. LOS + solid-tile check.
+//   4. Patrol helpers.
+//   5. Chase + aggro/deaggro.
+//   6. Attack helpers.
+//   7. `updateState` — the default state machine.
+//
+// =============================================================================
+
+module ai;
+
+bind "./config";
+
+//=============================================================================
+// AI STATE CONSTANTS
+//=============================================================================
+final AI_IDLE       = 0;
+final AI_PATROL     = 1;
+final AI_ALERT      = 2;  // noticed player, wind-up before chase
+final AI_CHASE      = 3;
+final AI_ATTACK     = 4;
+final AI_RETREAT    = 5;
+final AI_HURT       = 6;
+final AI_DYING      = 7;
+final AI_DEAD       = 8;
+final AI_SPECIAL    = 9;  // type-specific (charge, burrow, teleport, ...)
+
+//=============================================================================
+// DISTANCE HELPERS
+//=============================================================================
+
+/// @brief "Is `a` within a `range`-sized axis-aligned box of
+///        `b`?"  Cheap rectangular check — no sqrt.
+func inRange(ax: Integer, ay: Integer, bx: Integer, by: Integer,
+             range: Integer) -> Boolean  {
+    var dx = ax - bx;
+    var dy = ay - by;
+    if dx < 0 { dx = 0 - dx; }
+    if dy < 0 { dy = 0 - dy; }
+    return dx < range and dy < range;
+}
+
+/// @brief Absolute horizontal distance.
+func distX(ax: Integer, bx: Integer) -> Integer {
+    var d = ax - bx;
+    if d < 0 { return 0 - d; }
+    return d;
+}
+
+/// @brief Absolute vertical distance.
+func distY(ay: Integer, by: Integer) -> Integer {
+    var d = ay - by;
+    if d < 0 { return 0 - d; }
+    return d;
+}
+
+/// @brief Squared Euclidean distance.  Used for range
+///        comparisons (compare against `range * range`) to
+///        avoid a sqrt on the hot path.
+func distSq(ax: Integer, ay: Integer, bx: Integer, by: Integer) -> Integer {
+    var dx = ax - bx;
+    var dy = ay - by;
+    return dx * dx + dy * dy;
+}
+
+//=============================================================================
+// LINE OF SIGHT
+//=============================================================================
+
+/// @brief "Can enemy at (ex, ey) see player at (px, py)?"
+///
+/// Simplified check: we only look for a horizontal line (same Y
+/// ±1 tile) with no solid tiles between.  Good enough for a
+/// sidescroller where enemies shoot horizontally and don't
+/// peek around corners.  A full raycast would add multi-tile
+/// walk + diagonal steps.
+func hasLineOfSight(ex: Integer, ey: Integer,
+                    px: Integer, py: Integer,
+                    tileGrid: List[List[Integer]],
+                    gridW: Integer, gridH: Integer) -> Boolean  {
+    // Reject big vertical offsets cheaply.
+    var tileDy = distY(ey / TILE_SIZE, py / TILE_SIZE);
+    if tileDy > 1 { return false; }
+
+    // Normalise left→right ordering so we can iterate forward.
+    var startTX = ex / TILE_SIZE;
+    var endTX = px / TILE_SIZE;
+    if startTX > endTX {
+        var tmp = startTX;
+        startTX = endTX;
+        endTX = tmp;
+    }
+    var ty = ey / TILE_SIZE;
+    if ty < 0 or ty >= gridH { return false; }
+
+    // Walk the tile row; any solid tile blocks sight.
+    var tx = startTX;
+    while tx <= endTX {
+        if tx >= 0 and tx < gridW {
+            var tile = tileGrid.get(ty).get(tx);
+            if isSolid(tile) { return false; }
+        }
+        tx = tx + 1;
+    }
+    return true;
+}
+
+/// @brief "Is this tile ID solid?"  Centralised so both the
+///        LOS check and patrol-ledge check agree.  Tile IDs
+///        1–20 are the solid ground family (see config.zia).
+func isSolid(tileId: Integer) -> Boolean {
+    return tileId >= 1 and tileId <= 20;
+}
+
+/// @brief Which way (enemy, target) should the enemy face?
+///        Returns -1 for "left of target", +1 for "right of".
+func facingToward(ex: Integer, tx: Integer) -> Integer {
+    if tx > ex { return 1; }
+    return -1;
+}
+
+//=============================================================================
+// PATROL
+//=============================================================================
+
+/// @brief Walk between `minX` and `maxX`.  Returns the new
+///        velocity for this frame.
+///
+/// We flip direction *only* when we cross the respective bound
+/// going the wrong way.  In the middle we keep whatever vx the
+/// caller already had, which means on-the-fly speed changes
+/// propagate without introducing a "jerk".
+func patrol(ex: Integer, vx: Integer, speed: Integer,
+            minX: Integer, maxX: Integer, facing: Integer) -> Integer  {
+    if ex <= minX and facing < 0 { return speed; }
+    if ex >= maxX and facing > 0 { return 0 - speed; }
+    return vx;
+}
+
+/// @brief "Would my next step walk off an edge?"
+///
+/// Probes one tile ahead and one tile below.  If either the
+/// tile just-past-the-foot is empty (so stepping forward
+/// would fall) or the grid ends, say yes.
+///
+/// Smart patrols use this to turn around at pit edges; dumb
+/// ones fall.  Xenoscape's ground enemies are smart.
+func atLedge(ex: Integer, ey: Integer, facing: Integer,
+             tileGrid: List[List[Integer]],
+             gridW: Integer, gridH: Integer) -> Boolean  {
+    var checkX = (ex + facing * TILE_SIZE) / TILE_SIZE;
+    var checkY = (ey + TILE_SIZE) / TILE_SIZE;
+    if checkX < 0 or checkX >= gridW { return true; }
+    if checkY < 0 or checkY >= gridH { return true; }
+    var tile = tileGrid.get(checkY).get(checkX);
+    return not isSolid(tile);
+}
+
+//=============================================================================
+// CHASE + AGGRO
+//=============================================================================
+
+/// @brief Chase horizontally toward the player.  Returns the
+///        target vx (`+speed`, `-speed`, or 0 when aligned).
+func chaseHorizontal(ex: Integer, px: Integer, speed: Integer) -> Integer {
+    if px > ex { return speed; }
+    if px < ex { return 0 - speed; }
+    return 0;
+}
+
+/// @brief "Is the player close enough to notice?"  Uses
+///        squared distance vs squared range to skip the sqrt.
+func shouldAggro(ex: Integer, ey: Integer,
+                 px: Integer, py: Integer,
+                 aggroRange: Integer) -> Boolean  {
+    return distSq(ex, ey, px, py) < aggroRange * aggroRange;
+}
+
+/// @brief "Should we stop chasing now that the player escaped?"
+///
+/// `deaggroRange` MUST be > `aggroRange` to get the hysteresis
+/// described in the file header — that's the whole point of
+/// having two thresholds.
+func shouldDeaggro(ex: Integer, ey: Integer,
+                   px: Integer, py: Integer,
+                   deaggroRange: Integer) -> Boolean  {
+    return distSq(ex, ey, px, py) > deaggroRange * deaggroRange;
+}
+
+//=============================================================================
+// ATTACK
+//=============================================================================
+
+/// @brief "Am I close enough to attack?"  Same squared-
+///        distance trick.
+func inAttackRange(ex: Integer, ey: Integer,
+                   px: Integer, py: Integer,
+                   attackRange: Integer) -> Boolean  {
+    return distSq(ex, ey, px, py) < attackRange * attackRange;
+}
+
+/// @brief Pure-integer aim vector.
+///
+/// Returns `[vx, vy]` — a pair approximately pointing at
+/// (px, py) with total speed `speed`.  We normalise by the
+/// larger-of-|dx|-or-|dy| (Chebyshev / chessboard distance)
+/// rather than the Euclidean length, which avoids a sqrt.
+/// The result is slightly faster on diagonals than on axis-
+/// aligned shots, which reads fine in practice and is how many
+/// classic arcade games shot too.
+func aimAt(ex: Integer, ey: Integer,
+           px: Integer, py: Integer,
+           speed: Integer) -> List[Integer]  {
+    var dx = px - ex;
+    var dy = py - ey;
+    var len = 1;
+    var adx = dx;
+    var ady = dy;
+    if adx < 0 { adx = 0 - adx; }
+    if ady < 0 { ady = 0 - ady; }
+    if adx > ady { len = adx; } else { len = ady; }
+    if len == 0 { len = 1; }
+    var vx = dx * speed / len;
+    var vy = dy * speed / len;
+    return [vx, vy];
+}
+
+//=============================================================================
+// DEFAULT STATE MACHINE
+//=============================================================================
+
+/// @brief The boilerplate state transition used by most
+///        ground-level enemies.  Returns the next state.
+///
+/// Priority:
+///   1. If HP hit 0, flip to DYING.  Hold DYING for 30 frames,
+///      then DEAD.
+///   2. HURT auto-transitions back to PATROL after 10 frames
+///      (stagger duration).
+///   3. IDLE/PATROL promote to ALERT when the player enters
+///      aggro range.
+///   4. ALERT holds for 15 frames (a visible "!" wind-up),
+///      then CHASE.
+///   5. CHASE either drops back to PATROL (deaggro escape) or
+///      promotes to ATTACK (inside attack range).
+///   6. ATTACK auto-transitions back to CHASE after 20 frames.
+///
+/// A type-specific enemy can bypass this entirely — e.g. a
+/// boss uses its own state machine with multi-phase logic.
+/// But for the 80% case it saves writing the same switch
+/// statement for every grunt.
+func updateState(currentState: Integer, stateTimer: Integer,
+                 hp: Integer, _maxHp: Integer,
+                 ex: Integer, ey: Integer,
+                 px: Integer, py: Integer,
+                 aggroRange: Integer, deaggroRange: Integer,
+                 attackRange: Integer) -> Integer  {
+    // Death priority — overrides everything else.
+    if hp <= 0 {
+        if currentState != AI_DYING and currentState != AI_DEAD {
+            return AI_DYING;
+        }
+        if currentState == AI_DYING and stateTimer > 30 {
+            return AI_DEAD;
+        }
+        return currentState;
+    }
+
+    // Stagger: auto-clear after 10 frames.
+    if currentState == AI_HURT {
+        if stateTimer > 10 { return AI_PATROL; }
+        return AI_HURT;
+    }
+
+    // Passive → aware.
+    if currentState == AI_IDLE or currentState == AI_PATROL {
+        if shouldAggro(ex, ey, px, py, aggroRange) {
+            return AI_ALERT;
+        }
+        return AI_PATROL;
+    }
+
+    // ALERT wind-up — 240ms at 60fps.  The "!" sprite plays
+    // here; then we commit.
+    if currentState == AI_ALERT {
+        if stateTimer > 15 { return AI_CHASE; }
+        return AI_ALERT;
+    }
+
+    // CHASE decision tree.
+    if currentState == AI_CHASE {
+        if shouldDeaggro(ex, ey, px, py, deaggroRange) {
+            return AI_PATROL;
+        }
+        if inAttackRange(ex, ey, px, py, attackRange) {
+            return AI_ATTACK;
+        }
+        return AI_CHASE;
+    }
+
+    // ATTACK swing duration.
+    if currentState == AI_ATTACK {
+        if stateTimer > 20 { return AI_CHASE; }
+        return AI_ATTACK;
+    }
+
+    return currentState;
+}

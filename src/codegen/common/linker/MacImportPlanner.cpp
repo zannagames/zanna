@@ -5,20 +5,25 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/MacImportPlanner.cpp
+// File: src/codegen/common/linker/MacImportPlanner.cpp
 // Purpose: macOS framework and dylib import planning for the native linker.
 //          Resolves each undefined dynamic symbol to the dylib that exports it
 //          and produces the LC_LOAD_DYLIB list plus per-symbol ordinal map.
 // Key invariants:
 //   - The symbol-to-dylib lookup is fully baked-in; no filesystem access.
-//   - Symbols absent from the table route to flat-lookup
-//     (BIND_SPECIAL_DYLIB_FLAT_LOOKUP) so dyld searches every dylib.
+//   - Known libSystem symbols fall back to ordinal 1; unresolved Objective-C
+//     class lookups use flat lookup where dyld framework re-exports require it.
 //   - Returned ordinals are 1-based and stable for a given input set.
 // Ownership/Lifetime: stateless — caller owns the populated MacImportPlan.
 // Links: codegen/common/linker/PlatformImportPlanner.hpp,
 //        codegen/common/linker/MachOExeWriter.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file MacImportPlanner.cpp
+ * @brief Implements deterministic macOS dylib/framework selection and bind ordinals.
+ */
 
 #include "codegen/common/linker/PlatformImportPlanner.hpp"
 
@@ -44,6 +49,8 @@ struct MacImportRule {
 
 /// @brief Drop leading underscores from a Mach-O symbol so the lookup table
 ///        can store unmangled keys (e.g., "main", "printf", not "_main").
+/// @param name Raw Mach-O symbol name.
+/// @return Name with every leading underscore removed.
 std::string stripLeadingUnderscores(const std::string &name) {
     size_t i = 0;
     while (i < name.size() && name[i] == '_')
@@ -52,17 +59,25 @@ std::string stripLeadingUnderscores(const std::string &name) {
 }
 
 /// @brief Recognise the OBJC_CLASS_$_/OBJC_METACLASS_$_ class-ref naming convention.
+/// @param name Raw or underscore-prefixed Mach-O symbol name.
+/// @return `true` for Objective-C class or metaclass lookup symbols.
 bool isObjcClassLookupSymbol(const std::string &name) {
     const std::string stripped = stripLeadingUnderscores(name);
     return stripped.rfind("OBJC_CLASS_$_", 0) == 0 || stripped.rfind("OBJC_METACLASS_$_", 0) == 0;
 }
 
+/// @brief Tests for Objective-C framework class, metaclass, or exception types.
+/// @param name Raw Mach-O symbol name.
+/// @return `true` for the three recognized Objective-C type prefixes.
 bool isObjcFrameworkTypeSymbol(const std::string &name) {
     const std::string stripped = stripLeadingUnderscores(name);
     return stripped.rfind("OBJC_CLASS_$_", 0) == 0 || stripped.rfind("OBJC_METACLASS_$_", 0) == 0 ||
            stripped.rfind("OBJC_EHTYPE_$_", 0) == 0;
 }
 
+/// @brief Normalizes a framework symbol to its exported type or API base name.
+/// @param name Raw Mach-O symbol name.
+/// @return Name without object-format underscores or Objective-C type prefix.
 std::string normalizeMacFrameworkSymbol(const std::string &name) {
     std::string normalized = stripLeadingUnderscores(name);
     static constexpr const char *kObjcPrefixes[] = {
@@ -229,6 +244,11 @@ static constexpr MacImportRule kMacImportRules[] = {
      kMacNoMatches},
 };
 
+/// @brief Tests a symbol against one baked-in dylib import rule.
+/// @param sym Raw Mach-O symbol name.
+/// @param rule Candidate dylib rule.
+/// @return `true` when raw, de-underscored, or framework-normalized spelling
+///         matches an exact entry or prefix.
 bool macSymbolMatchesRule(const std::string &sym, const MacImportRule &rule) {
     const std::string stripped = stripLeadingUnderscores(sym);
     const std::string normalized = normalizeMacFrameworkSymbol(sym);
@@ -244,6 +264,11 @@ bool macSymbolMatchesRule(const std::string &sym, const MacImportRule &rule) {
     return false;
 }
 
+/// @brief Finds the first dylib rule matching a symbol.
+/// @details Objective-C framework type symbols skip the generic libobjc rule
+///          so framework-specific prefix rules can select their provider.
+/// @param sym Raw Mach-O symbol name.
+/// @return Pointer into the static rule table, or `nullptr` when unmapped.
 const MacImportRule *findMacImportRule(const std::string &sym) {
     for (const auto &rule : kMacImportRules) {
         if (isObjcFrameworkTypeSymbol(sym) &&
@@ -256,6 +281,9 @@ const MacImportRule *findMacImportRule(const std::string &sym) {
     return nullptr;
 }
 
+/// @brief Tests whether a name resembles a known framework-owned API family.
+/// @param sym Raw Mach-O symbol name.
+/// @return `true` when raw or normalized spelling begins with a framework prefix.
 bool isMacFrameworkLikeSymbol(const std::string &sym) {
     static constexpr const char *kFrameworkPrefixes[] = {
         "CF",
@@ -295,6 +323,11 @@ bool isMacFrameworkLikeSymbol(const std::string &sym) {
     return false;
 }
 
+/// @brief Returns or creates the one-based load-command ordinal for a dylib.
+/// @param path Install name of the dylib or framework binary.
+/// @param plan Plan whose ordered dylib list may be extended.
+/// @param pathToOrdinal Deduplication map maintained alongside @p plan.
+/// @return Existing or newly assigned one-based ordinal.
 uint32_t ensureMacDylibOrdinal(const char *path,
                                MacImportPlan &plan,
                                std::unordered_map<std::string, uint32_t> &pathToOrdinal) {
@@ -310,6 +343,7 @@ uint32_t ensureMacDylibOrdinal(const char *path,
 
 } // namespace
 
+/// @copydoc planMacImports(const std::unordered_set<std::string> &, MacImportPlan &, std::ostream &)
 bool planMacImports(const std::unordered_set<std::string> &dynamicSyms,
                     MacImportPlan &plan,
                     std::ostream &err) {

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/AsmEmitter.hpp
+// File: src/codegen/aarch64/AsmEmitter.hpp
 // Purpose: AArch64 assembly text emitter for machine IR functions.
 //
 // Assembly format: GNU Assembler (GAS) unified syntax — target OS selects
@@ -31,12 +31,22 @@
 //   - Emitter is stateless between function emissions (except during a single call).
 //   - TargetInfo reference must remain valid for the emitter's lifetime.
 //
-// Links: codegen/aarch64/AsmEmitter.cpp,
-//        codegen/aarch64/MachineIR.hpp,
-//        codegen/aarch64/FrameBuilder.hpp,
-//        codegen/aarch64/TargetAArch64.hpp
+// Links: src/codegen/aarch64/AsmEmitter.cpp,
+//        src/codegen/aarch64/MachineIR.hpp,
+//        src/codegen/aarch64/FrameBuilder.hpp,
+//        src/codegen/aarch64/TargetAArch64.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares the cross-platform GAS text emitter for allocated AArch64 MIR.
+ *
+ * The emitter translates physical-register machine IR into Darwin Mach-O,
+ * Linux ELF, or Windows PE/COFF assembly syntax. Public instruction helpers
+ * append text to caller-owned streams; full-function emission temporarily
+ * records the active frame plan so each return can emit the matching epilogue.
+ */
 
 #pragma once
 
@@ -54,6 +64,9 @@ namespace zanna::codegen::aarch64 {
 ///
 /// Converts MIR instructions to assembly text, handling function headers,
 /// prologue/epilogue generation, and instruction-level emission.
+/// @invariant `target_` points to a live immutable target description.
+/// @note One emitter may be reused sequentially; concurrent calls on the same
+///       object are unsafe because full-function emission uses transient state.
 class AsmEmitter {
   public:
     /// @brief Construct an AsmEmitter with target-specific configuration.
@@ -478,12 +491,40 @@ class AsmEmitter {
     /// @param offset Byte offset from frame pointer (negative for locals).
     void emitStrToFp(std::ostream &os, PhysReg src, long long offset) const;
 
-    /// @brief Load/store narrow integer values from frame pointer offsets.
+    /// @brief Load an unsigned byte through the frame pointer.
+    /// @param os Output assembly stream.
+    /// @param dst Destination GPR, written through its W-register view.
+    /// @param offset Signed byte offset from `x29`.
     void emitLdr8FromFp(std::ostream &os, PhysReg dst, long long offset) const;
+
+    /// @brief Store a byte through the frame pointer.
+    /// @param os Output assembly stream.
+    /// @param src Source GPR, read through its W-register view.
+    /// @param offset Signed byte offset from `x29`.
     void emitStr8ToFp(std::ostream &os, PhysReg src, long long offset) const;
+
+    /// @brief Load an unsigned 16-bit value through the frame pointer.
+    /// @param os Output assembly stream.
+    /// @param dst Destination GPR, written through its W-register view.
+    /// @param offset Signed byte offset from `x29`.
     void emitLdr16FromFp(std::ostream &os, PhysReg dst, long long offset) const;
+
+    /// @brief Store a 16-bit value through the frame pointer.
+    /// @param os Output assembly stream.
+    /// @param src Source GPR, read through its W-register view.
+    /// @param offset Signed byte offset from `x29`.
     void emitStr16ToFp(std::ostream &os, PhysReg src, long long offset) const;
+
+    /// @brief Load a 32-bit value through the frame pointer.
+    /// @param os Output assembly stream.
+    /// @param dst Destination GPR, written through its W-register view.
+    /// @param offset Signed byte offset from `x29`.
     void emitLdr32FromFp(std::ostream &os, PhysReg dst, long long offset) const;
+
+    /// @brief Store a 32-bit value through the frame pointer.
+    /// @param os Output assembly stream.
+    /// @param src Source GPR, read through its W-register view.
+    /// @param offset Signed byte offset from `x29`.
     void emitStr32ToFp(std::ostream &os, PhysReg src, long long offset) const;
 
     /// @brief Load FPR from frame pointer offset: `ldr dst, [fp, #offset]`.
@@ -523,12 +564,46 @@ class AsmEmitter {
     /// @param offset Byte offset from base.
     void emitStrToBase(std::ostream &os, PhysReg src, PhysReg base, long long offset) const;
 
-    /// @brief Load/store narrow integer values from arbitrary base-register offsets.
+    /// @brief Load an unsigned byte through an arbitrary base register.
+    /// @param os Output assembly stream.
+    /// @param dst Destination GPR.
+    /// @param base Address base GPR.
+    /// @param offset Signed byte displacement.
     void emitLdr8FromBase(std::ostream &os, PhysReg dst, PhysReg base, long long offset) const;
+
+    /// @brief Store a byte through an arbitrary base register.
+    /// @param os Output assembly stream.
+    /// @param src Source GPR.
+    /// @param base Address base GPR.
+    /// @param offset Signed byte displacement.
     void emitStr8ToBase(std::ostream &os, PhysReg src, PhysReg base, long long offset) const;
+
+    /// @brief Load an unsigned 16-bit value through an arbitrary base register.
+    /// @param os Output assembly stream.
+    /// @param dst Destination GPR.
+    /// @param base Address base GPR.
+    /// @param offset Signed byte displacement.
     void emitLdr16FromBase(std::ostream &os, PhysReg dst, PhysReg base, long long offset) const;
+
+    /// @brief Store a 16-bit value through an arbitrary base register.
+    /// @param os Output assembly stream.
+    /// @param src Source GPR.
+    /// @param base Address base GPR.
+    /// @param offset Signed byte displacement.
     void emitStr16ToBase(std::ostream &os, PhysReg src, PhysReg base, long long offset) const;
+
+    /// @brief Load a 32-bit value through an arbitrary base register.
+    /// @param os Output assembly stream.
+    /// @param dst Destination GPR.
+    /// @param base Address base GPR.
+    /// @param offset Signed byte displacement.
     void emitLdr32FromBase(std::ostream &os, PhysReg dst, PhysReg base, long long offset) const;
+
+    /// @brief Store a 32-bit value through an arbitrary base register.
+    /// @param os Output assembly stream.
+    /// @param src Source GPR.
+    /// @param base Address base GPR.
+    /// @param offset Signed byte displacement.
     void emitStr32ToBase(std::ostream &os, PhysReg src, PhysReg base, long long offset) const;
 
     /// @brief Load FPR from base register offset: `ldr dst, [base, #offset]`.
@@ -569,6 +644,12 @@ class AsmEmitter {
 
   private:
     /// @brief Resolve base+offset, materialising into scratch for large offsets.
+    /// @param os Output stream for any address-materialization instructions.
+    /// @param base Original base GPR.
+    /// @param offset Signed byte displacement.
+    /// @param resolvedOffset Receives an encodable residual displacement.
+    /// @param avoid Optional transfer register that scratch selection must preserve.
+    /// @return Original base or a reserved scratch register containing the full address.
     [[nodiscard]] PhysReg resolveBaseOffset(std::ostream &os,
                                             PhysReg base,
                                             long long offset,
@@ -582,6 +663,8 @@ class AsmEmitter {
     mutable bool skipFrame_{false}; ///< True for leaf functions with no frame.
 
     /// @brief Return the canonical assembly name for a physical register.
+    /// @param r Physical register.
+    /// @return Pointer to a static register spelling.
     [[nodiscard]] static const char *rn(PhysReg r) noexcept {
         return regName(r);
     }

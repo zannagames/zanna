@@ -1,0 +1,179 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/death_loop.zia
+// Purpose: Owns banked salvage and the single recoverable campaign death marker.
+// Key invariants:
+//   - Only salvage collected since the last successful save can be dropped.
+//   - Recording a death replaces any older marker, so recovery is available once.
+// Ownership/Lifetime:
+//   - Game owns one DeathRecovery for the duration of the active expedition.
+// Links: game.zia, difficulty.zia, meta_probe.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module death_loop;
+
+bind "./difficulty";
+
+/// @brief Calculate the recoverable salvage dropped by one campaign death.
+///
+/// Banked salvage is protected. The profile percentage applies only to the
+/// nonnegative difference between carried and banked totals. Positive fractional
+/// penalties round up so Standard and Veteran retain meaningful stakes even for
+/// small unbanked amounts.
+///
+/// @param carriedGems Total salvage currently shown to the player.
+/// @param bankedGems Total salvage protected by the last successful save.
+/// @param profile Active `DIFFICULTY_*` profile id.
+/// @return Recoverable loss in the inclusive range 0..max(carried-banked, 0).
+func deathRecoverableGemLoss(carriedGems: Integer, bankedGems: Integer,
+                             profile: Integer) -> Integer {
+    var unbanked = carriedGems - bankedGems;
+    if unbanked <= 0 { return 0; }
+    var percent = difficultyGemLossPercent(profile);
+    if percent <= 0 { return 0; }
+    var loss = (unbanked * percent + 99) / 100;
+    if loss > unbanked { loss = unbanked; }
+    return loss;
+}
+
+/// @brief Runtime owner for protected salvage and one recoverable death marker.
+///
+/// The marker intentionally is not serialized: a clean quit preserves the last
+/// successful save's banked total, while an unresolved death run does not create
+/// a permanent duplicate-currency path. Coordinates use world pixels and the
+/// level id is one-based to match Game and SaveManager.
+class DeathRecovery {
+    hide Integer bankedGems;
+    hide Boolean markerActive;
+    hide Integer markerGems;
+    hide Integer markerLevel;
+    hide Integer markerX;
+    hide Integer markerY;
+
+    /// @brief Initialize an expedition with no protected salvage or marker.
+    ///
+    /// @return Nothing. All state is reset to deterministic new-profile values.
+    expose func init() { reset(0); }
+
+    /// @brief Reset the recovery system after new-game creation or slot load.
+    ///
+    /// Loaded salvage is already durable, so it becomes the new protected total.
+    /// Any marker from the previous expedition is discarded.
+    ///
+    /// @param savedGems Nonnegative salvage restored from the selected slot.
+    /// @return Nothing. Mutates bank and marker state.
+    expose func reset(savedGems: Integer) {
+        bankedGems = savedGems;
+        if bankedGems < 0 { bankedGems = 0; }
+        markerActive = false;
+        markerGems = 0;
+        markerLevel = 0;
+        markerX = 0;
+        markerY = 0;
+    }
+
+    /// @brief Protect the current salvage total after a successful save flush.
+    ///
+    /// Banking never clears an existing death marker. This permits a recovered
+    /// marker to be saved normally while preventing failed writes from silently
+    /// protecting currency.
+    ///
+    /// @param carriedGems Current nonnegative player salvage total.
+    /// @return Nothing. Updates only the protected total.
+    expose func bank(carriedGems: Integer) {
+        bankedGems = carriedGems;
+        if bankedGems < 0 { bankedGems = 0; }
+    }
+
+    /// @brief Replace the old marker and apply this death's salvage penalty.
+    ///
+    /// Explorer produces no marker. Standard and Veteran create one marker only
+    /// when the calculated loss is positive; a later death always invalidates the
+    /// previous marker before considering the new loss.
+    ///
+    /// @param carriedGems Salvage total immediately before the death.
+    /// @param profile Active `DIFFICULTY_*` profile id.
+    /// @param level One-based region containing the death.
+    /// @param worldX Death position in world pixels.
+    /// @param worldY Death position in world pixels.
+    /// @return Remaining salvage after subtracting the recoverable loss.
+    expose func recordDeath(carriedGems: Integer, profile: Integer,
+                            level: Integer, worldX: Integer,
+                            worldY: Integer) -> Integer {
+        markerActive = false;
+        markerGems = deathRecoverableGemLoss(carriedGems, bankedGems, profile);
+        markerLevel = level;
+        markerX = worldX;
+        markerY = worldY;
+        if markerGems > 0 {
+            markerActive = true;
+            return carriedGems - markerGems;
+        }
+        return carriedGems;
+    }
+
+    /// @brief Recover and consume the marker when the player returns near it.
+    ///
+    /// A marker can be collected only in its original region and only once.
+    /// Axis-aligned range checks are used to avoid square-root work in the hot
+    /// gameplay loop.
+    ///
+    /// @param level Current one-based region.
+    /// @param worldX Player center X in world pixels.
+    /// @param worldY Player center Y in world pixels.
+    /// @param radius Nonnegative collection radius in pixels.
+    /// @return Recovered salvage, or zero when no eligible marker is nearby.
+    expose func recoverIfNear(level: Integer, worldX: Integer,
+                              worldY: Integer, radius: Integer) -> Integer {
+        if markerActive == false or level != markerLevel or radius < 0 {
+            return 0;
+        }
+        var dx = worldX - markerX;
+        if dx < 0 { dx = 0 - dx; }
+        var dy = worldY - markerY;
+        if dy < 0 { dy = 0 - dy; }
+        if dx > radius or dy > radius { return 0; }
+
+        var recovered = markerGems;
+        markerActive = false;
+        markerGems = 0;
+        return recovered;
+    }
+
+    /// @brief Report whether a visible recovery marker currently exists.
+    ///
+    /// @return True until the marker is recovered or replaced by another death.
+    expose func hasMarker() -> Boolean { return markerActive; }
+
+    /// @brief Read the salvage stored in the active marker.
+    ///
+    /// @return Positive marker salvage, or zero when inactive.
+    expose func getMarkerGems() -> Integer { return markerGems; }
+
+    /// @brief Read the marker's one-based region id.
+    ///
+    /// @return Region id recorded at death; zero before any recorded death.
+    expose func getMarkerLevel() -> Integer { return markerLevel; }
+
+    /// @brief Read the marker world-space X coordinate.
+    ///
+    /// @return Marker center X in pixels.
+    expose func getMarkerX() -> Integer { return markerX; }
+
+    /// @brief Read the marker world-space Y coordinate.
+    ///
+    /// @return Marker center Y in pixels.
+    expose func getMarkerY() -> Integer { return markerY; }
+
+    /// @brief Read the last successfully protected salvage total.
+    ///
+    /// @return Nonnegative banked salvage used for future death calculations.
+    expose func getBankedGems() -> Integer { return bankedGems; }
+}

@@ -9,11 +9,22 @@
 // Purpose: Stable façade for constructing IL modules without depending on src paths.
 // Key invariants: Mirrors il::build::IRBuilder API; no additional behavior.
 // Ownership/Lifetime: IRBuilder lifetime remains managed by callers.
-// Links: docs/il-guide.md#reference
+// Links: docs/il/il-guide.md#reference, src/il/build/IRBuilder.hpp
+//
+//===----------------------------------------------------------------------===//
+
 #pragma once
 
 #include "il/build/IRBuilder.hpp"
 
-/// @file include/zanna/il/IRBuilder.hpp
-/// @brief Public forwarding header exposing il::build::IRBuilder for clients
-///        that need to generate IL programmatically.
+/**
+ * @file include/zanna/il/IRBuilder.hpp
+ * @brief Exposes the supported IL builder interface to downstream clients.
+ *
+ * @details
+ * This forwarding header gives embedders and language frontends access to
+ * `il::build::IRBuilder` through the installed `zanna/il` include hierarchy.
+ * It introduces no wrapper types or behavior, so insertion-point validity,
+ * module mutation, reference stability, and ownership follow the underlying
+ * builder declaration.
+ */

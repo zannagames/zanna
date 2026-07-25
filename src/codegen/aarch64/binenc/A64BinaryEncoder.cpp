@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/binenc/A64BinaryEncoder.cpp
+// File: src/codegen/aarch64/binenc/A64BinaryEncoder.cpp
 // Purpose: AArch64 MIR-to-machine-code binary encoder implementation.
 //          Encodes all non-pseudo AArch64 MIR opcodes into 32-bit instruction
 //          words, synthesizes prologue/epilogue from function metadata, and
@@ -17,9 +17,9 @@
 //   - External BL generates A64Call26 relocation; ADRP/ADD generate page relocs
 // Ownership/Lifetime:
 //   - State (labelOffsets_, pendingBranches_) is cleared per encodeFunction() call
-// Links: codegen/aarch64/binenc/A64BinaryEncoder.hpp,
-//        codegen/aarch64/binenc/A64Encoding.hpp,
-//        codegen/aarch64/AsmEmitter.cpp
+// Links: src/codegen/aarch64/binenc/A64BinaryEncoder.hpp,
+//        src/codegen/aarch64/binenc/A64Encoding.hpp,
+//        src/codegen/aarch64/AsmEmitter.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,18 +40,36 @@
 #include <string>
 #include <unordered_set>
 
+/**
+ * @file
+ * @brief Implements direct AArch64 MIR-to-machine-code object emission.
+ *
+ * Encoding is preceded by iterative size/label measurement so conditional
+ * branches can be promoted before bytes are emitted. The final pass validates
+ * operands, synthesizes ABI frame sequences, records relocations and unwind
+ * metadata, and patches internal branches and jump-table entries.
+ */
+
 namespace zanna::codegen::aarch64::binenc {
 
 // === Helpers ===
 
-/// Map IL extern names to C runtime symbol names.
+/**
+ * @brief Resolves a canonical IL runtime name to its linker symbol.
+ * @param name Raw external symbol name.
+ * @return Owned mapped runtime name, or an unchanged copy for a user symbol.
+ */
 static std::string mapRuntimeSymbol(const std::string &name) {
     if (auto mapped = il::runtime::mapCanonicalRuntimeName(name))
         return std::string(*mapped);
     return name;
 }
 
-/// Sanitize a label for internal use (replace hyphens, etc.).
+/**
+ * @brief Applies the common object/assembler label sanitizer.
+ * @param name Raw MIR label.
+ * @return Owned sanitized spelling.
+ */
 static std::string sanitizeLabel(const std::string &name) {
     return zanna::codegen::common::sanitizeLabel(name);
 }
@@ -71,7 +89,13 @@ static std::string objectFunctionSymbolName(const std::string &name) {
     return sanitizeLabel(name);
 }
 
-/// Extract PhysReg from a register operand.
+/**
+ * @brief Validates and extracts a physical register from a MIR operand.
+ *
+ * @param op Operand expected to be a class-consistent physical register.
+ * @return Physical-register enumerator.
+ * @throws std::runtime_error If the kind, physicality, numeric range, or class is invalid.
+ */
 static PhysReg getReg(const MOperand &op) {
     if (op.kind != MOperand::Kind::Reg)
         throw std::runtime_error("AArch64 binary encoder expected register operand, got kind=" +
@@ -91,7 +115,12 @@ static PhysReg getReg(const MOperand &op) {
     return phys;
 }
 
-/// Extract immediate value from an operand.
+/**
+ * @brief Extracts a signed immediate payload.
+ * @param op Operand expected to have immediate kind.
+ * @return Stored immediate value.
+ * @throws std::runtime_error If @p op is not an immediate.
+ */
 static long long getImm(const MOperand &op) {
     if (op.kind != MOperand::Kind::Imm)
         throw std::runtime_error("AArch64 binary encoder expected immediate operand, got kind=" +
@@ -99,7 +128,12 @@ static long long getImm(const MOperand &op) {
     return op.imm;
 }
 
-/// Extract label value from an operand.
+/**
+ * @brief Extracts an owned label by reference.
+ * @param op Operand expected to have label kind.
+ * @return Const reference into @p op.
+ * @throws std::runtime_error If @p op is not a label.
+ */
 static const std::string &getLabel(const MOperand &op) {
     if (op.kind != MOperand::Kind::Label)
         throw std::runtime_error("AArch64 binary encoder expected label operand, got kind=" +
@@ -107,6 +141,14 @@ static const std::string &getLabel(const MOperand &op) {
     return op.label;
 }
 
+/**
+ * @brief Extracts, validates, and sanitizes a non-empty label operand.
+ * @param op Label operand to normalize.
+ * @param context Non-null diagnostic context.
+ * @return Owned non-empty sanitized label.
+ * @throws std::runtime_error If the raw or sanitized label is empty or the
+ *         operand kind is invalid.
+ */
 static std::string getSanitizedNonEmptyLabel(const MOperand &op, const char *context) {
     const std::string &label = getLabel(op);
     if (label.empty())
@@ -117,6 +159,14 @@ static std::string getSanitizedNonEmptyLabel(const MOperand &op, const char *con
     return sanitized;
 }
 
+/**
+ * @brief Adds two signed offsets with explicit overflow detection.
+ * @param lhs First addend.
+ * @param rhs Second addend.
+ * @param context Non-null diagnostic context.
+ * @return Exact signed sum.
+ * @throws std::runtime_error If the sum is outside `int64_t`.
+ */
 static int64_t checkedAddI64(int64_t lhs, int64_t rhs, const char *context) {
     if ((rhs > 0 && lhs > std::numeric_limits<int64_t>::max() - rhs) ||
         (rhs < 0 && lhs < std::numeric_limits<int64_t>::min() - rhs)) {
@@ -125,6 +175,14 @@ static int64_t checkedAddI64(int64_t lhs, int64_t rhs, const char *context) {
     return lhs + rhs;
 }
 
+/**
+ * @brief Computes a signed displacement between two unsigned section offsets.
+ * @param target Target byte offset.
+ * @param base PC/base byte offset.
+ * @param context Non-null diagnostic context.
+ * @return Exact `target - base` in `int64_t`, including `INT64_MIN`.
+ * @throws std::runtime_error If the displacement magnitude exceeds `int64_t`.
+ */
 static int64_t checkedOffsetDelta(size_t target, size_t base, const char *context) {
     if (target >= base) {
         const size_t diff = target - base;
@@ -141,7 +199,12 @@ static int64_t checkedOffsetDelta(size_t target, size_t base, const char *contex
     return -static_cast<int64_t>(diff);
 }
 
-/// Extract encoded condition value from an operand.
+/**
+ * @brief Extracts an architectural condition accepted by conditional instructions.
+ * @param op Condition operand.
+ * @return Encoded condition in `[0, 13]`.
+ * @throws std::exception If the operand/mnemonic is invalid or names `al`/`nv`.
+ */
 static uint32_t getCondCode(const MOperand &op) {
     if (op.kind != MOperand::Kind::Cond)
         throw std::runtime_error("AArch64 binary encoder expected condition operand, got kind=" +
@@ -413,7 +476,9 @@ static void validateFunctionMetadata(const MFunction &fn) {
 /// @details The `.xdata` save_regp/save_reg unwind codes index callee-saved
 ///          GPRs as 0..9 for X19..X28 (per the MS ARM64 exception-handling
 ///          ABI). Only X19-X28 are valid here.
+/// @param reg Callee-saved GPR to encode.
 /// @return Zero-based index in [0,9].
+/// @throws std::out_of_range If @p reg is outside `X19..X28`.
 static uint8_t windowsArm64GprSaveIndex(PhysReg reg) {
     if (reg < PhysReg::X19 || reg > PhysReg::X28)
         throw std::out_of_range("AArch64 Windows unwind: GPR save must be X19-X28");
@@ -423,7 +488,9 @@ static uint8_t windowsArm64GprSaveIndex(PhysReg reg) {
 /// @brief Encode a callee-saved FPR as its Windows ARM64 unwind save index.
 /// @details Mirror of windowsArm64GprSaveIndex() for the D8..D15 callee-saved
 ///          FP range, indexed 0..7 in the save_fregp/save_freg unwind codes.
+/// @param reg Callee-saved FP register to encode.
 /// @return Zero-based index in [0,7].
+/// @throws std::out_of_range If @p reg is outside `V8..V15`.
 static uint8_t windowsArm64FprSaveIndex(PhysReg reg) {
     if (reg < PhysReg::V8 || reg > PhysReg::V15)
         throw std::out_of_range("AArch64 Windows unwind: FPR save must be V8-V15");
@@ -437,6 +504,7 @@ static uint8_t windowsArm64FprSaveIndex(PhysReg reg) {
 ///          large form. @p bytes must be 16-byte aligned per the ABI.
 /// @param codes Unwind-code byte vector to append to (big-endian opcode order).
 /// @param bytes Prologue stack-allocation size in bytes (0 = no code emitted).
+/// @throws std::out_of_range If @p bytes is unaligned or exceeds the unwind format.
 static void appendWindowsArm64AllocCode(std::vector<uint8_t> &codes, uint32_t bytes) {
     if (bytes == 0)
         return;
@@ -516,6 +584,8 @@ static bool isInSignedImmRange(long long offset) {
 
 /// @brief Return true if @p offset is encodable as an unsigned 12-bit scaled STR/LDR immediate.
 /// AArch64 unsigned-offset LDR/STR (64-bit) encodes imm12 * 8; legal range is [0, 32760] step 8.
+/// @param offset Candidate byte offset.
+/// @return `true` when one 64-bit scaled access can encode @p offset.
 static bool isLegalScaledUImm64(long long offset) {
     return offset >= 0 && (offset % 8) == 0 && (offset / 8) <= 4095;
 }
@@ -525,6 +595,9 @@ static bool isLegalScaledUImm64(long long offset) {
 /// @details The scaled form encodes `offset / accessBytes` in a 12-bit field, so
 ///          @p offset must be non-negative, a multiple of @p accessBytes, and
 ///          `offset / accessBytes <= 4095`.
+/// @param offset Candidate byte offset.
+/// @param accessBytes Access-size scale; zero is rejected.
+/// @return `true` when the scaled unsigned field can represent @p offset.
 static bool isLegalScaledUImm(long long offset, unsigned accessBytes) {
     if (accessBytes == 0)
         return false;
@@ -537,6 +610,9 @@ static bool isLegalScaledUImm(long long offset, unsigned accessBytes) {
 /// @details Returns 4 when @p offset fits either the unscaled simm9 or the
 ///          scaled-uimm12 form (a single 4-byte instruction); 0 signals the
 ///          caller to fall back to a multi-instruction address materialization.
+/// @param offset Candidate byte offset.
+/// @param accessBytes Scalar access width.
+/// @return Four for a single-instruction form, otherwise zero.
 static size_t scalarLdStSizeForOffset(int64_t offset, unsigned accessBytes) {
     return (isInSignedImmRange(offset) || isLegalScaledUImm(offset, accessBytes)) ? 4 : 0;
 }
@@ -544,6 +620,8 @@ static size_t scalarLdStSizeForOffset(int64_t offset, unsigned accessBytes) {
 /// @brief True if @p offset fits the signed scaled 7-bit immediate of LDP/STP.
 /// @details Pair load/store encodes `offset / 8` as a signed 7-bit field, so
 ///          @p offset must be a multiple of 8 within `[-512, 504]`.
+/// @param offset Candidate byte offset.
+/// @return `true` when @p offset is aligned and within the pair range.
 static bool isPairImm7Offset(int64_t offset) {
     if ((offset % 8) != 0)
         return false;
@@ -596,6 +674,10 @@ static uint32_t unscaledGprLdStTemplate(bool isLoad, unsigned accessBytes) {
 /// @brief Select a scratch GPR that is not @p base and not @p avoid.
 /// @details Tries kScratchGPR (x9), kScratchGPR2 (x16), kScratchGPR3 (x17) in priority order.
 /// Throws if all three scratch registers conflict (indicates a register-allocation bug).
+/// @param base Hardware register field that must not be selected.
+/// @param avoid Optional second hardware register field to exclude.
+/// @return Hardware field of the first available reserved scratch GPR.
+/// @throws std::runtime_error If all reserved scratch registers conflict.
 static uint32_t chooseGprScratch(uint32_t base, std::optional<uint32_t> avoid = std::nullopt) {
     const uint32_t candidates[] = {hwGPR(kScratchGPR), hwGPR(kScratchGPR2), hwGPR(kScratchGPR3)};
     for (uint32_t candidate : candidates) {
@@ -614,6 +696,8 @@ static uint32_t chooseGprScratch(uint32_t base, std::optional<uint32_t> avoid = 
 /// Throws std::out_of_range if the offset violates alignment or exceeds the field range.
 /// @param offset Byte offset to encode.
 /// @param opcode Human-readable opcode name used in the exception message.
+/// @return Signed scaled immediate in `[-64, 63]`.
+/// @throws std::out_of_range If @p offset is unaligned or out of range.
 static int32_t checkedPairImm7(int64_t offset, const char *opcode) {
     if ((offset % 8) != 0)
         throw std::out_of_range(std::string("AArch64 ") + opcode +
@@ -636,6 +720,7 @@ static int32_t checkedPairImm7(int64_t offset, const char *opcode) {
 /// @param target        Target label name for the error message.
 /// @param fnName        Enclosing function name for the error message.
 /// @return Signed word-count displacement that fits in immBits.
+/// @throws std::runtime_error If the byte displacement is unaligned or out of range.
 static int32_t checkedBranchDispWords(int64_t deltaBytes,
                                       int immBits,
                                       const char *kind,
@@ -662,6 +747,9 @@ static int32_t checkedBranchDispWords(int64_t deltaBytes,
 /// field.
 /// @details Used during the label-offset fixup pass to choose between the short (4-byte)
 ///          and long (8-byte trampoline) conditional branch forms before final emission.
+/// @param deltaBytes Signed byte displacement.
+/// @param immBits Signed architectural immediate width.
+/// @return `true` when aligned and representable.
 static bool fitsBranchDispWords(int64_t deltaBytes, int immBits) {
     if ((deltaBytes & 0x3) != 0)
         return false;
@@ -672,12 +760,22 @@ static bool fitsBranchDispWords(int64_t deltaBytes, int immBits) {
     return deltaWords >= min && deltaWords <= max;
 }
 
+/**
+ * @brief Measures the minimal move-wide sequence for a 64-bit constant.
+ * @param imm Exact constant bit pattern.
+ * @return Four bytes per instruction selected by `forEachMoveWideInst()`.
+ */
 size_t A64BinaryEncoder::movImm64Size(uint64_t imm) const {
     size_t count = 0;
     forEachMoveWideInst(imm, [&](const MoveWideInst &) { ++count; });
     return count * 4;
 }
 
+/**
+ * @brief Measures the add/sub immediate strategy used by final emission.
+ * @param value Non-negative magnitude to encode.
+ * @return Byte size of a direct, shifted, split, or chunked sequence.
+ */
 size_t A64BinaryEncoder::addSubImmSmartSize(uint32_t value) const {
     if (value <= 4095)
         return 4;
@@ -699,10 +797,20 @@ size_t A64BinaryEncoder::addSubImmSmartSize(uint32_t value) const {
     return bytes;
 }
 
+/**
+ * @brief Measures scratch-address materialization plus one scalar access.
+ * @param offset Signed offset materialized as a 64-bit constant.
+ * @return Encoded sequence size in bytes.
+ */
 size_t A64BinaryEncoder::largeOffsetLdStSize(int64_t offset) const {
     return movImm64Size(static_cast<uint64_t>(offset)) + 8; // add scratch + ldr/str
 }
 
+/**
+ * @brief Measures an SP-relative store and any scratch-address setup.
+ * @param offset Signed destination byte offset from `SP`.
+ * @return Encoded sequence size in bytes.
+ */
 size_t A64BinaryEncoder::spOffsetStoreSize(int64_t offset) const {
     if (isLegalScaledUImm64(offset))
         return 4;
@@ -715,6 +823,11 @@ size_t A64BinaryEncoder::spOffsetStoreSize(int64_t offset) const {
     return bytes;
 }
 
+/**
+ * @brief Measures the canonical prologue selected for a function.
+ * @param fn Function frame and saved-register metadata.
+ * @return Prologue byte count under `currentAbi_`.
+ */
 size_t A64BinaryEncoder::prologueSize(const MFunction &fn) const {
     size_t size = 0;
     if (currentAbi_ == ABIFormat::Darwin)
@@ -727,6 +840,11 @@ size_t A64BinaryEncoder::prologueSize(const MFunction &fn) const {
     return size;
 }
 
+/**
+ * @brief Measures the canonical epilogue selected for a function.
+ * @param fn Function frame and saved-register metadata.
+ * @return Epilogue byte count under `currentAbi_`.
+ */
 size_t A64BinaryEncoder::epilogueSize(const MFunction &fn) const {
     size_t size = 0;
     size += ((fn.savedFPRs.size() + 1) / 2) * 4;
@@ -740,6 +858,11 @@ size_t A64BinaryEncoder::epilogueSize(const MFunction &fn) const {
     return size;
 }
 
+/**
+ * @brief Measures BTI and optional frame setup before the first block label.
+ * @param fn Function being measured.
+ * @return Prelude byte count.
+ */
 size_t A64BinaryEncoder::measurePreludeSize(const MFunction &fn) {
     size_t size = 0;
     if (currentAbi_ == ABIFormat::Darwin)
@@ -749,6 +872,17 @@ size_t A64BinaryEncoder::measurePreludeSize(const MFunction &fn) {
     return size;
 }
 
+/**
+ * @brief Measures one MIR instruction for iterative label-offset convergence.
+ *
+ * @param mi Instruction to validate and measure.
+ * @param currentOffset Function-relative instruction offset.
+ * @param knownLabelOffsets Current function-relative label hypothesis.
+ * @param instructionOrdinal Stable MIR instruction ordinal.
+ * @param assumedLongConditionalBranches Ordinals already promoted to long form.
+ * @param[out] discoveredLongConditionalBranches Optional newly promoted ordinals.
+ * @return Predicted encoded byte size.
+ */
 size_t A64BinaryEncoder::measureInstructionSize(
     const MInstr &mi,
     size_t currentOffset,
@@ -916,6 +1050,12 @@ size_t A64BinaryEncoder::measureInstructionSize(
     }
 }
 
+/**
+ * @brief Iterates instruction sizes until block offsets and long branches stabilize.
+ * @param fn Function whose sanitized block labels are measured.
+ * @return Function-relative label offsets.
+ * @throws std::exception If labels duplicate, sizes overflow, or convergence fails.
+ */
 A64BinaryEncoder::LabelOffsetMap A64BinaryEncoder::computeFunctionLabelOffsets(
     const MFunction &fn) {
     LabelOffsetMap estimated;
@@ -1011,6 +1151,12 @@ A64BinaryEncoder::LabelOffsetMap A64BinaryEncoder::computeFunctionLabelOffsets(
     return conservative;
 }
 
+/**
+ * @brief Estimates total encoded size for a fixed label-offset map.
+ * @param fn Function to measure.
+ * @param knownLabelOffsets Current relative label offsets.
+ * @return Total byte count including prelude and instruction expansions.
+ */
 size_t A64BinaryEncoder::estimateFunctionSize(const MFunction &fn,
                                               const LabelOffsetMap &knownLabelOffsets) {
     size_t size = measurePreludeSize(fn);
@@ -1028,6 +1174,12 @@ size_t A64BinaryEncoder::estimateFunctionSize(const MFunction &fn,
     return size;
 }
 
+/**
+ * @brief Checks a final absolute label offset against the precomputed map.
+ * @param label Sanitized block label.
+ * @param actualOffset Actual text-section offset.
+ * @throws std::runtime_error If a stored prediction differs.
+ */
 void A64BinaryEncoder::verifyPredictedLabelOffset(const std::string &label,
                                                   size_t actualOffset) const {
     auto it = labelOffsets_.find(label);
@@ -1044,6 +1196,16 @@ void A64BinaryEncoder::verifyPredictedLabelOffset(const std::string &label,
 // encodeFunction
 // =============================================================================
 
+/**
+ * @brief Encodes, patches, and records metadata for one complete MIR function.
+ *
+ * @param fn Validated, allocated MIR function.
+ * @param[in,out] text Destination text section.
+ * @param rodata Read-only section used by address fixups.
+ * @param abi Target object ABI.
+ * @throws std::exception On invalid metadata/operands, unresolved labels,
+ *         unencodable ranges, or size prediction drift.
+ */
 void A64BinaryEncoder::encodeFunction(const MFunction &fn,
                                       objfile::CodeSection &text,
                                       const objfile::CodeSection &rodata,
@@ -1228,6 +1390,11 @@ void A64BinaryEncoder::encodeFunction(const MFunction &fn,
 // Prologue/Epilogue Synthesis
 // =============================================================================
 
+/**
+ * @brief Emits the canonical ABI prologue described by function metadata.
+ * @param fn Function frame size and saved-register lists.
+ * @param[in,out] cs Text section receiving instruction words.
+ */
 void A64BinaryEncoder::encodePrologue(const MFunction &fn, objfile::CodeSection &cs) {
     const uint32_t sp = hwGPR(PhysReg::SP);
     const uint32_t fp = hwGPR(PhysReg::X29);
@@ -1303,6 +1470,11 @@ void A64BinaryEncoder::encodePrologue(const MFunction &fn, objfile::CodeSection 
                     Steps(*this, cs, sp, fp, lr));
 }
 
+/**
+ * @brief Emits saved-register restoration, frame teardown, and return.
+ * @param fn Function frame size and saved-register lists.
+ * @param[in,out] cs Text section receiving instruction words.
+ */
 void A64BinaryEncoder::encodeEpilogue(const MFunction &fn, objfile::CodeSection &cs) {
     const uint32_t sp = hwGPR(PhysReg::SP);
     const uint32_t fp = hwGPR(PhysReg::X29);
@@ -1372,6 +1544,13 @@ void A64BinaryEncoder::encodeEpilogue(const MFunction &fn, objfile::CodeSection 
                     Steps(*this, cs, sp, fp, lr));
 }
 
+/**
+ * @brief Serializes Windows ARM64 unwind codes matching the canonical prologue.
+ * @param fn Function whose frame operations are described.
+ * @param funcSymIdx Function symbol index.
+ * @param functionLength Encoded byte length.
+ * @param[in,out] cs Section receiving the unwind entry and xdata bytes.
+ */
 void A64BinaryEncoder::recordWindowsArm64UnwindEntry(const MFunction &fn,
                                                      uint32_t funcSymIdx,
                                                      uint32_t functionLength,
@@ -1470,6 +1649,12 @@ void A64BinaryEncoder::recordWindowsArm64UnwindEntry(const MFunction &fn,
 // Multi-instruction sequences
 // =============================================================================
 
+/**
+ * @brief Emits the minimal move-wide instruction sequence for a constant.
+ * @param rd Destination GPR hardware field.
+ * @param imm Exact constant bits.
+ * @param[in,out] cs Text section receiving words.
+ */
 void A64BinaryEncoder::encodeMovImm64(uint32_t rd, uint64_t imm, objfile::CodeSection &cs) {
     // Templates indexed by halfword position (0=lsl #0, 1=lsl #16, 2=lsl #32, 3=lsl #48).
     static constexpr uint32_t movzTmpl[4] = {kMovZ, kMovZ16, kMovZ32, kMovZ48};
@@ -1528,6 +1713,11 @@ static void emitAddSubImmSmart(
     }
 }
 
+/**
+ * @brief Emits a validated smart `sub sp, sp, #bytes` sequence.
+ * @param bytes Non-negative stack allocation size.
+ * @param[in,out] cs Text section receiving words.
+ */
 void A64BinaryEncoder::encodeSubSp(int64_t bytes, objfile::CodeSection &cs) {
     if (bytes < 0 || bytes > std::numeric_limits<uint32_t>::max())
         throw std::out_of_range("AArch64 stack adjustment is out of encodable range");
@@ -1537,6 +1727,11 @@ void A64BinaryEncoder::encodeSubSp(int64_t bytes, objfile::CodeSection &cs) {
     emitAddSubImmSmart(kSubRI, sp, sp, static_cast<uint32_t>(bytes), cs);
 }
 
+/**
+ * @brief Emits a validated smart `add sp, sp, #bytes` sequence.
+ * @param bytes Non-negative stack deallocation size.
+ * @param[in,out] cs Text section receiving words.
+ */
 void A64BinaryEncoder::encodeAddSp(int64_t bytes, objfile::CodeSection &cs) {
     if (bytes < 0 || bytes > std::numeric_limits<uint32_t>::max())
         throw std::out_of_range("AArch64 stack adjustment is out of encodable range");
@@ -1546,6 +1741,16 @@ void A64BinaryEncoder::encodeAddSp(int64_t bytes, objfile::CodeSection &cs) {
     emitAddSubImmSmart(kAddRI, sp, sp, static_cast<uint32_t>(bytes), cs);
 }
 
+/**
+ * @brief Emits scratch-address setup and a zero-offset scalar access.
+ * @param rt Transfer register hardware field.
+ * @param base Base register hardware field.
+ * @param offset Signed byte offset to materialize.
+ * @param isLoad Selects load versus store.
+ * @param fprOperand Selects FP versus GPR transfer encoding.
+ * @param accessBytes Scalar access width.
+ * @param[in,out] cs Text section receiving words.
+ */
 void A64BinaryEncoder::encodeLargeOffsetLdSt(uint32_t rt,
                                              uint32_t base,
                                              int64_t offset,
@@ -1569,6 +1774,16 @@ void A64BinaryEncoder::encodeLargeOffsetLdSt(uint32_t rt,
         emit32(scaledGprLdStTemplate(isLoad, accessBytes) | (0 << 10) | (scratch << 5) | rt, cs);
 }
 
+/**
+ * @brief Chooses and emits scaled, unscaled, or large-offset scalar access.
+ * @param rt Transfer register hardware field.
+ * @param base Base GPR hardware field.
+ * @param offset Signed byte offset.
+ * @param isLoad Selects load versus store.
+ * @param fprOperand Selects FP versus GPR transfer encoding.
+ * @param accessBytes Scalar width.
+ * @param[in,out] cs Text section receiving words.
+ */
 void A64BinaryEncoder::encodeScalarLdSt(uint32_t rt,
                                         uint32_t base,
                                         int64_t offset,
@@ -1601,6 +1816,13 @@ void A64BinaryEncoder::encodeScalarLdSt(uint32_t rt,
     encodeLargeOffsetLdSt(rt, base, offset, isLoad, fprOperand, accessBytes, cs);
 }
 
+/**
+ * @brief Emits an outgoing-argument store relative to `SP`.
+ * @param rt Transfer register hardware field.
+ * @param offset Signed destination byte offset.
+ * @param fprOperand Selects FP versus GPR store encoding.
+ * @param[in,out] cs Text section receiving words.
+ */
 void A64BinaryEncoder::encodeSpOffsetStore(uint32_t rt,
                                            int64_t offset,
                                            bool fprOperand,
@@ -1696,6 +1918,12 @@ constexpr Conv2RegEntry kConv2RegTable[] = {
 
 } // namespace
 
+/**
+ * @brief Validates and encodes one physical-register MIR instruction.
+ * @param mi Instruction to dispatch by opcode and operand shape.
+ * @param[in,out] cs Text section receiving words, relocations, or pending fixups.
+ * @throws std::exception If the opcode/operands are invalid or unsupported.
+ */
 void A64BinaryEncoder::encodeInstruction(const MInstr &mi, objfile::CodeSection &cs) {
     validateOperandCount(mi);
 
@@ -1907,6 +2135,8 @@ void A64BinaryEncoder::encodeInstruction(const MInstr &mi, objfile::CodeSection 
 
 // ─── Per-family encoder definitions ────────────────────────────────────────
 
+/** @brief Encodes an add/sub immediate family instruction.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeAddSubImmInstr(const MInstr &mi, objfile::CodeSection &cs) {
     const uint32_t rd = hwGPR(getReg(mi.ops[0]));
     const uint32_t rn = hwGPR(getReg(mi.ops[1]));
@@ -1939,6 +2169,8 @@ void A64BinaryEncoder::encodeAddSubImmInstr(const MInstr &mi, objfile::CodeSecti
            cs);
 }
 
+/** @brief Encodes integer or FP move-family MIR.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeMoveInstr(const MInstr &mi, objfile::CodeSection &cs) {
     if (mi.opc == MOpcode::MovRR) {
         // orr Xd, XZR, Xm
@@ -1960,6 +2192,8 @@ void A64BinaryEncoder::encodeMoveInstr(const MInstr &mi, objfile::CodeSection &c
     }
 }
 
+/** @brief Encodes a validated immediate shift alias.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeShiftImmInstr(const MInstr &mi, objfile::CodeSection &cs) {
     const uint32_t rd = hwGPR(getReg(mi.ops[0]));
     const uint32_t rn = hwGPR(getReg(mi.ops[1]));
@@ -1988,6 +2222,8 @@ void A64BinaryEncoder::encodeShiftImmInstr(const MInstr &mi, objfile::CodeSectio
     }
 }
 
+/** @brief Encodes integer/FP comparison and test MIR.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeCompareInstr(const MInstr &mi, objfile::CodeSection &cs) {
     switch (mi.opc) {
         case MOpcode::CmpRR:
@@ -2021,6 +2257,8 @@ void A64BinaryEncoder::encodeCompareInstr(const MInstr &mi, objfile::CodeSection
     }
 }
 
+/** @brief Encodes conditional set or select MIR.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeConditionalInstr(const MInstr &mi, objfile::CodeSection &cs) {
     if (mi.opc == MOpcode::Cset) {
         const uint32_t rd = hwGPR(getReg(mi.ops[0]));
@@ -2045,6 +2283,8 @@ void A64BinaryEncoder::encodeConditionalInstr(const MInstr &mi, objfile::CodeSec
     emit32(kCsel | (rm << 16) | (cc << 12) | (rn << 5) | rd, cs);
 }
 
+/** @brief Encodes frame-pointer-relative scalar memory MIR.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeFpRelLdStInstr(const MInstr &mi, objfile::CodeSection &cs) {
     // GPR Ldr/Str + PhiStore (single-width) — width 8 access.
     if (mi.opc == MOpcode::LdrRegFpImm || mi.opc == MOpcode::PhiStoreGPR ||
@@ -2080,6 +2320,8 @@ void A64BinaryEncoder::encodeFpRelLdStInstr(const MInstr &mi, objfile::CodeSecti
     encodeScalarLdSt(rt, fp, offset, isLoad, true, 8, cs);
 }
 
+/** @brief Encodes arbitrary-base immediate-offset scalar memory MIR.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeBaseRelLdStInstr(const MInstr &mi, objfile::CodeSection &cs) {
     // FPR base-relative.
     if (mi.opc == MOpcode::LdrFprBaseImm || mi.opc == MOpcode::StrFprBaseImm) {
@@ -2104,6 +2346,8 @@ void A64BinaryEncoder::encodeBaseRelLdStInstr(const MInstr &mi, objfile::CodeSec
     encodeScalarLdSt(rt, base, offset, isLoad, false, bytes, cs);
 }
 
+/** @brief Encodes scaled register-offset scalar memory MIR.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeRegOffsetLdStInstr(const MInstr &mi, objfile::CodeSection &cs) {
     // LDR/STR (register offset): size(2) 111 V 00 opc(2) 1 Rm option(011=LSL)
     // S 10 Rn Rt. S=1 selects a shift equal to log2(access size); S=0 selects
@@ -2134,6 +2378,8 @@ void A64BinaryEncoder::encodeRegOffsetLdStInstr(const MInstr &mi, objfile::CodeS
     emit32(word, cs);
 }
 
+/** @brief Encodes frame-pointer-relative paired memory MIR.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeLdStPairInstr(const MInstr &mi, objfile::CodeSection &cs) {
     // Common shape: two transfer regs + base (always FP) + offset; the only
     // axes are GPR-vs-FPR and load-vs-store.
@@ -2163,6 +2409,8 @@ void A64BinaryEncoder::encodeLdStPairInstr(const MInstr &mi, objfile::CodeSectio
     emit32(encodePair(tmpl, rt, rt2, fp, offset), cs);
 }
 
+/** @brief Encodes stack-pointer adjustment and argument-store pseudos.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeSpOpInstr(const MInstr &mi, objfile::CodeSection &cs) {
     switch (mi.opc) {
         case MOpcode::SubSpImm:
@@ -2188,6 +2436,8 @@ void A64BinaryEncoder::encodeSpOpInstr(const MInstr &mi, objfile::CodeSection &c
     }
 }
 
+/** @brief Encodes formation of an FP-relative address.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeAddFpImmInstr(const MInstr &mi, objfile::CodeSection &cs) {
     const uint32_t rd = hwGPR(getReg(mi.ops[0]));
     const long long offset = getImm(mi.ops[1]);
@@ -2206,6 +2456,8 @@ void A64BinaryEncoder::encodeAddFpImmInstr(const MInstr &mi, objfile::CodeSectio
     }
 }
 
+/** @brief Encodes a logical-immediate instruction after bitmask conversion.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeLogicalImmInstr(const MInstr &mi, objfile::CodeSection &cs) {
     // Three textually-identical patterns (And/Orr/Eor) differing only in
     // instruction templates: try the immediate encoding; on failure materialise
@@ -2240,6 +2492,8 @@ void A64BinaryEncoder::encodeLogicalImmInstr(const MInstr &mi, objfile::CodeSect
     }
 }
 
+/** @brief Encodes special FP moves, conversions, comparisons, and rounding.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeFpSpecialInstr(const MInstr &mi, objfile::CodeSection &cs) {
     // FAddRRR / FSubRRR / FMulRRR / FDivRRR are dispatched via kReg3FprTable.
     // SCvtF / FCvtZS / UCvtF / FCvtZU / FMovGR via kConv2RegTable. The cases
@@ -2285,6 +2539,8 @@ void A64BinaryEncoder::encodeFpSpecialInstr(const MInstr &mi, objfile::CodeSecti
     }
 }
 
+/** @brief Encodes page-relative address formation and associated relocations.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeAddressInstr(const MInstr &mi, objfile::CodeSection &cs) {
     // ADRP / ADD page-off: both generate linker-resolved relocations. ADRP
     // takes 2 operands (rd, label); AddPageOff takes 3 (rd, rn, label).
@@ -2315,6 +2571,8 @@ void A64BinaryEncoder::encodeAddressInstr(const MInstr &mi, objfile::CodeSection
     }
 }
 
+/** @brief Encodes branch, call, test-branch, and jump-table control flow.
+ * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeBranchInstr(const MInstr &mi, objfile::CodeSection &cs) {
     switch (mi.opc) {
         case MOpcode::Br: {

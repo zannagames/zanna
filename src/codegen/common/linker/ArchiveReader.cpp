@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/ArchiveReader.cpp
+// File: src/codegen/common/linker/ArchiveReader.cpp
 // Purpose: Implementation of Unix ar archive parsing.
 //          Handles GNU, BSD, and COFF archive format variants.
 // Key invariants:
@@ -16,6 +16,11 @@
 // Links: codegen/common/linker/ArchiveReader.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ArchiveReader.cpp
+ * @brief Implements bounded parsing of GNU, BSD/Darwin, and COFF archives.
+ */
 
 #include "codegen/common/linker/ArchiveReader.hpp"
 
@@ -37,6 +42,10 @@ static constexpr size_t kArHeaderLen = 60;
 /// @brief Add @p a + @p b into @p out, returning false on size_t overflow.
 /// @details Used throughout this reader to harden against malformed archives
 ///          that claim sizes near SIZE_MAX in their member headers.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param out Receives the sum when representable.
+/// @return `true` when the addition succeeds; otherwise `false`.
 static bool checkedAdd(size_t a, size_t b, size_t &out) {
     if (a > std::numeric_limits<size_t>::max() - b)
         return false;
@@ -49,6 +58,10 @@ static bool checkedAdd(size_t a, size_t b, size_t &out) {
 ///          where size_t may be narrower than the object format's logical
 ///          limits. Centralizing the multiplication check prevents wraparound
 ///          before range validation.
+/// @param a Left factor.
+/// @param b Right factor.
+/// @param out Receives the product when representable.
+/// @return `true` when the multiplication succeeds; otherwise `false`.
 static bool checkedMul(size_t a, size_t b, size_t &out) {
     if (a != 0 && b > std::numeric_limits<size_t>::max() / a)
         return false;
@@ -59,22 +72,32 @@ static bool checkedMul(size_t a, size_t b, size_t &out) {
 /// @brief Verify that the byte range [@p off, @p off+@p len) fits within @p size.
 /// @details Avoids the @c off+len overflow trap by computing the bound as
 ///          @p size − @p off, which never overflows once @p off ≤ @p size holds.
+/// @param off Starting byte offset.
+/// @param len Number of bytes in the range.
+/// @param size Size of the containing buffer.
+/// @return `true` when the complete half-open range is contained.
 static bool checkedRange(size_t off, size_t len, size_t size) {
     return off <= size && len <= size - off;
 }
 
-/// Read a big-endian 32-bit integer from raw bytes.
+/// @brief Reads an unaligned big-endian 32-bit integer.
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded host-order value.
 static uint32_t readBE32(const uint8_t *p) {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
            (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
 }
 
-/// Read a little-endian 16-bit integer from raw bytes.
+/// @brief Reads an unaligned little-endian 16-bit integer.
+/// @param p Pointer to at least two readable bytes.
+/// @return Decoded host-order value.
 static uint16_t readLE16(const uint8_t *p) {
     return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
 }
 
-/// Read a little-endian 32-bit integer from raw bytes.
+/// @brief Reads an unaligned little-endian 32-bit integer.
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded host-order value.
 static uint32_t readLE32(const uint8_t *p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
@@ -83,8 +106,13 @@ static uint32_t readLE32(const uint8_t *p) {
 /// Maximum archive member size: 2 GB.
 static constexpr size_t kMaxMemberSize = 2ULL * 1024 * 1024 * 1024;
 
-/// Parse the size field from an archive member header (ASCII decimal, 10 chars at offset 48).
-/// Returns SIZE_MAX on overflow or if the value exceeds kMaxMemberSize.
+/// @brief Parses the fixed-width decimal size in an archive member header.
+/// @details The ten-byte field at offset 48 must contain at least one digit
+///          followed only by space padding.  Members larger than
+///          `kMaxMemberSize` are rejected.
+/// @param header Pointer to a complete 60-byte archive header.
+/// @return Parsed member size, or `SIZE_MAX` for malformed, overflowing, or
+///         over-limit values.
 static size_t parseSize(const uint8_t *header) {
     // Size field is at offset 48, 10 bytes, ASCII decimal, space-padded.
     size_t val = 0;
@@ -111,9 +139,14 @@ static size_t parseSize(const uint8_t *header) {
     return val > kMaxMemberSize ? SIZE_MAX : val;
 }
 
-/// Parse a GNU-style symbol table ("/" member).
-/// Format: big-endian 32-bit count, then count big-endian 32-bit offsets,
-/// then count NUL-terminated symbol names.
+/// @brief Parses a GNU-style `"/"` archive symbol table.
+/// @details The payload contains a big-endian count, that many big-endian
+///          member-header offsets, then matching NUL-terminated symbol names.
+///          A malformed optional index is ignored rather than treated as an
+///          archive-wide failure.
+/// @param data Start of the linker-member payload.
+/// @param size Payload size in bytes.
+/// @param symbols Receives symbol names paired with archive member offsets.
 static void parseGnuSymbolTable(const uint8_t *data,
                                 size_t size,
                                 std::vector<std::pair<std::string, size_t>> &symbols) {
@@ -145,7 +178,6 @@ static void parseGnuSymbolTable(const uint8_t *data,
     }
 }
 
-/// Parse a BSD-style symbol table ("__.SYMDEF" or "__.SYMDEF SORTED").
 /// @brief Parse the BSD/Darwin archive symbol table into symbol/member pairs.
 /// @details The first word stores the byte size of the ranlib array, followed by
 ///          8-byte ranlib entries `(string offset, member offset)`, a string-table
@@ -246,6 +278,7 @@ static void parseCoffSecondLinkerMember(const uint8_t *data,
     }
 }
 
+/// @copydoc readArchive(const std::string &, Archive &, std::ostream &)
 bool readArchive(const std::string &path, Archive &ar, std::ostream &err) {
     ar = Archive{};
     ar.path = path;
@@ -292,6 +325,7 @@ bool readArchive(const std::string &path, Archive &ar, std::ostream &err) {
     std::vector<std::pair<std::string, size_t>> rawSymbols; // (symbol name, file offset of member).
 
     // Track member headers and their file offsets for symbol index mapping.
+    /// @brief First-pass metadata retaining archive-header offsets and special status.
     struct RawMember {
         std::string name;
         size_t headerOffset = 0;
@@ -515,6 +549,7 @@ bool readArchive(const std::string &path, Archive &ar, std::ostream &err) {
 }
 
 // cppcheck-suppress unusedFunction
+/// @copydoc extractMember(const Archive &, const ArchiveMember &)
 [[maybe_unused]] std::vector<uint8_t> extractMember(const Archive &ar,
                                                     const ArchiveMember &member) {
     if (!checkedRange(member.dataOffset, member.dataSize, ar.data.size()))
@@ -524,6 +559,7 @@ bool readArchive(const std::string &path, Archive &ar, std::ostream &err) {
         ar.data.begin() + static_cast<std::ptrdiff_t>(member.dataOffset + member.dataSize));
 }
 
+/// @copydoc memberDataView(const Archive &, const ArchiveMember &)
 ArchiveMemberView memberDataView(const Archive &ar, const ArchiveMember &member) {
     if (!checkedRange(member.dataOffset, member.dataSize, ar.data.size()))
         return {};

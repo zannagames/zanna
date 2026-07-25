@@ -12,9 +12,22 @@
 //                 and never retain references beyond the call site.
 // Ownership/Lifetime: Functions access VM state through the existing handler
 //                     access layer without introducing new global state.
-// Links: docs/il-guide.md#reference
+// Links: docs/il/il-guide.md#reference, src/vm/OpHelpers.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file include/zanna/vm/internal/OpHelpers.hpp
+ * @brief Defines typed operand, result, binary-operation, and trap helpers for
+ *        VM opcode handlers.
+ *
+ * @details
+ * These helpers translate between the VM's untyped `Slot` representation and
+ * handler-selected C++ scalar types, centralize common binary handler flow, and
+ * attach instruction/frame context to arithmetic traps. All VM, frame,
+ * instruction, block, and string inputs are borrowed for the duration of the
+ * call.
+ */
 
 #pragma once
 
@@ -33,60 +46,97 @@ namespace il::vm::internal
 {
 namespace detail
 {
-/// @brief Emit a trap with diagnostic context from the current instruction and frame.
-/// @param kind Classification of the trap (e.g., overflow, divide-by-zero).
-/// @param message Human-readable description of the failure.
-/// @param instr Instruction that triggered the trap.
-/// @param frame Active frame containing function metadata.
-/// @param block Current basic block pointer, may be null.
+/**
+ * @brief Raise a runtime-bridge trap with current execution context.
+ * @param kind Trap classification, such as overflow or divide-by-zero.
+ * @param message Borrowed, non-null human-readable diagnostic.
+ * @param instr Borrowed instruction supplying the source location.
+ * @param frame Active frame supplying optional function metadata.
+ * @param block Optional active block supplying its label.
+ */
 void trapWithMessage(TrapKind kind,
                      const char *message,
                      const il::core::Instr &instr,
                      Frame &frame,
                      const il::core::BasicBlock *block);
 
-/// @brief Type traits for loading from and storing to Slot union members.
-/// @tparam T Target C++ type selecting the appropriate Slot field.
-/// @tparam Enable SFINAE selector.
+/**
+ * @brief Selects the `Slot` member used for a supported scalar C++ type.
+ * @tparam T Scalar type loaded or stored.
+ * @tparam Enable SFINAE selector used by partial specializations.
+ *
+ * The primary template is intentionally undefined. Instantiation is supported
+ * only for non-boolean integral, floating-point, and `bool` types.
+ */
 template <typename T, typename Enable = void> struct SlotTraits;
 
-/// @brief SlotTraits specialization for non-bool integral types (maps to Slot::i64).
+/// @brief Maps non-boolean integral values through `Slot::i64`.
 template <typename T>
 struct SlotTraits<T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>>>
 {
+    /**
+     * @brief Convert the slot's signed integer payload to `T`.
+     * @param slot Slot whose `i64` member is active.
+     * @return `static_cast<T>(slot.i64)`.
+     */
     [[nodiscard]] static T load(const Slot &slot) noexcept
     {
         return static_cast<T>(slot.i64);
     }
 
+    /**
+     * @brief Store an integral value through the slot's signed integer member.
+     * @param slot Destination whose `i64` member becomes active.
+     * @param value Value converted with `static_cast<int64_t>`.
+     */
     static void store(Slot &slot, T value) noexcept
     {
         slot.i64 = static_cast<int64_t>(value);
     }
 };
 
-/// @brief SlotTraits specialization for floating-point types (maps to Slot::f64).
+/// @brief Maps floating-point values through `Slot::f64`.
 template <typename T> struct SlotTraits<T, std::enable_if_t<std::is_floating_point_v<T>>>
 {
+    /**
+     * @brief Convert the slot's double payload to `T`.
+     * @param slot Slot whose `f64` member is active.
+     * @return `static_cast<T>(slot.f64)`.
+     */
     [[nodiscard]] static T load(const Slot &slot) noexcept
     {
         return static_cast<T>(slot.f64);
     }
 
+    /**
+     * @brief Store a floating value through the slot's double member.
+     * @param slot Destination whose `f64` member becomes active.
+     * @param value Value converted with `static_cast<double>`.
+     */
     static void store(Slot &slot, T value) noexcept
     {
         slot.f64 = static_cast<double>(value);
     }
 };
 
-/// @brief SlotTraits specialization for bool (maps to Slot::i64, 0/1).
+/// @brief Maps boolean values through normalized zero-or-one `Slot::i64` data.
 template <> struct SlotTraits<bool, void>
 {
+    /**
+     * @brief Interpret any nonzero integer slot payload as true.
+     * @param slot Slot whose `i64` member is active.
+     * @return `slot.i64 != 0`.
+     */
     [[nodiscard]] static bool load(const Slot &slot) noexcept
     {
         return slot.i64 != 0;
     }
 
+    /**
+     * @brief Store false as zero or true as one.
+     * @param slot Destination whose `i64` member becomes active.
+     * @param value Boolean value to normalize.
+     */
     static void store(Slot &slot, bool value) noexcept
     {
         slot.i64 = value ? 1 : 0;
@@ -95,14 +145,19 @@ template <> struct SlotTraits<bool, void>
 
 } // namespace detail
 
-/// @brief Evaluate operand @p index as type @p T using the active VM execution state.
-/// @tparam T Destination type to read from the operand slot.
-/// @param vm Virtual machine used for operand evaluation.
-/// @param fr Active frame containing the operand slots.
-/// @param instr Instruction describing the operand locations.
-/// @param index Operand index to decode.
-/// @return Operand value converted to @p T.
-/// @note This helper simply materialises the operand slot and casts the stored value.
+/**
+ * @brief Evaluate one instruction operand and decode its slot as `T`.
+ * @tparam T Type supported by `detail::SlotTraits`.
+ * @param vm Active VM used to resolve constants, temporaries, and globals.
+ * @param fr Active frame containing temporary operand slots.
+ * @param instr Borrowed instruction whose operand vector is indexed.
+ * @param index Zero-based operand index.
+ * @return The evaluated slot payload converted to `T`.
+ *
+ * @pre `index < instr.operands.size()`.
+ * @pre The evaluated slot member agrees with the selected `SlotTraits<T>`
+ *      representation.
+ */
 template <typename T>
 [[nodiscard]] inline T readOperand(VM &vm, Frame &fr, const il::core::Instr &instr, size_t index)
 {
@@ -110,13 +165,17 @@ template <typename T>
     return detail::SlotTraits<T>::load(slot);
 }
 
-/// @brief Store @p value into the destination slot for @p instr.
-/// @tparam T Value type written into the result slot.
-/// @param fr Active frame receiving the result.
-/// @param instr Instruction whose destination slot is updated.
-/// @param value Typed value to persist.
-/// @note Uses uninitialized Slot to avoid redundant zero-initialization
-///       since SlotTraits::store immediately overwrites the relevant field.
+/**
+ * @brief Encode a typed value and store it in an instruction destination.
+ * @tparam T Type supported by `detail::SlotTraits`.
+ * @param fr Active frame that owns the destination temporary.
+ * @param instr Borrowed result-producing instruction.
+ * @param value Scalar payload to encode.
+ *
+ * @pre `instr` has a valid result temporary addressable in `fr`.
+ * @note The local `Slot` is intentionally not zero-initialized because the
+ *       selected trait fully initializes the active union member.
+ */
 template <typename T> inline void writeResult(Frame &fr, const il::core::Instr &instr, T value)
 {
     Slot slot;
@@ -124,15 +183,21 @@ template <typename T> inline void writeResult(Frame &fr, const il::core::Instr &
     il::vm::detail::ops::storeResult(fr, instr, slot);
 }
 
-/// @brief Execute a binary opcode by evaluating both operands as @p T.
-/// @tparam T Type used for operand decoding and result storage.
-/// @tparam Compute Callable invoked with the decoded operands.
-/// @param vm Active virtual machine.
-/// @param fr Current execution frame.
-/// @param instr Instruction providing operand metadata.
-/// @param compute Functor returning the value to store in the destination slot.
-/// @return VM execution result signalling normal fallthrough.
-/// @note The helper leaves control-flow metadata untouched; callers update block/ip if needed.
+/**
+ * @brief Implement a non-control-flow binary opcode over scalar type `T`.
+ * @tparam T Operand and result type supported by `SlotTraits`.
+ * @tparam Compute Callable type invocable as `compute(T lhs, T rhs)`.
+ * @param vm Active VM used to evaluate operands zero and one.
+ * @param fr Active frame receiving the result.
+ * @param instr Borrowed instruction with two operands and a destination.
+ * @param compute Callable forwarded exactly once and invoked left-to-right with
+ *                decoded scalar operands.
+ * @return Default `VM::ExecResult`, signalling normal fallthrough.
+ *
+ * @pre `instr` has at least two operands and a valid result temporary.
+ * @note The helper does not advance an instruction pointer or modify block
+ *       control-flow metadata.
+ */
 template <typename T, typename Compute>
 inline VM::ExecResult binaryOp(VM &vm, Frame &fr, const il::core::Instr &instr, Compute &&compute)
 {
@@ -142,11 +207,13 @@ inline VM::ExecResult binaryOp(VM &vm, Frame &fr, const il::core::Instr &instr, 
     return {};
 }
 
-/// @brief Emit a divide-by-zero trap with a standardised diagnostic payload.
-/// @param instr Instruction responsible for the trap.
-/// @param frame Active frame providing diagnostic context.
-/// @param block Current basic block (may be null).
-/// @param message Human-readable message describing the fault.
+/**
+ * @brief Raise a divide-by-zero trap with instruction context.
+ * @param instr Borrowed instruction supplying the source location.
+ * @param frame Active frame supplying optional function metadata.
+ * @param block Optional current block supplying its label.
+ * @param message Borrowed, non-null human-readable diagnostic.
+ */
 inline void trapDivideByZero(const il::core::Instr &instr,
                              Frame &frame,
                              const il::core::BasicBlock *block,
@@ -155,11 +222,13 @@ inline void trapDivideByZero(const il::core::Instr &instr,
     detail::trapWithMessage(TrapKind::DivideByZero, message, instr, frame, block);
 }
 
-/// @brief Emit an overflow trap using a shared diagnostic formatter.
-/// @param instr Instruction responsible for the trap.
-/// @param frame Active frame providing diagnostic context.
-/// @param block Current basic block (may be null).
-/// @param message Human-readable message describing the fault.
+/**
+ * @brief Raise an overflow trap with instruction context.
+ * @param instr Borrowed instruction supplying the source location.
+ * @param frame Active frame supplying optional function metadata.
+ * @param block Optional current block supplying its label.
+ * @param message Borrowed, non-null human-readable diagnostic.
+ */
 inline void trapOverflow(const il::core::Instr &instr,
                          Frame &frame,
                          const il::core::BasicBlock *block,
@@ -168,14 +237,19 @@ inline void trapOverflow(const il::core::Instr &instr,
     detail::trapWithMessage(TrapKind::Overflow, message, instr, frame, block);
 }
 
-/// @brief Guard against zero divisors before performing a division-like operation.
-/// @tparam T Operand type supporting equality comparison with zero.
-/// @param divisor Value checked for zero.
-/// @param instr Instruction responsible for the operation.
-/// @param frame Active frame providing diagnostic context.
-/// @param block Current basic block (may be null).
-/// @param message Human-readable message describing the trap condition.
-/// @return @c true when @p divisor is non-zero; @c false after emitting a trap.
+/**
+ * @brief Guard a division-like operation against a zero divisor.
+ * @tparam T Scalar type constructible from integer zero and equality-comparable.
+ * @param divisor Value compared with `static_cast<T>(0)`.
+ * @param instr Borrowed instruction supplying the trap source location.
+ * @param frame Active frame supplying optional function metadata.
+ * @param block Optional current block supplying its label.
+ * @param message Borrowed, non-null divide-by-zero diagnostic.
+ * @return `true` when the divisor is nonzero; `false` after raising the trap.
+ *
+ * @note For floating-point `T`, both positive and negative zero trap, while NaN
+ *       passes the guard.
+ */
 template <typename T>
 [[nodiscard]] inline bool ensureNonZero(T divisor,
                                         const il::core::Instr &instr,

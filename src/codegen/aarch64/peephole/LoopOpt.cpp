@@ -5,13 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/LoopOpt.cpp
-// Purpose: Loop-invariant constant hoisting for the AArch64 peephole optimizer.
+// File: src/codegen/aarch64/peephole/LoopOpt.cpp
+// Purpose: Loop-invariant constant hoisting and phi-slot spill elimination for
+//          the AArch64 peephole optimizer.
 //
 // Key invariants:
 //   - Only hoists MovRI to callee-saved registers (x19-x28).
 //   - The register must be defined only by MovRI with the same immediate value
 //     throughout the loop body.
+//   - Phi-slot rewrites require dominance-proven, call-free natural loops and
+//     preserve parallel-copy semantics without a scratch register.
 //
 // Ownership/Lifetime:
 //   - Operates on mutable MFunction owned by the caller.
@@ -30,11 +33,17 @@
 #include <unordered_set>
 #include <utility>
 
+/// @file
+/// @brief Implements post-allocation natural-loop optimizations for AArch64 MIR.
+
 namespace zanna::codegen::aarch64::peephole {
 namespace {
 
 /// @brief Return the branch-target label of a terminator instruction, or "" if
 ///        @p mi is not a (conditional or unconditional) branch.
+/// @param mi Machine instruction whose label operand is inspected.
+/// @return The direct target label for recognized branch forms, or an empty
+///         string for malformed or non-branch instructions.
 [[nodiscard]] std::string getBranchTarget(const MInstr &mi) {
     if (mi.opc == MOpcode::Br && !mi.ops.empty() && mi.ops[0].kind == MOperand::Kind::Label)
         return mi.ops[0].label;
@@ -47,7 +56,9 @@ namespace {
     return {};
 }
 
-/// @brief Check whether a physical register is callee-saved (x19-x28).
+/// @brief Test whether a physical-register identifier is a hoistable GPR.
+/// @param phys Numeric physical-register identifier.
+/// @return `true` for the callee-saved range X19--X28.
 [[nodiscard]] bool isCalleeSavedGPR(uint32_t phys) noexcept {
     return phys >= static_cast<uint32_t>(PhysReg::X19) &&
            phys <= static_cast<uint32_t>(PhysReg::X28);
@@ -55,6 +66,9 @@ namespace {
 
 /// @brief Record a physical register made live across @p block's exit by a
 ///        post-RA loop rewrite while preserving the sorted metadata invariant.
+/// @param[in,out] block Block whose sorted `carriedExitRegs` vector is updated.
+/// @param reg Physical register made live through the block exit. Non-register
+///            and virtual-register operands are ignored.
 void markCarriedExitReg(MBasicBlock &block, const MOperand &reg) {
     if (!isPhysReg(reg))
         return;
@@ -124,6 +138,7 @@ struct EdgeMove {
 
 } // namespace
 
+/// @copydoc hoistLoopConstants
 std::size_t hoistLoopConstants(MFunction &fn) {
     if (fn.blocks.size() < 3)
         return 0;
@@ -133,6 +148,10 @@ std::size_t hoistLoopConstants(MFunction &fn) {
     for (std::size_t i = 0; i < fn.blocks.size(); ++i)
         nameToIdx[fn.blocks[i].name] = i;
 
+    /// Test whether operand zero of @p opc is not an explicit GPR definition.
+    ///
+    /// This conservative classification lets the loop scan distinguish uses
+    /// from the conventional destination operand without a full role table.
     auto isNonDefOpc = [](MOpcode opc) -> bool {
         return opc == MOpcode::StrRegFpImm || opc == MOpcode::StrRegBaseImm ||
                opc == MOpcode::Str8RegFpImm || opc == MOpcode::Str8RegBaseImm ||
@@ -187,6 +206,14 @@ std::size_t hoistLoopConstants(MFunction &fn) {
     // Uses the standard reverse-reachability algorithm: start from the latch,
     // walk predecessors until reaching the header to find all blocks on paths
     // from header to latch.
+    /// Collect the natural-loop blocks for a dominance-proven back edge.
+    ///
+    /// Reverse predecessor reachability is bounded at the header's layout
+    /// position to avoid absorbing earlier blocks in multi-header BASIC loops.
+    ///
+    /// @param header Loop-header block index.
+    /// @param latch Back-edge source block index.
+    /// @return Set containing the header, latch, and intervening predecessors.
     auto computeLoopBody = [&preds](std::size_t header,
                                     std::size_t latch) -> std::unordered_set<std::size_t> {
         std::unordered_set<std::size_t> body;
@@ -218,9 +245,15 @@ std::size_t hoistLoopConstants(MFunction &fn) {
         return body;
     };
 
+    /// @brief Indexed natural loop considered for constant hoisting.
     struct LoopInfo {
+        /// Dominating back-edge target.
         std::size_t header{0};
+
+        /// Back-edge source.
         std::size_t latch{0};
+
+        /// Blocks in the reverse-reachable natural loop.
         std::unordered_set<std::size_t> body;
     };
 
@@ -337,10 +370,18 @@ std::size_t hoistLoopConstants(MFunction &fn) {
                 continue;
         }
 
+        /// @brief Per-register evidence accumulated across one loop body.
         struct RegInfo {
+            /// Number of matching immediate materializations encountered.
             std::size_t movriCount{0};
+
+            /// Number of conflicting immediates or other definitions.
             std::size_t otherDefCount{0};
+
+            /// Number of blocks that use the register without defining it locally.
             std::size_t useWithoutDefBlocks{0}; // blocks that USE but don't DEFINE
+
+            /// Immediate shared by the candidate `MovRI` definitions.
             int64_t immValue{0};
         };
 
@@ -501,6 +542,8 @@ std::size_t hoistLoopConstants(MFunction &fn) {
                 auto beforeSize = instrs.size();
                 instrs.erase(std::remove_if(instrs.begin(),
                                             instrs.end(),
+                                            /// Select redundant in-loop materializations
+                                            /// of the value inserted in the preheader.
                                             [phys, &info](const MInstr &mi) {
                                                 return mi.opc == MOpcode::MovRI &&
                                                        mi.ops.size() >= 2 && isPhysReg(mi.ops[0]) &&
@@ -525,6 +568,7 @@ std::size_t hoistLoopConstants(MFunction &fn) {
     return hoisted;
 }
 
+/// @copydoc eliminateLoopPhiSpills
 std::size_t eliminateLoopPhiSpills(MFunction &fn) {
     if (fn.blocks.size() < 2)
         return 0;
@@ -534,8 +578,9 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
     for (std::size_t i = 0; i < fn.blocks.size(); ++i)
         nameToIdx[fn.blocks[i].name] = i;
 
-    // Helper: get branch target label from an instruction.
-    // Helper: check if instruction is a branch or terminator.
+    /// Test whether an opcode ends a schedulable/control-flow region.
+    /// @param opc Opcode to classify.
+    /// @return `true` for recognized branch, jump-table, and return forms.
     auto isTerminator = [](MOpcode opc) -> bool {
         return opc == MOpcode::Br || opc == MOpcode::BCond || opc == MOpcode::Cbz ||
                opc == MOpcode::Cbnz || opc == MOpcode::Tbz || opc == MOpcode::Tbnz ||
@@ -572,6 +617,12 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
     }
     const auto dominators = computeDominators(fn.blocks.size(), predsVec);
 
+    /// Test whether a call instruction clobbers a physical register under the
+    /// AArch64 ABI sets modeled by this post-allocation rewrite.
+    ///
+    /// @param mi Candidate direct or indirect call.
+    /// @param reg Physical register whose survival is queried.
+    /// @return `true` when @p mi is a call and @p reg is caller-saved.
     auto callClobbersReg = [](const MInstr &mi, const MOperand &reg) -> bool {
         if ((mi.opc != MOpcode::Bl && mi.opc != MOpcode::Blr) || !isPhysReg(reg))
             return false;
@@ -583,8 +634,12 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
     };
 
     // Find back-edges: block i branches to block j where j <= i.
+    /// @brief Dominance-proven backward CFG edge.
     struct BackEdge {
+        /// Source block containing the backward branch.
         std::size_t latchIdx;
+
+        /// Dominating target block at the loop header.
         std::size_t headerIdx;
     };
 
@@ -605,6 +660,9 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
     if (backEdges.empty())
         return 0;
 
+    /// Collect the natural loop induced by @p edge through reverse predecessors.
+    /// @param edge Dominance-proven latch-to-header edge.
+    /// @return Set of block indices belonging to the natural loop.
     auto collectNaturalLoop = [&preds](const BackEdge &edge) {
         std::unordered_set<std::size_t> loopBlocks;
         std::vector<std::size_t> worklist;
@@ -628,6 +686,9 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
         return loopBlocks;
     };
 
+    /// Test whether a candidate loop contains a call or an invalid block index.
+    /// @param loopBlocks Natural-loop block indices to inspect.
+    /// @return `true` when register edge moves cannot be proven call-safe.
     auto loopContainsCall = [&fn](const std::unordered_set<std::size_t> &loopBlocks) {
         for (std::size_t blockIdx : loopBlocks) {
             if (blockIdx >= fn.blocks.size())
@@ -640,20 +701,40 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
         return false;
     };
 
+    /// @brief One scalar component of a header phi-slot load.
     struct PhiLoad {
+        /// Index of the scalar or pair load instruction in its block.
         std::size_t instrIdx{0};
+
+        /// Frame-pointer-relative byte offset of the loaded component.
         int64_t fpOffset{0};
+
+        /// Physical destination register receiving the phi value.
         MOperand dstReg{};
     };
 
+    /// @brief One scalar component of a back-edge phi-slot store.
     struct PhiStore {
+        /// Index of the scalar or pair store instruction in its block.
         std::size_t instrIdx{0};
+
+        /// Frame-pointer-relative byte offset of the stored component.
         int64_t fpOffset{0};
+
+        /// Physical source register carrying the next phi value.
         MOperand srcReg{};
     };
 
+    /// Decompose a recognized scalar or paired FP-relative load into phi-load
+    /// components associated with the original instruction index.
+    ///
+    /// @param mi Candidate load instruction.
+    /// @param instrIdx Index of @p mi in its containing sequence.
+    /// @param[in,out] out Vector receiving one or two scalar load components.
+    /// @return `true` for a well-formed supported load; `false` otherwise.
     auto appendPhiLoads =
         [](const MInstr &mi, std::size_t instrIdx, std::vector<PhiLoad> &out) -> bool {
+        /// Append one decomposed load component.
         auto pushLoad = [&](const MOperand &dst, int64_t offset) {
             out.push_back({instrIdx, offset, dst});
         };
@@ -683,10 +764,20 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
         }
     };
 
+    /// Decompose a recognized scalar, pseudo, or paired FP-relative store,
+    /// retaining only components whose offsets are in @p phiOffsets.
+    ///
+    /// @param mi Candidate store instruction.
+    /// @param instrIdx Index of @p mi in its containing sequence.
+    /// @param[in,out] out Vector receiving matching scalar store components.
+    /// @param phiOffsets Header phi offsets eligible for matching.
+    /// @return `true` for a well-formed supported store even when none of its
+    ///         components matches; `false` otherwise.
     auto appendPhiStores = [](const MInstr &mi,
                               std::size_t instrIdx,
                               std::vector<PhiStore> &out,
                               const std::unordered_set<int64_t> &phiOffsets) -> bool {
+        /// Append one decomposed store component when its offset is relevant.
         auto pushStore = [&](const MOperand &src, int64_t offset) {
             if (phiOffsets.count(offset))
                 out.push_back({instrIdx, offset, src});
@@ -719,9 +810,15 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
         }
     };
 
+    /// @brief Complete memory-to-register rewrite plan for one back edge.
     struct EdgePlan {
+        /// Original store instruction indices erased as a unit.
         std::unordered_set<std::size_t> storeIndicesToRemove;
+
+        /// Acyclic physical copies in safe sequential emission order.
         std::vector<EdgeMove> orderedMoves;
+
+        /// Number of scalar spill/reload pairs represented by the plan.
         std::size_t eliminatedCount{0};
     };
 
@@ -861,6 +958,11 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
 
         std::size_t firstNonPhiIdx = phiLoads.back().instrIdx + 1;
 
+        /// Prove that a stored source register retains its value until the edge.
+        ///
+        /// @param instrs Instruction sequence containing the candidate store.
+        /// @param store Decomposed store and its original instruction index.
+        /// @return `true` when no later definition or call clobbers the source.
         auto sourceRegSurvivesToEdge = [&](const std::vector<MInstr> &instrs,
                                            const PhiStore &store) -> bool {
             if (!isPhysReg(store.srcReg))
@@ -875,6 +977,14 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
             return true;
         };
 
+        /// Match each header load to the last suitable edge store and construct
+        /// an acyclic parallel-copy lowering.
+        ///
+        /// @param edgeInstrs Sequence containing the stores on this back edge.
+        /// @param stores Decomposed candidate stores from @p edgeInstrs.
+        /// @param[out] plan Store removals, ordered copies, and elimination count.
+        /// @return `true` when every load has a surviving source and the required
+        ///         register moves contain no cycle.
         auto planEdgeMoves = [&](const std::vector<MInstr> &edgeInstrs,
                                  const std::vector<PhiStore> &stores,
                                  EdgePlan &plan) {
@@ -952,6 +1062,9 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
         for (const auto &load : phiLoads)
             markCarriedExitReg(header, load.dstReg);
 
+        /// Remove complete store instructions selected by original index.
+        /// @param[in,out] bb Edge block whose instruction vector is compacted.
+        /// @param indices Store instruction indices to erase.
         auto removeStores = [](MBasicBlock &bb, const std::unordered_set<std::size_t> &indices) {
             if (indices.empty())
                 return;
@@ -965,6 +1078,11 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
             bb.instrs = std::move(newInstrs);
         };
 
+        /// Apply one edge plan by deleting stores and inserting ordered register
+        /// copies immediately before the block's terminator suffix.
+        ///
+        /// @param[in,out] bb Back-edge block to rewrite.
+        /// @param plan Previously validated store-removal and copy sequence.
         auto applyEdgeMoves = [&](MBasicBlock &bb, const EdgePlan &plan) {
             removeStores(bb, plan.storeIndicesToRemove);
             if (plan.orderedMoves.empty())
@@ -998,6 +1116,8 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
         }
         eliminated += edgePlan.eliminatedCount;
 
+        /// Retarget every reference to the old header label in one back-edge block.
+        /// @param[in,out] bb Block whose label operands may be rewritten.
         auto redirectBackedgeTarget = [&](MBasicBlock &bb) {
             for (auto &mi : bb.instrs) {
                 for (auto &op : mi.ops) {

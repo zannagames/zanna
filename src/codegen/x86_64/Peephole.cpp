@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Peephole.cpp
+// File: src/codegen/x86_64/Peephole.cpp
 // Purpose: Driver for conservative peephole optimizations over Machine IR for
 //          the x86-64 backend. Delegates to modular sub-passes under
 //          peephole/ for each optimization category.
@@ -15,13 +15,13 @@
 //   - Block rewrites iterate to a fixed point bounded by kMaxIterations.
 // Ownership/Lifetime:
 //   - Mutates MIR owned by the caller; no references to transient operands retained.
-// Links: codegen/x86_64/Peephole.hpp,
-//        codegen/x86_64/peephole/PeepholeCommon.hpp,
-//        codegen/x86_64/peephole/ArithSimplify.hpp,
-//        codegen/x86_64/peephole/BranchOpt.hpp,
-//        codegen/x86_64/peephole/DCE.hpp,
-//        codegen/x86_64/peephole/MemoryOpt.hpp,
-//        codegen/x86_64/peephole/MovFolding.hpp
+// Links: src/codegen/x86_64/Peephole.hpp,
+//        src/codegen/x86_64/peephole/PeepholeCommon.hpp,
+//        src/codegen/x86_64/peephole/ArithSimplify.hpp,
+//        src/codegen/x86_64/peephole/BranchOpt.hpp,
+//        src/codegen/x86_64/peephole/DCE.hpp,
+//        src/codegen/x86_64/peephole/MemoryOpt.hpp,
+//        src/codegen/x86_64/peephole/MovFolding.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,6 +35,16 @@
 #include "peephole/PeepholeCommon.hpp"
 
 #include <algorithm>
+
+/**
+ * @file
+ * @brief Implements the fixed-point driver for modular x86-64 peephole passes.
+ *
+ * Block-local rewriting tracks constants, simplifies arithmetic, folds moves,
+ * forwards frame accesses, and removes dead operations. Function-level branch
+ * cleanup reaches a bounded fixed point before and after one-shot layout and
+ * cold-block placement.
+ */
 
 namespace zanna::codegen::x64 {
 
@@ -78,6 +88,10 @@ static bool blockMayTransferControl(const MFunction &fn, std::size_t blockIndex)
 
 /// Run per-block rewrite passes (strength reduction, identity elimination,
 /// move folding, DCE). Returns the number of transformations applied.
+/// @param fn Function whose blocks are rewritten in place.
+/// @param stats Cumulative transformation counters.
+/// @param target ABI metadata used by target-sensitive DCE.
+/// @return Number of new transformations recorded during this invocation.
 static std::size_t runBlockRewrites(MFunction &fn,
                                     ph::PeepholeStats &stats,
                                     const TargetInfo &target) {
@@ -156,6 +170,7 @@ static std::size_t runBlockRewrites(MFunction &fn,
         }
 
         // Pass 4: Remove marked instructions
+        /// Detect whether the removal bitmap contains any marked instruction.
         if (std::any_of(toRemove.begin(), toRemove.end(), [](bool v) { return v; })) {
             ph::removeMarkedInstructions(instrs, toRemove);
         }
@@ -169,6 +184,7 @@ static std::size_t runBlockRewrites(MFunction &fn,
     return stats.total() - before;
 }
 
+/// @copydoc runPeepholes
 std::size_t runPeepholes(MFunction &fn, const TargetInfo &target) {
     ph::PeepholeStats stats;
 

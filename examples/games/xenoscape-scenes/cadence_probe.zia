@@ -1,0 +1,111 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/cadence_probe.zia
+// Purpose: Verifies bounded gameplay timing at 30, 60, and 120 Hz cadences.
+// Key invariants:
+//   - Equal elapsed time leaves an idle player at the same safe ground position.
+//   - Millisecond UI lifetimes and surface forces converge at every cadence.
+// Ownership/Lifetime:
+//   - Each cadence pass owns fresh gameplay and presentation state.
+// Links: player.zia, environment.zia, tutorials.zia, abilities.zia,
+//        docs/internals/testing.md
+//
+//===----------------------------------------------------------------------===//
+
+module cadence_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "./abilities";
+bind "./environment";
+bind "./level";
+bind "./palette";
+bind "./player";
+bind "./tutorials";
+
+final CADENCE_TEST_MS = 7200;
+
+/// @brief Aggregate cadence outcomes without relying on tuple returns.
+class CadenceResult {
+    expose Integer playerY;
+    expose Integer conveyorVelocity;
+    expose Integer wallContactMs;
+    expose Boolean tutorialVisible;
+    expose Boolean abilityVisible;
+    expose Boolean playerDead;
+}
+
+/// @brief Advance representative gameplay state for exactly 7.2 seconds.
+///
+/// @param stepMs Frame delta: 32, 16, or 8 milliseconds.
+/// @return Owned result containing final timing-sensitive state.
+func runCadence(stepMs: Integer) -> CadenceResult {
+    var pal = new Palette();
+    var level = new Level();
+    level.loadLevel(1);
+    var player = new Player();
+    player.reset();
+    player.spawn(level.playerStartX, level.playerStartY);
+    var tutorials = new TutorialSystem();
+    tutorials.request(TUTORIAL_MOVE);
+    var abilities = new AbilityManager();
+    abilities.initAbilities(pal);
+    abilities.grant(ABILITY_DASH);
+
+    var conveyor = 0;
+    var wallContact = 0;
+    var elapsed = 0;
+    while elapsed < CADENCE_TEST_MS {
+        var dt = stepMs;
+        if elapsed + dt > CADENCE_TEST_MS { dt = CADENCE_TEST_MS - elapsed; }
+        level.updateDynamicTiles(dt);
+        player.update(level, dt);
+        tutorials.update(dt);
+        abilities.updateUI(dt);
+        conveyor = environmentalConveyorVelocity(conveyor, 1, dt);
+        wallContact = advanceWallContactTimer(wallContact, true, dt);
+        elapsed = elapsed + dt;
+    }
+
+    var result = new CadenceResult();
+    result.playerY = player.pixelY();
+    result.conveyorVelocity = conveyor;
+    result.wallContactMs = wallContact;
+    result.tutorialVisible = tutorials.getActiveTutorial() >= 0;
+    result.abilityVisible = abilities.isAcquisitionActive();
+    result.playerDead = player.state == PS_DEAD;
+    return result;
+}
+
+/// @brief Compare 30/60/120 Hz outcomes for timing drift and unsafe state.
+/// @return Nothing. Prints `RESULT: ok` only when all cadences converge safely.
+func main() {
+    var hz30 = runCadence(32);
+    var hz60 = runCadence(16);
+    var hz120 = runCadence(8);
+    if hz30.playerDead or hz60.playerDead or hz120.playerDead {
+        Terminal.Say("RESULT: fail idle player death"); return;
+    }
+    if hz30.playerY != hz60.playerY or hz60.playerY != hz120.playerY {
+        Terminal.Say("RESULT: fail idle position drift"); return;
+    }
+    if hz30.conveyorVelocity != CONVEYOR_MAX_SPEED or
+       hz60.conveyorVelocity != CONVEYOR_MAX_SPEED or
+       hz120.conveyorVelocity != CONVEYOR_MAX_SPEED {
+        Terminal.Say("RESULT: fail conveyor cadence"); return;
+    }
+    if hz30.wallContactMs != WALL_STICK_GRACE_MS or
+       hz60.wallContactMs != WALL_STICK_GRACE_MS or
+       hz120.wallContactMs != WALL_STICK_GRACE_MS {
+        Terminal.Say("RESULT: fail wall grace cadence"); return;
+    }
+    if hz30.tutorialVisible or hz60.tutorialVisible or hz120.tutorialVisible or
+       hz30.abilityVisible or hz60.abilityVisible or hz120.abilityVisible {
+        Terminal.Say("RESULT: fail bounded overlay cadence"); return;
+    }
+    Terminal.Say("RESULT: ok");
+}

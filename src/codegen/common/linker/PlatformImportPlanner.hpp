@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/PlatformImportPlanner.hpp
+// File: src/codegen/common/linker/PlatformImportPlanner.hpp
 // Purpose: Declare per-platform dynamic-import planners used by the native
 //          linker. Each planner converts a set of unresolved dynamic symbols
 //          into the platform-specific data structures (Mach-O dylibs +
@@ -21,6 +21,11 @@
 // Links: NativeLinker.cpp, MachOExeWriter.hpp, PeExeWriter.hpp, ElfExeWriter.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file PlatformImportPlanner.hpp
+ * @brief Declares deterministic target-specific dynamic-import planning.
+ */
 
 #pragma once
 
@@ -56,6 +61,7 @@ struct MacImportPlan {
 };
 
 /// @brief Result of resolving Linux dynamic imports — just the DT_NEEDED list.
+/// @details The list uses stable ABI-conventional ordering and is owned by the plan.
 struct LinuxImportPlan {
     std::vector<std::string> neededLibs;
 };
@@ -65,6 +71,10 @@ struct LinuxImportPlan {
 ///          to-dylib table, and populates @p plan with the unique dylib list
 ///          plus per-symbol ordinals. Returns false (and writes to @p err) on
 ///          an unrecognised symbol.
+/// @param dynamicSyms Unresolved symbols accepted by macOS dynamic policy.
+/// @param plan Destination dylib list and symbol ordinals, cleared before planning.
+/// @param err Diagnostic output stream.
+/// @return `true` when every symbol has a valid provider or lookup policy.
 bool planMacImports(const std::unordered_set<std::string> &dynamicSyms,
                     MacImportPlan &plan,
                     std::ostream &err);
@@ -72,6 +82,11 @@ bool planMacImports(const std::unordered_set<std::string> &dynamicSyms,
 /// @brief Plan Linux DT_NEEDED entries for a set of dynamic symbols.
 /// @details Resolves each symbol to its providing shared object (libc.so.6,
 ///          libpthread.so.0, etc.) and produces the deduplicated NEEDED list.
+///          libc is included even when @p dynamicSyms is empty.
+/// @param dynamicSyms Unresolved symbols to validate and classify.
+/// @param plan Destination dependency list, cleared before planning and on failure.
+/// @param err Diagnostic output stream.
+/// @return `true` when every symbol is recognized for Linux.
 bool planLinuxImports(const std::unordered_set<std::string> &dynamicSyms,
                       LinuxImportPlan &plan,
                       std::ostream &err);
@@ -82,6 +97,7 @@ bool planLinuxImports(const std::unordered_set<std::string> &dynamicSyms,
 /// @param debugRuntime When true, prefer ucrtbased.dll / vcruntime140d.dll.
 /// @param plan         Receives the synthetic ObjFile + imports list.
 /// @param err          Stream for diagnostics on unrecognised symbols.
+/// @return `true` when every symbol is mapped or synthesized.
 bool generateWindowsImports(LinkArch arch,
                             const std::unordered_set<std::string> &dynamicSyms,
                             bool debugRuntime,

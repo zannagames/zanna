@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/passes/LegalizePass.cpp
+// File: src/codegen/x86_64/passes/LegalizePass.cpp
 // Purpose: Implement the MIR legalisation stage in the x86-64 codegen pipeline.
 //          Lowers the adapter IL into machine IR, captures the shared rodata
 //          literal pool, and records one frame summary per function.
@@ -15,8 +15,8 @@
 //     infer partial state.
 // Ownership/Lifetime:
 //   - Stateless pass; mutates Module state in place.
-// Links: codegen/x86_64/passes/LegalizePass.hpp,
-//        codegen/x86_64/Backend.hpp
+// Links: src/codegen/x86_64/passes/LegalizePass.hpp,
+//        src/codegen/x86_64/Backend.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,16 +24,22 @@
 
 #include <string>
 
+/// @file
+/// @brief Implements x86-64 MIR legalization and downstream-state invalidation.
+
 namespace zanna::codegen::x64::passes {
 
 /// @brief Lower the adapter module to legalized MIR.
 /// @details Emits a descriptive diagnostic when lowering has not populated the
-///          module's adapter artefact or when MIR legalisation fails. On
-///          success, populates @c mir, @c frames, and @c roData before setting
-///          @c legalised so later passes can rely on concrete machine state.
+///          module's adapter artifact or when MIR legalization fails. If the
+///          target is absent, resolves it from the stored ABI option. On
+///          success, populates @c mir, @c frames, and @c roData, marks MIR
+///          legal, marks registers unallocated, and clears prior textual,
+///          text-section, read-only-data, and debug-line emission results.
 /// @param module Backend pipeline state being mutated.
-/// @param diags  Diagnostics sink used to report ordering problems.
-/// @return @c true when legalisation conditions are satisfied.
+/// @param diags Diagnostics sink used to report ordering or lowering failures.
+/// @return @c true when complete legalized MIR is installed; @c false when a
+///         diagnostic was recorded.
 bool LegalizePass::run(Module &module, Diagnostics &diags) {
     if (!module.lowered) {
         diags.error("legalize: lowering has not produced an adapter module");

@@ -5,10 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the declarative BASIC builtin registry used by the semantic
-// analyser and lowering pipeline.  The translation unit owns the static tables
-// that map source spellings to enumerators, provide lowering/scan rules, and
-// expose hooks for dynamically registered intrinsics.
+// File: src/frontends/basic/BuiltinRegistry.cpp
+// Purpose: Own dense BASIC builtin descriptors, semantic and lowering rules,
+//          name indexes, and dynamically registered lowering handlers.
+// Ownership/Lifetime: Static tables and maps live for the process lifetime.
+// Links: src/frontends/basic/BuiltinRegistry.hpp,
+//        src/frontends/basic/builtin_registry.inc,
+//        src/frontends/basic/builtins/MathBuiltins.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -44,6 +47,7 @@ using TransformKind = LowerRule::ArgTransform::Kind;
 using Feature = LowerRule::Feature;
 using FeatureAction = LowerRule::Feature::Action;
 
+/// Number of dense builtin enumerators, including the final Err builtin.
 constexpr std::size_t kBuiltinCount = static_cast<std::size_t>(B::Err) + 1;
 
 /// @brief Convert a builtin enumerator into a dense array index.
@@ -59,16 +63,26 @@ constexpr std::size_t idx(B b) noexcept {
 /// @brief Heterogeneous hash enabling string_view/`const char*` lookups into a
 ///        std::string-keyed map without constructing a temporary std::string.
 struct TransparentStringHash {
+    /// Marker enabling heterogeneous unordered-map lookup.
     using is_transparent = void;
 
+    /// @brief Hash a borrowed string view.
+    /// @param sv Key bytes.
+    /// @return Standard string-view hash.
     std::size_t operator()(std::string_view sv) const noexcept {
         return std::hash<std::string_view>{}(sv);
     }
 
+    /// @brief Hash a NUL-terminated string without allocating.
+    /// @param sv Key string.
+    /// @return Standard string-view hash.
     std::size_t operator()(const char *sv) const noexcept {
         return std::hash<std::string_view>{}(sv);
     }
 
+    /// @brief Hash an owning string through its view.
+    /// @param s Key string.
+    /// @return Standard string-view hash.
     std::size_t operator()(const std::string &s) const noexcept {
         return std::hash<std::string_view>{}(s);
     }
@@ -76,22 +90,29 @@ struct TransparentStringHash {
 
 /// @brief Heterogeneous equality companion to @ref TransparentStringHash.
 struct TransparentStringEqual {
+    /// Marker enabling heterogeneous unordered-map lookup.
     using is_transparent = void;
 
+    /// @brief Compare two key views byte-for-byte.
+    /// @param lhs Left key.
+    /// @param rhs Right key.
+    /// @return Whether both views contain identical bytes.
     bool operator()(std::string_view lhs, std::string_view rhs) const noexcept {
         return lhs == rhs;
     }
 };
 
+/// Exact-name map owning keys and storing non-owning function pointers.
 using HandlerMap =
     std::unordered_map<std::string, BuiltinHandler, TransparentStringHash, TransparentStringEqual>;
 
 /// @brief Access the singleton map storing dynamically registered builtins.
 /// @details The registry persists for the lifetime of the process, allowing
 ///          tools or tests to inject custom builtin implementations at runtime.
-///          It is initialised on first use and thereafter reused without further
-///          allocation.
+///          It is initialised on first use and reused thereafter; inserts may
+///          allocate or rehash its owned key storage.
 /// @return Reference to the mutable handler registry.
+/// @warning Access is not internally synchronized.
 HandlerMap &builtinHandlerRegistry() {
     static HandlerMap registry{};
     return registry;
@@ -99,9 +120,13 @@ HandlerMap &builtinHandlerRegistry() {
 
 /// @brief Describes broad type categories produced by a builtin.
 enum class TypeMask : std::uint8_t {
+    /// No known result category.
     None = 0,
+    /// Integer result category.
     I64 = 1U << 0U,
+    /// Floating-point result category.
     F64 = 1U << 1U,
+    /// String result category.
     Str = 1U << 2U,
 };
 
@@ -151,6 +176,7 @@ constexpr std::array<BuiltinDescriptor, kBuiltinCount> makeBuiltinDescriptors() 
     return descriptors;
 }
 
+/// Dense compile-time descriptors indexed by BuiltinCallExpr::Builtin.
 constexpr auto kBuiltinDescriptors = makeBuiltinDescriptors();
 
 /// @brief Create the lightweight info table consumed by semantic analysis.
@@ -165,6 +191,7 @@ constexpr std::array<BuiltinInfo, kBuiltinCount> makeBuiltinInfos() {
     return infos;
 }
 
+/// Dense semantic info records derived from the descriptors.
 constexpr auto kBuiltins = makeBuiltinInfos();
 
 /// @brief Generate the lowering rule table referenced by lowering passes.
@@ -200,6 +227,7 @@ static const std::array<BuiltinScanRule, kBuiltinCount> kBuiltinScanRules = [] {
 ///          lookups.
 /// @return Reference to the immutable name-to-enum map.
 const std::unordered_map<std::string_view, B> &builtinNameIndex() {
+    /// Build the immutable exact-spelling index on first access.
     static const auto index = [] {
         std::unordered_map<std::string_view, B> map;
         map.reserve(kBuiltinDescriptors.size());
@@ -223,8 +251,8 @@ const BuiltinInfo &getBuiltinInfo(BuiltinCallExpr::Builtin b) {
 
 /// @brief Retrieve the argument arity constraints for a builtin.
 /// @param b Builtin enumerator to inspect.
-/// @return Structure containing minimum and maximum argument counts.
-/// @pre @p b must be a valid BuiltinCallExpr::Builtin enumerator.
+/// @return Structure containing minimum and maximum argument counts, or
+///         `{0, 0}` for an out-of-range value.
 BuiltinArity getBuiltinArity(BuiltinCallExpr::Builtin b) {
     const auto idx = static_cast<std::size_t>(b);
     if (idx >= kBuiltinCount)
@@ -234,9 +262,8 @@ BuiltinArity getBuiltinArity(BuiltinCallExpr::Builtin b) {
 }
 
 /// @brief Resolve a BASIC built-in enum from its source spelling.
-/// @param name Canonical BASIC keyword spelling to look up. The string is
-///        matched exactly; callers must provide the normalized uppercase form
-///        including any suffix markers.
+/// @param name BASIC source spelling to look up. Exact canonical spelling is
+///        attempted first, followed by case folding and the CHR alias.
 /// @return Built-in enumerator on success; std::nullopt when the name is not
 ///         registered.
 std::optional<BuiltinCallExpr::Builtin> lookupBuiltin(std::string_view name) {
@@ -324,6 +351,7 @@ static il::frontends::basic::BuiltinResultKind resultKindFromMask(TypeMask m) {
     return RK::Unknown;
 }
 
+/// @copydoc getBuiltinFixedResult()
 BuiltinResultKind getBuiltinFixedResult(BuiltinCallExpr::Builtin b) {
     const auto idxv = static_cast<std::size_t>(b);
     if (idxv >= kBuiltinCount)
@@ -333,26 +361,31 @@ BuiltinResultKind getBuiltinFixedResult(BuiltinCallExpr::Builtin b) {
 }
 
 // Minimal registry-driven semantic signatures for critical builtins ----------
+/// ARGGET's one required integer argument specification.
 static const SemanticArgSpecView kArgGetArgs[] = {
     SemanticArgSpecView{false, BuiltinArgTypeMask::Int},
 };
 
+/// ARGC semantic signature: no arguments, integer result.
 static const SemanticSignatureView kArgcSemSig{/*min*/ 0,
                                                /*max*/ 0,
                                                /*args*/ nullptr,
                                                /*count*/ 0,
                                                /*result*/ BuiltinResultKind::Int};
+/// ARGGET semantic signature: one integer index, string result.
 static const SemanticSignatureView kArgGetSemSig{/*min*/ 1,
                                                  /*max*/ 1,
                                                  /*args*/ kArgGetArgs,
                                                  /*count*/ 1,
                                                  /*result*/ BuiltinResultKind::String};
+/// COMMAND semantic signature: no arguments, string result.
 static const SemanticSignatureView kCommandSemSig{/*min*/ 0,
                                                   /*max*/ 0,
                                                   /*args*/ nullptr,
                                                   /*count*/ 0,
                                                   /*result*/ BuiltinResultKind::String};
 
+/// @copydoc getBuiltinSemanticSignature()
 const SemanticSignatureView *getBuiltinSemanticSignature(BuiltinCallExpr::Builtin b) {
     using E = BuiltinCallExpr::Builtin;
     switch (b) {

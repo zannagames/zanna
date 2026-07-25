@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/RelocClassify.hpp
+// File: src/codegen/common/linker/RelocClassify.hpp
 // Purpose: Map format-specific relocation type numbers to format-independent
 //          RelocAction categories. Separates relocation classification from
 //          the patching logic in RelocApplier.cpp.
@@ -17,6 +17,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file RelocClassify.hpp
+ * @brief Classifies ABI-specific relocation numbers into linker patch actions.
+ *
+ * Relocation numbers overlap between object formats and architectures. These
+ * small mapping functions keep that format-dependent namespace boundary out of
+ * the byte-patching implementation and provide a single @ref RelocAction
+ * vocabulary for the relocation applier.
+ */
+
 #pragma once
 
 #include "codegen/common/linker/ObjFileReader.hpp"
@@ -26,7 +36,10 @@
 
 namespace zanna::codegen::linker {
 
-/// Format-independent relocation categories.
+/// @brief Format-independent operations performed by the relocation applier.
+/// @details Each enumerator describes the mathematical or instruction-level
+///          patch to perform after the raw relocation number has been decoded
+///          in the context of its object format and target architecture.
 enum class RelocAction {
     PCRel32,      // S + A - P (32-bit)
     PCRel64,      // S + A - P (64-bit)
@@ -60,6 +73,9 @@ enum class RelocAction {
 // to RelocAction::Unknown so the caller can report a precise diagnostic.
 
 /// @brief Map an ELF/x86_64 relocation type code to a format-independent action.
+/// @param type ELF `R_X86_64_*` relocation number.
+/// @return The corresponding patch action, or @ref RelocAction::Unknown when
+///         the relocation is not supported by the native linker.
 inline RelocAction elfX64Action(uint32_t type) {
     switch (type) {
         case elf_x64::kAbs64:
@@ -82,6 +98,9 @@ inline RelocAction elfX64Action(uint32_t type) {
 }
 
 /// @brief Map an ELF/AArch64 relocation type code to a format-independent action.
+/// @param type ELF `R_AARCH64_*` relocation number.
+/// @return The corresponding patch action, or @ref RelocAction::Unknown when
+///         the relocation is not supported by the native linker.
 inline RelocAction elfA64Action(uint32_t type) {
     switch (type) {
         case elf_a64::kAbs64:
@@ -124,6 +143,9 @@ inline RelocAction elfA64Action(uint32_t type) {
 }
 
 /// @brief Map a Mach-O/x86_64 relocation type code to a format-independent action.
+/// @param type Mach-O `X86_64_RELOC_*` relocation number.
+/// @return The corresponding patch action, or @ref RelocAction::Unknown when
+///         the relocation is not supported by the native linker.
 inline RelocAction machoX64Action(uint32_t type) {
     switch (type) {
         case macho_x64::kUnsigned:
@@ -141,6 +163,9 @@ inline RelocAction machoX64Action(uint32_t type) {
 }
 
 /// @brief Map a Mach-O/AArch64 relocation type code to a format-independent action.
+/// @param type Mach-O `ARM64_RELOC_*` relocation number.
+/// @return The corresponding patch action, or @ref RelocAction::Unknown when
+///         the relocation is not supported by the native linker.
 inline RelocAction machoA64Action(uint32_t type) {
     switch (type) {
         case macho_a64::kUnsigned:
@@ -170,6 +195,9 @@ inline RelocAction machoA64Action(uint32_t type) {
 }
 
 /// @brief Map a COFF/x86_64 relocation type code to a format-independent action.
+/// @param type COFF `IMAGE_REL_AMD64_*` relocation number.
+/// @return The corresponding patch action, or @ref RelocAction::Unknown when
+///         the relocation is not supported by the native linker.
 inline RelocAction coffX64Action(uint32_t type) {
     switch (type) {
         case coff_x64::kAddr64:
@@ -189,6 +217,9 @@ inline RelocAction coffX64Action(uint32_t type) {
 }
 
 /// @brief Map a COFF/AArch64 relocation type code to a format-independent action.
+/// @param type COFF `IMAGE_REL_ARM64_*` relocation number.
+/// @return The corresponding patch action, or @ref RelocAction::Unknown when
+///         the relocation is not supported by the native linker.
 inline RelocAction coffA64Action(uint32_t type) {
     switch (type) {
         case coff_a64::kAddr64:
@@ -212,7 +243,12 @@ inline RelocAction coffA64Action(uint32_t type) {
 
 // ── Top-level dispatcher ─────────────────────────────────────────────────
 
-/// Dispatch relocation type to action based on format and architecture.
+/// @brief Dispatch a raw relocation number using its format and architecture.
+/// @param format Object container format that defines the relocation namespace.
+/// @param arch Target architecture that selects the ABI-specific mapping.
+/// @param type Raw relocation type number from the object record.
+/// @return The format-independent patch action, or @ref RelocAction::Unknown
+///         for unsupported formats, architectures, or relocation numbers.
 inline RelocAction classifyReloc(ObjFileFormat format, LinkArch arch, uint32_t type) {
     switch (format) {
         case ObjFileFormat::ELF:

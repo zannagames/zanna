@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/Dominators.hpp
+// File: src/codegen/aarch64/peephole/Dominators.hpp
 // Purpose: Shared bit-vector dominator analysis for the AArch64 peephole
 //          optimizer. Replaces three previously-duplicated implementations
 //          (one bitset in Peephole.cpp, two set-based in LoopOpt.cpp).
@@ -30,15 +30,28 @@
 #include <cstdint>
 #include <vector>
 
+/// @file
+/// @brief Declares compact dominator-set analysis for AArch64 peephole passes.
+
 namespace zanna::codegen::aarch64::peephole {
 
-/// @brief Bit-vector dominator sets — one 64-bit-word vector per basic block.
-///        `dom[i][w]` is the wᵗʰ 64-bit word of the dominator bitset for block i.
+/// @brief Owns a packed dominator set for every indexed basic block.
+///
+/// `bits[block][word]` stores the corresponding 64-bit word of the block's
+/// dominator bitset. The representation is independent of MIR objects, so
+/// callers retain responsibility for keeping their block indices stable.
 struct DominatorSets {
+    /// Packed dominator bitsets indexed first by dominated block.
     std::vector<std::vector<std::uint64_t>> bits;
+
+    /// Number of blocks represented when the analysis was computed.
     std::size_t blockCount = 0;
 
-    /// @brief Return true if @p block is dominated by @p dominator.
+    /// @brief Test whether one indexed block dominates another.
+    /// @param dominator Candidate dominator block index.
+    /// @param block Candidate dominated block index.
+    /// @return `true` when the dominator bit is present; `false` for an
+    ///         out-of-range index or an absent relationship.
     [[nodiscard]] bool dominates(std::size_t dominator, std::size_t block) const noexcept {
         if (block >= bits.size())
             return false;
@@ -52,10 +65,12 @@ struct DominatorSets {
 /// @brief Compute dominator sets for all blocks using iterative bit-vector dataflow.
 /// @details Standard iterative algorithm: entry block dominates only itself, all
 ///          others start as the universal set and are intersected with each
-///          predecessor's dominator set until fixpoint.
+///          predecessor's dominator set until fixpoint. Blocks without valid
+///          predecessors are treated as unreachable and dominate only themselves.
 /// @param blockCount Total number of blocks (entry is index 0).
 /// @param preds      preds[i] is the list of predecessor block indices for block i.
-///                   For the entry block this is typically empty.
+///                   Missing lists and out-of-range predecessor indices are
+///                   handled conservatively.
 /// @return Dominator sets sized to @p blockCount.
 [[nodiscard]] DominatorSets computeDominators(std::size_t blockCount,
                                               const std::vector<std::vector<std::size_t>> &preds);

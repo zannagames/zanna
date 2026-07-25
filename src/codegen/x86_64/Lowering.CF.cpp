@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Lowering.CF.cpp
+// File: src/codegen/x86_64/Lowering.CF.cpp
 // Purpose: Implement control-flow lowering rules for the x86-64 backend,
 //          covering branches, selects, and returns.
 // Key invariants:
@@ -13,9 +13,9 @@
 //   - Register classes are dictated by MIRBuilder.
 // Ownership/Lifetime:
 //   - Works with borrowed MIRBuilder and IL instruction data; no persistent state.
-// Links: codegen/x86_64/LoweringRules.hpp,
-//        codegen/x86_64/Lowering.EmitCommon.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/LoweringRules.hpp,
+//        src/codegen/x86_64/Lowering.EmitCommon.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,12 +32,25 @@
 #include <limits>
 #include <string>
 
+/**
+ * @file
+ * @brief Implements branches, returns, bounds checks, selects, and i32 switches.
+ *
+ * Small switches become linear compare chains, larger sparse switches use a
+ * balanced comparison tree, and sufficiently dense switches use an inline jump
+ * table. Bounds checks preserve signed lower-bound behavior while sharing the
+ * runtime error-call planning convention used by other checked operations.
+ */
+
 namespace zanna::codegen::x64::lowering {
 namespace {
 
+/// Runtime error code used for an out-of-range index.
 constexpr int64_t kErrBounds = 7;
 
 /// @brief True if @p kind is integer-like (I64/I1/PTR) — GPR-eligible.
+/// @param kind IL kind to classify.
+/// @return @c true for a GPR-representable integer, boolean, or pointer.
 [[nodiscard]] bool isIntegerLikeKind(ILValue::Kind kind) noexcept {
     return kind == ILValue::Kind::I64 || kind == ILValue::Kind::I1 || kind == ILValue::Kind::PTR;
 }
@@ -45,6 +58,8 @@ constexpr int64_t kErrBounds = 7;
 /// @brief Extract the integer value of an immediate ILValue.
 /// @details Normalizes I1 to a canonical 0/1; all other integer kinds pass
 ///          their raw @c i64 through. Used to build switch-case keys.
+/// @param value Immediate integer-like IL value.
+/// @return Canonical signed representation used as a switch key.
 [[nodiscard]] int64_t integerImmediateValue(const ILValue &value) noexcept {
     return value.kind == ILValue::Kind::I1 ? (value.i64 != 0 ? 1 : 0) : value.i64;
 }
@@ -56,6 +71,7 @@ constexpr int64_t kErrBounds = 7;
 ///          wrong switch_i32 semantics.
 /// @param value IL case value operand.
 /// @return The value narrowed to an i32 switch key and widened for MIR immediates.
+/// @throws std::runtime_error Through @c phaseAUnsupported when outside i32.
 [[nodiscard]] int64_t checkedSwitchI32Immediate(const ILValue &value) {
     const int64_t raw = integerImmediateValue(value);
     if (raw < std::numeric_limits<int32_t>::min() ||
@@ -225,7 +241,8 @@ void emitReturn(const ILInstr &instr, MIRBuilder &builder) {
 /// @brief Lower an idx_chk instruction (bounds check with trap on out-of-bounds).
 /// @details Emits inline CMP + JCC + UD2 sequences using in-block LABEL definitions
 ///          to conditionally trap when the index is outside [lower, upper).
-///          The check verifies: lower <= index < upper (unsigned comparison).
+///          A zero lower bound uses an unsigned upper comparison, which also
+///          rejects negative indices; nonzero bounds use signed comparisons.
 ///          The result is the index value passed through if the check succeeds.
 /// @param instr IL idx_chk instruction: ops[0]=index, ops[1]=lower, ops[2]=upper.
 /// @param builder Machine IR builder receiving the emitted code.
@@ -351,6 +368,7 @@ void emitSwitchI32(const ILInstr &instr, MIRBuilder &builder) {
     }
 
     Operand defLabel = builder.makeLabelOperand(instr.ops.back());
+    /// Sort cases by key so duplicate detection, density checks, and trees are deterministic.
     std::sort(cases.begin(), cases.end(), [](const SwitchCase &lhs, const SwitchCase &rhs) {
         return lhs.value < rhs.value;
     });

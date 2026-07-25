@@ -1,0 +1,299 @@
+// =============================================================================
+// pickups.zia — Coins, health, power-ups, gems, keys
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — SPAWNING STUFF FROM THE LEVEL DATA
+// ---------------------------------------------
+// Every platformer needs "stuff lying around": coins to
+// collect, hearts to heal, keys that unlock doors, gems that
+// count as currency.  Xenoscape calls all of these "pickups".
+//
+// This file shows the standard recipe:
+//
+//   1. **One pool + parallel arrays** — same ObjectPool
+//      pattern as `projectile.zia`.  `pool` tracks which slots
+//      are live; `ptype[i]`, `px[i]`, `py[i]`, `pframe[i]`
+//      are the per-pickup data.
+//
+//   2. **Level-driven spawning** — the level file (see
+//      `level.zia`) stores three parallel arrays of pickup
+//      type/x/y triples.  On level load, `spawnFromLevel`
+//      walks those arrays and calls `spawnPickup` for each.
+//      This is how you keep *level content* separate from
+//      *pickup logic*.
+//
+//   3. **Cheap AABB overlap for collection** — on every frame
+//      the player's hitbox is tested against each active
+//      pickup via `PhysicsHelper.rectOverlapPx`.  The first
+//      overlap returns the pickup type code and the slot is
+//      released.
+//
+//   4. **Shared bob + rotate animation** — a single timer
+//      drives the vertical bobbing of every pickup so they
+//      move in unison, which reads nicely on screen.  Coins
+//      also cycle a 4-frame rotation.
+//
+//   5. **Per-type draw dispatch** — sprite-based pickups
+//      (coin, health orb, powerups) use pre-baked sprites;
+//      the newer "drawn at runtime" types (gem, HP upgrade,
+//      key) are composed from primitives.  Both styles live
+//      side-by-side in the same `drawAll` loop.
+//
+// WHERE THIS FITS
+// ---------------
+//     level.zia   ──►  supplies pickup type/x/y arrays on load.
+//     game.zia    ──►  per-frame: updateAll, drawAll,
+//                      checkCollection against player.
+//     player.zia  ──►  collectPowerUp(ptype) for the effect.
+//     sprites.zia ──►  getCoinFrame, getHealthOrb, etc.
+//
+// =============================================================================
+
+module pickups;
+
+bind Zanna.Graphics;
+bind Zanna.Game;
+bind "./config";
+bind "./level";
+bind "./physics";
+bind "./sprites";
+
+/// @brief Pool of collectible items present in the current room.
+///        Rebuilt on every level load.
+class PickupManager {
+    hide ObjectPool pool;
+    hide List[Integer] ptype;    // PICKUP_* (see config.zia)
+    hide List[Integer] px;       // world pixel x
+    hide List[Integer] py;       // world pixel y
+    hide List[Integer] pframe;   // per-pickup animation frame (coin rotation)
+    hide Integer animTimer;      // shared bob/rotate clock
+
+    hide PhysicsHelper phys;     // for rectOverlapPx
+
+    /// @brief Allocate pool + pre-fill every parallel array
+    ///        with a zero placeholder so pool handles index
+    ///        into valid slots immediately.
+    expose func init() {
+        pool = ObjectPool.New(MAX_PICKUPS);
+        ptype = [];
+        px = [];
+        py = [];
+        pframe = [];
+        animTimer = 0;
+        phys = new PhysicsHelper();
+
+        var fill = 0;
+        while fill < MAX_PICKUPS {
+            ptype.add(0); px.add(0); py.add(0); pframe.add(0);
+            fill = fill + 1;
+        }
+    }
+
+    /// @brief Wipe every active pickup and reset the animation
+    ///        timer.  Called on room transition.
+    expose func reset() {
+        pool.Clear();
+        animTimer = 0;
+    }
+
+    /// @brief Add one pickup at (wx, wy).  No-op if the pool is
+    ///        full; in practice rooms are sized so this doesn't
+    ///        happen.
+    expose func spawnPickup(t: Integer, wx: Integer, wy: Integer) {
+        var handle = pool.Acquire();
+        if handle < 0 { return; }
+        ptype.set(handle, t);
+        px.set(handle, wx);
+        py.set(handle, wy);
+        pframe.set(handle, 0);
+    }
+
+    /// @brief Pump the level's packaged pickup list into the
+    ///        pool.  Called once on level load.  The level
+    ///        stores three parallel arrays
+    ///        (`pickupTypes/X/Y`); we iterate in lockstep.
+    expose func spawnFromLevel(level: Level) {
+        var i = 0;
+        while i < level.pickupTypes.length() {
+            spawnPickup(level.pickupTypes.get(i),
+                        level.pickupX.get(i),
+                        level.pickupY.get(i));
+            i = i + 1;
+        }
+    }
+
+    /// @brief Advance the shared bob/rotate clock.  Every 12
+    ///        ticks, each active coin advances one frame of
+    ///        its 4-frame rotation.  Non-coin pickups ignore
+    ///        the frame slot — their `draw*` helpers do their
+    ///        own per-type animation from `animTimer`.
+    expose func updateAll() {
+        animTimer = animTimer + 1;
+        if animTimer >= 12 {
+            animTimer = 0;
+            var i = pool.FirstActive();
+            while i >= 0 {
+                var next = pool.NextActive(i);
+                if ptype.get(i) == PICKUP_COIN {
+                    var f = pframe.get(i) + 1;
+                    if f >= 4 { f = 0; }
+                    pframe.set(i, f);
+                }
+                i = next;
+            }
+        }
+    }
+
+    /// @brief Test each active pickup against the player's
+    ///        hitbox.  Returns the first-hit pickup type code
+    ///        (releasing its slot), or -1 if nothing was
+    ///        collected this frame.
+    ///
+    /// Coin hitboxes are `COIN_SIZE`; all other pickups use
+    /// `POWERUP_SIZE` — slightly larger so they're easier to
+    /// grab.
+    expose func checkCollection(playerPx: Integer, playerPy: Integer) -> Integer {
+        var i = pool.FirstActive();
+        while i >= 0 {
+            var next = pool.NextActive(i);
+            var t = ptype.get(i);
+            var size = COIN_SIZE;
+            if t != PICKUP_COIN {
+                size = POWERUP_SIZE;
+            }
+
+            if phys.rectOverlapPx(playerPx, playerPy, PLAYER_W, PLAYER_H,
+                                  px.get(i), py.get(i), size, size) {
+                pool.Release(i);
+                return t;
+            }
+            i = next;
+        }
+        return -1;
+    }
+
+    /// @brief Render every visible pickup.  Off-screen items
+    ///        get culled by a cheap four-sided margin check
+    ///        (±48 px beyond the visible area so a pickup's
+    ///        bob doesn't clip on the edge).
+    ///
+    /// Sprite-backed pickups (coin, health, speed, shield,
+    /// rapidfire) call through to `sprites`; drawn pickups
+    /// (gem, HP up, key) are composed here from primitives.
+    expose func drawAll(canvas: Canvas, camX: Integer, camY: Integer,
+                        sprites: SpriteFactory) {
+        var i = pool.FirstActive();
+        while i >= 0 {
+            var next = pool.NextActive(i);
+            var sx = px.get(i) - camX;
+            var sy = py.get(i) - camY;
+
+            // Cull off-screen items with 48 px margin.
+            if sx > -48 {
+                if sx < SCREEN_W + 48 {
+                    if sy > -48 {
+                        if sy < SCREEN_H + 48 {
+                            var t = ptype.get(i);
+                            var f = pframe.get(i);
+
+                            // Shared bob animation: 0..2..0 px
+                            // over a 12-tick cycle.  Offsets
+                            // every pickup in sync.
+                            var bob = animTimer / 6;
+                            if animTimer >= 6 {
+                                bob = 2 - (animTimer - 6) / 6;
+                            }
+                            sy = sy + bob;
+
+                            if t == PICKUP_COIN {
+                                canvas.BlitAlpha(sx, sy, sprites.getCoinFrame(f));
+                            }
+                            if t == PICKUP_HEALTH {
+                                canvas.BlitAlpha(sx, sy, sprites.getHealthOrb());
+                            }
+                            if t == PICKUP_SPEED {
+                                canvas.BlitAlpha(sx, sy, sprites.getSpeedPickup());
+                            }
+                            if t == PICKUP_SHIELD {
+                                canvas.BlitAlpha(sx, sy, sprites.getShieldPickup());
+                            }
+                            if t == PICKUP_RAPIDFIRE {
+                                canvas.BlitAlpha(sx, sy, sprites.getRapidPickup());
+                            }
+                            // Newer pickups drawn procedurally —
+                            // cheaper in code than adding
+                            // sprite-sheet entries.
+                            if t == PICKUP_GEM {
+                                drawGem(canvas, sx, sy, animTimer);
+                            }
+                            if t == PICKUP_HP_UP {
+                                drawHpUp(canvas, sx, sy, animTimer);
+                            }
+                            if t == PICKUP_KEY {
+                                drawKey(canvas, sx, sy, animTimer);
+                            }
+                        }
+                    }
+                }
+            }
+            i = next;
+        }
+    }
+
+    //=========================================================================
+    // PROCEDURAL PICKUP SPRITES
+    //=========================================================================
+    //
+    // For newer pickup types we compose from primitives instead
+    // of baking sprite sheets.  It's both quicker to iterate
+    // on and matches the rest of the file's "light on assets"
+    // aesthetic.  Each helper takes the screen-space origin
+    // and the shared animTimer so sparkles/glows can pulse.
+
+    /// @brief Blue diamond gem with a 50% sparkle at the top-
+    ///        right.  Two triangles form the diamond; the
+    ///        highlight line gives it dimension.
+    hide func drawGem(canvas: Canvas, sx: Integer, sy: Integer, timer: Integer) {
+        var cx = sx + 18;
+        var cy = sy + 18;
+        canvas.Triangle(cx, cy - 12, cx - 8, cy, cx + 8, cy, Color.RGB(100, 180, 255));
+        canvas.Triangle(cx, cy + 12, cx - 8, cy, cx + 8, cy, Color.RGB(60, 130, 220));
+        canvas.Line(cx - 3, cy - 4, cx + 3, cy - 4, Color.RGB(200, 230, 255));
+        if timer % 8 < 4 {
+            canvas.Disc(cx + 4, cy - 6, 1, Color.RGB(255, 255, 255));
+        }
+    }
+
+    /// @brief Golden heart (max-HP upgrade).  Built from two
+    ///        discs + a triangle, with a "plus" cross inside
+    ///        and a half-time halo pulse.
+    hide func drawHpUp(canvas: Canvas, sx: Integer, sy: Integer, timer: Integer) {
+        var cx = sx + 21;
+        var cy = sy + 21;
+        canvas.Disc(cx - 5, cy - 3, 6, Color.RGB(255, 200, 50));
+        canvas.Disc(cx + 5, cy - 3, 6, Color.RGB(255, 200, 50));
+        canvas.Triangle(cx, cy + 10, cx - 11, cy, cx + 11, cy, Color.RGB(255, 180, 30));
+        canvas.Disc(cx, cy - 2, 3, Color.RGB(255, 255, 200));
+        canvas.Box(cx - 1, cy - 5, 3, 7, Color.RGB(255, 255, 255));
+        canvas.Box(cx - 3, cy - 3, 7, 3, Color.RGB(255, 255, 255));
+        if timer % 12 < 6 {
+            canvas.DiscAlpha(cx, cy, 14, Color.RGB(255, 220, 100), 40);
+        }
+    }
+
+    /// @brief Golden key (door-opener).  Ring + disc for the
+    ///        head, thin box for the shaft, two bumps for the
+    ///        teeth.  Static — no animation beyond the shared
+    ///        bob.
+    hide func drawKey(canvas: Canvas, sx: Integer, sy: Integer, _timer: Integer) {
+        var cx = sx + 18;
+        var cy = sy + 18;
+        canvas.Ring(cx, cy - 6, 6, Color.RGB(255, 200, 50));
+        canvas.Disc(cx, cy - 6, 4, Color.RGB(255, 220, 80));
+        canvas.Box(cx - 1, cy, 3, 14, Color.RGB(200, 160, 40));
+        canvas.Box(cx + 2, cy + 8, 4, 2, Color.RGB(200, 160, 40));
+        canvas.Box(cx + 2, cy + 12, 4, 2, Color.RGB(200, 160, 40));
+        canvas.Disc(cx - 2, cy - 8, 1, Color.RGB(255, 255, 255));
+    }
+}

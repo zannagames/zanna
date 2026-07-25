@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/AlignUtil.hpp
+// File: src/codegen/common/linker/AlignUtil.hpp
 // Purpose: Shared alignment utility for the native linker subsystem.
 // Key invariants:
 //   - align must be 0 or a power of two
@@ -17,6 +17,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file AlignUtil.hpp
+ * @brief Provides checked power-of-two alignment for native linker layouts.
+ */
+
 #pragma once
 
 #include <cassert>
@@ -26,8 +31,13 @@
 
 namespace zanna::codegen::linker {
 
-/// Round \p val up to the next multiple of \p align.
-/// \p align must be 0 (no-op) or a power of two.
+/// @brief Rounds a size upward to a requested power-of-two alignment.
+/// @param val Value to align.
+/// @param align Required alignment, or zero to leave @p val unchanged.
+/// @return The smallest multiple of @p align greater than or equal to
+///         @p val, or @p val when @p align is zero.
+/// @throws std::invalid_argument If a nonzero alignment is not a power of two.
+/// @throws std::length_error If rounding would overflow `size_t`.
 inline size_t alignUp(size_t val, size_t align) {
     if (align == 0)
         return val;

@@ -19,6 +19,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file RuntimeComponents.hpp
+ * @brief Classifies referenced runtime symbols and computes the component
+ *        archives required by native executables.
+ *
+ * The mapping in this file bridges emitted `rt_*`/`Zanna.*` symbol names and
+ * the component archive manifest.  It also closes the component set over
+ * internal runtime dependencies so linkers receive a deterministic,
+ * duplicate-free archive list.
+ */
+
 #pragma once
 
 #include "zanna/runtime/RuntimeComponentManifest.hpp"
@@ -50,11 +61,17 @@ enum class RtComponent {
     Count,
 };
 
-/// @brief Map a runtime symbol to its component for selective linking.
-/// @param sym The symbol name (e.g., "rt_list_add", "rt_grid2d_new").
-/// @return The component if recognized, std::nullopt otherwise.
+/// @brief Maps a runtime symbol to the component that defines it.
+/// @details Recognizes both C ABI `rt_*` names and namespace-qualified
+///          `Zanna.*` frontend names.  Classification is purely lexical and
+///          does not consult the live runtime registry.
+/// @param sym Symbol name to classify, for example `rt_list_add` or
+///            `Zanna.Collections.List.Add`.
+/// @return The defining component when a known prefix or exact name matches;
+///         otherwise `std::nullopt`.
 /// @note Keep this in sync with src/runtime/CMakeLists.txt library organization.
 inline std::optional<RtComponent> componentForRuntimeSymbol(std::string_view sym) {
+    /// Tests whether the symbol being classified begins with @p prefix.
     auto starts = [&](std::string_view prefix) -> bool {
         return sym.size() >= prefix.size() && sym.substr(0, prefix.size()) == prefix;
     };
@@ -239,9 +256,11 @@ inline std::optional<RtComponent> componentForRuntimeSymbol(std::string_view sym
     return std::nullopt;
 }
 
-/// @brief Get the static library archive name for a runtime component.
-/// @param comp The runtime component.
-/// @return Library base name (e.g., "zanna_rt_collections").
+/// @brief Obtains the manifest archive name for a runtime component.
+/// @param comp Component whose static-library base name is required.
+/// @return The corresponding manifest entry, such as
+///         `zanna_rt_collections`.  An invalid value (including `Count`)
+///         falls back to the Base archive.
 inline std::string_view archiveNameForComponent(RtComponent comp) {
     static_assert(zanna::runtime_manifest::kRuntimeComponentArchives.size() ==
                   static_cast<size_t>(RtComponent::Count));
@@ -252,12 +271,14 @@ inline std::string_view archiveNameForComponent(RtComponent comp) {
     return zanna::runtime_manifest::kRuntimeComponentArchives[0];
 }
 
-/// @brief Resolve the full set of required runtime components from referenced symbols.
+/// @brief Resolves the complete runtime component set required by symbols.
+/// @details Classifies recognized symbols, applies transitive internal
+///          dependency rules, and emits each required component once in a
+///          stable link order.  Unrecognized symbols do not add a component.
 /// @tparam SymbolRange A range type whose elements are convertible to std::string_view
 ///                     (e.g., std::unordered_set<std::string>, std::vector<std::string>).
 /// @param symbols The runtime symbols referenced by generated code.
-/// @return Ordered list of required components (with dependencies resolved).
-///         Base is always included first.
+/// @return Dependency-closed, duplicate-free component list with Base first.
 template <typename SymbolRange>
 inline std::vector<RtComponent> resolveRequiredComponents(const SymbolRange &symbols) {
     // Classify symbols into components.
@@ -268,7 +289,9 @@ inline std::vector<RtComponent> resolveRequiredComponents(const SymbolRange &sym
             needed.insert(static_cast<int>(*comp));
     }
 
+    /// Reports whether @p c is already present in the dependency closure.
     auto has = [&](RtComponent c) { return needed.count(static_cast<int>(c)) != 0; };
+    /// Inserts @p c into the dependency closure; duplicate insertions are harmless.
     auto add = [&](RtComponent c) { needed.insert(static_cast<int>(c)); };
 
     // Apply dependency rules (internal runtime calls between components).

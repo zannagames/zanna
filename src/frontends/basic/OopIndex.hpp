@@ -5,12 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/OopIndex.hpp
+// File: src/frontends/basic/OopIndex.hpp
 // Purpose: Pure data model for OOP metadata without AST dependencies.
 // Key invariants: Index stores one entry per class name with immutable signature data.
 // Ownership/Lifetime: OopIndex stores copies of metadata without owning AST nodes.
 //
 //===----------------------------------------------------------------------===//
+
+/// @file OopIndex.hpp
+/// @brief Declares the AST-independent BASIC OOP metadata index.
+/// @details The index owns copied class, interface, and enum descriptions used
+///          by semantic analysis and lowering. Query results point into these
+///          owned containers and can be invalidated by subsequent mutation.
 
 #pragma once
 
@@ -29,8 +35,13 @@ namespace il::frontends::basic {
 
 /// @brief Hash functor for heterogeneous string lookup (C++20).
 struct OopStringHash {
+    /// Marker enabling heterogeneous lookup in compatible unordered containers.
     using is_transparent = void;
 
+    /// @brief Hash a string-like key through its `std::string_view` representation.
+    /// @tparam T Type constructible as `std::string_view`.
+    /// @param key String-like value to hash.
+    /// @return Standard-library hash of the key's character sequence.
     template <typename T> [[nodiscard]] std::size_t operator()(const T &key) const noexcept {
         return std::hash<std::string_view>{}(std::string_view(key));
     }
@@ -144,28 +155,31 @@ class OopIndex {
     using IfaceTable = std::unordered_map<std::string, InterfaceInfo>;
 
     /// @brief Access the mutable class table.
+    /// @return Mutable reference to the index-owned class map.
     [[nodiscard]] ClassTable &classes() noexcept {
         return classes_;
     }
 
     /// @brief Access the immutable class table.
+    /// @return Const reference to the index-owned class map.
     [[nodiscard]] const ClassTable &classes() const noexcept {
         return classes_;
     }
 
-    /// @brief Remove all indexed classes.
+    /// @brief Reset class and interface metadata and restart interface IDs.
+    /// @details Enum metadata is intentionally retained.
     void clear() noexcept {
         classes_.clear();
         interfacesByQname_.clear();
         nextInterfaceId_ = 0;
     }
 
-    /// @brief Find a class by name.
+    /// @brief Find a class by name using case-insensitive BASIC comparison.
     /// @param name Qualified or unqualified class name to search for.
     /// @return Pointer to the ClassInfo, or nullptr when not found.
     [[nodiscard]] ClassInfo *findClass(const std::string &name);
 
-    /// @brief Find a class by name (const overload).
+    /// @brief Find a class by name using case-insensitive BASIC comparison.
     /// @param name Qualified or unqualified class name to search for.
     /// @return Pointer to the ClassInfo, or nullptr when not found.
     [[nodiscard]] const ClassInfo *findClass(const std::string &name) const;
@@ -175,6 +189,8 @@ class OopIndex {
     // =========================================================================
 
     /// @brief Find a field in a class (case-insensitive).
+    /// @details Searches instance fields before static fields and does not
+    ///          inspect base classes.
     /// @param className Qualified class name.
     /// @param fieldName Field identifier to find.
     /// @return Pointer to field info or nullptr if not found.
@@ -182,6 +198,7 @@ class OopIndex {
                                                         std::string_view fieldName) const;
 
     /// @brief Find a field in a class or any of its base classes (case-insensitive).
+    /// @details Searches instance fields before static fields at each level.
     /// @param className Qualified class name to start search from.
     /// @param fieldName Field identifier to find.
     /// @return Pointer to field info or nullptr if not found in hierarchy.
@@ -192,14 +209,14 @@ class OopIndex {
     // Method Query API
     // =========================================================================
 
-    /// @brief Find a method in a class by name.
+    /// @brief Find a method declared directly by a class using BASIC casing rules.
     /// @param className Qualified class name.
     /// @param methodName Method identifier to find.
     /// @return Pointer to method info or nullptr if not found.
     [[nodiscard]] const ClassInfo::MethodInfo *findMethod(const std::string &className,
                                                           std::string_view methodName) const;
 
-    /// @brief Find a method in a class or any of its base classes.
+    /// @brief Find a method in a class or its first declaring base class.
     /// @param className Qualified class name to start search from.
     /// @param methodName Method identifier to find.
     /// @return Pointer to method info or nullptr if not found in hierarchy.
@@ -207,6 +224,7 @@ class OopIndex {
         const std::string &className, std::string_view methodName) const;
 
     /// @brief Access the interface table by qualified name.
+    /// @return Mutable reference to the index-owned interface map.
     [[nodiscard]] IfaceTable &interfacesByQname() noexcept {
         return interfacesByQname_;
     }
@@ -225,29 +243,41 @@ class OopIndex {
 
     /// @brief Metadata for an ENUM type: named integer constants.
     struct EnumInfo {
+        /// Declared enum name used as the table key.
         std::string name;
 
+        /// @brief One named integral constant in an enum declaration.
         struct Member {
+            /// Declared variant name.
             std::string name;
+            /// Integral value assigned by explicit or implicit enumeration.
             long long value{0};
         };
 
+        /// Variants in declaration order.
         std::vector<Member> members;
     };
 
+    /// Map from enum names to owned enum metadata.
     using EnumTable = std::unordered_map<std::string, EnumInfo, OopStringHash, std::equal_to<>>;
 
     /// @brief Access the enum table.
+    /// @return Mutable reference to the index-owned enum map.
     [[nodiscard]] EnumTable &enums() noexcept {
         return enums_;
     }
 
     /// @brief Access the immutable enum table.
+    /// @return Const reference to the index-owned enum map.
     [[nodiscard]] const EnumTable &enums() const noexcept {
         return enums_;
     }
 
     /// @brief Look up an enum variant value.
+    /// @details Enum and variant comparisons use the map's and loop's exact
+    ///          string equality; no BASIC case folding is performed here.
+    /// @param enumName Exact enum-table key.
+    /// @param variantName Exact member name to locate.
     /// @return The variant's integer value, or std::nullopt if not found.
     [[nodiscard]] std::optional<long long> findEnumVariant(const std::string &enumName,
                                                            const std::string &variantName) const {
@@ -262,9 +292,13 @@ class OopIndex {
     }
 
   private:
+    /// Owned class metadata keyed by stored class name.
     ClassTable classes_;
+    /// Owned interface metadata keyed by fully qualified interface name.
     IfaceTable interfacesByQname_;
+    /// Owned enum metadata; retained by @ref clear().
     EnumTable enums_;
+    /// Next interface identifier returned by @ref allocateInterfaceId().
     int nextInterfaceId_ = 0;
 };
 

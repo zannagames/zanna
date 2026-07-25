@@ -1,0 +1,184 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/tools/build_release_assets.zia
+// Purpose: Bakes deterministic first-party sprite, tile, icon, and UI atlases.
+// Key invariants:
+//   - Every output is derived only from in-tree procedural art and fixed colors.
+//   - Atlas cell sizes and ordering remain stable for package probes and tooling.
+// Ownership/Lifetime:
+//   - The process owns temporary Pixels buffers and releases them on exit.
+// Links: ../sprites.zia, ../player_animation.zia, ../assets/manifest.txt,
+//        ../docs/internals/testing.md
+//
+//===----------------------------------------------------------------------===//
+
+module build_release_assets;
+
+bind Zanna.Graphics;
+bind Zanna.Terminal as Terminal;
+bind "../config";
+bind "../palette";
+bind "../player_animation";
+bind "../sprites";
+
+/// @brief Save one mandatory PNG and report an actionable build diagnostic.
+///
+/// @param pixels Owned or borrowed output buffer to encode.
+/// @param path Project-relative destination whose parent directory already exists.
+/// @return True when PNG encoding and the filesystem write both succeed.
+func saveReleasePng(pixels: Pixels, path: String) -> Boolean {
+    if pixels == null {
+        Terminal.Say("ASSET BUILD FAILED: null buffer for " + path);
+        return false;
+    }
+    if pixels.SavePng(path) != 1 {
+        Terminal.Say("ASSET BUILD FAILED: cannot write " + path);
+        return false;
+    }
+    return true;
+}
+
+/// @brief Bake all 41 stable right-facing player frames into an 8x6 atlas.
+///
+/// Empty cells at the end remain transparent. The grid layout is compatible
+/// with `SpriteSheet.FromGrid(..., PLAYER_SPRITE_W, PLAYER_SPRITE_H)` and gives
+/// runtime code a first-party production path while preserving SpriteFactory as
+/// the exact deterministic missing-asset fallback.
+///
+/// @param sprites Borrowed fully constructed SpriteFactory.
+/// @return Newly allocated 448x432 release player atlas.
+func buildPlayerAtlas(sprites: SpriteFactory) -> Pixels {
+    var columns = 8;
+    var rows = 6;
+    var atlas = Pixels.New(columns * PLAYER_SPRITE_W,
+                           rows * PLAYER_SPRITE_H);
+    var frame = 0;
+    while frame < PLAYER_RELEASE_FRAME_COUNT {
+        var x = (frame % columns) * PLAYER_SPRITE_W;
+        var y = (frame / columns) * PLAYER_SPRITE_H;
+        atlas.Copy(x, y, sprites.getPlayerFrame(1, frame), 0, 0,
+                   PLAYER_SPRITE_W, PLAYER_SPRITE_H);
+        frame = frame + 1;
+    }
+    return atlas;
+}
+
+/// @brief Bake every stable gameplay tile id into an 8x8 inspection atlas.
+///
+/// Unused trailing cells remain transparent. Animated tiles use their authored
+/// base frame so tooling and package validation never depend on wall-clock time.
+///
+/// @param sprites Borrowed fully constructed SpriteFactory.
+/// @return Newly allocated 512x512 tile atlas covering ids 0..56.
+func buildTileAtlas(sprites: SpriteFactory) -> Pixels {
+    var columns = 8;
+    var atlas = Pixels.New(columns * TILE_SIZE, columns * TILE_SIZE);
+    var tile = 0;
+    while tile <= TILE_GRAPPLE_ANCHOR {
+        var x = (tile % columns) * TILE_SIZE;
+        var y = (tile / columns) * TILE_SIZE;
+        atlas.Copy(x, y, sprites.getTile(tile), 0, 0,
+                   TILE_SIZE, TILE_SIZE);
+        tile = tile + 1;
+    }
+    return atlas;
+}
+
+/// @brief Compose the release HUD icon strip from production pickup art.
+///
+/// Four retained pickup sprites are paired with hand-authored map, objective,
+/// radio, and simulator pictograms. Cell borders and cyan/gold accents match the
+/// game HUD so this atlas can be reused by downstream UI tooling.
+///
+/// @param sprites Borrowed fully constructed SpriteFactory.
+/// @return Newly allocated 512x64 icon atlas with eight 64px cells.
+func buildIconAtlas(sprites: SpriteFactory) -> Pixels {
+    var atlas = Pixels.New(512, 64);
+    atlas.FillColor(Color.RGB(4, 9, 18));
+    var cell = 0;
+    while cell < 8 {
+        atlas.DrawFrame(cell * 64, 0, 64, 64, Color.RGB(38, 76, 105));
+        cell = cell + 1;
+    }
+    var coin = sprites.getCoinFrame(0).Scale(42, 42);
+    var health = sprites.getHealthOrb().Scale(42, 42);
+    var speed = sprites.getSpeedPickup().Scale(42, 42);
+    var shield = sprites.getShieldPickup().Scale(42, 42);
+    atlas.Copy(11, 11, coin, 0, 0, 42, 42);
+    atlas.Copy(75, 11, health, 0, 0, 42, 42);
+    atlas.Copy(139, 11, speed, 0, 0, 42, 42);
+    atlas.Copy(203, 11, shield, 0, 0, 42, 42);
+
+    // Map node and routes.
+    atlas.DrawDisc(288, 32, 10, Color.RGB(65, 200, 225));
+    atlas.DrawLine(274, 18, 302, 46, Color.RGB(190, 225, 235));
+    atlas.DrawLine(274, 46, 302, 18, Color.RGB(190, 225, 235));
+    // Objective diamond.
+    atlas.DrawTriangle(352, 9, 375, 32, 352, 55, Color.RGB(245, 205, 95));
+    atlas.DrawTriangle(352, 9, 329, 32, 352, 55, Color.RGB(170, 125, 45));
+    // Radio rings.
+    atlas.DrawRing(416, 32, 19, Color.RGB(65, 200, 225));
+    atlas.DrawRing(416, 32, 10, Color.RGB(120, 235, 245));
+    atlas.DrawDisc(416, 32, 3, Color.RGB(245, 205, 95));
+    // Simulator crossed blades / energy traces.
+    atlas.DrawThickLine(470, 15, 498, 49, 4, Color.RGB(185, 95, 225));
+    atlas.DrawThickLine(498, 15, 470, 49, 4, Color.RGB(245, 205, 95));
+    return atlas;
+}
+
+/// @brief Build the authored translucent title-menu panel texture.
+///
+/// The texture contains only framing, circuit traces, and scan accents; text and
+/// focus remain live Canvas elements so accessibility scaling and semantic input
+/// prompts stay authoritative. Alpha is preserved by PNG output.
+///
+/// @return Newly allocated 440x330 UI texture.
+func buildTitlePanelTexture() -> Pixels {
+    var panel = Pixels.New(440, 330);
+    panel.DrawBox(0, 0, 440, 330, Color.RGBA(2, 7, 16, 205));
+    panel.DrawFrame(0, 0, 440, 330, Color.RGB(55, 120, 150));
+    panel.DrawFrame(4, 4, 432, 322, Color.RGB(20, 58, 82));
+    panel.DrawLine(24, 54, 416, 54, Color.RGB(46, 105, 132));
+    panel.DrawLine(24, 304, 416, 304, Color.RGB(46, 105, 132));
+    var y = 78;
+    while y < 288 {
+        panel.DrawLine(30, y, 52, y, Color.RGB(32, 76, 100));
+        panel.DrawLine(388, y, 410, y, Color.RGB(32, 76, 100));
+        y = y + 40;
+    }
+    panel.DrawLine(8, 36, 36, 8, Color.RGB(245, 175, 65));
+    panel.DrawLine(404, 8, 432, 36, Color.RGB(65, 200, 225));
+    panel.DrawDisc(22, 318, 3, Color.RGB(245, 205, 95));
+    panel.DrawDisc(418, 318, 3, Color.RGB(65, 200, 225));
+    return panel;
+}
+
+/// @brief Generate the complete deterministic release-art inventory.
+///
+/// @return Nothing. Prints `RESULT: ok` only when all four PNGs are written.
+func main() {
+    var palette = new Palette();
+    var sprites = new SpriteFactory(palette);
+    if saveReleasePng(buildPlayerAtlas(sprites),
+                      "assets/sprites/player-release-sheet.png") == false {
+        return;
+    }
+    if saveReleasePng(buildTileAtlas(sprites),
+                      "assets/tiles/biome-tile-atlas.png") == false {
+        return;
+    }
+    if saveReleasePng(buildIconAtlas(sprites),
+                      "assets/icons/hud-icon-atlas.png") == false {
+        return;
+    }
+    if saveReleasePng(buildTitlePanelTexture(),
+                      "assets/ui/title-menu-panel.png") == false {
+        return;
+    }
+    Terminal.Say("RESULT: ok");
+}

@@ -26,11 +26,21 @@
 //   - finalize() is idempotent but should be called exactly once.
 // Ownership/Lifetime:
 //   - Borrows MFunction*; the MFunction must outlive the FrameBuilder.
-// Links: codegen/aarch64/FrameBuilder.hpp,
-//        codegen/aarch64/RegAllocLinear.cpp (spill usage),
-//        codegen/aarch64/AsmEmitter.cpp (prologue/epilogue)
+// Links: src/codegen/aarch64/FrameBuilder.hpp,
+//        src/codegen/aarch64/RegAllocLinear.cpp (spill usage),
+//        src/codegen/aarch64/AsmEmitter.cpp (prologue/epilogue)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Implements validated AAPCS64 local, spill, and outgoing-area layout.
+ *
+ * Slot allocation rejects invalid size/alignment inputs and arithmetic
+ * overflow. Spill reuse is confined to one basic-block epoch because liveness
+ * instruction indices reset at block boundaries. Finalization derives a
+ * 16-byte-aligned frame size from both pre-existing and newly allocated slots.
+ */
 
 #include "FrameBuilder.hpp"
 
@@ -44,6 +54,8 @@ namespace zanna::codegen::aarch64 {
 namespace {
 
 /// @brief Check whether @p value is a positive power-of-two alignment.
+/// @param value Candidate alignment.
+/// @return `true` when @p value is positive with exactly one bit set.
 [[nodiscard]] bool isPositivePowerOfTwo(int value) noexcept {
     return value > 0 && (value & (value - 1)) == 0;
 }
@@ -53,6 +65,9 @@ namespace {
 ///          assume concrete positive sizes and power-of-two alignment. Rejecting
 ///          bad inputs here keeps frontend or lowering mistakes from becoming
 ///          silently clamped frame offsets.
+/// @param what Object kind included in an exception message.
+/// @param sizeBytes Required positive object size.
+/// @param alignBytes Required positive power-of-two alignment.
 /// @throws std::invalid_argument if the size or alignment is invalid.
 void validateStackObjectSpec(const char *what, int sizeBytes, int alignBytes) {
     if (sizeBytes <= 0)
@@ -64,6 +79,10 @@ void validateStackObjectSpec(const char *what, int sizeBytes, int alignBytes) {
 }
 
 /// @brief Add two frame byte counts with signed-int overflow checking.
+/// @param lhs Existing nonnegative byte count.
+/// @param rhs Nonnegative increment.
+/// @param what Quantity name included in an exception message.
+/// @return Representable sum.
 /// @throws std::overflow_error if the sum exceeds int range.
 [[nodiscard]] int checkedAddFrameBytes(int lhs, int rhs, const char *what) {
     if (rhs < 0)
@@ -75,6 +94,9 @@ void validateStackObjectSpec(const char *what, int sizeBytes, int alignBytes) {
 }
 
 /// @brief Return the positive extent represented by a negative FP-relative offset.
+/// @param offset Nonpositive FP-relative offset.
+/// @param what Object kind included in an exception message.
+/// @return Nonnegative distance below the frame pointer.
 /// @throws std::overflow_error if negating @p offset would overflow.
 [[nodiscard]] int positiveExtentFromOffset(int offset, const char *what) {
     if (offset > 0)

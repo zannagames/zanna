@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/StrengthReduce.cpp
+// File: src/codegen/aarch64/peephole/StrengthReduce.cpp
 // Purpose: Arithmetic identity elimination, strength reduction (mul/udiv/sdiv
 //          to shifts, div-by-constant to multiply-by-magic), cmp-zero-to-tst,
 //          and immediate folding for the AArch64 peephole optimizer.
@@ -19,6 +19,7 @@
 //     * SDIV by arbitrary constant -> SMULH + shifts (magic number multiply)
 //   - Remainder fusion covers:
 //     * UDIV+MSUB (UREM) by power-of-2 -> AND mask
+//     * SDIV+MSUB (SREM) by positive power-of-2 -> sign-corrected mask sequence
 //
 // Ownership/Lifetime:
 //   - Operates on mutable instructions owned by the caller.
@@ -42,10 +43,16 @@
 #include <intrin.h>
 #endif
 
+/// @file
+/// @brief Implements AArch64 arithmetic identities and constant strength reduction.
+
 namespace zanna::codegen::aarch64::peephole {
 namespace {
 
-/// @brief Check if a power of 2 and return the log2, or -1 if not.
+/// @brief Compute the base-two exponent of a positive signed power of two.
+/// @param value Candidate signed value.
+/// @return Exponent in `[0, 62]`, or `-1` when @p value is non-positive or is
+///         not a power of two.
 [[nodiscard]] int log2IfPowerOf2(long long value) noexcept {
     if (value <= 0)
         return -1;
@@ -96,6 +103,12 @@ using zanna::codegen::UnsignedMagicNumber;
 ///          a single-predecessor successor in registers with no in-block use
 ///          marking the carry. @p carriedExitRegs (MBasicBlock::carriedExitRegs,
 ///          sorted) supplies that invisible live-out set.
+/// @param instrs Block-local instruction sequence to scan.
+/// @param idx Index after which the scan begins.
+/// @param reg Physical register whose liveness is queried.
+/// @param carriedExitRegs Optional sorted allocator-provided live-through set.
+/// @return `true` when @p reg is used before redefinition or remains live at
+///         the end of the block.
 [[nodiscard]] bool regUsedAfterBeforeRedef(
     const std::vector<MInstr> &instrs,
     std::size_t idx,
@@ -121,7 +134,8 @@ using zanna::codegen::UnsignedMagicNumber;
 ///   floor(x / d) = (smulh(x, M) [+ x if needsAdd] >> S) + (x < 0 ? 1 : 0)
 ///
 /// @param d The divisor (must be >= 2).
-/// @return Magic number parameters, or empty if d is not suitable.
+/// @return Magic-number parameters. An unsuitable divisor is represented by
+///         the shared helper's zero multiplier sentinel.
 [[maybe_unused]] [[nodiscard]] MagicNumber computeSignedMagic(long long d) noexcept {
     return zanna::codegen::computeSignedMagic(d);
 }
@@ -140,6 +154,7 @@ using zanna::codegen::UnsignedMagicNumber;
 
 } // namespace
 
+/// @copydoc tryCmpZeroToTst
 bool tryCmpZeroToTst(MInstr &instr, PeepholeStats &stats) {
     if (instr.opc != MOpcode::CmpRI)
         return false;
@@ -154,6 +169,7 @@ bool tryCmpZeroToTst(MInstr &instr, PeepholeStats &stats) {
     return true;
 }
 
+/// @copydoc tryArithmeticIdentity
 bool tryArithmeticIdentity(MInstr &instr, PeepholeStats &stats) {
     switch (instr.opc) {
         case MOpcode::AddRI:
@@ -183,6 +199,7 @@ bool tryArithmeticIdentity(MInstr &instr, PeepholeStats &stats) {
     return false;
 }
 
+/// @copydoc tryStrengthReduction
 bool tryStrengthReduction(MInstr &instr, const RegConstMap &knownConsts, PeepholeStats &stats) {
     if (instr.opc != MOpcode::MulRRR)
         return false;
@@ -220,6 +237,7 @@ bool tryStrengthReduction(MInstr &instr, const RegConstMap &knownConsts, Peephol
     return true;
 }
 
+/// @copydoc tryDivStrengthReduction
 bool tryDivStrengthReduction(MInstr &instr, const RegConstMap &knownConsts, PeepholeStats &stats) {
     if (instr.opc != MOpcode::UDivRRR)
         return false;
@@ -240,6 +258,7 @@ bool tryDivStrengthReduction(MInstr &instr, const RegConstMap &knownConsts, Peep
     return true;
 }
 
+/// @copydoc tryUDivStrengthReduction
 bool tryUDivStrengthReduction(std::vector<MInstr> &instrs,
                               std::size_t idx,
                               const RegConstMap &knownConsts,
@@ -312,6 +331,7 @@ bool tryUDivStrengthReduction(std::vector<MInstr> &instrs,
     return true;
 }
 
+/// @copydoc tryImmediateFolding
 bool tryImmediateFolding(MInstr &instr, const RegConstMap &knownConsts, PeepholeStats &stats) {
     if (instr.ops.size() != 3)
         return false;
@@ -342,11 +362,13 @@ bool tryImmediateFolding(MInstr &instr, const RegConstMap &knownConsts, Peephole
     return true;
 }
 
+/// @copydoc tryFPArithmeticIdentity
 [[maybe_unused]] bool tryFPArithmeticIdentity([[maybe_unused]] MInstr &instr,
                                               [[maybe_unused]] PeepholeStats &stats) {
     return false;
 }
 
+/// @copydoc trySDivStrengthReduction
 bool trySDivStrengthReduction(std::vector<MInstr> &instrs,
                               std::size_t idx,
                               const RegConstMap &knownConsts,
@@ -490,6 +512,7 @@ bool trySDivStrengthReduction(std::vector<MInstr> &instrs,
     return true;
 }
 
+/// @copydoc tryRemainderFusion
 bool tryRemainderFusion(std::vector<MInstr> &instrs,
                         std::size_t idx,
                         const RegConstMap &knownConsts,

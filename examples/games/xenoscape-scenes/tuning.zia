@@ -1,0 +1,127 @@
+// =============================================================================
+// tuning.zia — Runtime-tunable game parameters (JSON-backed)
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — WHY A GAME NEEDS "TUNING"
+// ------------------------------------
+// Making a platformer *feel* right is mostly about tweaking numbers.
+// Gravity strength, jump impulse, friction, screen-shake magnitude,
+// how long coyote-time lasts, whether debug collision boxes are
+// visible — none of these are really "code", they're data.
+// Recompiling the whole game every time you bump friction from
+// 0.82 to 0.85 is a miserable way to iterate.
+//
+// This file wraps the Zanna runtime's `Zanna.Game.Config` class.
+// On startup, `RuntimeTuning.init(path)` loads a JSON file from
+// disk and stashes a handle.  Anywhere in the game code that wants
+// a tunable, it calls `getInt(path, default)` or `getBool(path,
+// default)` — if the JSON file has the key, that value wins;
+// otherwise the `default` gets returned.  That means:
+//
+//   * A shipped build can run with no JSON file at all and still
+//     work (every call returns its default).
+//   * Designers can drop a `xenoscape.runtime.json` next to the
+//     binary and change values without a rebuild.
+//   * Individual keys can appear or disappear over time without
+//     breaking old saves/configs — unknown keys are just ignored.
+//
+// WHERE THIS FITS
+// ---------------
+//     main.zia → Game
+//        │
+//        ▼
+//     game.zia                ──► creates a `RuntimeTuning` early
+//         │                        and passes it to everything
+//         │                        that has tunable behaviour.
+//         ▼
+//     player, enemy, physics, camera, particles, etc.
+//         └── call `tuning.getInt("camera.shake_peak_strength", 3)`
+//             at construction time or in `update`.
+//
+// KEY DESIGN CHOICES
+// ------------------
+//   1. Optional file.  `cfg` is `RuntimeConfig?` (nullable).  A
+//      missing file means every `getInt` / `getBool` falls
+//      through to defaults — no null-check ceremony at the call
+//      sites.
+//
+//   2. Dotted paths.  `"camera.shake_peak_strength"` is one key;
+//      `Zanna.Game.Config` handles the JSON navigation
+//      internally.  This lets the tuning file be organized like
+//      the code ("camera.*", "player.*", "enemy.*") without
+//      carrying that structure in Zia types.
+//
+//   3. Only two getters.  Integer and Boolean cover almost every
+//      platformer tunable.  When you need floats, the convention
+//      in this codebase is to store them as fixed-point integers
+//      (e.g. `gravity_times_256 = 384` meaning 1.5) and divide
+//      at read time.  If you need floats often, adding
+//      `getFloat` is a two-line change.
+//
+// HOW TO READ THIS FILE
+// ---------------------
+// One class, three tiny methods.  `init` loads, the two getters
+// dispatch through `cfg` if non-null else return the default.
+// That's it — the file is deliberately trivial because every
+// mechanic in the game reaches for it.
+//
+// =============================================================================
+
+module tuning;
+
+// `Zanna.Game.Config` is the runtime's JSON-config reader.
+// Aliased as `RuntimeConfig` so `RuntimeTuning` below doesn't
+// shadow `Config` (which is a different, save-slot-level config
+// in `./config.zia`).
+bind Zanna.Game.Config as RuntimeConfig;
+
+/// @brief Holds a loaded runtime-tunables JSON, if any.
+///
+/// One instance lives on `Game` and gets passed by reference to
+/// subsystems that have tunable numbers.  Zero-cost when no
+/// JSON file exists — every getter takes the `default` branch
+/// immediately.
+class RuntimeTuning {
+    // The loaded config.  `null` if the file was missing or
+    // couldn't be parsed — in that case every getter falls back
+    // to its default argument.
+    hide RuntimeConfig? cfg;
+
+    /// Did we successfully load a JSON file?  The Game's
+    /// boot-time log prints this so you can tell from the
+    /// terminal whether your tweaks are taking effect.
+    expose Boolean loaded;
+
+    /// @brief Load tunables from a JSON file at `path`.
+    ///
+    /// A missing or malformed file is not an error — `loaded`
+    /// stays false and every getter returns its default.  The
+    /// convention is to place the file next to the binary
+    /// (`xenoscape.runtime.json`) so `path` is usually just
+    /// that filename.
+    expose func init(path: String) {
+        cfg = RuntimeConfig.Load(path);
+        loaded = cfg != null;
+    }
+
+    /// @brief Look up an integer tunable; return `defaultValue`
+    ///        if missing.
+    ///
+    /// `path` uses JSON dot-notation ("camera.shake.peak").
+    /// The cost of a miss is one null-check plus returning the
+    /// already-in-register default, so it's safe to sprinkle
+    /// these calls even into per-frame code.
+    expose func getInt(path: String, defaultValue: Integer) -> Integer {
+        if cfg == null { return defaultValue; }
+        return cfg!.GetInt(path, defaultValue);
+    }
+
+    /// @brief Same, for booleans.  Used for feature toggles
+    ///        like `"debug.show_hitboxes"` or
+    ///        `"player.enable_double_jump"`.
+    expose func getBool(path: String, defaultValue: Boolean) -> Boolean {
+        if cfg == null { return defaultValue; }
+        return cfg!.GetBool(path, defaultValue);
+    }
+}

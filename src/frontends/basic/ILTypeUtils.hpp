@@ -5,16 +5,27 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/ILTypeUtils.hpp
+// File: src/frontends/basic/ILTypeUtils.hpp
 // Purpose: Helper utilities for IL type checking in BASIC lowering
-// Key invariants: All functions are constexpr-compatible and stateless
+// Key invariants: All conversion functions are stateless and non-allocating.
 // Ownership/Lifetime: Non-owning utilities operating on IL types
-// Links: docs/internals/codemap.md, docs/il/il-guide.md
+// Links: src/frontends/basic/ILTypeUtils.cpp,
+//        src/frontends/common/TypeUtils.hpp,
+//        docs/il/il-guide.md
 //
 // NOTE: This file re-exports the common type utilities for backwards
 //       compatibility. New code should use frontends/common/TypeUtils.hpp.
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ILTypeUtils.hpp
+ * @brief Re-exports shared IL predicates and declares BASIC-to-IL conversions.
+ *
+ * The compatibility namespace preserves older BASIC call sites, while
+ * type_conv provides the frontend-specific AST, field-layout, catalog-token,
+ * and BasicType mappings.
+ */
 
 #pragma once
 
@@ -26,7 +37,8 @@
 
 namespace il::frontends::basic::il_utils {
 
-// Re-export common type utilities for backwards compatibility
+/// @name Shared type-predicate compatibility exports
+/// @{
 using ::il::frontends::common::type_utils::areTypesCompatible;
 using ::il::frontends::common::type_utils::getFloatBitWidth;
 using ::il::frontends::common::type_utils::getIntegerBitWidth;
@@ -37,10 +49,11 @@ using ::il::frontends::common::type_utils::isNumericType;
 using ::il::frontends::common::type_utils::isPointerType;
 using ::il::frontends::common::type_utils::isSignedIntegerType;
 using ::il::frontends::common::type_utils::isVoidType;
+/// @}
 
 } // namespace il::frontends::basic::il_utils
 
-// Forward declare BASIC AST Type enum
+/// BASIC AST scalar type, defined by the AST node-forward header.
 namespace il::frontends::basic {
 enum class Type : std::uint8_t;
 }
@@ -96,11 +109,13 @@ namespace il::frontends::basic::type_conv {
 ///
 /// @details Maps string tokens from runtime property/method signatures
 ///          (e.g., "i64", "f64", "str", "obj", "obj<Zanna.Math.Vec3>") to their IL Type
-///          equivalents.
+///          equivalents. Surrounding ASCII whitespace and one trailing `?`
+///          optional marker are ignored. Matching is case-sensitive.
 ///          Used when processing runtime property types from the catalog.
 ///
 /// @param token Runtime scalar type string (e.g., "i64", "f64", "i1", "str", "obj").
-/// @return Corresponding IL Type. Defaults to I64 for unrecognized tokens.
+/// @return Corresponding IL Type. Object, pointer, sequence, and list tokens
+///         map to Ptr; void maps to Void; unrecognized tokens default to I64.
 [[nodiscard]] il::core::Type runtimeScalarToType(std::string_view token) noexcept;
 
 } // namespace il::frontends::basic::type_conv

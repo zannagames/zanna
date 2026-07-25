@@ -1,0 +1,170 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_camera_lighting_probe.zia
+// Purpose: Verify camera/lighting section authoring transactions and the
+//          workspace-only bounds overlay in the 2D scene editor.
+// Key invariants:
+//   - One Apply authors the complete section as one exact-undo transaction.
+//   - Range-invalid and partial-bounds drafts reject without mutation.
+//   - The bounds overlay renders without changing canonical content.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, document, and editor.
+// Links: zannastudio/src/ui/scene_camera_lighting_2d.zia,
+//        zannastudio/src/ui/scene_editor_2d.zia,
+//        docs/adr/0177-scene-camera-and-lighting-sections.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_camera_lighting_probe;
+
+// ============================================================================
+// MODULE: scene_camera_lighting_probe
+// PURPOSE: Pin the ADR 0177 section-authoring transaction contract.
+//
+// WHERE-THIS-FITS: RTSceneEditorTests pins runtime field validation. This
+//          probe pins the editor's group transaction, rejection, draft, and
+//          overlay behavior above it.
+//
+// TEACHING-NOTE: A section Apply is deliberately one history entry even when
+//          it changes several fields, so authors undo "the camera change",
+//          not eight field edits.
+// ============================================================================
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+
+bind Color = Zanna.Graphics.Color;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+func Fail(shell: app_shell.AppShell, reason: String) {
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func Rgb(pixel: Integer) -> Integer {
+    return pixel % 16777216;
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Camera Lighting Probe", 1120, 760);
+    var editor = new scene_editor_2d.SceneEditor2D();
+    editor.Setup(shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+
+    if editor.ReplaceScene(10, 8, 16) == false {
+        Fail(shell, "scene fixture");
+        return;
+    }
+
+    // Complete camera apply is one transaction with exact typed state.
+    var revision = editor.GetRevision();
+    var undoCount = editor.undoStack.count();
+    if editor.ApplyCameraSection(
+           "follow", "16", "16", "128", "96", "24", "16", "12", "100")
+       == false
+       or editor.GetRevision() != revision + 1
+       or editor.undoStack.count() != undoCount + 1
+       or editor.scene.CameraGetStr("mode", "") != "follow"
+       or editor.scene.CameraGetInt("maxX", -1) != 128
+       or editor.scene.CameraGetInt("followLerpPct", -1) != 12 {
+        Fail(shell, "camera apply transaction");
+        return;
+    }
+    var cameraContent = sceneDoc.content;
+    if Str.Contains(cameraContent, "\"camera\"") == false {
+        Fail(shell, "camera serialization");
+        return;
+    }
+
+    // Identical re-apply is a history-free no-op.
+    if editor.ApplyCameraSection(
+           "follow", "16", "16", "128", "96", "24", "16", "12", "100")
+       or sceneDoc.content != cameraContent
+       or editor.GetRevision() != revision + 1 {
+        Fail(shell, "camera no-op");
+        return;
+    }
+
+    // Partial bounds and out-of-range values reject without mutation.
+    if editor.ApplyCameraSection(
+           "follow", "16", "", "128", "96", "", "", "", "")
+       or editor.ApplyCameraSection(
+           "follow", "16", "16", "128", "96", "", "", "", "5000")
+       or editor.ApplyCameraSection(
+           "follow", "16", "16", "128", "96", "", "", "banana", "")
+       or sceneDoc.content != cameraContent {
+        Fail(shell, "camera rejection");
+        return;
+    }
+
+    // Blank drafts remove fields; undo restores the complete section.
+    if editor.ApplyCameraSection(
+           "", "16", "16", "128", "96", "", "", "", "") == false
+       or editor.scene.CameraFieldKind("mode") != ""
+       or editor.scene.CameraFieldKind("deadzoneWidth") != ""
+       or editor.scene.CameraGetInt("minX", -1) != 16
+       or editor.Undo() == false
+       or sceneDoc.content != cameraContent {
+        Fail(shell, "camera field removal or exact undo");
+        return;
+    }
+
+    // Lighting apply, range rejection, and clear.
+    revision = editor.GetRevision();
+    if editor.ApplyLightingSection("160", "4278854912", "220", "4294962892")
+       == false
+       or editor.scene.LightingGetInt("darkness", -1) != 160
+       or editor.GetRevision() != revision + 1 {
+        Fail(shell, "lighting apply transaction");
+        return;
+    }
+    var lightingContent = sceneDoc.content;
+    if editor.ApplyLightingSection("300", "4278854912", "220", "4294962892")
+       or editor.ApplyLightingSection("160", "4278854912", "9999", "0")
+       or sceneDoc.content != lightingContent {
+        Fail(shell, "lighting rejection");
+        return;
+    }
+    if editor.ClearLightingSection() == false
+       or Str.Contains(sceneDoc.content, "\"lighting\"")
+       or editor.ClearLightingSection() {
+        Fail(shell, "lighting clear");
+        return;
+    }
+
+    // The bounds overlay renders in the canvas without content changes.
+    var contentBefore = sceneDoc.content;
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if sceneDoc.content != contentBefore or editor.framePixels == null {
+        Fail(shell, "overlay render mutated content");
+        return;
+    }
+    // Sample the top edge of the bounds rectangle (world y = 16 -> cell 1).
+    var d = editor.displayCellSize;
+    var overlayPixel = Rgb(editor.framePixels.GetColor(2 * d, 1 * d));
+    if overlayPixel != Rgb(Color.RGB(233, 140, 220)) {
+        Fail(shell, "camera bounds overlay pixel " + overlayPixel);
+        return;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

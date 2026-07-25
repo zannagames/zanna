@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/MachOCodeSign.cpp
+// File: src/codegen/common/linker/MachOCodeSign.cpp
 // Purpose: Ad-hoc code signature generation for Mach-O arm64 executables.
 //          Builds an Apple-compatible embedded signature SuperBlob with
 //          SHA-256 page hashes.
@@ -21,6 +21,11 @@
 // Links: codegen/common/linker/MachOCodeSign.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file MachOCodeSign.cpp
+ * @brief Implements reproducible SHA-256 Mach-O ad-hoc signature blobs.
+ */
 
 #include "codegen/common/linker/MachOCodeSign.hpp"
 #include "codegen/common/linker/ExeWriterUtil.hpp"
@@ -53,22 +58,29 @@ static constexpr uint32_t kRequirementsSize = 12;
 static constexpr uint32_t kBlobWrapperSize = 8;
 static constexpr uint32_t kSuperBlobHeaderSize = 12 + 3 * 8;
 
+/// @brief Rotates a 32-bit SHA-256 word right.
+/// @param value Word to rotate.
+/// @param bits Rotation count in the range 1 through 31.
+/// @return Rotated word.
 inline uint32_t ror32(uint32_t value, unsigned bits) {
     return (value >> bits) | (value << (32 - bits));
 }
 
+/// @brief Reads an unaligned big-endian 32-bit word.
+/// @param p Pointer to at least four readable bytes.
+/// @return Host-order word.
 inline uint32_t readBE32(const uint8_t *p) {
     return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
            (static_cast<uint32_t>(p[2]) << 8) | static_cast<uint32_t>(p[3]);
 }
 
-/// Compute the SHA-256 digest of @p data into @p out (32 bytes).
-///
-/// Self-contained (FIPS 180-4) so the ad-hoc signature is byte-identical on
-/// every build host. macOS arm64 requires a *valid* code signature at exec, so
-/// the previous CommonCrypto-only path silently produced an all-zero, invalid
-/// signature when cross-building off a non-Apple host — the kernel then killed
-/// the binary at launch with a code-signing error.
+/// @brief Computes the SHA-256 digest of a byte range.
+/// @details This self-contained FIPS 180-4 implementation makes signatures
+///          byte-identical on every build host and avoids a host crypto
+///          dependency during cross-signing.
+/// @param data Pointer to @p len readable bytes.
+/// @param len Input length in bytes.
+/// @param out Caller-provided 32-byte digest buffer.
 void sha256(const uint8_t *data, size_t len, uint8_t out[32]) {
     static constexpr std::array<uint32_t, 64> k = {
         0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u,
@@ -91,6 +103,7 @@ void sha256(const uint8_t *data, size_t len, uint8_t out[32]) {
                      0x1f83d9abu,
                      0x5be0cd19u};
 
+    /// Expands and compresses one 64-byte SHA-256 message block.
     auto processBlock = [&](const uint8_t block[64]) {
         uint32_t w[64] = {};
         for (size_t i = 0; i < 16; ++i)
@@ -155,6 +168,9 @@ void sha256(const uint8_t *data, size_t len, uint8_t out[32]) {
     }
 }
 
+/// @brief Encodes a target page size for the CodeDirectory header.
+/// @param pageSize Nonzero power-of-two page size.
+/// @return Base-two logarithm; zero is treated as a one-byte page defensively.
 uint8_t pageSizeLog2(size_t pageSize) {
     uint8_t log2 = 0;
     size_t value = (pageSize == 0) ? 1 : pageSize;
@@ -165,11 +181,20 @@ uint8_t pageSizeLog2(size_t pageSize) {
     return log2;
 }
 
+/// @brief Computes the number of page hashes needed to cover the signed prefix.
+/// @param codeLimit Signed file-prefix length.
+/// @param pageSize Target page size; zero is treated as one for this calculation.
+/// @return Ceiling of `codeLimit / pageSize`, narrowed to the format field.
 uint32_t codeSlotCount(size_t codeLimit, size_t pageSize) {
     const size_t effectivePageSize = (pageSize == 0) ? 1 : pageSize;
     return static_cast<uint32_t>((codeLimit + effectivePageSize - 1) / effectivePageSize);
 }
 
+/// @brief Computes the serialized CodeDirectory size.
+/// @param codeLimit Signed file-prefix length.
+/// @param identifier CodeDirectory identifier.
+/// @param pageSize Target code-slot page size.
+/// @return Header, identifier, special-slot, and code-slot byte count.
 uint32_t codeDirectorySize(size_t codeLimit, const std::string &identifier, size_t pageSize) {
     const uint32_t identLen = static_cast<uint32_t>(identifier.size() + 1);
     const uint32_t nCodeSlots = codeSlotCount(codeLimit, pageSize);
@@ -179,11 +204,13 @@ uint32_t codeDirectorySize(size_t codeLimit, const std::string &identifier, size
 
 } // anonymous namespace
 
+/// @copydoc estimateCodeSignatureSize(size_t, const std::string &, size_t)
 size_t estimateCodeSignatureSize(size_t codeLimit, const std::string &identifier, size_t pageSize) {
     return kSuperBlobHeaderSize + codeDirectorySize(codeLimit, identifier, pageSize) +
            kRequirementsSize + kBlobWrapperSize;
 }
 
+/// @copydoc buildCodeSignature(const std::vector<uint8_t> &, size_t, const std::string &, uint64_t, uint64_t, size_t)
 std::vector<uint8_t> buildCodeSignature(const std::vector<uint8_t> &file,
                                         size_t codeLimit,
                                         const std::string &identifier,

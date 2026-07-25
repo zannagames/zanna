@@ -1,0 +1,185 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_schema_migration_probe.zia
+// Purpose: Verify bounded schema-migration scans, per-file transactional
+//          application, refusals, and version-2 field authoring writes.
+// Key invariants:
+//   - Scans count exact-kind matches and list 3D scenes as manual refusals.
+//   - Apply renames/retypes matched values and refuses lossy conversions.
+//   - A file changed after the scan is refused byte-identically.
+//   - UpdateField writes enum choices and the lowest required schema version.
+// Ownership/Lifetime:
+//   - The probe owns one temporary fixture directory it removes on exit.
+// Links: zannastudio/src/ui/scene_schema_migration.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia,
+//        docs/adr/0178-scene-component-schema-v2-enum-asset-fields.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_schema_migration_probe;
+
+// ============================================================================
+// MODULE: scene_schema_migration_probe
+// PURPOSE: Pin the ADR 0178 migration and version-sync contracts without a
+//          display: this is pure file and value logic.
+//
+// WHERE-THIS-FITS: scene_component_schema_probe pins v2 parsing;
+//          scene_component_authoring_probe pins structured file edits.
+//
+// TEACHING-NOTE: The stale-file case rewrites a scene between Scan and Apply,
+//          proving match counts are never trusted across a changed mtime.
+// ============================================================================
+
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_schema_migration";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+final FIXTURE_ROOT: String = "__schema_migration_probe";
+
+func fail(reason: String) {
+    try { Dir.RemoveAll(FIXTURE_ROOT); } catch {}
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func WriteScene(path: String, key: String, values: Integer) -> Boolean {
+    var scene = SceneDocument.New(4, 4, 16, 16);
+    var index = 0;
+    while index < values {
+        var objectIndex = scene.AddObject(
+            "enemy", "e" + index, index * 16, 16);
+        scene.ObjectSetInt(objectIndex, key, 10 + index);
+        index = index + 1;
+    }
+    var decoy = scene.AddObject("enemy", "decoy", 48, 48);
+    scene.ObjectSetStr(decoy, key, "wrong-kind");
+    return scene.Save(path);
+}
+
+func main() {
+    Dir.MakeAll(Path.Join(FIXTURE_ROOT, "nested"));
+    var sceneA = Path.Join(FIXTURE_ROOT, "region-a.scene");
+    var sceneB = Path.Join(FIXTURE_ROOT, Path.Join("nested", "region-b.level"));
+    var stale = Path.Join(FIXTURE_ROOT, "stale.scene");
+    var vscn = Path.Join(FIXTURE_ROOT, "world.vscn");
+    if WriteScene(sceneA, "enemy.hp", 2) == false
+       or WriteScene(sceneB, "enemy.hp", 1) == false
+       or WriteScene(stale, "enemy.hp", 1) == false
+    {
+        fail("fixture scenes");
+        return;
+    }
+    File.WriteAllText(vscn, "{}");
+
+    var plan = scene_schema_migration.Scan(
+        FIXTURE_ROOT, "enemy.hp", "int");
+    if plan.error != "" or plan.MatchedFiles() != 3 or plan.truncated {
+        fail("scan matches: " + plan.error);
+        return;
+    }
+    var sawVscnRefusal = false;
+    var index = 0;
+    while index < plan.records.count() {
+        var record = plan.records.get(index);
+        if Str.EndsWith(record.path, ".vscn") and record.reason != "" {
+            sawVscnRefusal = true;
+        }
+        index = index + 1;
+    }
+    if sawVscnRefusal == false {
+        fail("3D scenes were not reported as manual refusals");
+        return;
+    }
+
+    // Lossy conversions refuse before touching any file.
+    var lossy = scene_schema_migration.Apply(
+        "enemy.hp", "int", "enemy.hp", "float", plan);
+    if lossy.error == "" {
+        fail("a lossy int-to-bool conversion was accepted");
+        return;
+    }
+
+    // Rewrite one file after the scan so its application must refuse: even
+    // on coarse-mtime filesystems the match-count recheck catches the change.
+    if WriteScene(stale, "enemy.hp", 2) == false {
+        fail("stale fixture rewrite");
+        return;
+    }
+
+    var applied = scene_schema_migration.Apply(
+        "enemy.hp", "int", "enemy.health", "string", plan);
+    if applied.error != "" {
+        fail("apply error: " + applied.error);
+        return;
+    }
+    var migrated = 0;
+    var refusedStale = false;
+    index = 0;
+    while index < applied.records.count() {
+        var record = applied.records.get(index);
+        if record.applied { migrated = migrated + 1; }
+        if Str.EndsWith(record.path, "stale.scene")
+           and record.applied == false and record.reason != "" {
+            refusedStale = true;
+        }
+        index = index + 1;
+    }
+    if migrated != 2 or refusedStale == false {
+        fail("apply outcome: migrated=" + migrated);
+        return;
+    }
+
+    var checkResult = SceneDocument.LoadResult(sceneA);
+    if checkResult.IsOk == false {
+        fail("migrated scene reload");
+        return;
+    }
+    var check = checkResult.Unwrap() as SceneDocument;
+    if check.ObjectPropertyKind(0, "enemy.health") != "string"
+       or check.ObjectGetStr(0, "enemy.health", "") != "10"
+       or check.ObjectHas(0, "enemy.hp")
+       or check.ObjectGetStr(2, "enemy.hp", "") != "wrong-kind" {
+        fail("migrated values were not converted exactly");
+        return;
+    }
+
+    // UpdateField writes enum choices and the lowest required version.
+    var v1Text =
+        "{\n  \"version\": 1,\n  \"components\": [\n    {\n"
+        + "      \"name\": \"spawn\",\n      \"target\": \"both\",\n"
+        + "      \"fields\": [\n        {\"key\": \"spawn.kind\", "
+        + "\"type\": \"string\", \"default\": \"walker\"}\n      ]\n"
+        + "    }\n  ]\n}\n";
+    var toEnum = scene_component_authoring.UpdateField(
+        v1Text, "spawn", "spawn.kind", "spawn.kind", "Kind",
+        "enum", "ranged", "", "walker, ranged, elite");
+    if toEnum.ok == false
+       or Str.Contains(toEnum.content, "\"version\": 2") == false
+       or Str.Contains(toEnum.content, "\"choices\"") == false
+       or Str.Contains(toEnum.content, "\"ranged\"") == false {
+        fail("enum authoring did not write choices and version 2");
+        return;
+    }
+    var backToString = scene_component_authoring.UpdateField(
+        toEnum.content, "spawn", "spawn.kind", "spawn.kind", "Kind",
+        "string", "walker", "", "");
+    if backToString.ok == false
+       or Str.Contains(backToString.content, "\"version\": 1") == false
+       or Str.Contains(backToString.content, "\"choices\"") {
+        fail("retype did not drop choices and restore version 1");
+        return;
+    }
+
+    try { Dir.RemoveAll(FIXTURE_ROOT); } catch {}
+    Terminal.Say("RESULT: ok");
+}

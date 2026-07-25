@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/Relocation.hpp
+// File: src/codegen/common/objfile/Relocation.hpp
 // Purpose: Architecture-agnostic relocation types and structures for the
 //          native assembler. Each object file writer (ELF, Mach-O, COFF)
 //          maps these to format-specific relocation codes.
@@ -18,6 +18,15 @@
 // Links: codegen/common/objfile/CodeSection.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file Relocation.hpp
+ * @brief Defines format-neutral relocation kinds and encoder relocation records.
+ *
+ * Object writers map this compact semantic representation to ELF RELA,
+ * Mach-O REL, or COFF fixups while retaining optional exact section-offset
+ * identity for unambiguous cross-section references.
+ */
 
 #pragma once
 

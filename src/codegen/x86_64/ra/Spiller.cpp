@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/ra/Spiller.cpp
+// File: src/codegen/x86_64/ra/Spiller.cpp
 // Purpose: Implement spill slot orchestration for the linear-scan allocator.
 //          Provides helpers for reserving stack slots and emitting loads/stores
 //          around Machine IR instructions when register pressure overflows.
@@ -14,9 +14,9 @@
 //   - Spill stores always precede instruction execution; loads precede uses.
 // Ownership/Lifetime:
 //   - Mutates AllocationResult to reflect spilled registers; does not own MIR.
-// Links: codegen/x86_64/ra/Spiller.hpp,
-//        codegen/x86_64/ra/Allocator.hpp,
-//        codegen/x86_64/RegAllocLinear.hpp
+// Links: src/codegen/x86_64/ra/Spiller.hpp,
+//        src/codegen/x86_64/ra/Allocator.hpp,
+//        src/codegen/x86_64/RegAllocLinear.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -60,8 +60,10 @@ namespace {
 ///          This enables aggressive slot reuse, reducing stack frame size.
 /// @param lifetimes Vector of slot lifetimes to search.
 /// @param start Start of the new value's live interval.
-/// @param end End of the new value's live interval.
+/// @param end Exclusive end of the new interval; currently unnecessary for the
+///            one-sided non-overlap test.
 /// @return Index of a reusable slot, or -1 if none found.
+/// @note The search does not reserve or update the returned slot.
 int Spiller::findReusableSlot(std::vector<SlotLifetime> &lifetimes,
                               std::size_t start,
                               std::size_t end) const {
@@ -85,6 +87,8 @@ int Spiller::findReusableSlot(std::vector<SlotLifetime> &lifetimes,
 ///          return early, ensuring each value reuses the same slot.
 /// @param cls Register class whose spill storage is being provisioned.
 /// @param plan Spill descriptor that records slot ownership.
+/// @post A previously unassigned plan owns a permanent class-specific slot and
+///       has needsSpill set. An assigned plan is unchanged.
 void Spiller::ensureSpillSlot(RegClass cls, SpillPlan &plan) {
     if (plan.slot >= 0) {
         return;
@@ -103,16 +107,15 @@ void Spiller::ensureSpillSlot(RegClass cls, SpillPlan &plan) {
 }
 
 /// @brief Assign a spill slot with lifetime-based reuse analysis.
-/// @details This is the optimized version of ensureSpillSlot that attempts to
-///          reuse existing slots with non-overlapping lifetimes. If a spilled
-///          value's lifetime [start, end) doesn't overlap with an existing slot's
-///          lifetime, we can reuse that slot instead of allocating a new one.
-///          This optimization can reduce stack frame size by 20-40% for functions
-///          with high register pressure.
+/// @details Reuses the first inactive slot or one whose previous assignment
+///          ends no later than @p start. Otherwise a new slot is appended.
+///          Existing assignments in @p plan return without changing the plan
+///          or the recorded lifetime.
 /// @param cls Register class for the spill slot.
 /// @param plan Spill plan to receive the slot assignment.
 /// @param start Start of the live interval (instruction index).
 /// @param end End of the live interval (instruction index, exclusive).
+/// @post A newly assigned slot is marked in use with interval `[start, end)`.
 void Spiller::ensureSpillSlotWithReuse(RegClass cls,
                                        SpillPlan &plan,
                                        std::size_t start,
@@ -144,8 +147,10 @@ void Spiller::ensureSpillSlotWithReuse(RegClass cls,
 /// @brief Mark a spill slot as no longer in use.
 /// @details Called when a spilled value's live interval ends, allowing the
 ///          slot to be reused by future spills with non-overlapping lifetimes.
+///          Negative and out-of-range indices are harmless no-ops.
 /// @param cls Register class of the slot.
 /// @param slot Slot index to release.
+/// @post A valid selected slot is marked not in use.
 void Spiller::releaseSlot(RegClass cls, int slot) {
     if (slot < 0) {
         return;
@@ -160,13 +165,16 @@ void Spiller::releaseSlot(RegClass cls, int slot) {
 
 /// @brief Emit a load instruction from a spill slot into a register.
 /// @details The opcode chosen depends on the register class: general-purpose
-///          registers use @c MOVrr while floating-point registers rely on
+///          registers use @c MOVmr while floating-point registers rely on
 ///          @c MOVSDmr.  The resulting instruction is ready to be inserted into
 ///          the MIR stream without additional operands.
 /// @param cls Register class to load.
 /// @param dst Physical register receiving the value.
 /// @param plan Spill plan describing the source slot.
 /// @return Machine instruction that reloads the spilled value.
+/// @throws std::out_of_range If the plan has a negative slot.
+/// @throws std::overflow_error If placeholder encoding exceeds its reserved
+///         range or the int32 displacement range.
 MInstr Spiller::makeLoad(RegClass cls, PhysReg dst, const SpillPlan &plan) const {
     if (cls == RegClass::GPR) {
         return MInstr::make(MOpcode::MOVmr,
@@ -184,6 +192,9 @@ MInstr Spiller::makeLoad(RegClass cls, PhysReg dst, const SpillPlan &plan) const
 /// @param plan Spill plan containing the destination slot.
 /// @param src Physical register providing the value to spill.
 /// @return Machine instruction that writes the register to the stack slot.
+/// @throws std::out_of_range If the plan has a negative slot.
+/// @throws std::overflow_error If placeholder encoding exceeds its reserved
+///         range or the int32 displacement range.
 MInstr Spiller::makeStore(RegClass cls, const SpillPlan &plan, PhysReg src) const {
     if (cls == RegClass::GPR) {
         return MInstr::make(MOpcode::MOVrm,
@@ -205,6 +216,9 @@ MInstr Spiller::makeStore(RegClass cls, const SpillPlan &plan, PhysReg src) cons
 /// @param pool Register pool receiving the freed physical register.
 /// @param prefix Instruction buffer that receives the spill store.
 /// @param result Global allocation result map updated to forget @p vreg.
+/// @pre @p alloc is physically resident and its @c phys field belongs to @p cls.
+/// @post The spill store is appended, the physical register is returned to
+///       @p pool, and @p alloc is marked nonresident but spill-backed.
 void Spiller::spillValue(RegClass cls,
                          uint16_t vreg,
                          VirtualAllocation &alloc,
@@ -234,6 +248,9 @@ void Spiller::spillValue(RegClass cls,
 /// @param result Global allocation result map updated to forget @p vreg.
 /// @param intervalStart Start of the value's live interval.
 /// @param intervalEnd End of the value's live interval.
+/// @pre @p alloc is physically resident and its @c phys field belongs to @p cls.
+/// @post The spill store is appended, the physical register is returned to
+///       @p pool, and @p alloc is marked nonresident but spill-backed.
 void Spiller::spillValueWithReuse(RegClass cls,
                                   uint16_t vreg,
                                   VirtualAllocation &alloc,
@@ -261,6 +278,9 @@ void Spiller::spillValueWithReuse(RegClass cls,
 /// @param cls  Register class owning the slot.
 /// @param slot Zero-based per-class slot index to reference.
 /// @return Memory operand pointing to the spill slot.
+/// @throws std::out_of_range If @p slot is negative.
+/// @throws std::overflow_error If @p slot exceeds its reserved class range or
+///         its byte displacement cannot be represented by int32.
 Operand Spiller::makeFrameOperand(RegClass cls, int slot) const {
     if (slot < 0) {
         throw std::out_of_range("x86 spiller: negative spill slot index");

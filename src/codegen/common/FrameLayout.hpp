@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/FrameLayout.hpp
+// File: src/codegen/common/FrameLayout.hpp
 // Purpose: Abstract interface for stack frame layout management shared between
 //          backend register allocators. Both x86-64 (FrameInfo + assignSpillSlots)
 //          and AArch64 (FrameBuilder) implement this interface to provide
@@ -27,6 +27,9 @@
 
 #include <cstdint>
 
+/// @file
+/// @brief Declares the backend-neutral stack-frame allocation interface.
+
 namespace zanna::codegen::common {
 
 /// @brief Abstract interface for stack frame layout management.
@@ -44,6 +47,7 @@ namespace zanna::codegen::common {
 ///          to manage spill slots without knowing which backend is active.
 class FrameLayout {
   public:
+    /// @brief Destroy a frame-layout implementation through the common interface.
     virtual ~FrameLayout() = default;
 
     /// @brief Allocate a local variable slot for an IL temporary.
@@ -66,6 +70,7 @@ class FrameLayout {
 
     /// @brief Reserve space for outgoing arguments passed on the stack.
     /// @param bytes Maximum bytes needed for any call's stack arguments.
+    /// @post A later smaller request must not reduce the effective reservation.
     virtual void setMaxOutgoing(int bytes) = 0;
 
     /// @brief Finalize frame layout and compute the total frame size.
@@ -73,6 +78,7 @@ class FrameLayout {
     virtual void finalize() = 0;
 
     /// @brief Get the total frame size in bytes (valid only after finalize()).
+    /// @return Final aligned frame byte count.
     virtual int totalBytes() const = 0;
 };
 

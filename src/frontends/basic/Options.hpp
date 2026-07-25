@@ -38,6 +38,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file Options.hpp
+/// @brief Declares process-wide feature switches for the BASIC frontend.
+/// @details Each option has independent relaxed-atomic storage. Concurrent
+///          access is data-race-free but does not synchronize any other state,
+///          so callers should establish a stable configuration before starting
+///          concurrent compilation work.
+
 #pragma once
 
 namespace il::frontends::basic {
@@ -71,9 +78,11 @@ struct FrontendOptions {
     ///          prohibited. When disabled, the legacy behavior blocks USING and
     ///          references to 'Zanna'.
     /// @note Thread-safe: uses atomic load with relaxed ordering.
+    /// @return Current process-wide flag value.
     static bool enableRuntimeNamespaces();
 
     /// @brief Set @ref enableRuntimeNamespaces() for this process.
+    /// @param on New process-wide flag value.
     /// @note Thread-safe: uses atomic store with relaxed ordering.
     static void setEnableRuntimeNamespaces(bool on);
 
@@ -81,9 +90,11 @@ struct FrontendOptions {
     /// @details When enabled, selected NEW expressions for built-in types may
     ///          be lowered directly to runtime helpers (catalog-only types).
     /// @note Thread-safe: uses atomic load with relaxed ordering.
+    /// @return Current process-wide flag value.
     static bool enableRuntimeTypeBridging();
 
     /// @brief Set @ref enableRuntimeTypeBridging() for this process.
+    /// @param on New process-wide flag value.
     /// @note Thread-safe: uses atomic store with relaxed ordering.
     static void setEnableRuntimeTypeBridging(bool on);
 
@@ -91,9 +102,11 @@ struct FrontendOptions {
     /// @details When enabled, the parser accepts identifiers bound via CONST
     ///          (integer/string) and folded CHR/CHR$ calls as CASE labels.
     /// @note Thread-safe: uses atomic load with relaxed ordering.
+    /// @return Current process-wide flag value.
     static bool enableSelectCaseConstLabels();
 
     /// @brief Set @ref enableSelectCaseConstLabels() for this process.
+    /// @param on New process-wide flag value.
     /// @note Thread-safe: uses atomic store with relaxed ordering.
     static void setEnableSelectCaseConstLabels(bool on);
 };

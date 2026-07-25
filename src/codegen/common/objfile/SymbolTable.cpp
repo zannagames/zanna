@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/SymbolTable.cpp
+// File: src/codegen/common/objfile/SymbolTable.cpp
 // Purpose: Implementation of symbol table for object file generation.
 // Key invariants:
 //   - Index 0 is always the null entry
@@ -16,6 +16,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file SymbolTable.cpp
+ * @brief Implements encoder symbol insertion, definition replacement, and lookup.
+ */
+
 #include "codegen/common/objfile/SymbolTable.hpp"
 
 #include <limits>
@@ -24,11 +29,13 @@
 
 namespace zanna::codegen::objfile {
 
+/// @copydoc SymbolTable::SymbolTable
 SymbolTable::SymbolTable() {
     // Index 0 is the null symbol (ELF requirement, harmless for other formats).
     symbols_.push_back(Symbol{"", SymbolBinding::Local, SymbolSection::Undefined, 0, 0});
 }
 
+/// @copydoc SymbolTable::add
 uint32_t SymbolTable::add(Symbol sym) {
     if (symbols_.size() >= std::numeric_limits<uint32_t>::max())
         throw std::length_error("SymbolTable index exceeds 32-bit object-file field range");
@@ -79,6 +86,7 @@ uint32_t SymbolTable::add(Symbol sym) {
     return index;
 }
 
+/// @copydoc SymbolTable::findOrAdd
 uint32_t SymbolTable::findOrAdd(const std::string &name) {
     if (ambiguousNames_.count(name) != 0) {
         throw std::invalid_argument("SymbolTable: ambiguous symbol name '" + name + "'");
@@ -91,6 +99,7 @@ uint32_t SymbolTable::findOrAdd(const std::string &name) {
     return add(Symbol{name, SymbolBinding::External, SymbolSection::Undefined, 0, 0});
 }
 
+/// @copydoc SymbolTable::find
 uint32_t SymbolTable::find(const std::string &name) const {
     if (ambiguousNames_.count(name) != 0)
         return 0;
@@ -100,6 +109,7 @@ uint32_t SymbolTable::find(const std::string &name) const {
     return it->second;
 }
 
+/// @copydoc SymbolTable::reserve
 void SymbolTable::reserve(size_t totalSymbols) {
     if (symbols_.capacity() < totalSymbols)
         symbols_.reserve(totalSymbols);

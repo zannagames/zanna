@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/StringDedup.cpp
+// File: src/codegen/common/linker/StringDedup.cpp
 // Purpose: Implements cross-module string deduplication for the native linker.
 //          Operates between deadStrip() and mergeSections() in the link pipeline.
 // Key invariants:
@@ -16,6 +16,17 @@
 // Links: codegen/common/linker/StringDedup.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file StringDedup.cpp
+ * @brief Implements safe cross-object deduplication of C string literals.
+ *
+ * The pass discovers symbolized, NUL-terminated strings only in sections
+ * explicitly identified as C-string storage. Duplicate groups are redirected
+ * through collision-free synthetic globals, after which fully understood
+ * sections may be compacted without invalidating relocations or unrelated
+ * symbols.
+ */
 
 #include "codegen/common/linker/StringDedup.hpp"
 
@@ -33,14 +44,22 @@
 
 namespace zanna::codegen::linker {
 
+/// @copydoc zanna::codegen::linker::deduplicateStrings
 size_t deduplicateStrings(std::vector<ObjFile> &allObjects,
                           std::unordered_map<std::string, GlobalSymEntry> &globalSyms) {
+    /// Location and compaction state for one candidate string symbol.
     struct SymLoc {
+        ///< Index of the object containing the string.
         size_t objIdx = 0;
+        ///< Index of the string's symbol-table entry.
         size_t symIdx = 0;
+        ///< One-based index of the containing input section.
         uint32_t secIdx = 0;
+        ///< Byte offset before any section compaction.
         size_t originalOffset = 0;
+        ///< String byte count including its NUL terminator.
         size_t strLen = 0;
+        ///< Whether this occurrence remains in the compacted section.
         bool keepBytes = true;
     };
 
@@ -55,6 +74,7 @@ size_t deduplicateStrings(std::vector<ObjFile> &allObjects,
         }
     }
 
+    /// Generate and reserve the next collision-free synthetic global name.
     auto makeDedupSymbolName = [&](size_t &counter) -> std::string {
         for (;;) {
             std::string name = "__zanna_dedup_str_" + std::to_string(counter++);
@@ -149,6 +169,8 @@ size_t deduplicateStrings(std::vector<ObjFile> &allObjects,
     contentKeys.reserve(contentMap.size());
     for (const auto &entry : contentMap)
         contentKeys.push_back(&entry.first);
+    /// Sort content keys by byte value so synthetic naming is deterministic
+    /// despite unordered-map iteration order.
     std::sort(contentKeys.begin(), contentKeys.end(), [](const auto *lhs, const auto *rhs) {
         return *lhs < *rhs;
     });
@@ -197,6 +219,8 @@ size_t deduplicateStrings(std::vector<ObjFile> &allObjects,
     sectionKeys.reserve(sectionMap.size());
     for (const auto &entry : sectionMap)
         sectionKeys.push_back(entry.first);
+    /// Sort candidate sections by object and section index for deterministic
+    /// compaction and symbol-table updates.
     std::sort(sectionKeys.begin(),
               sectionKeys.end(),
               [](const InputSectionKey &a, const InputSectionKey &b) {
@@ -235,6 +259,7 @@ size_t deduplicateStrings(std::vector<ObjFile> &allObjects,
             continue;
 
         std::vector<size_t> sortedByOffset = locIndices;
+        /// Restore the physical string order within this input section.
         std::sort(sortedByOffset.begin(), sortedByOffset.end(), [&](size_t aIdx, size_t bIdx) {
             return locations[aIdx].originalOffset < locations[bIdx].originalOffset;
         });

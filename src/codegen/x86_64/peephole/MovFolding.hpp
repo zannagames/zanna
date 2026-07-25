@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/peephole/MovFolding.hpp
+// File: src/codegen/x86_64/peephole/MovFolding.hpp
 // Purpose: Declarations for move folding peephole sub-passes: consecutive
 //          register-to-register move coalescing.
 // Key invariants:
@@ -14,9 +14,9 @@
 //   - Argument registers near calls are not folded to avoid ABI violations.
 // Ownership/Lifetime:
 //   - Operates on mutable instructions owned by the caller.
-// Links: codegen/x86_64/peephole/MovFolding.cpp,
-//        codegen/x86_64/peephole/PeepholeCommon.hpp,
-//        codegen/x86_64/Peephole.hpp
+// Links: src/codegen/x86_64/peephole/MovFolding.cpp,
+//        src/codegen/x86_64/peephole/PeepholeCommon.hpp,
+//        src/codegen/x86_64/Peephole.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,6 +27,9 @@
 
 #include <cstddef>
 #include <vector>
+
+/// @file
+/// @brief Declares adjacent physical-register move-chain folding.
 
 namespace zanna::codegen::x64::peephole {
 
@@ -40,7 +43,8 @@ namespace zanna::codegen::x64::peephole {
 /// @param instrs Instruction list being scanned (mutated in place).
 /// @param idx    Index of the first move in the candidate pair.
 /// @param stats  Peephole statistics counter (incremented on success).
-/// @return True if the fold was applied at @p idx.
+/// @return @c true if the fold was applied at @p idx; @c false for an
+///         out-of-range or unsafe candidate.
 [[nodiscard]] bool tryFoldConsecutiveMoves(std::vector<MInstr> &instrs,
                                            std::size_t idx,
                                            PeepholeStats &stats);
@@ -48,9 +52,10 @@ namespace zanna::codegen::x64::peephole {
 /// @brief Fold all adjacent move pairs in @p instrs using one suffix liveness scan.
 /// @details Equivalent to applying @ref tryFoldConsecutiveMoves across the
 ///          block, but avoids rescanning the tail of long blocks for each
-///          candidate pair. Branching and fallthrough blocks conservatively
-///          seed every physical register as live at exit because the post-RA
-///          block-local pass does not own a successor liveness map.
+///          candidate pair by precomputing suffix use-before-definition and
+///          call-before-definition masks. Branching and fallthrough blocks
+///          conservatively seed every physical register as live at exit because
+///          the post-RA block-local pass does not own a successor liveness map.
 /// @param instrs Instruction list being scanned (mutated in place).
 /// @param stats  Peephole statistics counter (incremented on each fold).
 /// @return Number of folds applied.

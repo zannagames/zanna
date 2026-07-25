@@ -30,12 +30,13 @@
 // 2. Syntax Analysis: Parse tokens into AST
 // 3. Semantic Analysis: Validate AST, resolve symbols, check types
 // 4. IL Generation: Lower AST to IL instructions
-// 5. Module Finalization: Return IL module with diagnostics
+// 5. IL Verification: Verify the lowered module and forward diagnostics
+// 6. Module Finalization: Return IL module with diagnostics
 //
 // Compilation Options:
 // - Bounds checking: Enable/disable runtime array bounds checks (default: off)
-// - Debug info: Control source location preservation in IL (future)
-// - Optimization level: Configure lowering optimizations (future)
+// - Diagnostic dumps: Emit tokens, AST, lowered IL, or phase timings
+// - Unsafe pointers: Control semantic acceptance of compatibility constructs
 //
 // Input Specification:
 // - Source code: BASIC program text as string_view
@@ -44,20 +45,20 @@
 //
 // Output Structure:
 // The compiler returns a BasicCompilerResult containing:
-// - IL module: The lowered program ready for VM execution or codegen
+// - IL module: The lowered program, or a default empty module on early failure
 // - Diagnostics: All errors, warnings, and notes from compilation
 // - Emitter: Configured DiagnosticEmitter for formatting messages
 // - File ID: Source file identifier for cross-referencing
 //
 // Error Handling:
 // - Compilation may produce diagnostics at any stage
-// - The IL module may be null if parsing or semantic analysis fails
+// - Early failures leave the value-owned IL module in its default empty state
 // - Diagnostics are accumulated and available even on failure
 // - The result always includes the DiagnosticEngine for error reporting
 //
 // Design Notes:
 // - The compiler owns the DiagnosticEngine and DiagnosticEmitter
-// - Source management is borrowed via SourceManager reference
+// - The result emitter retains a borrowed SourceManager reference
 // - The returned IL module transfers ownership to the caller
 // - Multiple compilations can share a single SourceManager
 //
@@ -70,15 +71,23 @@
 //   BasicCompilerOptions opts{
 //     .boundsChecks = true
 //   };
-//   auto result = compileBasicProgram(input, srcMgr, opts);
-//   if (result.module) {
-//     // Compilation succeeded, use IL module
+//   auto result = compileBasic(input, opts, srcMgr);
+//   if (result.succeeded() && result.moduleVerified) {
+//     // Compilation succeeded; consume result.module
 //   } else {
-//     // Report diagnostics
-//     result.emitter->report(result.diagnostics);
+//     // Inspect result.diagnostics or format through result.emitter
 //   }
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file BasicCompiler.hpp
+ * @brief Declares the complete BASIC source-to-verified-IL driver contract.
+ *
+ * Inputs borrow source text and a SourceManager. Results own diagnostics and
+ * the module, while their DiagnosticEmitter continues to borrow that manager.
+ */
+
 #pragma once
 
 #include "frontends/basic/DiagnosticEmitter.hpp"
@@ -93,7 +102,9 @@
 namespace il::frontends::basic {
 
 /// @brief Options controlling BASIC compilation behavior.
-/// @invariant Bounds check flag only affects lowering.
+/// @details Some post-optimization dump flags are carried for outer tool
+///          drivers; compileBasic() itself consumes bounds, token, AST,
+///          pre-optimization IL, timing, and unsafe-pointer settings.
 struct BasicCompilerOptions {
     /// @brief Enable debug bounds checks when lowering arrays.
     bool boundsChecks{false};
@@ -107,16 +118,16 @@ struct BasicCompilerOptions {
     /// @brief Dump IL after lowering, before optimization.
     bool dumpIL{false};
 
-    /// @brief Dump IL after the full optimization pipeline.
+    /// @brief Request an outer driver to dump IL after its optimization pipeline.
     bool dumpILOpt{false};
 
-    /// @brief Dump IL before and after each optimization pass.
+    /// @brief Request an outer driver to dump IL around each optimization pass.
     bool dumpILPasses{false};
 
     /// @brief Print frontend phase timings to stderr.
     bool timeCompile{false};
 
-    /// @brief Reserved compatibility flag; BASIC source no longer exposes raw pointers.
+    /// @brief Allow semantic acceptance of unsafe pointer compatibility constructs.
     bool allowUnsafePointers{false};
 };
 
@@ -132,7 +143,8 @@ struct BasicCompilerInput {
 };
 
 /// @brief Aggregated result of compiling BASIC source.
-/// @ownership Owns diagnostics engine and emitter; module returned by value.
+/// @ownership Owns diagnostics, emitter, and module. The emitter borrows the
+///            SourceManager passed to compileBasic().
 struct BasicCompilerResult {
     /// @brief Diagnostics accumulated during compilation.
     il::support::DiagnosticEngine diagnostics{};
@@ -147,14 +159,26 @@ struct BasicCompilerResult {
     bool moduleVerified{false};
 
     /// @brief Helper indicating whether compilation succeeded without errors.
+    /// @details This predicate checks only that an emitter exists and has
+    ///          recorded no errors; it does not require @ref moduleVerified.
+    /// @return True when the emitter exists and its error count is zero.
     [[nodiscard]] bool succeeded() const;
 };
 
 /// @brief Compile BASIC source text into IL.
+/// @details Registers or reuses the input file, optionally dumps tokens, parses,
+///          collects qualified procedures, folds constants, runs semantic
+///          analysis, lowers to IL, and verifies up to 50 IL diagnostics.
+///          Fatal or error-producing stages return early with accumulated
+///          diagnostics. Runtime-namespace enablement is reset from
+///          `ZANNA_NO_RUNTIME_NAMESPACES` for each invocation.
 /// @param input Source information describing the buffer to compile.
 /// @param options Front-end options controlling lowering behavior.
 /// @param sm Source manager used for diagnostics and tracing.
 /// @return Module and diagnostics emitted during compilation.
+/// @warning @p sm must outlive the returned result because the result's emitter
+///          retains a reference to it.
+/// @note The function mutates @p sm and global FrontendOptions state.
 BasicCompilerResult compileBasic(const BasicCompilerInput &input,
                                  const BasicCompilerOptions &options,
                                  il::support::SourceManager &sm);

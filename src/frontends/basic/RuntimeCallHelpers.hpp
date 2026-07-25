@@ -18,6 +18,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file RuntimeCallHelpers.hpp
+/// @brief Declares a fluent runtime-call emission adapter for BASIC lowering.
+/// @details RuntimeCallBuilder owns its pending argument values and optional
+///          source location, borrows a Lowerer, and emits only when an explicit
+///          call method is invoked.
+
 #pragma once
 
 #include "il/runtime/RuntimeSignatures.hpp"
@@ -50,18 +56,23 @@ class Lowerer;
 ///       .at(stmt.loc)
 ///       .arg(path.value)
 ///       .argNarrow32(Value::constInt(static_cast<int32_t>(stmt.mode)))
-///       .argChannel(channel)
+///       .argChannel(channel.value, channel.type)
 ///       .withFeature(RuntimeFeature::OpenErrVstr)
 ///       .callWithErrCheck(Type(Type::Kind::I32), "rt_open_err_vstr", "open");
 /// @endcode
+/// @invariant The borrowed Lowerer outlives the builder.
 class RuntimeCallBuilder {
   public:
+    /// IL value type accepted by runtime calls.
     using Value = il::core::Value;
+    /// IL type descriptor used for coercion and return values.
     using Type = il::core::Type;
+    /// Runtime helper feature identifier.
     using RuntimeFeature = il::runtime::RuntimeFeature;
 
     /// @brief Construct a builder bound to the lowering context.
-    /// @param lowerer Owning lowering driver.
+    /// @param lowerer Borrowed lowering driver receiving emitted instructions.
+    /// @pre @p lowerer outlives the builder.
     explicit RuntimeCallBuilder(Lowerer &lowerer) noexcept;
 
     // -------------------------------------------------------------------------
@@ -176,7 +187,7 @@ class RuntimeCallBuilder {
     // -------------------------------------------------------------------------
 
     /// @brief Get the collected arguments.
-    /// @return Vector of argument values.
+    /// @return Const reference to builder-owned argument values.
     [[nodiscard]] const std::vector<Value> &args() const noexcept;
 
     /// @brief Get the current source location.
@@ -184,14 +195,19 @@ class RuntimeCallBuilder {
     [[nodiscard]] std::optional<il::support::SourceLoc> location() const noexcept;
 
     /// @brief Clear collected arguments for reuse.
+    /// @details Does not clear the source location set by @ref at.
     void clearArgs() noexcept;
 
   private:
+    /// Borrowed lowering driver receiving features, locations, and instructions.
     Lowerer &lowerer_;
+    /// Ordered arguments retained across calls until explicitly cleared.
     std::vector<Value> args_;
+    /// Optional source location applied before coercion or emission.
     std::optional<il::support::SourceLoc> loc_;
 
     /// @brief Apply stored location to lowerer before emission.
+    /// @details Leaves the lowerer's current location unchanged when none is stored.
     void applyLoc() const;
 };
 

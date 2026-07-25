@@ -20,10 +20,20 @@
 // Ownership/Lifetime:
 //   - CodegenPipeline owns the Options struct; all other objects are
 //     stack-local or owned by the caller-supplied AArch64Module.
-// Links: codegen/aarch64/CodegenPipeline.hpp,
-//        codegen/aarch64/passes/PassManager.hpp
+// Links: src/codegen/aarch64/CodegenPipeline.hpp,
+//        src/codegen/aarch64/passes/PassManager.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Implements the modular AArch64 backend and end-to-end native pipeline.
+ *
+ * The pass-level entry point mutates caller-owned MIR state in ordered stages.
+ * The higher-level driver selects an ABI target, captures diagnostics, emits
+ * assembly and/or object bytes, discovers runtime archives, and optionally
+ * links or executes the result according to `CodegenPipeline::Options`.
+ */
 
 #include "codegen/aarch64/CodegenPipeline.hpp"
 
@@ -67,6 +77,9 @@ using zanna::codegen::common::LinkContext;
 using TargetPlatform = CodegenPipeline::TargetPlatform;
 
 /// @brief Dump all MIR functions to the provided stream with a header tag.
+/// @param module Module whose machine functions are formatted.
+/// @param tag Stage label printed in each dump header.
+/// @param os Destination diagnostic stream.
 static void dumpMir(const passes::AArch64Module &module, const char *tag, std::ostream &os) {
     for (const auto &fn : module.mir) {
         os << "=== MIR " << tag << ": " << fn.name << " ===\n";
@@ -75,6 +88,8 @@ static void dumpMir(const passes::AArch64Module &module, const char *tag, std::o
 }
 
 /// @brief Map a TargetPlatform to the object-file format used by that OS.
+/// @param platform Requested target, or `Host` for runtime detection.
+/// @return Matching object container format.
 static objfile::ObjFormat targetObjectFormat(TargetPlatform platform) {
     switch (platform) {
         case TargetPlatform::Darwin:
@@ -90,6 +105,8 @@ static objfile::ObjFormat targetObjectFormat(TargetPlatform platform) {
 }
 
 /// @brief Map a TargetPlatform to the linker's LinkPlatform enum.
+/// @param platform Requested target, or `Host` for runtime detection.
+/// @return Matching native-link platform.
 static linker::LinkPlatform targetLinkPlatform(TargetPlatform platform) {
     switch (platform) {
         case TargetPlatform::Darwin:
@@ -105,8 +122,10 @@ static linker::LinkPlatform targetLinkPlatform(TargetPlatform platform) {
 }
 
 /// @brief Return the system assembler command-line prefix for a given target platform.
-/// On Darwin builds a `cc -arch arm64` invocation; on cross-compile hosts uses
-/// the clang `--target=` triple matching the AArch64 ABI of the target OS.
+/// @details On Darwin hosts builds a `cc -arch arm64` invocation; cross-target
+///          paths use the Clang `--target=` triple matching the requested ABI.
+/// @param platform Requested target, or `Host` for host-platform mapping.
+/// @return Executable and fixed target arguments, excluding input/output paths.
 static std::vector<std::string> systemAssemblerArgs(TargetPlatform platform) {
     switch (platform) {
         case TargetPlatform::Darwin:
@@ -130,6 +149,8 @@ static std::vector<std::string> systemAssemblerArgs(TargetPlatform platform) {
 }
 
 /// @brief Return true if @p path has a .o or .obj extension (object file output).
+/// @param path UTF-8 output path.
+/// @return `true` for case-insensitive `.o` or `.obj` extensions.
 static bool isObjectOutputPath(const std::string &path) {
     std::string ext =
         zanna::filesystem::pathToUtf8(zanna::filesystem::pathFromUtf8(path).extension());
@@ -156,6 +177,17 @@ static int linkObjToExe(const std::string &objPath,
 
 /// @brief Assemble @p asmPath to a temporary .o, then link to @p exePath via
 ///        the system assembler. Cleans up the temporary object file on return.
+/// @param asmPath Input assembly source path.
+/// @param exePath Destination executable path.
+/// @param targetPlatform Requested target ABI.
+/// @param stackSize Requested stack size, or zero for the platform default.
+/// @param extraObjects Additional object paths passed to the linker.
+/// @param fastLink Whether to skip optional size-reduction work.
+/// @param windowsDebugRuntime Optional Windows CRT flavor override.
+/// @param preserveDebugSections Whether linked output retains debug sections.
+/// @param out Stream receiving normal tool output.
+/// @param err Stream receiving diagnostics.
+/// @return Zero on success, otherwise the first assembler/linker error code.
 static int linkToExe(const std::string &asmPath,
                      const std::string &exePath,
                      TargetPlatform targetPlatform,
@@ -206,6 +238,7 @@ static int linkToExe(const std::string &asmPath,
 ///          uses the shared text-buffer C ABI.
 /// @param ctx Link context produced by prepareLinkContext/prepareLinkContextFromSymbols.
 /// @param targetPlatform Requested OS platform; Host is resolved through targetLinkPlatform().
+/// @param windowsDebugRuntime Optional Windows CRT flavor override.
 /// @param archives Output list; entries are absolute paths appended in dependency order.
 static void collectNativeLinkArchives(const common::LinkContext &ctx,
                                       TargetPlatform targetPlatform,
@@ -285,6 +318,7 @@ static void collectNativeLinkArchives(const common::LinkContext &ctx,
 /// @param stackSize     Requested thread stack size in bytes; 0 means platform default.
 /// @param extraObjects  Additional .o files to include in the link (e.g. runtime stubs).
 /// @param fastLink      Skip non-essential size-reduction passes in the linker.
+/// @param windowsDebugRuntime Optional Windows CRT flavor override.
 /// @param preserveDebugSections Keep non-alloc DWARF/debug sections in linked output.
 /// @param out           Stream for linker stdout diagnostics.
 /// @param err           Stream for linker stderr diagnostics.
@@ -386,6 +420,10 @@ static const TargetInfo &selectAArch64Target(CodegenPipeline::TargetPlatform pla
 /// @details Orchestrates all passes via PassManager in order: IL-to-MIR lowering,
 ///          pre-RA MIR legalization, register allocation (with optional coalescing),
 ///          post-RA layout/peephole/scheduling (O1+), and assembly/binary emission.
+/// @param module Caller-owned pipeline state mutated by each pass.
+/// @param opts Dump, optimization, timing, and emission controls.
+/// @param diagOut Destination for pass diagnostics, dumps, and timings.
+/// @return `true` when every enabled pass succeeds.
 bool runCodegenPipeline(passes::AArch64Module &module,
                         const PipelineOptions &opts,
                         std::ostream &diagOut) {

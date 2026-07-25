@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/CoffWriter.cpp
+// File: src/codegen/common/objfile/CoffWriter.cpp
 // Purpose: Serialize CodeSection data into a valid COFF relocatable object file
 //          for the Windows platform (x86_64 and AArch64).
 // Key invariants:
@@ -22,6 +22,17 @@
 // Links: codegen/common/objfile/CoffWriter.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file CoffWriter.cpp
+ * @brief Implements little-endian AMD64 and ARM64 COFF object serialization.
+ *
+ * The writer lays out code, read-only data, initialized data, generated unwind
+ * sections, relocation tables, symbols, and the COFF string table. It embeds
+ * relocation addends into instruction/data fields, supports relocation-overflow
+ * records, and validates every offset that must fit a 32-bit COFF field before
+ * writing the object.
+ */
 
 #include "codegen/common/objfile/CoffWriter.hpp"
 #include "codegen/common/objfile/ObjFileWriterUtil.hpp"
@@ -83,6 +94,10 @@ static constexpr uint16_t kImageRelARM64_Pageoffset12A = 6;
 static constexpr uint16_t kImageRelARM64_Pageoffset12L = 7;
 static constexpr uint16_t kImageRelARM64_Branch19 = 15;
 
+/// @brief Map an architecture-neutral relocation kind to a COFF relocation type.
+/// @param kind Relocation semantics recorded by the encoder.
+/// @param arch Target object architecture.
+/// @return COFF relocation number, or zero when @p kind is unsupported.
 static uint16_t coffRelocType(RelocKind kind, ObjArch arch) {
     switch (kind) {
         case RelocKind::PCRel32:
@@ -107,6 +122,10 @@ static uint16_t coffRelocType(RelocKind kind, ObjArch arch) {
     return 0;
 }
 
+/// @brief Overwrite four bytes in an existing vector in little-endian order.
+/// @param bytes Destination vector containing a valid four-byte range.
+/// @param off Index of the first destination byte.
+/// @param value Value to encode.
 static void writeLE32At(std::vector<uint8_t> &bytes, size_t off, uint32_t value) {
     bytes[off] = static_cast<uint8_t>(value);
     bytes[off + 1] = static_cast<uint8_t>(value >> 8);
@@ -114,17 +133,31 @@ static void writeLE32At(std::vector<uint8_t> &bytes, size_t off, uint32_t value)
     bytes[off + 3] = static_cast<uint8_t>(value >> 24);
 }
 
+/// @brief Overwrite eight bytes in an existing vector in little-endian order.
+/// @param bytes Destination vector containing a valid eight-byte range.
+/// @param off Index of the first destination byte.
+/// @param value Value to encode.
 static void writeLE64At(std::vector<uint8_t> &bytes, size_t off, uint64_t value) {
     for (size_t i = 0; i < 8; ++i)
         bytes[off + i] = static_cast<uint8_t>(value >> (i * 8));
 }
 
+/// @brief Read four existing vector bytes as a little-endian unsigned value.
+/// @param bytes Source vector containing a valid four-byte range.
+/// @param off Index of the first source byte.
+/// @return Decoded 32-bit value.
 static uint32_t readLE32At(const std::vector<uint8_t> &bytes, size_t off) {
     return static_cast<uint32_t>(bytes[off]) | (static_cast<uint32_t>(bytes[off + 1]) << 8) |
            (static_cast<uint32_t>(bytes[off + 2]) << 16) |
            (static_cast<uint32_t>(bytes[off + 3]) << 24);
 }
 
+/// @brief Narrow a relocation addend to a signed 32-bit COFF field.
+/// @param value Value to validate.
+/// @param what Human-readable relocation description.
+/// @param err Stream that receives an out-of-range diagnostic.
+/// @param out Receives the narrowed value on success.
+/// @return `true` when @p value is representable by `int32_t`.
 static bool checkedI32(int64_t value, const char *what, std::ostream &err, int32_t &out) {
     if (value < std::numeric_limits<int32_t>::min() ||
         value > std::numeric_limits<int32_t>::max()) {
@@ -135,6 +168,13 @@ static bool checkedI32(int64_t value, const char *what, std::ostream &err, int32
     return true;
 }
 
+/// @brief Validate and scale an AArch64 branch addend by instruction width.
+/// @param value Byte addend to encode.
+/// @param bits Width of the signed immediate field after division by four.
+/// @param what Human-readable branch kind.
+/// @param err Stream that receives alignment or range diagnostics.
+/// @param scaled Receives @p value divided by four on success.
+/// @return `true` when the addend is instruction aligned and field-representable.
 static bool checkedA64BranchAddend(
     int64_t value, unsigned bits, const char *what, std::ostream &err, int64_t &scaled) {
     if ((value & 0x3) != 0) {
@@ -151,6 +191,16 @@ static bool checkedA64BranchAddend(
     return true;
 }
 
+/// @brief Embed a COFF relocation's effective addend in copied section bytes.
+/// @details COFF relocation records have no explicit addend. This helper writes
+///          x86 displacements, absolute values, or AArch64 immediate fields into
+///          a mutable copy while preserving opcode bits.
+/// @param section Original section supplying logical bias and range validation.
+/// @param rel Relocation describing the fixup encoding and source offset.
+/// @param effectiveAddend Addend after section-offset contributions are applied.
+/// @param bytes Mutable physical payload receiving the encoded addend.
+/// @param err Stream that receives malformed range, alignment, or width diagnostics.
+/// @return `true` when the addend was encoded successfully.
 static bool patchCoffRelocationAddend(const CodeSection &section,
                                       const Relocation &rel,
                                       int64_t effectiveAddend,
@@ -269,6 +319,16 @@ static void appendFixedNameField(std::vector<uint8_t> &out, std::string_view nam
     }
 }
 
+/// @brief Append one 40-byte COFF section header.
+/// @param out Destination object buffer.
+/// @param name Inline or slash-offset section-name field.
+/// @param virtualSize COFF virtual-size field, normally zero in objects.
+/// @param virtualAddr COFF virtual-address field, normally zero in objects.
+/// @param rawDataSize File-backed section byte count.
+/// @param rawDataPtr File offset of raw section data.
+/// @param relocPtr File offset of the section relocation table.
+/// @param numRelocs Header relocation count, including overflow sentinel semantics.
+/// @param characteristics Section contents, alignment, and memory flags.
 static void writeSectionHeader(std::vector<uint8_t> &out,
                                std::string_view name,
                                uint32_t virtualSize,
@@ -291,6 +351,14 @@ static void writeSectionHeader(std::vector<uint8_t> &out,
     appendLE32(out, characteristics);
 }
 
+/// @brief Append one 18-byte COFF symbol-table record.
+/// @param out Destination symbol-table buffer.
+/// @param name Symbol name.
+/// @param strTabOffset String-table offset used when @p name exceeds eight bytes.
+/// @param value Section-relative symbol value.
+/// @param sectionNumber One-based defining section or zero for undefined.
+/// @param type COFF type field.
+/// @param storageClass COFF symbol storage class.
 static void writeSymbol(std::vector<uint8_t> &out,
                         const std::string &name,
                         uint32_t strTabOffset,
@@ -317,6 +385,11 @@ static void writeSymbol(std::vector<uint8_t> &out,
     out.push_back(0);
 }
 
+/// @brief Append one 10-byte COFF relocation record.
+/// @param out Destination relocation-table buffer.
+/// @param virtualAddr Section-relative fixup offset.
+/// @param symbolTableIndex Referenced COFF symbol-table index.
+/// @param type Architecture-specific relocation type.
 static void writeReloc(std::vector<uint8_t> &out,
                        uint32_t virtualAddr,
                        uint32_t symbolTableIndex,
@@ -326,6 +399,12 @@ static void writeReloc(std::vector<uint8_t> &out,
     appendLE16(out, type);
 }
 
+/// @brief Narrow a native section/file size to a 32-bit COFF field.
+/// @param value Native-size value to validate.
+/// @param what Human-readable field description.
+/// @param err Stream that receives an overflow diagnostic.
+/// @param out Receives the narrowed value.
+/// @return `true` when @p value does not exceed `UINT32_MAX`.
 static bool checkedU32(size_t value, const char *what, std::ostream &err, uint32_t &out) {
     if (value > UINT32_MAX) {
         err << "CoffWriter: " << what << " exceeds 32-bit COFF limit\n";
@@ -335,6 +414,13 @@ static bool checkedU32(size_t value, const char *what, std::ostream &err, uint32
     return true;
 }
 
+/// @brief Add two 32-bit COFF offsets without overflow.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param what Human-readable field description.
+/// @param err Stream that receives an overflow diagnostic.
+/// @param out Receives the sum.
+/// @return `true` when the sum fits in `uint32_t`.
 static bool addU32Checked(
     uint32_t a, uint32_t b, const char *what, std::ostream &err, uint32_t &out) {
     if (a > UINT32_MAX - b) {
@@ -345,6 +431,13 @@ static bool addU32Checked(
     return true;
 }
 
+/// @brief Align a 32-bit COFF offset while checking both native and field limits.
+/// @param value Offset to align.
+/// @param align Required byte alignment.
+/// @param what Human-readable field description.
+/// @param err Stream that receives validation diagnostics.
+/// @param out Receives the aligned offset.
+/// @return `true` when alignment succeeds within the COFF range.
 static bool alignU32Checked(
     uint32_t value, uint32_t align, const char *what, std::ostream &err, uint32_t &out) {
     size_t aligned = 0;
@@ -353,6 +446,13 @@ static bool alignU32Checked(
     return checkedU32(aligned, what, err, out);
 }
 
+/// @brief Convert a logical symbol offset to its physical COFF section value.
+/// @param section Section supplying logical bias and payload bounds.
+/// @param sym Defined symbol to convert.
+/// @param sectionName Name used to qualify diagnostics.
+/// @param err Stream that receives bias, bounds, or width diagnostics.
+/// @param out Receives the 32-bit physical offset.
+/// @return `true` when the definition lies within section contents.
 static bool checkedPhysicalSymbolValue(const CodeSection &section,
                                        const Symbol &sym,
                                        const char *sectionName,
@@ -372,6 +472,13 @@ static bool checkedPhysicalSymbolValue(const CodeSection &section,
     return checkedU32(physicalOffset, "symbol value", err, out);
 }
 
+/// @brief Compute total object buffer reserve size with checked native arithmetic.
+/// @param symtabOff File offset at which the symbol table begins.
+/// @param symtabSize Serialized symbol-table byte count.
+/// @param strtabSize Serialized string-table byte count.
+/// @param err Stream that receives an overflow diagnostic.
+/// @param out Receives the total byte count.
+/// @return `true` when both additions are representable by `size_t`.
 static bool checkedCoffReserveSize(
     uint32_t symtabOff, size_t symtabSize, size_t strtabSize, std::ostream &err, size_t &out) {
     size_t total = 0;
@@ -385,6 +492,11 @@ static bool checkedCoffReserveSize(
     return checkedAddSize(total, strtabSize, "CoffWriter", "file reserve size", err, out);
 }
 
+/// @brief Validate an already encoded COFF section-header name field.
+/// @param name Inline name or slash-prefixed string-table offset.
+/// @param what Section description used in diagnostics.
+/// @param err Stream that receives an overlength diagnostic.
+/// @return `true` when the encoded field fits eight bytes.
 static bool validateSectionHeaderName(const std::string &name,
                                       const char *what,
                                       std::ostream &err) {
@@ -396,6 +508,12 @@ static bool validateSectionHeaderName(const std::string &name,
     return true;
 }
 
+/// @brief Register a global definition and diagnose duplicate writer output.
+/// @param names Set of global names already emitted.
+/// @param sym Candidate section symbol.
+/// @param sectionName Defining section name used in diagnostics.
+/// @param err Stream that receives a duplicate-definition diagnostic.
+/// @return `true` for nonglobal or newly registered global symbols.
 static bool rememberDefinedGlobal(std::unordered_set<std::string> &names,
                                   const Symbol &sym,
                                   const char *sectionName,
@@ -410,6 +528,9 @@ static bool rememberDefinedGlobal(std::unordered_set<std::string> &names,
     return true;
 }
 
+/// @brief Prefix a relocation table with COFF's overflow sentinel when required.
+/// @param relocBytes Serialized ordinary relocation records, updated in place.
+/// @param relocCount Number of ordinary relocation records.
 static void addRelocationOverflowRecord(std::vector<uint8_t> &relocBytes, uint32_t relocCount) {
     if (relocCount <= kCoffMaxStandardRelocs)
         return;
@@ -420,14 +541,26 @@ static void addRelocationOverflowRecord(std::vector<uint8_t> &relocBytes, uint32
     relocBytes.swap(withOverflow);
 }
 
+/// @brief Compute the 16-bit section-header relocation count representation.
+/// @param relocCount Number of ordinary relocation records.
+/// @return @p relocCount when standard, otherwise the `0xffff` overflow marker.
 static uint32_t coffHeaderRelocCount(uint32_t relocCount) {
     return relocCount > kCoffMaxStandardRelocs ? kCoffMaxStandardRelocs : relocCount;
 }
 
+/// @brief Count serialized records including a required overflow sentinel.
+/// @param relocCount Number of ordinary relocation records.
+/// @return Physical relocation-record count.
 static uint32_t coffRelocRecordCount(uint32_t relocCount) {
     return relocCount + (relocCount > kCoffMaxStandardRelocs ? 1u : 0u);
 }
 
+/// @brief Compute a COFF relocation table's serialized byte size.
+/// @param relocCount Number of ordinary records.
+/// @param what Section description used in diagnostics.
+/// @param err Stream that receives a 32-bit-limit diagnostic.
+/// @param out Receives bytes for ordinary records plus any overflow sentinel.
+/// @return `true` when the table size fits a 32-bit file offset.
 static bool coffRelocTableSize(uint32_t relocCount,
                                const char *what,
                                std::ostream &err,
@@ -441,22 +574,39 @@ static bool coffRelocTableSize(uint32_t relocCount,
     return true;
 }
 
+/// @brief Deferred generated-symbol record awaiting final section numbering.
 struct PendingCoffSymbol {
+    ///< Symbol name written inline or through the string table.
     std::string name;
+    ///< Section-relative symbol value.
     uint32_t value{0};
+    ///< COFF symbol type field.
     uint16_t type{0};
+    ///< COFF storage class.
     uint8_t storageClass{kImageSymClassStatic};
 };
 
+/// @brief Deferred generated relocation whose symbol index is resolved later.
 struct PendingCoffReloc {
+    ///< Fixup offset within the generated section.
     uint32_t offset{0};
+    ///< Fallback name of the referenced symbol.
     std::string symbolName;
+    ///< Architecture-specific COFF relocation type.
     uint16_t type{0};
+    ///< Whether exact source symbol identity/index metadata is available.
     bool hasSymbolRef{false};
+    ///< Exact CodeSection identity for disambiguating duplicate local names.
     uint64_t symbolSectionIdentity{0};
+    ///< Encoder symbol index within the identified section.
     uint32_t symbolIndex{0};
 };
 
+/// @brief Validate that a generated `.pdata` fixup covers four existing bytes.
+/// @param offset Section-relative relocation offset.
+/// @param pdataSize Current `.pdata` byte count.
+/// @param err Stream that receives an out-of-bounds diagnostic.
+/// @return `true` when the four-byte fixup fits completely.
 static bool validatePdataRelocOffset(uint32_t offset, size_t pdataSize, std::ostream &err) {
     if (static_cast<size_t>(offset) > pdataSize || 4 > pdataSize - static_cast<size_t>(offset)) {
         err << "CoffWriter: .pdata relocation at offset " << offset
@@ -466,6 +616,9 @@ static bool validatePdataRelocOffset(uint32_t offset, size_t pdataSize, std::ost
     return true;
 }
 
+/// @brief Count two-byte Win64 unwind slots needed for one logical operation.
+/// @param code Logical unwind operation to encode.
+/// @return Slot count selected by operation and near/far offset form.
 static size_t win64UnwindSlotCount(const Win64UnwindCode &code) {
     switch (code.kind) {
         case Win64UnwindCode::Kind::PushNonVol:
@@ -488,6 +641,9 @@ static size_t win64UnwindSlotCount(const Win64UnwindCode &code) {
     return 0;
 }
 
+/// @brief Append the Win64 unwind-code nodes for one logical operation.
+/// @param out Destination `.xdata` byte stream.
+/// @param code Validated logical operation.
 static void emitWin64UnwindNodes(std::vector<uint8_t> &out, const Win64UnwindCode &code) {
     constexpr uint8_t kUwopPushNonVol = 0;
     constexpr uint8_t kUwopAllocLarge = 1;
@@ -497,6 +653,7 @@ static void emitWin64UnwindNodes(std::vector<uint8_t> &out, const Win64UnwindCod
     constexpr uint8_t kUwopSaveXmm128 = 8;
     constexpr uint8_t kUwopSaveXmm128Far = 9;
 
+    /// Emit the common two-byte unwind node header.
     const auto emitNode = [&](uint8_t codeOffset, uint8_t unwindOp, uint8_t opInfo) {
         out.push_back(codeOffset);
         out.push_back(static_cast<uint8_t>(unwindOp | (opInfo << 4)));
@@ -545,6 +702,11 @@ static void emitWin64UnwindNodes(std::vector<uint8_t> &out, const Win64UnwindCod
     }
 }
 
+/// @brief Validate one Win64 unwind operation against its function prologue.
+/// @param entry Function-level metadata supplying the prologue length.
+/// @param code Operation whose register, offset, and alignment are checked.
+/// @param err Stream that receives the first validation diagnostic.
+/// @return `true` when the operation has a legal Windows x64 encoding.
 static bool validateWin64UnwindCode(const Win64UnwindEntry &entry,
                                     const Win64UnwindCode &code,
                                     std::ostream &err) {
@@ -584,6 +746,15 @@ static bool validateWin64UnwindCode(const Win64UnwindEntry &entry,
     return true;
 }
 
+/// @brief Build generated Win64 `.xdata` records and `.pdata` references.
+/// @param text Text section whose per-function unwind entries are consumed.
+/// @param xdataNameBase Starting ordinal for generated `$xdata$N` symbols.
+/// @param xdataBytes Receives serialized unwind information.
+/// @param xdataSymbols Receives symbols at each generated xdata record.
+/// @param pdataBytes Receives 12-byte runtime-function records.
+/// @param pdataRelocs Receives function-start, function-end, and xdata fixups.
+/// @param err Stream that receives malformed metadata or overflow diagnostics.
+/// @return `true` when all Windows x64 unwind entries serialize successfully.
 static bool buildWin64UnwindSections(const CodeSection &text,
                                      uint32_t xdataNameBase,
                                      std::vector<uint8_t> &xdataBytes,
@@ -622,6 +793,8 @@ static bool buildWin64UnwindSections(const CodeSection &text,
         xdataSymbols.push_back({xdataName, xdataOffset, 0, kImageSymClassStatic});
 
         std::vector<Win64UnwindCode> codes = entry.codes;
+        /// Windows requires unwind operations in descending prologue offset;
+        /// stability preserves encoder order for equal-offset operations.
         std::stable_sort(codes.begin(), codes.end(), [](const auto &lhs, const auto &rhs) {
             return lhs.codeOffset > rhs.codeOffset;
         });
@@ -676,6 +849,15 @@ static bool buildWin64UnwindSections(const CodeSection &text,
     return true;
 }
 
+/// @brief Build generated Windows ARM64 `.xdata` and `.pdata` records.
+/// @param text Text section whose ARM64 unwind entries are consumed.
+/// @param xdataNameBase Starting ordinal for generated `$xdata$N` symbols.
+/// @param xdataBytes Receives packed ARM64 unwind headers and opcode streams.
+/// @param xdataSymbols Receives symbols at each generated xdata record.
+/// @param pdataBytes Receives eight-byte ARM64 runtime-function records.
+/// @param pdataRelocs Receives function-start and xdata RVA fixups.
+/// @param err Stream that receives alignment, range, or metadata diagnostics.
+/// @return `true` when all Windows ARM64 unwind entries serialize successfully.
 static bool buildWinArm64UnwindSections(const CodeSection &text,
                                         uint32_t xdataNameBase,
                                         std::vector<uint8_t> &xdataBytes,
@@ -766,6 +948,15 @@ static bool buildWinArm64UnwindSections(const CodeSection &text,
 ///          the per-section unwind iteration lives in one place. The arch is
 ///          carried in rather than inferred so each overload can pass the same
 ///          `arch_` value verbatim.
+/// @param text Text section whose architecture-specific unwind list is consumed.
+/// @param arch Target architecture selecting the unwind representation.
+/// @param xdataNameBase In/out ordinal for unique generated xdata symbols.
+/// @param xdataBytes Accumulated serialized unwind bytes.
+/// @param xdataSymbols Accumulated generated xdata symbols.
+/// @param pdataBytes Accumulated runtime-function table bytes.
+/// @param pdataRelocs Accumulated runtime-function relocations.
+/// @param err Stream that receives serialization diagnostics.
+/// @return `true` after appending this section's unwind data or doing nothing.
 static bool collectCoffUnwindForSection(const CodeSection &text,
                                         ObjArch arch,
                                         uint32_t &xdataNameBase,
@@ -795,6 +986,8 @@ static bool collectCoffUnwindForSection(const CodeSection &text,
     return true;
 }
 
+/// @copydoc CoffWriter::write(const std::string&, const CodeSection&,
+///                            const CodeSection&, std::ostream&)
 bool CoffWriter::write(const std::string &path,
                        const CodeSection &text,
                        const CodeSection &rodata,
@@ -845,6 +1038,8 @@ bool CoffWriter::write(const std::string &path,
         std::unordered_set<std::string> definedGlobalNames;
         uint32_t coffSymCount = 0;
 
+        /// Determine whether a section needs a synthetic anchor symbol for
+        /// exact section-offset relocations targeting @p targetSection.
         auto relocationNeedsAnchor = [](const CodeSection &sec, SymbolSection targetSection) {
             for (const auto &rel : sec.relocations())
                 if (rel.targetOffsetValid && rel.targetSection == targetSection)
@@ -880,15 +1075,23 @@ bool CoffWriter::write(const std::string &path,
             rodataAnchorIdx = coffSymCount++;
         }
 
+        /// Deferred undefined symbol whose final COFF index may coalesce with a
+        /// definition discovered in another emitted section.
         struct PendingExternal {
+            ///< Whether the original encoder symbol belongs to `.text`.
             bool fromText = false;
+            ///< Original CodeSection symbol-table index.
             uint32_t origIdx = 0;
+            ///< Symbol name used for cross-section coalescing.
             std::string name;
+            ///< COFF symbol type, such as function type `0x20`.
             uint16_t type = 0;
         };
 
         std::vector<PendingExternal> pendingExternals;
 
+        /// Append a NUL-terminated long name to the COFF string table and return
+        /// its checked byte offset.
         auto addToStrTab = [&](const std::string &s) -> uint32_t {
             if (strtabBytes.size() > std::numeric_limits<uint32_t>::max())
                 throw std::length_error(
@@ -1121,6 +1324,9 @@ bool CoffWriter::write(const std::string &path,
         std::vector<uint8_t> patchedTextBytes = text.bytes();
         std::vector<uint8_t> patchedRodataBytes = rodata.bytes();
         std::vector<uint8_t> textRelocBytes;
+
+        /// Resolve one encoder relocation to a final COFF symbol index and
+        /// effective addend, including exact section-offset anchor handling.
         auto resolveRelocSym = [&](const Relocation &rel,
                                    const CodeSection &source,
                                    const std::unordered_map<uint32_t, uint32_t> &sourceMap,
@@ -1196,6 +1402,8 @@ bool CoffWriter::write(const std::string &path,
             return true;
         };
 
+        /// Validate, addend-patch, and serialize every relocation from one
+        /// source section into its COFF relocation byte stream.
         auto appendRelocBytes = [&](const CodeSection &source,
                                     const std::unordered_map<uint32_t, uint32_t> &sourceMap,
                                     const char *sectionName,
@@ -1492,6 +1700,12 @@ bool CoffWriter::write(const std::string &path,
     }
 }
 
+/// @brief Derive a unique per-function COFF text-section name.
+/// @details Uses the first global text definition when available and falls back
+///          to a deterministic index-based name for anonymous sections.
+/// @param text Function-level code section to inspect.
+/// @param index Fallback ordinal within the multi-section write request.
+/// @return A `.text.<function>` section name.
 static std::string inferTextSectionName(const CodeSection &text, size_t index) {
     std::string funcName = "func_" + std::to_string(index);
     for (uint32_t i = 1; i < text.symbols().count(); ++i) {
@@ -1504,6 +1718,8 @@ static std::string inferTextSectionName(const CodeSection &text, size_t index) {
     return ".text." + funcName;
 }
 
+/// @copydoc CoffWriter::write(const std::string&, const std::vector<CodeSection>&,
+///                            const CodeSection&, std::ostream&)
 bool CoffWriter::write(const std::string &path,
                        const std::vector<CodeSection> &textSections,
                        const CodeSection &rodata,
@@ -1580,6 +1796,8 @@ bool CoffWriter::write(const std::string &path,
         std::unordered_set<std::string> definedGlobalNames;
         uint32_t coffSymCount = 0;
 
+        /// Append a NUL-terminated long name to the COFF string table and return
+        /// its checked byte offset.
         auto addToStrTab = [&](const std::string &s) -> uint32_t {
             if (strtabBytes.size() > std::numeric_limits<uint32_t>::max())
                 throw std::length_error(
@@ -1594,6 +1812,8 @@ bool CoffWriter::write(const std::string &path,
             return offset;
         };
 
+        /// Encode a long section name as COFF's slash-prefixed decimal string
+        /// table offset while leaving short names inline.
         auto encodeSectionHeaderName = [&](const std::string &name) -> std::string {
             if (name.size() <= 8)
                 return name;
@@ -1601,11 +1821,18 @@ bool CoffWriter::write(const std::string &path,
             return encoded;
         };
 
+        /// Deferred undefined symbol whose index may coalesce with a definition
+        /// from rodata, data, or any emitted function section.
         struct PendingExternal {
+            ///< Whether the original symbol belongs to a function text section.
             bool fromText = false;
+            ///< Function-section index when @ref fromText is true.
             size_t textIdx = SIZE_MAX;
+            ///< Original CodeSection symbol-table index.
             uint32_t origIdx = 0;
+            ///< Name used for definition coalescing and external interning.
             std::string name;
+            ///< COFF symbol type.
             uint16_t type = 0;
         };
 
@@ -1626,6 +1853,8 @@ bool CoffWriter::write(const std::string &path,
                 return false;
         }
 
+        /// Determine whether a section contains an exact section-offset
+        /// relocation requiring a synthetic anchor for @p targetSection.
         auto relocationNeedsAnchor = [](const CodeSection &sec, SymbolSection targetSection) {
             for (const auto &rel : sec.relocations())
                 if (rel.targetOffsetValid && rel.targetSection == targetSection)
@@ -1656,6 +1885,7 @@ bool CoffWriter::write(const std::string &path,
         const bool needRodataAnchor =
             hasRodata &&
             (relocationNeedsAnchor(rodata, SymbolSection::Rodata) ||
+             /// Scan every function section for an exact rodata-offset target.
              std::any_of(textSections.begin(), textSections.end(), [&](const CodeSection &sec) {
                  return relocationNeedsAnchor(sec, SymbolSection::Rodata);
              }));
@@ -1864,6 +2094,9 @@ bool CoffWriter::write(const std::string &path,
         std::vector<uint8_t> patchedRodataBytes = rodata.bytes();
         std::vector<std::vector<uint8_t>> textRelocBytes(textCount);
         std::vector<uint32_t> numTextRelocs(textCount, 0);
+
+        /// Resolve one encoder relocation to a final COFF symbol and effective
+        /// addend, using exact section identities to disambiguate text targets.
         auto resolveRelocSym = [&](const Relocation &rel,
                                    const CodeSection &source,
                                    const std::unordered_map<uint32_t, uint32_t> &sourceMap,
@@ -1984,6 +2217,8 @@ bool CoffWriter::write(const std::string &path,
             return true;
         };
 
+        /// Validate, addend-patch, and serialize all relocations from one
+        /// function or rodata section.
         auto appendRelocBytes = [&](const CodeSection &source,
                                     const std::unordered_map<uint32_t, uint32_t> &sourceMap,
                                     const char *sectionName,

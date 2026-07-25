@@ -11,9 +11,20 @@
 //   - Standalone translation unit; no cross-layer dependencies.
 // Ownership/Lifetime:
 //   - No long-lived state; all allocations are scoped to the run.
-// Links: docs/codemap.md
+// Links: examples/il/benchmarks/string_stress.il, docs/internals/testing.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file misc/benchmarks/reference/c/string_stress.c
+ * @brief Native reference implementation of the string-manipulation benchmark.
+ *
+ * @details
+ * The kernel reconstructs `Hello World!` in a fixed stack buffer with one copy
+ * and three concatenations on each of roughly five hundred thousand
+ * iterations. Summing the resulting lengths keeps every operation observable
+ * and yields the checksum returned to the host.
+ */
 
 /* string_stress.c — String manipulation benchmark (500K iterations).
    Equivalent to examples/il/benchmarks/string_stress.il */
@@ -21,6 +32,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/**
+ * @brief Execute the repeated string-concatenation workload.
+ * @param argc Hosted argument count. Each user argument adds one iteration.
+ * @param argv Hosted argument vector; its contents are intentionally unused.
+ * @return The accumulated byte lengths reduced to the least-significant eight
+ *         bits.
+ *
+ * @pre `argc >= 1`, and the derived iteration count keeps `sum` representable
+ *      by `int64_t`.
+ * @note The final 13-byte C string, including its terminator, fits comfortably
+ *       in the 64-byte local buffer.
+ */
 int main(int argc, char **argv)
 {
     (void)argv;

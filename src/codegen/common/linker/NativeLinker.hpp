@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/NativeLinker.hpp
+// File: src/codegen/common/linker/NativeLinker.hpp
 // Purpose: Top-level native linker orchestrator. Ties together archive reading,
 //          object file parsing, symbol resolution, section merging, relocation
 //          application, and executable output.
@@ -13,13 +13,18 @@
 //   - Zero external tool dependencies
 //   - Writes ELF (Linux), Mach-O (macOS), and PE (Windows) directly
 //   - Dynamic imports are implemented for Windows x86_64/AArch64, macOS
-//     AArch64, and Linux x86_64
+//     AArch64, and Linux x86_64/AArch64
 // Ownership/Lifetime:
 //   - Stateless entry point; each call is independent
 // Links: codegen/common/linker/LinkTypes.hpp
 //        codegen/common/LinkerSupport.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file NativeLinker.hpp
+ * @brief Declares the dependency-free top-level native link pipeline.
+ */
 
 #pragma once
 
@@ -34,7 +39,7 @@
 
 namespace zanna::codegen::linker {
 
-/// Options for the native linker.
+/// @brief Configures one independent native link invocation.
 struct NativeLinkerOptions {
     std::string objPath;                   ///< Path to the user's compiled .o file.
     /// Optional serialized user object supplied directly by native codegen.
@@ -58,11 +63,16 @@ struct NativeLinkerOptions {
     bool preserveDebugSections = false; ///< Keep non-alloc DWARF/debug sections in output.
 };
 
-/// Run the native linker.
-/// @param opts  Linker options.
-/// @param out   Standard output stream.
-/// @param err   Error output stream.
-/// @return 0 on success, non-zero on failure.
+/// @brief Runs the complete native object-to-executable link pipeline.
+/// @details Reads in-memory or on-disk objects and archives, resolves and
+///          extracts symbols, synthesizes platform support/import objects,
+///          strips and optionally folds content, merges sections, inserts
+///          branch islands, applies relocations, and writes ELF, Mach-O, or PE
+///          output without invoking external tools.
+/// @param opts Input, target, optimization, runtime, and output options.
+/// @param out Standard output stream reserved for successful informational output.
+/// @param err Diagnostic and optional link-timing output stream.
+/// @return Zero on success; one after a diagnosed pipeline failure.
 int nativeLink(const NativeLinkerOptions &opts, std::ostream &out, std::ostream &err);
 
 } // namespace zanna::codegen::linker

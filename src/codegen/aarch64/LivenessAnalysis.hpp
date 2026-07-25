@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/LivenessAnalysis.hpp
+// File: src/codegen/aarch64/LivenessAnalysis.hpp
 // Purpose: Cross-block liveness analysis for IL->MIR lowering.
 // Key invariants:
 //   - Temps used in a different block than their definition are cross-block.
@@ -14,10 +14,19 @@
 // Ownership/Lifetime:
 //   - Returns a value-type LivenessInfo; borrows Function and FrameBuilder
 //     only for the duration of the call.
-// Links: codegen/aarch64/LivenessAnalysis.cpp,
-//        codegen/aarch64/LoweringContext.hpp
+// Links: src/codegen/aarch64/LivenessAnalysis.cpp,
+//        src/codegen/aarch64/LoweringContext.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares conservative IL temporary liveness across basic-block boundaries.
+ *
+ * The analysis records each temporary's defining block, finds uses in other
+ * blocks, excludes recomputable alloca addresses, and reserves one persistent
+ * frame spill for every cross-block value.
+ */
 
 #pragma once
 
@@ -30,6 +39,8 @@
 namespace zanna::codegen::aarch64 {
 
 /// @brief Result of cross-block liveness analysis.
+/// @invariant Every key in @ref crossBlockSpillOffset also appears in
+///            @ref crossBlockTemps.
 struct LivenessInfo {
     /// @brief Map of temp ID to the block index where it's defined.
     std::unordered_map<unsigned, std::size_t> tempDefBlock;
@@ -48,7 +59,8 @@ struct LivenessInfo {
 /// @param fn The IL function to analyze.
 /// @param allocaTemps Set of temp IDs that are allocas (excluded from analysis).
 /// @param fb Frame builder for allocating spill slots.
-/// @returns LivenessInfo containing the analysis results.
+/// @return LivenessInfo containing the analysis results.
+/// @post @p fb contains a spill slot for every returned cross-block temp.
 LivenessInfo analyzeCrossBlockLiveness(const il::core::Function &fn,
                                        const std::unordered_set<unsigned> &allocaTemps,
                                        FrameBuilder &fb);

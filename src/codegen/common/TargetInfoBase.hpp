@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/TargetInfoBase.hpp
+// File: src/codegen/common/TargetInfoBase.hpp
 // Purpose: Target-independent base for ABI target information structs.
 // Key invariants: Common fields shared by all backend TargetInfo types; each
 //                 backend extends this with target-specific extras.
@@ -20,6 +20,9 @@
 #include <array>
 #include <cstddef>
 #include <vector>
+
+/// @file
+/// @brief Defines ABI register sets common to all native target descriptions.
 
 namespace zanna::codegen::common {
 

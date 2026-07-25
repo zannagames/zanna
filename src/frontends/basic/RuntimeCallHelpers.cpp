@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
+/// @file RuntimeCallHelpers.cpp
 /// @brief Implements the BASIC runtime call builder.
 /// @details Provides the out-of-line definitions for @ref RuntimeCallBuilder.
 ///          The builder offers a fluent interface for assembling runtime call
@@ -23,6 +23,7 @@ namespace il::frontends::basic {
 /// @details Stores a reference to the lowering context and initializes an empty
 ///          argument list; no instructions are emitted until a call is made.
 /// @param lowerer Lowering engine used to emit IL instructions.
+/// @pre @p lowerer outlives the builder.
 RuntimeCallBuilder::RuntimeCallBuilder(Lowerer &lowerer) noexcept : lowerer_(lowerer) {}
 
 /// @brief Record a source location for subsequent emissions.
@@ -102,8 +103,8 @@ RuntimeCallBuilder &RuntimeCallBuilder::argF64(Value v, Type ty) {
 }
 
 /// @brief Request a runtime helper feature before emitting a call.
-/// @details Delegates to @ref Lowerer::requestHelper so the helper is declared
-///          and linked when needed.
+/// @details Delegates to @ref Lowerer::requestHelper so the helper requirement
+///          is included in later runtime declaration emission.
 /// @param feature Runtime feature to request.
 /// @return Reference to this builder for chaining.
 RuntimeCallBuilder &RuntimeCallBuilder::withFeature(RuntimeFeature feature) {
@@ -133,7 +134,8 @@ RuntimeCallBuilder &RuntimeCallBuilder::withManualHelper(void (Lowerer::*require
 
 /// @brief Emit a void runtime call with collected arguments.
 /// @details Applies the stored source location and emits a call with no return
-///          value and no error handling.
+///          value and no error handling. Collected arguments are retained until
+///          @ref clearArgs is called.
 /// @param callee Runtime function name to call.
 void RuntimeCallBuilder::call(const std::string &callee) {
     applyLoc();
@@ -142,7 +144,7 @@ void RuntimeCallBuilder::call(const std::string &callee) {
 
 /// @brief Emit a runtime call that returns a value.
 /// @details Applies the stored source location and emits a call with the given
-///          return type; no error handling is added.
+///          return type; no error handling is added and arguments are retained.
 /// @param retTy Return type of the call.
 /// @param callee Runtime function name to call.
 /// @return Value representing the call result.
@@ -187,6 +189,7 @@ void RuntimeCallBuilder::callWithErrCheck(Type retTy,
                                           std::string_view labelStem) {
     applyLoc();
     Value err = lowerer_.emitCallRet(retTy, callee, args_);
+    /// Emit the standard trap path using the returned runtime error code.
     lowerer_.emitRuntimeErrCheck(err,
                                  loc_.value_or(il::support::SourceLoc{}),
                                  labelStem,
@@ -201,6 +204,7 @@ void RuntimeCallBuilder::callWithErrCheck(Type retTy,
 /// @param callee Runtime function name to call.
 /// @param labelStem Prefix for generated failure/continuation blocks.
 /// @param onFailure Callback invoked in the failure block.
+/// @note @p onFailure is invoked during this call and is not retained.
 void RuntimeCallBuilder::callWithErrHandler(Type retTy,
                                             const std::string &callee,
                                             std::string_view labelStem,
@@ -227,14 +231,15 @@ std::optional<il::support::SourceLoc> RuntimeCallBuilder::location() const noexc
 }
 
 /// @brief Clear collected arguments.
-/// @details Resets the internal argument list so the builder can be reused.
+/// @details Resets only the argument list so the builder can be reused; the
+///          optional source location remains set.
 void RuntimeCallBuilder::clearArgs() noexcept {
     args_.clear();
 }
 
 /// @brief Apply the stored source location to the lowerer.
-/// @details Updates the lowerer's current source location just before emitting
-///          instructions so diagnostics and debug info are anchored correctly.
+/// @details When a location was supplied via @ref at, copies it to the lowerer's
+///          current location. With no stored location, leaves lowerer state unchanged.
 void RuntimeCallBuilder::applyLoc() const {
     if (loc_)
         lowerer_.curLoc = *loc_;

@@ -5,10 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the table-driven constant folder used by the BASIC frontend.  The
-// folder interprets literal expressions, applies numeric promotion rules, and
-// materialises folded AST nodes while preserving the language's 64-bit wrapping
-// semantics and string concatenation behaviour.
+// File: src/frontends/basic/ConstFolder.cpp
+// Purpose: Implement table-driven literal folding and supported AST traversal
+//          for the BASIC frontend.
+// Ownership/Lifetime: Replacements transfer through unique_ptr slots owned by
+//                     the caller's Program.
+// Links: src/frontends/basic/ConstFolder.hpp,
+//        src/frontends/basic/constfold/Dispatch.hpp
 //
 //===----------------------------------------------------------------------===//
 //
@@ -39,9 +42,15 @@ namespace {
 ///          subtrees into canonical nodes.  The pass threads context via member
 ///          pointers so nested visits can replace the current expression or
 ///          statement without returning large structures.
+/// @invariant currentExpr_ and currentStmt_ point to the active owning slots
+///            only during their corresponding recursive dispatch.
 class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
   public:
     /// @brief Fold all procedures and top-level statements in a program.
+    /// @details Dispatches each entry in @c prog.procs and then @c prog.main.
+    ///          FunctionDecl and SubDecl visitors are currently no-ops, while
+    ///          supported declaration and main-statement visitors recurse as
+    ///          documented below.
     /// @param prog Program whose AST will be mutated in place.
     void run(Program &prog) {
         for (auto &decl : prog.procs)
@@ -75,6 +84,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
 
     /// @brief Access the expression slot currently being rewritten.
     /// @return Reference to the pointer tracked by the visitor.
+    /// @pre Called only while foldExpr() has installed a non-null currentExpr_.
     ExprPtr &exprSlot() {
         return *currentExpr_;
     }
@@ -311,10 +321,13 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     struct BuiltinDispatchEntry {
+        ///< Builtin enumerator matched by this dispatch row.
         BuiltinCallExpr::Builtin builtin;
+        ///< Member handler invoked for a matching call.
         bool (ConstFolderPass::*folder)(BuiltinCallExpr &);
     };
 
+    /// Supported pure-builtin folders searched in declaration order.
     static constexpr std::array<BuiltinDispatchEntry, 14> kBuiltinDispatch{{
         {BuiltinCallExpr::Builtin::Len, &ConstFolderPass::tryFoldLen},
         {BuiltinCallExpr::Builtin::Mid, &ConstFolderPass::tryFoldMid},
@@ -348,22 +361,28 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     /// @brief Variable references cannot be folded directly.
     void visit(VarExpr &) override {}
 
-    /// @brief Fold array index expressions before evaluating bounds.
+    /// @brief Fold the legacy single-dimensional array index when present.
+    /// @details The @c indices vector used by multidimensional references is
+    ///          not traversed by this handler.
+    /// @param expr Array access whose legacy index slot may be rewritten.
     void visit(ArrayExpr &expr) override {
         foldExpr(expr.index);
     }
 
     /// @brief Lower bound queries are left untouched because they resolve at runtime.
+    /// @param expr Query whose optional dimension expression is folded.
     void visit(LBoundExpr &expr) override {
         foldExpr(expr.dimension);
     }
 
     /// @brief Upper bound queries are left untouched because they resolve at runtime.
+    /// @param expr Query whose optional dimension expression is folded.
     void visit(UBoundExpr &expr) override {
         foldExpr(expr.dimension);
     }
 
     /// @brief Fold unary operations when the operand collapses to a literal.
+    /// @param expr Unary node whose operand and operation may be replaced.
     void visit(UnaryExpr &expr) override {
         foldExpr(expr.expr);
         switch (expr.op) {
@@ -384,6 +403,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold binary operations by evaluating literal operands and applying shortcuts.
+    /// @param expr Binary node folded left-first with short-circuit handling.
     void visit(BinaryExpr &expr) override {
         foldExpr(expr.lhs);
 
@@ -421,6 +441,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold builtin function calls whose arguments are literal values.
+    /// @param expr Builtin call whose arguments are folded before dispatch.
     void visit(BuiltinCallExpr &expr) override {
         for (auto &arg : expr.args)
             foldExpr(arg);
@@ -438,6 +459,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(CallExpr &) override {}
 
     /// @brief Fold constructor arguments to expose more literal values downstream.
+    /// @param expr Construction expression whose arguments are visited in order.
     void visit(NewExpr &expr) override {
         for (auto &arg : expr.args)
             foldExpr(arg);
@@ -447,11 +469,13 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(MeExpr &) override {}
 
     /// @brief Fold the receiver of member accesses before further lowering.
+    /// @param expr Member access whose optional base slot is folded.
     void visit(MemberAccessExpr &expr) override {
         foldExpr(expr.base);
     }
 
     /// @brief Fold the receiver and arguments of method invocations.
+    /// @param expr Method call traversed receiver-first, then argument order.
     void visit(MethodCallExpr &expr) override {
         foldExpr(expr.base);
         for (auto &arg : expr.args)
@@ -459,11 +483,13 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold inside IS expression (value only; type is metadata).
+    /// @param expr Type test whose value expression is folded.
     void visit(IsExpr &expr) override {
         foldExpr(expr.value);
     }
 
     /// @brief Fold inside AS expression (value only; type is metadata).
+    /// @param expr Cast whose value expression is folded.
     void visit(AsExpr &expr) override {
         foldExpr(expr.value);
     }
@@ -476,6 +502,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(LabelStmt &) override {}
 
     /// @brief Fold expressions embedded in PRINT statement items.
+    /// @param stmt PRINT statement whose expression-kind items are visited.
     void visit(PrintStmt &stmt) override {
         for (auto &item : stmt.items) {
             if (item.kind == PrintItem::Kind::Expr)
@@ -484,6 +511,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold channel and argument expressions for PRINT # statements.
+    /// @param stmt PRINT# statement traversed channel-first, then arguments.
     void visit(PrintChStmt &stmt) override {
         foldExpr(stmt.channelExpr);
         for (auto &arg : stmt.args)
@@ -494,6 +522,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(BeepStmt &) override {}
 
     /// @brief Fold arguments within CALL statements while leaving target intact.
+    /// @param stmt CALL whose CallExpr or MethodCallExpr operands may be folded.
     void visit(CallStmt &stmt) override {
         if (!stmt.call)
             return;
@@ -523,6 +552,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(AltScreenStmt &) override {}
 
     /// @brief Fold the foreground/background expressions for COLOR statements.
+    /// @param stmt COLOR statement traversed foreground-first, then background.
     void visit(ColorStmt &stmt) override {
         foldExpr(stmt.fg);
         foldExpr(stmt.bg);
@@ -531,29 +561,35 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     /// @brief Fold the millisecond duration in SLEEP statements.
     /// @details The runtime clamps negatives; folding only simplifies literal
     ///          arithmetic in the duration expression, leaving semantics to lowering/runtime.
+    /// @param stmt SLEEP statement whose optional duration is folded.
     void visit(SleepStmt &stmt) override {
         foldExpr(stmt.ms);
     }
 
     /// @brief Fold cursor position expressions for LOCATE statements.
+    /// @param stmt LOCATE statement traversed row-first, then column.
     void visit(LocateStmt &stmt) override {
         foldExpr(stmt.row);
         foldExpr(stmt.col);
     }
 
     /// @brief Fold both the target and assigned expression in LET statements.
+    /// @param stmt Assignment traversed target-first, then value.
     void visit(LetStmt &stmt) override {
         foldExpr(stmt.target);
         foldExpr(stmt.expr);
     }
 
     /// @brief Fold initializer expressions in CONST statements.
+    /// @param stmt Constant declaration whose optional initializer is folded.
     void visit(ConstStmt &stmt) override {
         if (stmt.initializer)
             foldExpr(stmt.initializer);
     }
 
     /// @brief Fold array size expressions in DIM statements when present.
+    /// @details Only the legacy @c size slot is traversed; @c dimensions is not.
+    /// @param stmt DIM declaration inspected for an array size.
     void visit(DimStmt &stmt) override {
         if (stmt.isArray && stmt.size)
             foldExpr(stmt.size);
@@ -566,6 +602,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(SharedStmt &) override {}
 
     /// @brief Fold new bounds in REDIM statements when present.
+    /// @param stmt REDIM traversed legacy size-first, then all dimensions.
     void visit(ReDimStmt &stmt) override {
         if (stmt.size)
             foldExpr(stmt.size);
@@ -574,6 +611,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold expressions in SWAP statements when present.
+    /// @param stmt SWAP statement traversed left-first, then right.
     void visit(SwapStmt &stmt) override {
         if (stmt.lhs)
             foldExpr(stmt.lhs);
@@ -581,10 +619,11 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
             foldExpr(stmt.rhs);
     }
 
-    /// @brief RANDOMIZE statements carry no foldable expressions.
+    /// @brief Leave RANDOMIZE unchanged, including any stored seed expression.
     void visit(RandomizeStmt &) override {}
 
     /// @brief Fold predicates and branch bodies within IF statements.
+    /// @param stmt IF traversed condition, THEN, ELSEIF pairs, then ELSE.
     void visit(IfStmt &stmt) override {
         foldExpr(stmt.cond);
         foldStmt(stmt.then_branch);
@@ -596,6 +635,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold selectors and arms inside SELECT CASE statements.
+    /// @param stmt SELECT traversed selector, arm bodies, then ELSE body.
     void visit(SelectCaseStmt &stmt) override {
         foldExpr(stmt.selector);
         for (auto &arm : stmt.arms)
@@ -606,6 +646,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold loop predicates and bodies for WHILE statements.
+    /// @param stmt WHILE traversed condition-first, then body order.
     void visit(WhileStmt &stmt) override {
         foldExpr(stmt.cond);
         for (auto &bodyStmt : stmt.body)
@@ -613,6 +654,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold DO loop conditions (when present) and bodies.
+    /// @param stmt DO traversed optional condition-first, then body order.
     void visit(DoStmt &stmt) override {
         if (stmt.cond)
             foldExpr(stmt.cond);
@@ -621,6 +663,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold range and body expressions for FOR loops.
+    /// @param stmt FOR traversed start, end, optional step, then body.
     void visit(ForStmt &stmt) override {
         foldExpr(stmt.start);
         foldExpr(stmt.end);
@@ -631,6 +674,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold body expressions for FOR EACH loops.
+    /// @param stmt FOR EACH whose body statements are traversed in order.
     void visit(ForEachStmt &stmt) override {
         for (auto &bodyStmt : stmt.body)
             foldStmt(bodyStmt);
@@ -649,6 +693,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(GosubStmt &) override {}
 
     /// @brief Fold OPEN statement operands such as path and channel.
+    /// @param stmt OPEN traversed optional path-first, then channel.
     void visit(OpenStmt &stmt) override {
         if (stmt.pathExpr)
             foldExpr(stmt.pathExpr);
@@ -657,12 +702,14 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     }
 
     /// @brief Fold channel expressions in CLOSE statements.
+    /// @param stmt CLOSE statement whose optional channel is folded.
     void visit(CloseStmt &stmt) override {
         if (stmt.channelExpr)
             foldExpr(stmt.channelExpr);
     }
 
     /// @brief Fold channel and offset expressions in SEEK statements.
+    /// @param stmt SEEK traversed optional channel-first, then position.
     void visit(SeekStmt &stmt) override {
         if (stmt.channelExpr)
             foldExpr(stmt.channelExpr);
@@ -680,6 +727,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(EndStmt &) override {}
 
     /// @brief Fold prompts within INPUT statements when literal.
+    /// @param stmt INPUT statement whose optional prompt is folded.
     void visit(InputStmt &stmt) override {
         if (stmt.prompt)
             foldExpr(stmt.prompt);
@@ -689,50 +737,57 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(InputChStmt &) override {}
 
     /// @brief Fold channel and destination expressions in LINE INPUT #.
+    /// @param stmt LINE INPUT# traversed channel-first, then target.
     void visit(LineInputChStmt &stmt) override {
         foldExpr(stmt.channelExpr);
         foldExpr(stmt.targetVar);
     }
 
-    /// @brief RETURN statements are control-only and do not fold expressions.
+    /// @brief Leave RETURN unchanged, including any optional return value.
     void visit(ReturnStmt &) override {}
 
-    /// @brief FUNCTION declarations are processed elsewhere; nothing to fold here.
+    /// @brief Leave FUNCTION declarations and their bodies unchanged.
     void visit(FunctionDecl &) override {}
 
-    /// @brief SUB declarations are processed elsewhere; nothing to fold here.
+    /// @brief Leave SUB declarations and their bodies unchanged.
     void visit(SubDecl &) override {}
 
     /// @brief Recursively fold every statement within a statement list.
+    /// @param stmt Sequence whose children are traversed in stored order.
     void visit(StmtList &stmt) override {
         for (auto &child : stmt.stmts)
             foldStmt(child);
     }
 
     /// @brief Fold the target expression of DELETE statements.
+    /// @param stmt DELETE statement whose target is folded.
     void visit(DeleteStmt &stmt) override {
         foldExpr(stmt.target);
     }
 
     /// @brief Fold the body statements of constructors.
+    /// @param stmt Constructor whose body is traversed in order.
     void visit(ConstructorDecl &stmt) override {
         for (auto &bodyStmt : stmt.body)
             foldStmt(bodyStmt);
     }
 
     /// @brief Fold the body statements of destructors.
+    /// @param stmt Destructor whose body is traversed in order.
     void visit(DestructorDecl &stmt) override {
         for (auto &bodyStmt : stmt.body)
             foldStmt(bodyStmt);
     }
 
     /// @brief Fold the body statements of method declarations.
+    /// @param stmt Method whose body is traversed in order.
     void visit(MethodDecl &stmt) override {
         for (auto &bodyStmt : stmt.body)
             foldStmt(bodyStmt);
     }
 
     /// @brief Fold every member statement within class declarations.
+    /// @param stmt Class whose members are traversed in order.
     void visit(ClassDecl &stmt) override {
         for (auto &member : stmt.members)
             foldStmt(member);
@@ -742,6 +797,7 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     void visit(TypeDecl &) override {}
 
     /// @brief Fold members inside INTERFACE declarations.
+    /// @param stmt Interface whose members are traversed in order.
     void visit(InterfaceDecl &stmt) override {
         for (auto &member : stmt.members)
             foldStmt(member);
@@ -751,14 +807,15 @@ class ConstFolderPass : public MutExprVisitor, public MutStmtVisitor {
     /// @details USING is compile-time only and has no expressions to fold.
     void visit(UsingDecl &) override {}
 
+    ///< Active owning expression slot, or null outside expression dispatch.
     ExprPtr *currentExpr_ = nullptr;
+    ///< Active owning statement slot, or null outside statement dispatch.
     StmtPtr *currentStmt_ = nullptr;
 };
 
 } // namespace
 
-/// @brief Perform constant folding across an entire BASIC program.
-/// @param prog Program to mutate; expressions are folded in place.
+/// @copydoc foldConstants()
 void foldConstants(Program &prog) {
     ConstFolderPass pass;
     pass.run(prog);

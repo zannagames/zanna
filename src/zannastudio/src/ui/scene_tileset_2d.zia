@@ -52,6 +52,7 @@ final MAX_TILESET_SOURCE_PIXELS: Integer = 4194304;
 final MAX_SCENE_TILESET_PIXELS: Integer = 8388608;
 final MAX_SCALED_CACHE_PIXELS: Integer = 8388608;
 final MAX_PALETTE_TILES: Integer = 512;
+final MAX_SPRITE_ENTRIES: Integer = 64;
 final PALETTE_COLUMNS: Integer = 8;
 final PALETTE_TILE_SIZE: Integer = 28;
 final PALETTE_STRIDE: Integer = 30;
@@ -150,6 +151,10 @@ class SceneTilesetLibrary2D {
     hide Integer cachedPixelCount;
     hide Integer lastExternalPollMs;
     hide Integer externalPollLayer;
+    hide List[String] spritePaths;
+    hide List[TilesetEntry2D] spriteEntries;
+    hide Integer spriteTileWidth;
+    hide Integer spriteTileHeight;
 
     expose func init() {
         entries = [];
@@ -162,6 +167,10 @@ class SceneTilesetLibrary2D {
         cachedPixelCount = 0;
         lastExternalPollMs = -1;
         externalPollLayer = 0;
+        spritePaths = [];
+        spriteEntries = [];
+        spriteTileWidth = 0;
+        spriteTileHeight = 0;
     }
 
     /// @brief Rebuild every layer preview from the current canonical scene.
@@ -173,7 +182,13 @@ class SceneTilesetLibrary2D {
         ClearScaledCache();
         lastExternalPollMs = Clock.NowMs();
         externalPollLayer = 0;
+        spritePaths = [];
+        spriteEntries = [];
+        spriteTileWidth = 0;
+        spriteTileHeight = 0;
         if scene == null { return; }
+        spriteTileWidth = scene.TileWidth;
+        spriteTileHeight = scene.TileHeight;
 
         var layer = 0;
         while layer < scene.LayerCount() {
@@ -214,14 +229,21 @@ class SceneTilesetLibrary2D {
             return false;
         }
         lastExternalPollMs = now;
-        if entries.count() == 0 { return false; }
+        var total = entries.count() + spriteEntries.count();
+        if total == 0 { return false; }
 
         var visited = 0;
-        while visited < entries.count() {
-            if externalPollLayer >= entries.count() {
+        while visited < total {
+            if externalPollLayer >= total {
                 externalPollLayer = 0;
             }
-            var entry = entries.get(externalPollLayer);
+            var entry: TilesetEntry2D = null;
+            if externalPollLayer < entries.count() {
+                entry = entries.get(externalPollLayer);
+            } else {
+                entry = spriteEntries.get(
+                    externalPollLayer - entries.count());
+            }
             externalPollLayer = externalPollLayer + 1;
             visited = visited + 1;
             if entry != null and entry.authoredPath != "" {
@@ -305,6 +327,16 @@ class SceneTilesetLibrary2D {
     /// @brief Render a scrollable, bounded palette for one layer.
     expose func RenderPalette(layer: Integer,
                               selectedTile: Integer) -> Pixels {
+        return RenderPaletteMarked(layer, selectedTile, []);
+    }
+
+    /// @brief Render the bounded palette with behavior badges on marked tiles.
+    /// @details Marked tile ids receive a small corner badge so authored
+    ///          collision/data/animation/autotile rules are visible at a
+    ///          glance (ADR 0176). Marks never affect hit testing.
+    expose func RenderPaletteMarked(layer: Integer,
+                                    selectedTile: Integer,
+                                    marked: List[Integer]) -> Pixels {
         var entry = Entry(layer);
         if entry == null or entry.pixels == null or entry.tileCount <= 0 {
             return null;
@@ -336,6 +368,11 @@ class SceneTilesetLibrary2D {
                     PALETTE_TILE_SIZE - 2, PALETTE_TILE_SIZE - 2,
                     Color.RGB(87, 58, 92));
             }
+            if TileIsMarked(marked, tile) {
+                palette.DrawBox(
+                    x + PALETTE_STRIDE - 8, y + 2, 6, 6,
+                    Color.RGB(255, 190, 72));
+            }
             if tile == selectedTile {
                 palette.DrawFrame(
                     x, y, PALETTE_STRIDE, PALETTE_STRIDE,
@@ -350,6 +387,16 @@ class SceneTilesetLibrary2D {
         return palette;
     }
 
+    /// @brief Return whether one tile id appears in the bounded marked list.
+    hide func TileIsMarked(marked: List[Integer], tile: Integer) -> Boolean {
+        var index = 0;
+        while index < marked.count() {
+            if marked.get(index) == tile { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
     /// @brief Blit one tileset frame into a square editor-preview cell.
     /// @return False for missing assets, invalid IDs, or exhausted cache budget.
     expose func DrawTile(destination: Pixels,
@@ -358,7 +405,71 @@ class SceneTilesetLibrary2D {
                          x: Integer,
                          y: Integer,
                          cellSize: Integer) -> Boolean {
-        var entry = Entry(layer);
+        return DrawEntryFrame(
+            destination, Entry(layer), layer + ":", tileId, x, y, cellSize);
+    }
+
+    /// @brief Blit one frame of a cached object-sprite image (ADR 0179).
+    /// @details `frame` is zero-based and addresses the image on the scene's
+    ///          tile grid, exactly like layer-atlas frames. Sprite images share
+    ///          the layer-preview decode and scaled-cache budgets, so a
+    ///          sprite-heavy scene degrades to markers deterministically.
+    expose func DrawSpriteFrame(destination: Pixels,
+                                authoredPath: String,
+                                frame: Integer,
+                                x: Integer,
+                                y: Integer,
+                                cellSize: Integer) -> Boolean {
+        var index = SpriteEntryIndex(authoredPath);
+        if index < 0 { return false; }
+        return DrawEntryFrame(
+            destination,
+            spriteEntries.get(index),
+            "s" + index + ":",
+            frame + 1,
+            x,
+            y,
+            cellSize);
+    }
+
+    /// @brief Return one cached sprite entry index, decoding on first use.
+    hide func SpriteEntryIndex(authoredPath: String) -> Integer {
+        var path = Str.Trim(authoredPath);
+        if path == "" or spriteTileWidth <= 0 { return -1; }
+        var index = 0;
+        while index < spritePaths.count() {
+            if spritePaths.get(index) == path { return index; }
+            index = index + 1;
+        }
+        if spritePaths.count() >= MAX_SPRITE_ENTRIES { return -1; }
+        var entry = DecodeEntry(
+            path, documentPath, spriteTileWidth, spriteTileHeight);
+        if entry.pixels != null {
+            var pixelCount = entry.width * entry.height;
+            if sourcePixelCount + pixelCount > MAX_SCENE_TILESET_PIXELS {
+                entry.pixels = null;
+                entry.columns = 0;
+                entry.rows = 0;
+                entry.tileCount = 0;
+                entry.error =
+                    "Scene tileset previews exceed the 32 MB decoded limit.";
+            } else {
+                sourcePixelCount = sourcePixelCount + pixelCount;
+            }
+        }
+        spritePaths.add(path);
+        spriteEntries.add(entry);
+        return spritePaths.count() - 1;
+    }
+
+    /// @brief Shared bounded scale-cache blit for layer and sprite frames.
+    hide func DrawEntryFrame(destination: Pixels,
+                             entry: TilesetEntry2D,
+                             keyPrefix: String,
+                             tileId: Integer,
+                             x: Integer,
+                             y: Integer,
+                             cellSize: Integer) -> Boolean {
         if destination == null or entry == null or entry.pixels == null
            or cellSize <= 0 or tileId <= 0 or tileId > entry.tileCount {
             return false;
@@ -368,7 +479,7 @@ class SceneTilesetLibrary2D {
             cacheCellSize = cellSize;
         }
 
-        var key = layer + ":" + tileId;
+        var key = keyPrefix + tileId;
         var cachedTile: ScaledTile2D = null;
         if Map.Has(scaledTileCache, key) {
             cachedTile = Map.Get(scaledTileCache, key) as ScaledTile2D;

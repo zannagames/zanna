@@ -25,6 +25,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file Lowerer_Procedure_Emit.cpp
+ * @brief Implements procedure pipeline orchestration, parameters, and cleanup.
+ *
+ * Each LoweringContext borrows its AST vectors and configuration. This unit
+ * creates function storage in the active module, owns no AST/IL nodes itself,
+ * and leaves the procedure context positioned according to the emitted path.
+ */
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/EmitCommon.hpp"
 #include "frontends/basic/Lowerer.hpp"
@@ -48,6 +57,7 @@ using pipeline_detail::coreTypeForAstType;
 // =============================================================================
 
 /// @brief Construct procedure-lowering helpers bound to a parent Lowerer.
+/// @param lowerer Borrowed parent that must outlive this pipeline helper.
 ProcedureLowering::ProcedureLowering(Lowerer &lowerer) : lowerer(lowerer) {}
 
 /// @brief Build a lowering context for a specific procedure body.
@@ -143,6 +153,7 @@ void ProcedureLowering::emitProcedureIL(LoweringContext &ctx) {
         // Remove any empty blocks (e.g., the exit block created by skeleton that's now unreachable)
         if (ctx.function) {
             auto &blocks = ctx.function->blocks;
+            /// Identify skeleton blocks containing no emitted instructions.
             blocks.erase(std::remove_if(blocks.begin(),
                                         blocks.end(),
                                         [](const auto &bb) { return bb.instructions.empty(); }),
@@ -359,6 +370,7 @@ void Lowerer::materializeSingleParam(const Param &p, size_t index, size_t ilPara
 ///          declared return type, and delegates to @ref lowerProcedure.
 /// @param decl AST node describing the function declaration.
 void Lowerer::lowerFunctionDecl(const FunctionDecl &decl) {
+    /// Produce the default return value dictated by the declared return kind.
     auto defaultRet = [&]() {
         if (!decl.explicitClassRetQname.empty())
             return Value::null();
@@ -378,6 +390,7 @@ void Lowerer::lowerFunctionDecl(const FunctionDecl &decl) {
     ProcedureConfig config;
     if (!decl.explicitClassRetQname.empty()) {
         config.retType = Type(Type::Kind::Ptr);
+        /// Retag the function-name result slot with its resolved class type.
         config.postCollect = [&]() {
             if (findSymbol(decl.name)) {
                 std::string q = resolveQualifiedClassCasing(JoinDots(decl.explicitClassRetQname));
@@ -386,12 +399,15 @@ void Lowerer::lowerFunctionDecl(const FunctionDecl &decl) {
         };
     } else {
         config.retType = functionRetTypeFromHint(decl.name, decl.explicitRetType);
+        /// Retag the function-name result slot with its declared scalar type.
         config.postCollect = [&]() {
             if (findSymbol(decl.name))
                 setSymbolType(decl.name, decl.ret);
         };
     }
+    /// Return the declared default when the function has no statements.
     config.emitEmptyBody = [&]() { emitRet(defaultRet()); };
+    /// Load the VB-style function-name result slot or fall back to the default.
     config.emitFinalReturn = [&]() {
         // VB-style implicit return: check if function name was assigned
         if (auto storage = resolveVariableStorage(decl.name, {})) {
@@ -435,7 +451,9 @@ void Lowerer::lowerFunctionDecl(const FunctionDecl &decl) {
 void Lowerer::lowerSubDecl(const SubDecl &decl) {
     ProcedureConfig config;
     config.retType = Type(Type::Kind::Void);
+    /// Terminate an empty SUB.
     config.emitEmptyBody = [&]() { emitRetVoid(); };
+    /// Terminate the synthetic exit block of a non-empty SUB.
     config.emitFinalReturn = [&]() { emitRetVoid(); };
 
     const std::string ilName = decl.qualifiedName.empty() ? decl.name : decl.qualifiedName;
@@ -483,21 +501,26 @@ void Lowerer::resetLoweringState() {
 // =============================================================================
 
 /// @brief Access the mutable procedure context for the current lowering run.
+/// @return Mutable context owned by this Lowerer.
 Lowerer::ProcedureContext &Lowerer::context() noexcept {
     return context_;
 }
 
 /// @brief Access the immutable procedure context for the current lowering run.
+/// @return Const context owned by this Lowerer.
 const Lowerer::ProcedureContext &Lowerer::context() const noexcept {
     return context_;
 }
 
 /// @brief Construct an @ref Emit helper bound to the current lowering state.
+/// @return Lightweight facade borrowing this Lowerer.
 Emit Lowerer::emitCommon() noexcept {
     return Emit(*this);
 }
 
 /// @brief Construct an emit helper and pre-set its source location.
+/// @param loc Source location installed in the facade.
+/// @return Lightweight facade borrowing this Lowerer.
 Emit Lowerer::emitCommon(il::support::SourceLoc loc) noexcept {
     Emit helper(*this);
     helper.at(loc);
@@ -505,12 +528,14 @@ Emit Lowerer::emitCommon(il::support::SourceLoc loc) noexcept {
 }
 
 /// @brief Retrieve the shared lowering emitter.
+/// @return Mutable owned emitter reference.
 lower::Emitter &Lowerer::emitter() noexcept {
     assert(emitter_ && "emitter must be initialized");
     return *emitter_;
 }
 
 /// @brief Retrieve the shared lowering emitter (const overload).
+/// @return Const owned emitter reference.
 const lower::Emitter &Lowerer::emitter() const noexcept {
     assert(emitter_ && "emitter must be initialized");
     return *emitter_;
@@ -521,6 +546,10 @@ const lower::Emitter &Lowerer::emitter() const noexcept {
 // =============================================================================
 
 /// @brief Reserve a fresh temporary identifier for IL value creation.
+/// @details Prefers the active builder's allocator, otherwise advances the
+///          procedure context counter. If a function exists, its value-name
+///          table is extended and an empty entry receives a `%tN` name.
+/// @return Reserved identifier.
 unsigned Lowerer::nextTempId() {
     ProcedureContext &ctx = context();
     unsigned id = 0;
@@ -542,6 +571,7 @@ unsigned Lowerer::nextTempId() {
 }
 
 /// @brief Generate a unique fallback block label for ad-hoc control flow.
+/// @return Mangled `bb_N` label using the next fallback counter.
 std::string Lowerer::nextFallbackBlockLabel() {
     return mangler.block("bb_" + std::to_string(nextFallbackBlockId++));
 }

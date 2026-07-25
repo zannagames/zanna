@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/SchedulerPass.hpp
+// File: src/codegen/aarch64/passes/SchedulerPass.hpp
 // Purpose: Declare the post-RA instruction scheduling pass for AArch64.
 // Key invariants: Runs after RegAllocPass (physical registers must be assigned).
 //                 Reorders instructions within each basic block to reduce
@@ -22,21 +22,32 @@
 
 #include "codegen/aarch64/passes/PassManager.hpp"
 
+/// @file
+/// @brief Declares dependency-aware post-allocation scheduling for AArch64 MIR.
+
 namespace zanna::codegen::aarch64::passes {
 
 /// @brief Post-RA instruction scheduler using list scheduling with AArch64 latencies.
 ///
-/// For each basic block, constructs a data-dependency DAG from the
-/// post-allocation physical-register operands and applies a list-scheduling
-/// algorithm that prioritises instructions on the critical path.  The schedule
-/// reduces load-use stalls (ldr latency ~4 cycles on Apple Silicon) by moving
-/// independent instructions between a load and its first use.
+/// For each manageable basic-block segment, the pass constructs a dependency
+/// DAG from post-allocation physical-register operands, memory accesses, NZCV,
+/// stack-pointer effects, and calls. A deterministic priority queue then selects
+/// ready instructions by descending critical-path length and original position.
+///
+/// Calls and mid-block control transfers divide a block into independently
+/// scheduled segments, while the final terminator group remains in its original
+/// order. Oversized functions or segments are deliberately left unchanged to
+/// bound compile time. The scheduler neither creates nor removes instructions.
 class SchedulerPass final : public Pass {
   public:
-    /// @brief Apply post-RA scheduling to every basic block in every function.
-    /// @param module Module state; mir must have physical registers assigned.
-    /// @param diags  Diagnostic sink (scheduling is non-failing; always true).
-    /// @return Always true; scheduling failures fall back to the original order.
+    /// @brief Schedule every eligible basic block in every allocated function.
+    ///
+    /// @param[in,out] module Pipeline state containing post-allocation MIR.
+    ///                         `module.ti` supplies caller-saved register sets
+    ///                         used to model call clobbers.
+    /// @param[in,out] diags Diagnostic sink used when target information is
+    ///                      missing.
+    /// @return `true` after scheduling, or `false` if `module.ti` is null.
     bool run(AArch64Module &module, Diagnostics &diags) override;
 };
 

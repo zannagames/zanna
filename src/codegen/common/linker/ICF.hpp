@@ -5,20 +5,25 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/ICF.hpp
+// File: src/codegen/common/linker/ICF.hpp
 // Purpose: Identical Code Folding (ICF) pass for the native linker.
 //          Identifies per-function .text sections with identical bytes AND
 //          identical relocation signatures, redirects duplicates to a single
 //          canonical copy.
 // Key invariants:
-//   - Only per-function .text.* sections with one Global symbol at offset 0
+//   - Only non-generic executable sections with one Global symbol at offset 0
 //   - Identity = (section bytes, sorted relocation signatures)
-//   - Address-taken functions (referenced by Abs64/Abs32 from data) are excluded
+//   - Address-taken functions (all non-branch references) are excluded
 //   - Non-canonical sections have both data AND relocs cleared
 // Links: codegen/common/linker/StringDedup.hpp
 //        codegen/common/linker/LinkTypes.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ICF.hpp
+ * @brief Declares conservative identical-code folding for native object sections.
+ */
 
 #pragma once
 
@@ -32,12 +37,15 @@ namespace zanna::codegen::linker {
 struct ObjFile;
 struct GlobalSymEntry;
 
-/// Fold identical .text sections across object files.
-/// Scans per-function text sections, groups by content identity (bytes + reloc
-/// signatures), and redirects all duplicates to a single canonical copy.
-///
-/// @param allObjects  All object files (modified in place: sections cleared).
-/// @param globalSyms  Global symbol table (entries redirected to canonical).
+/// @brief Folds identical per-function executable sections across object files.
+/// @details Candidates must contain a single global definition at offset zero,
+///          have no address-taking references, and come from a known non-COFF
+///          target. Identity requires equal bytes and normalized relocation
+///          signatures, not merely equal hashes. Folded definitions are
+///          redirected to a canonical section and their old data/relocations
+///          are cleared.
+/// @param allObjects Object files modified in place during folding.
+/// @param globalSyms Global definitions redirected to canonical locations.
 /// @return Number of sections folded (eliminated).
 size_t foldIdenticalCode(std::vector<ObjFile> &allObjects,
                          std::unordered_map<std::string, GlobalSymEntry> &globalSyms);

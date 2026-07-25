@@ -5,14 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/PreRegAllocOptPass.hpp
+// File: src/codegen/aarch64/passes/PreRegAllocOptPass.hpp
 // Purpose: Pass-manager wrapper for AArch64 pre-register-allocation MIR cleanup.
 // Key invariants:
 //   - Must run after LegalizePass and before RegAllocPass.
-//   - Delegates to PreRegAllocOpt free functions; always returns true.
+//   - Delegates to PreRegAllocOpt free functions after validating target state.
 // Ownership/Lifetime: Stateless pass; mutates AArch64Module::mir in place.
-// Links: codegen/aarch64/passes/PreRegAllocOptPass.cpp,
-//        codegen/aarch64/PreRegAllocOpt.hpp
+// Links: src/codegen/aarch64/passes/PreRegAllocOptPass.cpp,
+//        src/codegen/aarch64/PreRegAllocOpt.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,15 +20,22 @@
 
 #include "codegen/aarch64/passes/PassManager.hpp"
 
+/**
+ * @file
+ * @brief Declares the pass-manager adapter for pre-allocation MIR cleanup.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
-/// @brief Run pre-RA MIR cleanup optimisations (copy coalescing, dead code, etc.).
+/// @brief Runs virtual-copy forwarding and shifted-addressing folds before allocation.
 class PreRegAllocOptPass final : public Pass {
   public:
-    /// @brief Run the pre-RA optimisation pipeline on all MIR functions.
-    /// @param module Module state; mir must have been lowered and legalized.
-    /// @param diags  Diagnostic sink (non-failing; always returns true).
-    /// @return Always true.
+    /**
+     * @brief Applies pre-allocation cleanup to every MIR function.
+     * @param[in,out] module Lowered/legalized module to rewrite.
+     * @param[in,out] diags Sink receiving a missing-target diagnostic.
+     * @return `false` only when `module.ti` is null.
+     */
     bool run(AArch64Module &module, Diagnostics &diags) override;
 };
 

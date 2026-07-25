@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/MachOBindRebase.cpp
+// File: src/codegen/common/linker/MachOBindRebase.cpp
 // Purpose: Mach-O bind/rebase opcode emission and symbol table construction.
 //          Encodes GOT bindings, TLV descriptor bindings, ASLR rebases, and
 //          the nlist symbol table for __LINKEDIT.
@@ -20,6 +20,11 @@
 // Links: codegen/common/linker/MachOBindRebase.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file MachOBindRebase.cpp
+ * @brief Implements compact dyld opcode streams and Mach-O `nlist_64` output.
+ */
 
 #include "codegen/common/linker/MachOBindRebase.hpp"
 #include "codegen/common/linker/ExeWriterUtil.hpp"
@@ -58,8 +63,12 @@ static constexpr uint8_t N_EXT = 0x01;
 static constexpr uint8_t N_UNDF = 0x00;
 static constexpr uint8_t N_SECT = 0x0E;
 
-/// Emit one bind entry for a given symbol at a given segment offset.
-/// @param dylibOrdinal  1-based dylib ordinal for MH_TWOLEVEL. 0 = flat lookup.
+/// @brief Emits one pointer-bind operation for a symbol and segment offset.
+/// @param bindData Destination dyld bind stream.
+/// @param symbolName Unmangled external symbol name.
+/// @param segmentOffset Offset from the selected segment's VM base.
+/// @param dataSegIndex Segment load-command index.
+/// @param dylibOrdinal One-based `MH_TWOLEVEL` ordinal, or zero for flat lookup.
 void emitBindEntry(std::vector<uint8_t> &bindData,
                    const std::string &symbolName,
                    uint64_t segmentOffset,
@@ -92,13 +101,18 @@ void emitBindEntry(std::vector<uint8_t> &bindData,
 
 } // anonymous namespace
 
-/// Look up the dylib ordinal for a symbol. Returns 1 (libSystem) as default.
+/// @brief Looks up a symbol's dylib ordinal.
+/// @param symName Unmangled dynamic symbol name.
+/// @param symOrdinals Explicit symbol-to-ordinal map.
+/// @return Mapped value, including zero for flat lookup, or one for libSystem
+///         when no entry exists.
 static uint32_t lookupOrdinal(const std::string &symName,
                               const std::unordered_map<std::string, uint32_t> &symOrdinals) {
     auto it = symOrdinals.find(symName);
     return (it != symOrdinals.end()) ? it->second : 1;
 }
 
+/// @copydoc buildBindOpcodes(std::vector<uint8_t> &, const std::vector<GotEntry> &, const LinkLayout &, uint64_t, uint32_t, const std::unordered_map<std::string, uint32_t> &, std::ostream &)
 bool buildBindOpcodes(std::vector<uint8_t> &bindData,
                       const std::vector<GotEntry> &gotEntries,
                       const LinkLayout &layout,
@@ -164,6 +178,7 @@ bool buildBindOpcodes(std::vector<uint8_t> &bindData,
     return true;
 }
 
+/// @copydoc buildRebaseOpcodes(std::vector<uint8_t> &, const LinkLayout &, uint64_t, uint32_t)
 void buildRebaseOpcodes(std::vector<uint8_t> &rebaseData,
                         const LinkLayout &layout,
                         uint64_t dataSegVmAddr,
@@ -211,6 +226,7 @@ void buildRebaseOpcodes(std::vector<uint8_t> &rebaseData,
     rebaseData.push_back(REBASE_OPCODE_DONE);
 }
 
+/// @copydoc buildSymtab(std::vector<uint8_t> &, std::vector<uint8_t> &, const LinkLayout &, const std::unordered_set<std::string> &, const std::unordered_map<std::string, uint32_t> &, uint32_t &, uint32_t &)
 void buildSymtab(std::vector<uint8_t> &symtabData,
                  std::vector<uint8_t> &strtabData,
                  const LinkLayout &layout,
@@ -220,6 +236,7 @@ void buildSymtab(std::vector<uint8_t> &symtabData,
                  uint32_t &nUndef) {
     strtabData.push_back(0); // String table starts with NUL.
 
+    /// Appends one string and returns its starting offset in the string table.
     auto addString = [&](const std::string &s) -> uint32_t {
         uint32_t off = static_cast<uint32_t>(strtabData.size());
         strtabData.insert(strtabData.end(), s.begin(), s.end());
@@ -227,6 +244,7 @@ void buildSymtab(std::vector<uint8_t> &symtabData,
         return off;
     };
 
+    /// Appends one serialized 64-bit Mach-O symbol-table record.
     auto writeNlist =
         [&](uint32_t strx, uint8_t type, uint8_t sect, uint16_t desc, uint64_t value) {
             writeLE32(symtabData, strx);

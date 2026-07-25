@@ -11,7 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
+/// @file Lowerer_Statement.cpp
 /// @brief Statement lowering utilities for the BASIC front end.
 /// @details The @ref StatementLowering helper coordinates between numbered BASIC
 ///          lines and the IL block graph, wiring up branches, gosub continuations,
@@ -26,11 +26,11 @@
 
 namespace il::frontends::basic {
 
-/// @brief Construct a lowering helper bound to the owning @ref Lowerer.
+/// @brief Construct a lowering helper bound to a borrowed @ref Lowerer.
 /// @details Stores a reference to the parent lowerer so helper routines can
 ///          access shared state such as the current lowering context, gosub
 ///          stacks, and basic-block tables.
-/// @param lowerer Parent lowerer responsible for emitting IL.
+/// @param lowerer Parent lowerer that must outlive this helper.
 StatementLowering::StatementLowering(Lowerer &lowerer) : lowerer(lowerer) {}
 
 /// @brief Lower a sequential list of BASIC statements into IL blocks.
@@ -44,6 +44,8 @@ StatementLowering::StatementLowering(Lowerer &lowerer) : lowerer(lowerer) {}
 /// @param stopOnTerminated When true the loop exits once a terminator is seen.
 /// @param beforeBranch Optional hook invoked immediately before emitting a
 ///        fallthrough branch.
+/// @pre @p stmts contains no null pointers, an active function exists, and its
+///      line-block map contains every statement's virtual line.
 void StatementLowering::lowerSequence(const std::vector<const Stmt *> &stmts,
                                       bool stopOnTerminated,
                                       const std::function<void(const Stmt &)> &beforeBranch) {
@@ -60,7 +62,8 @@ void StatementLowering::lowerSequence(const std::vector<const Stmt *> &stmts,
     // across all sequences in a procedure since RETURN needs visibility of
     // ALL gosub sites, not just those in the current sequence.
 
-    // Helper to recursively find GOSUB statements, including those nested in StmtList
+    /// Register GOSUB continuations at the current statement level and through
+    /// nested StmtList nodes, reusing the enclosing statement's next block.
     std::function<void(const Stmt *, size_t)> scanForGosub;
     scanForGosub = [&](const Stmt *stmt, size_t nextIdx) {
         if (const auto *gosubStmt = as<const GosubStmt>(*stmt)) {
@@ -163,6 +166,10 @@ void StatementLowering::lowerSequence(const std::vector<const Stmt *> &stmts,
     }
 }
 
+/// @brief Forward sequence lowering to the owned StatementLowering facade.
+/// @param stmts Non-null statement pointers in execution order.
+/// @param stopOnTerminated Whether the facade stops at the first terminated block.
+/// @param beforeBranch Optional hook before normal fallthrough branches.
 void Lowerer::lowerStatementSequence(const std::vector<const Stmt *> &stmts,
                                      bool stopOnTerminated,
                                      const std::function<void(const Stmt &)> &beforeBranch) {

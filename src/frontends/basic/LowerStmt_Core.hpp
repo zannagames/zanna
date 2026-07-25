@@ -40,9 +40,9 @@ void lowerCallStmt(const CallStmt &stmt);
 void lowerReturn(const ReturnStmt &stmt);
 
 /// @brief Normalize a BASIC channel operand to a 32-bit integer.
-/// @details Accepts either 32-bit or 64-bit integer r-values and inserts the
-///          required narrowing conversion so runtime helpers observe the
-///          canonical i32 channel representation.
+/// @details Returns an existing `i32` unchanged. Every other input is first
+///          routed through `i64` coercion and then narrowed to the canonical
+///          runtime channel representation.
 /// @param channel Lowered channel operand.
 /// @param loc Source location for emitted instructions.
 /// @return Normalized r-value carrying the i32 type.
@@ -52,11 +52,14 @@ RVal normalizeChannelToI32(RVal channel, il::support::SourceLoc loc);
 /// @details Creates failure/continuation blocks derived from @p labelStem,
 ///          branches on a non-zero error flag, and invokes @p onFailure in the
 ///          failure block to emit diagnostics or cleanup. Control resumes in the
-///          continuation block when no error occurs.
-/// @param err Runtime error flag to inspect.
+///          continuation block when no error occurs. If no active function or
+///          current block exists, the routine returns without invoking the
+///          callback or emitting instructions.
+/// @param err Runtime `i32` error flag to inspect; zero denotes success.
 /// @param loc Source location for emitted instructions.
 /// @param labelStem Prefix used for naming helper blocks.
-/// @param onFailure Callback invoked to emit failure handling code.
+/// @param onFailure Callback invoked in the failure block with the original
+///                  `i32` error value.
 void emitRuntimeErrCheck(Value err,
                          il::support::SourceLoc loc,
                          std::string_view labelStem,

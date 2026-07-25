@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/CopyPropDCE.cpp
+// File: src/codegen/aarch64/peephole/CopyPropDCE.cpp
 // Purpose: Copy propagation, dead code elimination, dead FP store elimination,
 //          dead flag-setter removal, and compute-into-target folding for the
 //          AArch64 peephole optimizer.
@@ -36,6 +36,9 @@
 #include <unordered_set>
 #include <vector>
 
+/// @file
+/// @brief Implements physical-copy propagation and several AArch64 DCE passes.
+
 namespace zanna::codegen::aarch64::peephole {
 
 namespace {
@@ -45,6 +48,8 @@ namespace {
 ///          single fallthrough-free instruction range. Calls, traps, and branches
 ///          clear all local facts so later malformed or unreachable instructions
 ///          cannot inherit state from before a control-flow edge.
+/// @param opc Opcode to classify.
+/// @return `true` when local dataflow facts must not cross @p opc.
 [[nodiscard]] bool isControlBoundary(MOpcode opc) noexcept {
     return opc == MOpcode::Br || opc == MOpcode::BCond || opc == MOpcode::Ret ||
            opc == MOpcode::Bl || opc == MOpcode::Blr || opc == MOpcode::Cbz ||
@@ -56,6 +61,8 @@ namespace {
 /// @details FP-relative dead-store optimizations cannot prove that a base-relative
 ///          access does not alias an address-taken local or spill slot, so these
 ///          opcodes act as barriers for frame-slot store facts.
+/// @param opc Opcode to classify.
+/// @return `true` for recognized loads and stores through an arbitrary base GPR.
 [[nodiscard]] bool isBaseRelativeMemory(MOpcode opc) noexcept {
     switch (opc) {
         case MOpcode::LdrRegBaseImm:
@@ -95,10 +102,12 @@ namespace {
 
 } // namespace
 
+/// @copydoc propagateCopies
 std::size_t propagateCopies(std::vector<MInstr> &instrs, PeepholeStats &stats) {
     std::unordered_map<uint32_t, MOperand> copyOrigin;
     std::size_t propagated = 0;
 
+    /// Erase every tracked copy whose recorded origin is being redefined.
     auto invalidateDependents = [&copyOrigin](uint32_t originKey) {
         std::vector<uint32_t> toErase;
         for (const auto &[key, origin] : copyOrigin) {
@@ -116,6 +125,8 @@ std::size_t propagateCopies(std::vector<MInstr> &instrs, PeepholeStats &stats) {
         }
 
         // Shared copy-tracking for MovRR and FMovRR (same-class).
+        /// Record a well-formed two-register copy, collapsing a safe existing
+        /// origin chain and rewriting the copy source when that shortens it.
         auto trackCopy = [&](MInstr &mi) -> bool {
             const MOperand &dst = mi.ops[0];
             const MOperand &src = mi.ops[1];
@@ -201,6 +212,7 @@ std::size_t propagateCopies(std::vector<MInstr> &instrs, PeepholeStats &stats) {
     return propagated;
 }
 
+/// @copydoc removeDeadInstructions
 std::size_t removeDeadInstructions(std::vector<MInstr> &instrs,
                                    PeepholeStats &stats,
                                    const std::vector<uint16_t> *carriedExitRegs) {
@@ -285,18 +297,30 @@ std::size_t removeDeadInstructions(std::vector<MInstr> &instrs,
 
 namespace {
 
+/// @brief Encode a physical register and its register class as a liveness key.
+/// @param reg Physical GPR or FPR to encode.
+/// @return Packed key compatible with @ref regKey.
 [[nodiscard]] uint32_t physRegKey(PhysReg reg) noexcept {
     const RegClass cls = isGPR(reg) ? RegClass::GPR : RegClass::FPR;
     return (static_cast<uint32_t>(cls) << 16) | static_cast<uint32_t>(reg);
 }
 
+/// @brief Compact live-register set covering the complete AArch64 physical file.
+///
+/// GPR/SP identifiers occupy the low 32 bits and V0--V31 occupy the high
+/// 32 bits. Invalid or unrecognized packed keys are ignored.
 struct RegSet {
+    /// One bit per tracked physical register.
     uint64_t bits{0};
 
+    /// @brief Add an already-mapped bit position.
+    /// @param bit Bit index in `[0, 63]`.
     void insertBit(unsigned bit) noexcept {
         bits |= (uint64_t{1} << bit);
     }
 
+    /// @brief Add the physical register represented by a packed liveness key.
+    /// @param key Register-class and physical-identifier key.
     void insertKey(uint32_t key) noexcept {
         const uint32_t cls = key >> 16;
         const uint32_t phys = key & 0xFFFFu;
@@ -310,6 +334,8 @@ struct RegSet {
             insertBit(32u + (phys - v0));
     }
 
+    /// @brief Remove the physical register represented by a packed key.
+    /// @param key Register-class and physical-identifier key.
     [[maybe_unused]] void eraseKey(uint32_t key) noexcept {
         const uint32_t cls = key >> 16;
         const uint32_t phys = key & 0xFFFFu;
@@ -326,6 +352,9 @@ struct RegSet {
             bits &= ~(uint64_t{1} << bit);
     }
 
+    /// @brief Test membership of the physical register represented by a key.
+    /// @param key Register-class and physical-identifier key.
+    /// @return `true` when the mapped register bit is set.
     [[maybe_unused]] [[nodiscard]] bool containsKey(uint32_t key) const noexcept {
         const uint32_t cls = key >> 16;
         const uint32_t phys = key & 0xFFFFu;
@@ -341,6 +370,8 @@ struct RegSet {
         return bit < 64 && (bits & (uint64_t{1} << bit)) != 0;
     }
 
+    /// @brief Test whether the set contains no registers.
+    /// @return `true` when every bit is clear.
     [[nodiscard]] bool empty() const noexcept {
         return bits == 0;
     }
@@ -421,6 +452,7 @@ void collectUsesDefs(const MInstr &instr, const TargetInfo &target, RegSet &uses
 /// @param succs        Successor list being built (modified in place).
 /// @param labelToIndex Pre-built map from block name to block index.
 /// @param label        Branch target label to add as a successor.
+/// @return Nothing. Unknown labels and duplicate successors leave @p succs unchanged.
 void addUniqueSucc(std::vector<std::size_t> &succs,
                    const std::unordered_map<std::string, std::size_t> &labelToIndex,
                    const std::string &label) {
@@ -462,6 +494,14 @@ void addUniqueSucc(std::vector<std::size_t> &succs,
     }
 }
 
+/// @brief Build the successor list used by whole-function physical liveness.
+///
+/// Conditional branch targets are collected wherever they occur in a block.
+/// The final instruction determines direct-branch, jump-table, return, or
+/// no-return-call behavior; all other endings retain layout fallthrough.
+///
+/// @param fn Function whose block labels and terminators define the CFG.
+/// @return One deduplicated successor-index vector per basic block.
 [[nodiscard]] std::vector<std::vector<std::size_t>> buildSuccessors(const MFunction &fn) {
     std::unordered_map<std::string, std::size_t> labelToIndex;
     for (std::size_t i = 0; i < fn.blocks.size(); ++i)
@@ -469,6 +509,7 @@ void addUniqueSucc(std::vector<std::size_t> &succs,
 
     std::vector<std::vector<std::size_t>> succs(fn.blocks.size());
     for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
+        /// Add the next layout block as this block's implicit fallthrough.
         const auto addFallthrough = [&]() {
             if (bi + 1 < fn.blocks.size())
                 succs[bi].push_back(bi + 1);
@@ -504,6 +545,7 @@ void addUniqueSucc(std::vector<std::size_t> &succs,
 
 } // namespace
 
+/// @copydoc removeDeadInstructionsCFG
 std::size_t removeDeadInstructionsCFG(MFunction &fn,
                                       PeepholeStats &stats,
                                       const TargetInfo &target) {
@@ -580,6 +622,7 @@ std::size_t removeDeadInstructionsCFG(MFunction &fn,
             live.bits |= uses.bits;
         }
 
+        /// Test whether the block has at least one marked instruction.
         if (std::any_of(toRemove.begin(), toRemove.end(), [](bool value) { return value; }))
             removeMarkedInstructions(instrs, toRemove);
     }
@@ -588,6 +631,7 @@ std::size_t removeDeadInstructionsCFG(MFunction &fn,
     return removed;
 }
 
+/// @copydoc eliminateDeadFpStores
 std::size_t eliminateDeadFpStores(std::vector<MInstr> &instrs, PeepholeStats &stats) {
     std::unordered_map<int64_t, std::size_t> lastStore;
     std::vector<bool> toRemove(instrs.size(), false);
@@ -651,7 +695,9 @@ std::size_t eliminateDeadFpStores(std::vector<MInstr> &instrs, PeepholeStats &st
     return removed;
 }
 
+/// @copydoc removeDeadFlagSetters
 std::size_t removeDeadFlagSetters(std::vector<MInstr> &instrs, PeepholeStats &stats) {
+    /// Test whether an instruction produces a new NZCV value.
     auto setsFlags = [](MOpcode opc) -> bool {
         switch (opc) {
             case MOpcode::CmpRR:
@@ -668,6 +714,7 @@ std::size_t removeDeadFlagSetters(std::vector<MInstr> &instrs, PeepholeStats &st
         }
     };
 
+    /// Test whether an instruction consumes the current NZCV value.
     auto readsFlags = [](MOpcode opc) -> bool {
         switch (opc) {
             case MOpcode::BCond:
@@ -714,7 +761,9 @@ std::size_t removeDeadFlagSetters(std::vector<MInstr> &instrs, PeepholeStats &st
     return removed;
 }
 
+/// @copydoc foldComputeIntoTarget
 std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs, PeepholeStats &stats) {
+    /// Test whether an opcode's explicit destination may be redirected safely.
     auto isSimpleALU = [](MOpcode opc) -> bool {
         switch (opc) {
             case MOpcode::AddRRR:
@@ -811,6 +860,7 @@ std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs, PeepholeStats &st
     return folded;
 }
 
+/// @copydoc eliminateDeadFpStoresCrossBlock
 std::size_t eliminateDeadFpStoresCrossBlock(MFunction &fn, PeepholeStats &stats) {
     // Only compiler-created spill slots are safe for whole-function dead-store
     // removal. FP-relative locals/allocas can be observed through address-derived
@@ -843,12 +893,15 @@ std::size_t eliminateDeadFpStoresCrossBlock(MFunction &fn, PeepholeStats &stats)
     // (stp) qualify only when BOTH covered slots are eligible and unloaded —
     // spill stores frequently reach this pass already merged into pairs.
     std::size_t removed = 0;
+    /// Test whether one eight-byte spill-slot offset is eligible and unread.
     const auto deadSingle = [&](int64_t off) {
         return eligibleOffsets.count(off) != 0 && loadedOffsets.count(off) == 0;
     };
     for (auto &bb : fn.blocks) {
         bb.instrs.erase(std::remove_if(bb.instrs.begin(),
                                        bb.instrs.end(),
+                                       /// Select scalar and paired spill stores
+                                       /// whose complete covered range is dead.
                                        [&](const MInstr &mi) {
                                            if ((mi.opc == MOpcode::StrRegFpImm ||
                                                 mi.opc == MOpcode::StrFprFpImm) &&

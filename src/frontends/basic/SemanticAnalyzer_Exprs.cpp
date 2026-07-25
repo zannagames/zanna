@@ -17,6 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file SemanticAnalyzer_Exprs.cpp
+/// @brief Implements BASIC expression resolution, typing, and annotation.
+/// @details This translation unit contains qualified-name and runtime-type
+///          helpers, safe-pointer bridge checks, the mutable expression visitor,
+///          user/runtime member and method resolution, object construction
+///          validation, implicit-conversion recording, and array-bound queries.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/IdentifierUtil.hpp"
 #include "frontends/basic/SemanticAnalyzer_Internal.hpp"
@@ -32,9 +39,14 @@
 
 namespace il::frontends::basic::semantic_analyzer_detail {
 
-/// @brief Check if an expression represents a runtime namespace chain (starting with "Zanna").
-/// @param expr The expression to check.
-/// @return True if the expression is a qualified name chain starting with "Zanna".
+/// @brief Tests whether an expression is a `Zanna`-rooted name chain.
+/// @details Walks variable/member nodes from leaf to root, rejects every other
+///          node kind, reverses the collected segments, and compares the first
+///          segment with `Zanna` case-insensitively. It does not verify that the
+///          remaining chain names an existing runtime class or member.
+/// @param expr Candidate variable or member-access chain.
+/// @return @c true when the reconstructed chain is non-empty and rooted at
+///         `Zanna`.
 static bool isRuntimeNamespaceChain(const Expr &expr) {
     std::vector<std::string> parts;
     const Expr *cur = &expr;
@@ -57,10 +69,14 @@ static bool isRuntimeNamespaceChain(const Expr &expr) {
     return string_utils::iequals(parts.front(), "Zanna");
 }
 
-/// @brief Collect qualified name segments from an expression chain.
-/// @param expr The expression to traverse (VarExpr or MemberAccessExpr chain).
-/// @param out Output vector to store name segments in order.
-/// @return True if successful, false if expression is not a valid name chain.
+/// @brief Appends source-order segments from a qualified expression chain.
+/// @details Accepts a variable root followed by zero or more member accesses.
+///          Segments are collected leaf-first and then reversed in place. On
+///          failure, any segments already appended to @p out are not rolled
+///          back; callers therefore pass an empty vector.
+/// @param expr Candidate variable/member chain.
+/// @param out Destination receiving root-to-leaf names.
+/// @return @c true for a non-empty chain ending at a variable root.
 static bool collectQualifiedChain(const Expr &expr, std::vector<std::string> &out) {
     const Expr *cur = &expr;
     while (cur) {
@@ -81,9 +97,11 @@ static bool collectQualifiedChain(const Expr &expr, std::vector<std::string> &ou
     return true;
 }
 
-/// @brief Extract the fully-qualified runtime class name from an expression.
-/// @param expr The expression representing a runtime class reference.
-/// @return The qualified name (e.g., "Zanna.Graphics.Canvas") if valid, nullopt otherwise.
+/// @brief Reconstructs a potential fully qualified runtime name.
+/// @param expr Candidate qualified expression chain.
+/// @return Dot-joined source spellings when the root is case-insensitively
+///         `Zanna`; otherwise @c std::nullopt.
+/// @note This performs syntactic reconstruction only, not registry lookup.
 static std::optional<std::string> runtimeClassQNameFromExpr(const Expr &expr) {
     std::vector<std::string> parts;
     if (!collectQualifiedChain(expr, parts))
@@ -93,8 +111,19 @@ static std::optional<std::string> runtimeClassQNameFromExpr(const Expr &expr) {
     return JoinDots(parts);
 }
 
+/// @brief Safety role assigned to a raw-pointer runtime parameter.
+/// @details Only explicitly recognized callback bridge APIs receive non-default
+///          roles.
 enum class RuntimePointerBridgeRole { None, Callback, Payload };
 
+/// @brief Classifies a runtime API parameter for safe callback bridging.
+/// @details Matches canonical target names case-sensitively against an explicit
+///          allowlist for thread, async, and HTTP server APIs. Callback and
+///          payload positions differ by API; all unlisted positions return
+///          @ref RuntimePointerBridgeRole::None.
+/// @param target Canonical runtime method/function name.
+/// @param argIndex Zero-based parameter index.
+/// @return Allowlisted bridge role for the position.
 static RuntimePointerBridgeRole runtimePointerBridgeRole(std::string_view target,
                                                          std::size_t argIndex) {
     auto is = [&](std::string_view name) { return target == name; };
@@ -139,6 +168,10 @@ static RuntimePointerBridgeRole runtimePointerBridgeRole(std::string_view target
     return RuntimePointerBridgeRole::None;
 }
 
+/// @brief Suggests a typed alternative to selected raw-pointer parse APIs.
+/// @param target Canonical runtime API name, matched case-sensitively.
+/// @return Replacement name for `TryInt`, `TryDouble`, or `TryBool`; otherwise
+///         an empty string.
 static std::string saferRuntimePointerAlternative(std::string_view target) {
     if (target == "Zanna.Core.Parse.TryInt")
         return "Zanna.Core.Parse.IntOr";
@@ -149,14 +182,22 @@ static std::string saferRuntimePointerAlternative(std::string_view target) {
     return {};
 }
 
+/// @brief Tests whether an argument node is an address-of expression.
+/// @param expr Possibly null argument pointer.
+/// @return @c true only for a non-null node whose kind is @ref Expr::Kind::AddressOf.
 static bool isAddressOfArg(const ExprPtr &expr) {
     return expr && expr->kind() == Expr::Kind::AddressOf;
 }
 
-/// @brief Map runtime IL type names to BASIC semantic types.
-/// @param ty The IL type string (e.g., "i64", "f64", "str").
-/// @return The corresponding SemanticAnalyzer::Type, or nullopt if unknown.
+/// @brief Maps runtime signature type text to a BASIC semantic category.
+/// @details Trims ASCII space/tab/newline/carriage-return at both ends and one
+///          trailing nullable marker (`?`). Scalar `i64`, `f64`, `i1`, and
+///          `str` map directly. Object/pointer/sequence/list spellings, including
+///          their `<...>` prefixes, map to object.
+/// @param ty Runtime type token to normalize and classify.
+/// @return Corresponding type, or @c std::nullopt for unsupported text.
 static std::optional<SemanticAnalyzer::Type> semanticTypeFromRuntimeType(std::string_view ty) {
+    /// Removes surrounding ASCII whitespace and one nullable suffix.
     auto trimRuntimeToken = [](std::string_view token) {
         while (!token.empty() && (token.front() == ' ' || token.front() == '\t' ||
                                   token.front() == '\n' || token.front() == '\r'))
@@ -183,6 +224,10 @@ static std::optional<SemanticAnalyzer::Type> semanticTypeFromRuntimeType(std::st
     return std::nullopt;
 }
 
+/// @brief Converts a declared BASIC type to semantic-analysis type space.
+/// @param ty BASIC declaration type.
+/// @return Matching scalar/object category; void, unknown, and defensive
+///         fall-through map to @ref SemanticAnalyzer::Type::Unknown.
 static SemanticAnalyzer::Type semanticTypeFromBasicType(BasicType ty) {
     switch (ty) {
         case BasicType::Int:
@@ -202,6 +247,10 @@ static SemanticAnalyzer::Type semanticTypeFromBasicType(BasicType ty) {
     }
 }
 
+/// @brief Converts a semantic category back to declaration type space.
+/// @param ty Semantic type to translate.
+/// @return Matching scalar/object type. Arrays, unknown, and defensive
+///         fall-through map to @ref BasicType::Unknown.
 static BasicType basicTypeFromSemanticType(SemanticAnalyzer::Type ty) {
     switch (ty) {
         case SemanticAnalyzer::Type::Int:
@@ -223,6 +272,10 @@ static BasicType basicTypeFromSemanticType(SemanticAnalyzer::Type ty) {
     }
 }
 
+/// @brief Converts supported semantic scalars to compact AST types.
+/// @param ty Semantic type to translate.
+/// @return AST integer, float, string, or boolean type; arrays, objects, and
+///         unknown yield @c std::nullopt.
 static std::optional<::il::frontends::basic::Type> astTypeFromSemanticType(
     SemanticAnalyzer::Type ty) {
     switch (ty) {
@@ -239,6 +292,12 @@ static std::optional<::il::frontends::basic::Type> astTypeFromSemanticType(
     }
 }
 
+/// @brief Determines the semantic value type of an indexed OOP field.
+/// @details A non-empty object class annotation takes precedence over the
+///          field's scalar AST type.
+/// @param field Indexed field metadata.
+/// @return Object for class-typed fields, otherwise the corresponding scalar
+///         category; defensive fall-through is unknown.
 SemanticAnalyzer::Type semanticTypeFromOopField(const ClassInfo::FieldInfo &field) {
     if (!field.objectClassName.empty())
         return SemanticAnalyzer::Type::Object;
@@ -256,6 +315,11 @@ SemanticAnalyzer::Type semanticTypeFromOopField(const ClassInfo::FieldInfo &fiel
     return SemanticAnalyzer::Type::Unknown;
 }
 
+/// @brief Looks up an unqualified field on the active implicit instance.
+/// @param analyzer Analyzer supplying active receiver and OOP hierarchy state.
+/// @param name Field spelling to resolve through the hierarchy.
+/// @return Pointer to index-owned field metadata, or @c nullptr when no
+///         implicit receiver/field exists.
 const ClassInfo::FieldInfo *findActiveInstanceField(const SemanticAnalyzer &analyzer,
                                                     std::string_view name) {
     auto className = analyzer.activeInstanceClassQName();
@@ -264,6 +328,13 @@ const ClassInfo::FieldInfo *findActiveInstanceField(const SemanticAnalyzer &anal
     return analyzer.oopIndex().findFieldInHierarchy(*className, name);
 }
 
+/// @brief Resolves an expression to an indexed user-class qualified name.
+/// @details First treats a syntactic name chain as a class name, then falls back
+///          to general object-class inference. Either candidate is returned
+///          only if @ref OopIndex contains the class.
+/// @param analyzer Analyzer supplying the OOP index.
+/// @param expr Expression to classify.
+/// @return Indexed qualified class name, or @c std::nullopt.
 static std::optional<std::string> resolveUserClassQNameFromExpr(SemanticAnalyzer &analyzer,
                                                                 const Expr &expr) {
     std::vector<std::string> parts;
@@ -281,6 +352,11 @@ static std::optional<std::string> resolveUserClassQNameFromExpr(SemanticAnalyzer
     return std::nullopt;
 }
 
+/// @brief Emits the standard missing-method diagnostic.
+/// @param diagnostics Diagnostic facade to receive `E_NO_SUCH_METHOD`.
+/// @param className Display name of the resolved receiver class.
+/// @param method Missing method spelling.
+/// @param loc Source location of the method access.
 static void emitNoSuchMethod(SemanticDiagnostics &diagnostics,
                              const std::string &className,
                              const std::string &method,
@@ -293,10 +369,20 @@ static void emitNoSuchMethod(SemanticDiagnostics &diagnostics,
                      std::move(msg));
 }
 
+/// @brief Infers the concrete class returned by a runtime function call.
+/// @details Queries the runtime registry by canonical name. Explicit concrete
+///          return metadata wins; otherwise an object-returning `.New` method
+///          is inferred to return its registered class. An exact name is tried
+///          first. Only unqualified callees are retried beneath active imported
+///          namespaces, whose iteration order is unspecified.
+/// @param analyzer Analyzer supplying active imports.
+/// @param calleeName Qualified or unqualified runtime callee spelling.
+/// @return Concrete runtime class qualified name when inferable.
 static std::optional<std::string> resolveRuntimeFunctionReturnClassQName(
     SemanticAnalyzer &analyzer, std::string_view calleeName) {
     const auto &registry = il::runtime::RuntimeRegistry::instance();
 
+    /// Resolves concrete return metadata for one canonical registry name.
     auto resolveConcrete = [&](std::string_view canonicalName) -> std::optional<std::string> {
         auto sig = registry.findFunction(canonicalName);
         if (!sig)
@@ -340,6 +426,15 @@ static std::optional<std::string> resolveRuntimeFunctionReturnClassQName(
     return std::nullopt;
 }
 
+/// @brief Infers a concrete object class from a typed expression shape.
+/// @details Handles `ME`, tracked object variables, `NEW`, runtime function
+///          calls, runtime/user method calls, and member access. Runtime method
+///          inference uses unknown argument types, then user methods/array
+///          fields are consulted. The routine does not emit diagnostics.
+/// @param analyzer Analyzer supplying active receiver, variable mappings,
+///                 imports, and class indexes.
+/// @param expr Expression whose object provenance is inspected.
+/// @return Qualified class name when a concrete result is known.
 std::optional<std::string> inferObjectClassQName(SemanticAnalyzer &analyzer, const Expr &expr) {
     if (as<const MeExpr>(expr)) {
         return analyzer.activeInstanceClassQName();
@@ -424,12 +519,15 @@ std::optional<std::string> inferObjectClassQName(SemanticAnalyzer &analyzer, con
     return std::nullopt;
 }
 
-/// @brief Resolve the type of a runtime class property access.
-/// @param analyzer The semantic analyzer instance.
-/// @param expr The member access expression (e.g., obj.property).
-/// @return The semantic type of the property if found, nullopt otherwise.
-/// @details Handles both direct class references (Canvas.Width) and variable
-///          references to runtime class instances.
+/// @brief Resolves the semantic type of a runtime property access.
+/// @details Determines the base class from a `Zanna...` chain or inferred
+///          object class, locates that runtime class, and searches properties
+///          case-insensitively. The property's runtime type text is translated
+///          with @ref semanticTypeFromRuntimeType.
+/// @param analyzer Analyzer supplying object-class inference.
+/// @param expr Member access whose base and member are inspected.
+/// @return Mapped property type, or @c std::nullopt when the base class,
+///         property, or runtime type is unknown.
 static std::optional<SemanticAnalyzer::Type> resolveRuntimePropertyType(
     SemanticAnalyzer &analyzer, const MemberAccessExpr &expr) {
     const il::runtime::RuntimeClass *klass = nullptr;
@@ -467,6 +565,22 @@ using semantic_analyzer_detail::resolveUserClassQNameFromExpr;
 using semantic_analyzer_detail::runtimeClassQNameFromExpr;
 using semantic_analyzer_detail::semanticTypeName;
 
+/// @brief Validates raw-pointer exposure in a runtime call signature.
+/// @details Returns immediately for pointer-free signatures. Raw-pointer
+///          returns are always rejected. Raw-pointer parameters pass only for
+///          explicitly classified callback positions containing `ADDRESSOF`,
+///          or classified payload positions following an accepted callback and
+///          not themselves containing `ADDRESSOF`. The first violation emits
+///          `B2131`, optionally suggesting a known typed alternative.
+/// @param target Canonical runtime target, or empty to use @p displayName.
+/// @param rawPointerReturn Whether the signature returns a raw pointer.
+/// @param rawPointerParams Per-position raw-pointer flags.
+/// @param args Actual argument nodes used for bridge-shape validation.
+/// @param loc Fallback source location.
+/// @param displayName Source-facing method/function name used for diagnostics.
+/// @return @c true when no unsafe exposure remains; @c false after one
+///         diagnostic.
+/// @note The reserved @ref allowUnsafePointers_ flag is not consulted here.
 bool SemanticAnalyzer::checkRuntimePointerSafety(std::string_view target,
                                                  bool rawPointerReturn,
                                                  const std::vector<bool> &rawPointerParams,
@@ -487,6 +601,7 @@ bool SemanticAnalyzer::checkRuntimePointerSafety(std::string_view target,
     if (targetName.empty())
         targetName = std::string(displayName);
 
+    /// Formats the common safe-BASIC rejection and a typed replacement hint.
     auto diagnosticMessage = [&](std::string detail) {
         std::string message = "Runtime API '" + targetName + "' exposes " + detail +
                               " and is unavailable in safe BASIC";
@@ -551,84 +666,99 @@ bool SemanticAnalyzer::checkRuntimePointerSafety(std::string_view target,
     return true;
 }
 
-/// @brief Visitor that routes AST expression nodes through SemanticAnalyzer helpers.
-///
-/// @details Each override forwards to the corresponding SemanticAnalyzer method
-///          or returns an immediate type for literals.  The visitor stores the
-///          resulting semantic type so callers can retrieve it after walking an
-///          expression tree.
+/// @brief Mutable AST visitor that computes one expression's semantic type.
+/// @details Literal overrides assign immediate categories; compound nodes
+///          delegate to analyzer helpers or perform member/method/type-test
+///          resolution locally. Each visit replaces @ref result_, initialized
+///          to unknown, and may annotate mutable nodes or emit diagnostics.
+/// @invariant @ref analyzer_ outlives the visitor.
 class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
   public:
-    /// @brief Create a visitor bound to @p analyzer.
+    /// @brief Binds a visitor to shared analyzer state.
+    /// @param analyzer Analyzer borrowed for resolution and diagnostics.
+    /// @post The initial result is @ref SemanticAnalyzer::Type::Unknown.
     explicit SemanticAnalyzerExprVisitor(SemanticAnalyzer &analyzer) noexcept
         : analyzer_(analyzer) {}
 
-    /// @brief Literal integers yield the integer semantic type.
+    /// @brief Classifies an integer literal as integer.
     void visit(IntExpr &) override {
         result_ = SemanticAnalyzer::Type::Int;
     }
 
-    /// @brief Literal floats evaluate to floating-point semantic type.
+    /// @brief Classifies a floating literal as float.
     void visit(FloatExpr &) override {
         result_ = SemanticAnalyzer::Type::Float;
     }
 
-    /// @brief Literal strings evaluate to string semantic type.
+    /// @brief Classifies a string literal as string.
     void visit(StringExpr &) override {
         result_ = SemanticAnalyzer::Type::String;
     }
 
-    /// @brief Boolean literals propagate the boolean semantic type.
+    /// @brief Classifies a boolean literal as boolean.
     void visit(BoolExpr &) override {
         result_ = SemanticAnalyzer::Type::Bool;
     }
 
-    /// @brief Variables defer to SemanticAnalyzer for resolution.
+    /// @brief Resolves and classifies a variable expression.
+    /// @param expr Mutable variable passed to @ref SemanticAnalyzer::analyzeVar.
     void visit(VarExpr &expr) override {
         result_ = analyzer_.analyzeVar(expr);
     }
 
-    /// @brief Array expressions trigger array-specific analysis.
+    /// @brief Validates and classifies an array element access.
+    /// @param expr Mutable access passed to @ref SemanticAnalyzer::analyzeArray.
     void visit(ArrayExpr &expr) override {
         result_ = analyzer_.analyzeArray(expr);
     }
 
-    /// @brief Unary expressions are analysed via SemanticAnalyzer helpers.
+    /// @brief Validates and classifies a unary expression.
+    /// @param expr Expression passed to @ref SemanticAnalyzer::analyzeUnary.
     void visit(UnaryExpr &expr) override {
         result_ = analyzer_.analyzeUnary(expr);
     }
 
-    /// @brief Binary expressions defer to SemanticAnalyzer::analyzeBinary.
+    /// @brief Validates and classifies a binary expression.
+    /// @param expr Expression passed to @ref SemanticAnalyzer::analyzeBinary.
     void visit(BinaryExpr &expr) override {
         result_ = analyzer_.analyzeBinary(expr);
     }
 
-    /// @brief Builtin calls delegate to dedicated builtin analysis.
+    /// @brief Validates and classifies a builtin call.
+    /// @param expr Call passed to @ref SemanticAnalyzer::analyzeBuiltinCall.
     void visit(BuiltinCallExpr &expr) override {
         result_ = analyzer_.analyzeBuiltinCall(expr);
     }
 
-    /// @brief LBOUND expressions compute integer results via analyser logic.
+    /// @brief Validates and classifies an `LBOUND` query.
+    /// @param expr Query passed to @ref SemanticAnalyzer::analyzeLBound.
     void visit(LBoundExpr &expr) override {
         result_ = analyzer_.analyzeLBound(expr);
     }
 
-    /// @brief UBOUND expressions compute integer results via analyser logic.
+    /// @brief Validates and classifies a `UBOUND` query.
+    /// @param expr Query passed to @ref SemanticAnalyzer::analyzeUBound.
     void visit(UBoundExpr &expr) override {
         result_ = analyzer_.analyzeUBound(expr);
     }
 
-    /// @brief Procedure calls re-use general call analysis.
+    /// @brief Resolves and classifies a user/runtime function call.
+    /// @param expr Call passed to @ref SemanticAnalyzer::analyzeCall.
     void visit(CallExpr &expr) override {
         result_ = analyzer_.analyzeCall(expr);
     }
 
-    /// @brief NEW expressions analyse constructor signatures before returning Unknown.
+    /// @brief Resolves and validates object construction.
+    /// @param expr Construction passed to @ref SemanticAnalyzer::analyzeNew.
     void visit(NewExpr &expr) override {
         result_ = analyzer_.analyzeNew(expr);
     }
 
-    /// @brief ME references evaluate to the active instance object.
+    /// @brief Validates an implicit-instance `ME` reference.
+    /// @details Produces object only while an instance member and non-empty
+    ///          active class are recorded; otherwise emits `B2130` and produces
+    ///          unknown.
+    /// @param expr Reference supplying the diagnostic location.
     void visit(MeExpr &expr) override {
         if (analyzer_.activeMemberHasMe_ && !analyzer_.activeClassQName_.empty()) {
             result_ = SemanticAnalyzer::Type::Object;
@@ -643,7 +773,12 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         result_ = SemanticAnalyzer::Type::Unknown;
     }
 
-    /// @brief Member access expressions validate the base and return known field/property types.
+    /// @brief Resolves a runtime property or user-class field access.
+    /// @details Non-runtime namespace bases are visited first so undefined
+    ///          variables are diagnosed. Runtime properties take precedence.
+    ///          Then a user class is inferred and its hierarchy searched for a
+    ///          field. Failure is silent here and produces unknown.
+    /// @param expr Mutable member access to resolve.
     void visit(MemberAccessExpr &expr) override {
         // Validate base expression (catches undefined variables like 'A' in 'A.B')
         if (expr.base && !isRuntimeNamespaceChain(*expr.base)) {
@@ -671,7 +806,13 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
     ///          invalid i64/f64 operand. Strings are permitted (the lowerer passes them
     ///          as managed references), as are OBJECT and untyped/unknown arguments and
     ///          the literal `0` null-object idiom.
-    /// @return True when every argument is acceptable; false after emitting B2001.
+    /// @param info Resolved runtime method signature.
+    /// @param argTypes Actual arguments translated to BASIC declaration types.
+    /// @param args AST arguments used to recognize literal integer zero.
+    /// @param method Display method name for diagnostics.
+    /// @param loc Call location used for `B2001`.
+    /// @return @c true when every inspected object parameter accepts its
+    ///         argument; @c false after the first primitive mismatch.
     bool checkObjectParamArgs(const RuntimeMethodInfo &info,
                               const std::vector<BasicType> &argTypes,
                               const std::vector<ExprPtr> &args,
@@ -697,7 +838,17 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         return true;
     }
 
-    /// @brief Method calls validate runtime/OOP methods and return known result types.
+    /// @brief Resolves and validates a runtime or user-class method invocation.
+    /// @details Analyzes the non-namespace base and every argument first.
+    ///          Resolution order is: concrete runtime class (including strings),
+    ///          user-class instance/static overload, array-field indexing,
+    ///          root runtime-object fallback, then unknown. Runtime methods pass
+    ///          pointer-safety and object-parameter checks. User overload
+    ///          resolution maps unsupported argument categories to integer for
+    ///          recovery. Inaccessible same-name user methods deliberately
+    ///          defer diagnostics to lowering; truly absent methods emit
+    ///          `E_NO_SUCH_METHOD`.
+    /// @param expr Mutable method-call expression.
     void visit(MethodCallExpr &expr) override {
         SemanticAnalyzer::Type baseType = SemanticAnalyzer::Type::Unknown;
         const bool runtimeNamespaceBase = expr.base && isRuntimeNamespaceChain(*expr.base);
@@ -867,10 +1018,17 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         result_ = SemanticAnalyzer::Type::Unknown;
     }
 
-    /// @brief IS expressions evaluate to boolean; validate operands and type name.
+    /// @brief Validates an object/interface `IS` type test.
+    /// @details Resolves an unqualified target by walking enclosing namespace
+    ///          prefixes, then root, then active imports; qualified names are
+    ///          joined as written. Unknown targets emit `B2111`. A resolved
+    ///          target with a primitive/array left operand emits `B2121`.
+    ///          Result type is boolean even after errors.
+    /// @param expr Type-test expression with a required value operand.
     void visit(IsExpr &expr) override {
         // Check left operand type; reject obvious primitives.
         SemanticAnalyzer::Type lhsType = analyzer_.visitExpr(*expr.value);
+        /// Classifies scalar and array categories rejected as object operands.
         auto isPrimitive = [&](SemanticAnalyzer::Type t) {
             using T = SemanticAnalyzer::Type;
             return t == T::Int || t == T::Float || t == T::Bool || t == T::String ||
@@ -878,6 +1036,7 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         };
 
         // Resolve right-hand dotted type to class or interface.
+        /// Tests an exact qualified name against interface and class indexes.
         auto existsQ = [&](const std::string &q) -> bool {
             if (analyzer_.oopIndex_.interfacesByQname().contains(q))
                 return true;
@@ -950,10 +1109,19 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         result_ = SemanticAnalyzer::Type::Bool;
     }
 
-    /// @brief AS expressions yield the inner value's type; validate operands and type name.
+    /// @brief Validates an object/interface `AS` cast.
+    /// @details Preserves the operand's semantic type because runtime failure
+    ///          yields null rather than changing the static category. An
+    ///          unqualified target is resolved through namespace parents, root,
+    ///          and imports. A qualified target expands an active alias in its
+    ///          first segment. Interface lookup is exact; class lookup receives
+    ///          a case-insensitive fallback. Unknown targets emit `B2111`, and
+    ///          primitive/array sources emit `E_CAST_INVALID`.
+    /// @param expr Cast expression with a required value operand.
     void visit(AsExpr &expr) override {
         // Preserve operand type; runtime returns NULL on failure.
         SemanticAnalyzer::Type lhsType = analyzer_.visitExpr(*expr.value);
+        /// Classifies scalar and array categories rejected as cast sources.
         auto isPrimitive = [&](SemanticAnalyzer::Type t) {
             using T = SemanticAnalyzer::Type;
             return t == T::Int || t == T::Float || t == T::Bool || t == T::String ||
@@ -968,6 +1136,7 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
                 for (const auto &seg : analyzer_.nsStack_)
                     prefix.push_back(Canon(seg));
                 std::vector<std::string> hits;
+                /// Tests an exact qualified name against interface/class indexes.
                 auto existsQ = [&](const std::string &q) -> bool {
                     if (analyzer_.oopIndex_.interfacesByQname().contains(q))
                         return true;
@@ -1051,19 +1220,29 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         result_ = lhsType;
     }
 
-    /// @brief ADDRESSOF expressions yield a function pointer type (Unknown in BASIC semantics).
+    /// @brief Represents an `ADDRESSOF` result as unknown semantic type.
+    /// @details The BASIC semantic enum has no function-pointer category; bridge
+    ///          validation recognizes the node structurally where permitted.
     void visit(AddressOfExpr &) override {
         // ADDRESSOF produces a function pointer, which is represented as Unknown
         // in BASIC's type system since it's not a traditional BASIC value type.
         result_ = SemanticAnalyzer::Type::Unknown;
     }
 
-    /// @brief Retrieve the semantic type computed during visitation.
+    /// @brief Returns the most recent visit result.
+    /// @return Stored semantic type without mutation.
     [[nodiscard]] SemanticAnalyzer::Type result() const noexcept {
         return result_;
     }
 
   private:
+    /// @brief Validates index arguments used through an array-valued field.
+    /// @details Float literals are marked for implicit integer conversion and
+    ///          emit warning `B2002`; nonliteral floats and other known
+    ///          non-integer types emit `B2001`. Unknown types are tolerated.
+    ///          Diagnostics use the method-call location.
+    /// @param expr Field-as-method call whose arguments represent indices.
+    /// @param argTypes Pre-analyzed argument categories.
     void validateArrayFieldIndexArgs(MethodCallExpr &expr,
                                      const std::vector<SemanticAnalyzer::Type> &argTypes) {
         for (std::size_t i = 0; i < expr.args.size(); ++i) {
@@ -1092,53 +1271,62 @@ class SemanticAnalyzerExprVisitor final : public MutExprVisitor {
         }
     }
 
+    /// @brief Borrowed shared analyzer state.
     SemanticAnalyzer &analyzer_;
+
+    /// @brief Semantic type produced by the latest override.
     SemanticAnalyzer::Type result_{SemanticAnalyzer::Type::Unknown};
 };
 
-/// @brief Resolve a variable reference and compute its semantic type.
-///
-/// @details Delegates to @ref sem::analyzeVarExpr which handles symbol tracking,
-///          Levenshtein suggestions for typos, and BASIC suffix rules.
-///
-/// @param v Variable expression under analysis.
-/// @return Semantic type inferred for the variable.
+/// @brief Resolves and classifies a variable reference.
+/// @details Delegates to @ref sem::analyzeVarExpr for scoped name mapping,
+///          tracked types, implicit-instance fields, suffix defaults, and
+///          undefined-name diagnostics/suggestions.
+/// @param v Mutable variable node that may receive a resolved name.
+/// @return Inferred semantic type or unknown recovery type.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeVar(VarExpr &v) {
     return sem::analyzeVarExpr(*this, v);
 }
 
-/// @brief Analyse a unary expression using helper utilities.
-///
-/// @param u Unary expression AST node.
-/// @return Semantic type computed by @ref sem::analyzeUnaryExpr.
+/// @brief Applies the shared semantic rule for a unary expression.
+/// @param u Unary expression whose operand and operator are validated.
+/// @return Type computed by @ref sem::analyzeUnaryExpr, including recovery
+///         types after diagnostics.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeUnary(const UnaryExpr &u) {
     return sem::analyzeUnaryExpr(*this, u);
 }
 
-/// @brief Analyse a binary expression using helper utilities.
-///
-/// @param b Binary expression AST node.
-/// @return Semantic type computed by @ref sem::analyzeBinaryExpr.
+/// @brief Applies the shared semantic rule for a binary expression.
+/// @param b Binary expression whose operands and operator are validated.
+/// @return Type computed by @ref sem::analyzeBinaryExpr, including promotions
+///         and recovery behavior.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeBinary(const BinaryExpr &b) {
     return sem::analyzeBinaryExpr(*this, b);
 }
 
-/// @brief Analyse a constructor invocation for argument compatibility.
-///
-/// @details Evaluates each argument expression, then compares the resulting
-///          semantic types against the constructor signature recorded in the
-///          OOP index.  When the class is unknown or a synthetic constructor is
-///          used, the analyser treats the expression as producing an unknown
-///          type but still walks the argument expressions to preserve nested
-///          diagnostics.
-///
-/// @param expr NEW expression being analysed.
-/// @return Semantic type observed for the NEW expression (currently Unknown).
+/// @brief Resolves a `NEW` target and validates constructor compatibility.
+/// @details Mutates a single-segment qualified type into an unqualified name,
+///          expands an active alias for qualified names, and resolves
+///          unqualified names through namespace parents, the global scope, then
+///          imports. Multiple matches emit `B2110`; no match emits `B2111` with
+///          at most eight attempted names. Once resolution succeeds, all
+///          arguments are visited. Runtime external classes require a catalog
+///          constructor (`E_RUNTIME_CLASS_NO_CTOR`). User classes reject
+///          abstract construction (`B2106`), enforce exact arity (`B2008`), and
+///          validate ByRef array variables and scalar types; integer-to-float is
+///          accepted. This analyzer currently returns unknown for every outcome,
+///          including valid construction.
+/// @param expr Mutable construction node whose class name/qualified segments
+///             may be normalized to declared spelling.
+/// @return Always @ref Type::Unknown; diagnostics distinguish success/recovery.
+/// @note Resolution failures occur before argument visitation.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
     // Helper: map canonical qualified name to declared-case name in OOP index.
+    /// Maps canonical qualified spelling back to the class index's declared case.
     auto mapCanonicalToDeclared = [&](const std::string &qcanon) -> std::string {
         if (const ClassInfo *ci = oopIndex_.findClass(qcanon))
             return ci->qualifiedName;
+        /// Canonicalizes every segment of one dotted name.
         auto toCanonQ = [](const std::string &q) -> std::string {
             std::vector<std::string> segs = SplitDots(q);
             return CanonJoin(segs);
@@ -1176,6 +1364,7 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
     // If unqualified type, resolve using parent-walk then USING imports.
     if (expr.qualifiedType.empty()) {
         std::vector<std::string> attempts;
+        /// Tests a canonical candidate against class and interface indexes.
         auto existsQ = [&](const std::string &q) -> bool {
             std::string decl = mapCanonicalToDeclared(q);
             if (oopIndex_.interfacesByQname().contains(decl))
@@ -1206,6 +1395,7 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
         if (existsQ(ident))
             hits.push_back(ident);
 
+        /// Emits deterministic candidate text for an ambiguous type lookup.
         auto reportAmbiguous = [&](const std::vector<std::string> &cands) {
             std::vector<std::string> sorted = cands;
             std::sort(sorted.begin(), sorted.end());
@@ -1360,27 +1550,23 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeNew(NewExpr &expr) {
     return Type::Unknown;
 }
 
-/// @brief Record that @p expr should be implicitly converted to @p targetType.
-///
-/// @details Stores the target type in an auxiliary map consulted during
-///          lowering so conversions can be inserted exactly where the analyser
-///          determined they are needed.
-///
-/// @param expr Expression requiring a conversion.
-/// @param targetType Type to which the expression should be coerced.
+/// @brief Records or replaces an expression's lowering-time conversion.
+/// @details Uses the borrowed AST node address as the map key. The AST must
+///          therefore remain alive and at the same address while lowering
+///          consumes analyzer metadata.
+/// @param expr Expression whose address identifies the conversion site.
+/// @param targetType Destination semantic type.
+/// @post @ref implicitConversions_ maps `&expr` to @p targetType.
 void SemanticAnalyzer::markImplicitConversion(const Expr &expr, Type targetType) {
     implicitConversions_[&expr] = targetType;
 }
 
-/// @brief Request that @p expr be wrapped in an implicit cast to @p target.
-///
-/// @details The current BASIC AST lacks a dedicated cast node, so the semantic
-///          analyser records the intent using the same implicit-conversion map
-///          consulted during lowering. Once cast nodes exist this helper can
-///          be updated to rewrite the AST directly.
-///
-/// @param expr Expression slated for conversion.
-/// @param target Semantic type to coerce the expression to.
+/// @brief Requests a lowering-time implicit cast without rewriting the AST.
+/// @details Returns early when the identical target is already recorded;
+///          otherwise delegates to @ref markImplicitConversion, replacing any
+///          different prior target.
+/// @param expr Mutable expression retained as a stable-address metadata key.
+/// @param target Destination semantic type.
 void SemanticAnalyzer::insertImplicitCast(Expr &expr, Type target) {
     auto it = implicitConversions_.find(&expr);
     if (it != implicitConversions_.end() && it->second == target)
@@ -1388,45 +1574,36 @@ void SemanticAnalyzer::insertImplicitCast(Expr &expr, Type target) {
     markImplicitConversion(expr, target);
 }
 
-/// @brief Analyse an array element access.
-///
-/// @details Delegates to @ref sem::analyzeArrayExpr which validates that the
-///          referenced symbol is an array, ensures index expressions resolve to
-///          integers, and emits warnings for constant indices that fall outside
-///          known bounds.
-///
-/// @param a Array expression under analysis.
-/// @return Semantic type of the accessed element or Unknown on error.
+/// @brief Validates and classifies an array element access.
+/// @details Delegates to @ref sem::analyzeArrayExpr for symbol/shape lookup,
+///          index count/type checking, narrowing metadata, and constant-bound
+///          diagnostics.
+/// @param a Mutable array expression whose name/indices may be annotated.
+/// @return Element semantic type or unknown recovery type.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeArray(ArrayExpr &a) {
     return sem::analyzeArrayExpr(*this, a);
 }
 
-/// @brief Analyse an `LBOUND` expression returning the lower index bound.
-///
-/// @details Delegates to @ref sem::analyzeLBoundExpr which confirms the
-///          referenced symbol is a known array and emits diagnostics otherwise.
-///
-/// @param expr LBOUND expression node.
-/// @return Integer type on success or Unknown when diagnostics were emitted.
+/// @brief Validates and classifies an `LBOUND` query.
+/// @param expr Mutable bound-query expression passed to
+///             @ref sem::analyzeLBoundExpr.
+/// @return Integer for a valid query or unknown after validation failure.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeLBound(LBoundExpr &expr) {
     return sem::analyzeLBoundExpr(*this, expr);
 }
 
-/// @brief Analyse a `UBOUND` expression returning the upper index bound.
-///
-/// @details Delegates to @ref sem::analyzeUBoundExpr which shares the same
-///          validation steps as LBOUND analysis.
-///
-/// @param expr UBOUND expression node.
-/// @return Integer type on success or Unknown when diagnostics were emitted.
+/// @brief Validates and classifies a `UBOUND` query.
+/// @param expr Mutable bound-query expression passed to
+///             @ref sem::analyzeUBoundExpr.
+/// @return Integer for a valid query or unknown after validation failure.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeUBound(UBoundExpr &expr) {
     return sem::analyzeUBoundExpr(*this, expr);
 }
 
-/// @brief Visit an expression tree and compute its semantic type.
-///
-/// @param e Expression to analyse.
-/// @return Semantic type determined by the visitor.
+/// @brief Dispatches one expression through the mutable semantic visitor.
+/// @param e Root expression; visitor overrides may resolve names, record
+///          conversions, or mutate normalized type names.
+/// @return Type stored by the selected visitor override.
 SemanticAnalyzer::Type SemanticAnalyzer::visitExpr(Expr &e) {
     SemanticAnalyzerExprVisitor visitor(*this);
     e.accept(visitor);

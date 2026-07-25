@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/LinkerSupport.cpp
+// File: src/codegen/common/LinkerSupport.cpp
 // Purpose: Implementation of shared linker utilities used by both x86_64 and
 //          AArch64 codegen pipelines: runtime symbol scanning, archive
 //          discovery, missing-target rebuild, and system linker invocation.
@@ -59,12 +59,17 @@
 #include <unistd.h>
 #endif
 
+/// @file
+/// @brief Implements cross-platform archive discovery and native tool invocation.
+
 namespace zanna::codegen::common {
 namespace {
 
 /// @brief Build the platform-correct archive filename for a given library base.
 /// @details Produces `<base>.lib` on Windows and `lib<base>.a` elsewhere; the
 ///          base name should not include any prefix or extension.
+/// @param libBaseName Library target/base name.
+/// @return Host-specific static archive filename.
 std::string archiveFileName(std::string_view libBaseName) {
     if constexpr (zanna::platform::kHostWindows)
         return std::string(libBaseName) + ".lib";
@@ -74,6 +79,8 @@ std::string archiveFileName(std::string_view libBaseName) {
 /// @brief Probe whether @p dir looks like an installed Zanna lib directory.
 /// @details Tests for the presence of libzanna_rt_base, the always-required
 ///          base archive, as a low-cost fingerprint for an installed layout.
+/// @param dir Directory candidate to inspect.
+/// @return `true` when the platform-named base archive is a regular file.
 bool dirHasArchiveProbe(const std::filesystem::path &dir) {
     return fileExists(dir / archiveFileName("zanna_rt_base"));
 }
@@ -121,6 +128,8 @@ std::optional<std::filesystem::path> installedLibraryPathInDir(
 ///          support archives pulled when IntelliSense is embedded in a
 ///          codegen'd binary) directly under src/ (zanna_support under
 ///          src/support).
+/// @param libBaseName Support-library target/base name.
+/// @return Relative build-tree directory expected to contain the archive.
 std::filesystem::path supportLibBuildSubdir(std::string_view libBaseName) {
     if (libBaseName == "zannagui")
         return std::filesystem::path("src") / "lib" / "gui";
@@ -145,12 +154,21 @@ std::filesystem::path supportLibBuildSubdir(std::string_view libBaseName) {
 }
 
 /// @brief Best-effort static-layout path for a support lib, used as a final fallback.
+/// @param libBaseName Support-library target/base name.
+/// @return Relative source/build-layout path without existence validation.
 std::filesystem::path fallbackSupportLibraryPath(std::string_view libBaseName) {
     return supportLibBuildSubdir(libBaseName) / archiveFileName(libBaseName);
 }
 
+/// @brief Return multi-config build configurations in preferred probe order.
+///
+/// An explicit `ZANNA_BUILD_TYPE` is considered first, followed by a
+/// debug- or release-biased deterministic fallback sequence.
+///
+/// @return Unique configuration names in search order.
 [[maybe_unused]] std::vector<std::string> preferredBuildConfigs() {
     std::vector<std::string> configs;
+    /// Append one nonempty configuration unless it is already present.
     auto append = [&](std::string config) {
         if (config.empty())
             return;
@@ -194,6 +212,10 @@ std::filesystem::path fallbackSupportLibraryPath(std::string_view libBaseName) {
 ///          before other multi-config directories; this prevents stale archives
 ///          from a different configuration being mixed into the link. Returns an
 ///          empty path when no candidate exists.
+/// @param buildDir CMake build root.
+/// @param libBaseName Support-library target/base name.
+/// @return Existing preferred archive path, a deterministic non-Windows path,
+///         or an empty path when Windows probes find no archive.
 std::filesystem::path buildTreeSupportLibraryPath(const std::filesystem::path &buildDir,
                                                   std::string_view libBaseName) {
     const std::filesystem::path subdir = supportLibBuildSubdir(libBaseName);
@@ -212,6 +234,11 @@ std::filesystem::path buildTreeSupportLibraryPath(const std::filesystem::path &b
     return buildDir / subdir / archive;
 }
 
+/// @brief Read one exact key from a CMake cache.
+/// @param buildDir Directory containing `CMakeCache.txt`.
+/// @param key Cache key without type or delimiter.
+/// @return Text following `=` for the matching key, or an empty string when
+///         the cache cannot be read or the key is absent.
 static std::string cmakeCacheValue(const std::filesystem::path &buildDir, std::string_view key) {
     if (buildDir.empty())
         return {};
@@ -233,6 +260,10 @@ static std::string cmakeCacheValue(const std::filesystem::path &buildDir, std::s
     return {};
 }
 
+/// @brief Locate the newest MSVC toolset under a Visual Studio instance.
+/// @param instance Visual Studio installation root.
+/// @param arch Required library architecture subdirectory.
+/// @return Toolset root containing the requested libraries, or `std::nullopt`.
 static std::optional<std::filesystem::path> windowsMsvcToolsetFromInstance(
     const std::filesystem::path &instance, std::string_view arch) {
     if (instance.empty())
@@ -261,6 +292,9 @@ static std::optional<std::filesystem::path> windowsMsvcToolsetFromInstance(
     return std::nullopt;
 }
 
+/// @brief Resolve an MSVC toolset from `VCToolsInstallDir`.
+/// @param arch Required library architecture subdirectory.
+/// @return Validated toolset root, or `std::nullopt`.
 static std::optional<std::filesystem::path> windowsMsvcToolsetFromEnv(std::string_view arch) {
     if (const auto env = zanna::environment::getUtf8("VCToolsInstallDir")) {
         const std::filesystem::path root = zanna::filesystem::pathFromUtf8(*env);
@@ -272,6 +306,10 @@ static std::optional<std::filesystem::path> windowsMsvcToolsetFromEnv(std::strin
     return std::nullopt;
 }
 
+/// @brief Resolve an MSVC toolset from CMake generator or archiver metadata.
+/// @param buildDir Directory containing the relevant CMake cache.
+/// @param arch Required library architecture subdirectory.
+/// @return Validated toolset root, or `std::nullopt`.
 static std::optional<std::filesystem::path> windowsMsvcToolsetFromCMakeCache(
     const std::filesystem::path &buildDir, std::string_view arch) {
     const std::string instance = cmakeCacheValue(buildDir, "CMAKE_GENERATOR_INSTANCE");
@@ -300,6 +338,7 @@ static std::optional<std::filesystem::path> windowsMsvcToolsetFromCMakeCache(
 /// @brief Return the platform's standard library search dirs for installed Zanna.
 /// @details macOS uses /usr/local/zanna/lib; Linux walks the usual /usr/{,local}
 ///          tree; Windows returns an empty list (everything is co-located).
+/// @return Host-specific candidate directories in probe order.
 std::vector<std::filesystem::path> standardInstalledLibDirs() {
     std::vector<std::filesystem::path> dirs;
     if constexpr (zanna::platform::kHostMacOS) {
@@ -316,6 +355,9 @@ std::vector<std::filesystem::path> standardInstalledLibDirs() {
 /// @brief Order-sensitive equality on two RtComponent lists.
 /// @details Used by the LinkContext cache to detect when a recomputed closure
 ///          changed and the cache entry must be evicted.
+/// @param lhs First component sequence.
+/// @param rhs Second component sequence.
+/// @return `true` when sizes and elements match in order.
 bool componentsEqual(const std::vector<RtComponent> &lhs, const std::vector<RtComponent> &rhs) {
     return lhs == rhs;
 }
@@ -323,6 +365,7 @@ bool componentsEqual(const std::vector<RtComponent> &lhs, const std::vector<RtCo
 /// @brief Recompute @p ctx.requiredArchives from its current requiredComponents.
 /// @details Called whenever the component list mutates (initial discovery or
 ///          archive-closure expansion) so the archive list stays in sync.
+/// @param[in,out] ctx Context whose archive vector is replaced.
 void rebuildRequiredArchives(LinkContext &ctx) {
     ctx.requiredArchives.clear();
     for (auto comp : ctx.requiredComponents) {
@@ -359,6 +402,10 @@ static bool zannaaudAvailable(const std::filesystem::path &buildDir) {
 /// @details Drives `cmake --build <dir> --target <missing...>` for every
 ///          required archive plus the appropriate gfx/gui/audio support libs.
 ///          Returns false (and writes to @p err) if the cmake invocation fails.
+/// @param ctx Resolved component, frontend, and build-directory requirements.
+/// @param out Stream receiving build standard output.
+/// @param err Stream receiving build diagnostics and launch errors.
+/// @return `true` when nothing is missing or the build succeeds.
 bool ensureRequiredTargetsBuilt(const LinkContext &ctx, std::ostream &out, std::ostream &err) {
     if (ctx.buildDir.empty())
         return true;
@@ -527,6 +574,7 @@ bool addArchiveClosureSymbols(const LinkContext &ctx,
 ///          switches install/build configuration between links.
 std::string linkEnvironmentCacheKey() {
     std::string key;
+    /// Append one environment variable name and current UTF-8 value.
     auto appendEnv = [&](const char *name) {
         key += name;
         key.push_back('=');
@@ -545,6 +593,9 @@ std::string linkEnvironmentCacheKey() {
 ///          regardless of hash-table iteration order, and includes the current
 ///          archive-discovery environment so process-wide cache hits cannot
 ///          cross install/build configuration changes.
+/// @param buildDir Resolved build root, possibly empty for installed layouts.
+/// @param symbols Unordered external symbol set.
+/// @return Deterministic normalized build/environment/symbol key.
 std::string linkContextCacheKey(const std::filesystem::path &buildDir,
                                 const std::unordered_set<std::string> &symbols) {
     std::vector<std::string> ordered(symbols.begin(), symbols.end());
@@ -565,15 +616,18 @@ std::string linkContextCacheKey(const std::filesystem::path &buildDir,
 // Pure utilities
 // =========================================================================
 
+/// @copydoc pathToUtf8
 std::string pathToUtf8(const std::filesystem::path &path) {
     return zanna::filesystem::pathToUtf8(path);
 }
 
+/// @copydoc fileExists
 bool fileExists(const std::filesystem::path &path) {
     std::error_code ec;
     return std::filesystem::is_regular_file(path, ec);
 }
 
+/// @copydoc readFileToString
 bool readFileToString(const std::filesystem::path &path, std::string &dst) {
     std::ifstream in(path, std::ios::binary);
     if (!in)
@@ -584,6 +638,7 @@ bool readFileToString(const std::filesystem::path &path, std::string &dst) {
     return true;
 }
 
+/// @copydoc writeTextFile
 bool writeTextFile(const std::filesystem::path &path, std::string_view text, std::ostream &err) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -598,6 +653,7 @@ bool writeTextFile(const std::filesystem::path &path, std::string_view text, std
     return true;
 }
 
+/// @copydoc windowsMsvcCxxRuntimeArchives
 std::vector<std::filesystem::path> windowsMsvcCxxRuntimeArchives(
     const std::filesystem::path &buildDir, std::string_view arch, bool debugRuntime) {
     std::vector<std::filesystem::path> archives;
@@ -631,9 +687,11 @@ std::vector<std::filesystem::path> windowsMsvcCxxRuntimeArchives(
     return archives;
 }
 
+/// @copydoc windowsArchivePathsUseDebugRuntime
 bool windowsArchivePathsUseDebugRuntime(const std::vector<std::string> &archivePaths) {
     for (const auto &path : archivePaths) {
         std::string lower = path;
+        /// Lowercase one path byte without invoking undefined signed-char behavior.
         std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
         });
@@ -648,6 +706,7 @@ bool windowsArchivePathsUseDebugRuntime(const std::vector<std::string> &archiveP
     return false;
 }
 
+/// @copydoc findBuildDir
 std::optional<std::filesystem::path> findBuildDir() {
     if (const auto env = zanna::environment::getUtf8("ZANNA_BUILD_DIR")) {
         std::filesystem::path candidate = zanna::filesystem::pathFromUtf8(*env);
@@ -697,6 +756,7 @@ std::optional<std::filesystem::path> findBuildDir() {
     return std::nullopt;
 }
 
+/// @copydoc currentExecutablePath
 std::optional<std::filesystem::path> currentExecutablePath() {
 #if ZANNA_HOST_WINDOWS
     std::wstring buf(MAX_PATH, L'\0');
@@ -732,6 +792,9 @@ std::optional<std::filesystem::path> currentExecutablePath() {
 #endif
 }
 
+/// @brief Probe the executable-relative `../lib` installed layout.
+/// @return Canonical library directory containing the base archive, or
+///         `std::nullopt` when the executable/path probe fails.
 std::optional<std::filesystem::path> executableInstalledLibDir() {
     if (const auto exePath = currentExecutablePath()) {
         std::error_code ec;
@@ -744,6 +807,8 @@ std::optional<std::filesystem::path> executableInstalledLibDir() {
     return std::nullopt;
 }
 
+/// @brief Probe host-standard installed library directories.
+/// @return First directory containing the base runtime archive, or `std::nullopt`.
 std::optional<std::filesystem::path> systemInstalledLibDir() {
     for (const auto &candidate : standardInstalledLibDirs()) {
         if (dirHasArchiveProbe(candidate))
@@ -752,6 +817,7 @@ std::optional<std::filesystem::path> systemInstalledLibDir() {
     return std::nullopt;
 }
 
+/// @copydoc findInstalledLibDir
 std::optional<std::filesystem::path> findInstalledLibDir() {
     if (const auto configured = configuredInstalledLibDir())
         return configured;
@@ -762,9 +828,12 @@ std::optional<std::filesystem::path> findInstalledLibDir() {
     return std::nullopt;
 }
 
+/// @copydoc parseRuntimeSymbols
 std::unordered_set<std::string> parseRuntimeSymbols(std::string_view text) {
+    /// Test the ASCII byte policy for unqualified runtime identifiers.
     auto isIdent = [](unsigned char c) -> bool { return std::isalnum(c) || c == '_'; };
     // Namespace-qualified symbols also contain dots.
+    /// Test the ASCII byte policy for namespace-qualified Zanna identifiers.
     auto isNsIdent = [](unsigned char c) -> bool {
         return std::isalnum(c) || c == '_' || c == '.';
     };
@@ -831,6 +900,7 @@ std::unordered_set<std::string> parseRuntimeSymbols(std::string_view text) {
     return symbols;
 }
 
+/// @copydoc runtimeArchivePath
 std::filesystem::path runtimeArchivePath(const std::filesystem::path &buildDir,
                                          std::string_view libBaseName) {
     const std::string libName = archiveFileName(libBaseName);
@@ -843,6 +913,8 @@ std::filesystem::path runtimeArchivePath(const std::filesystem::path &buildDir,
         return *adjacentPath;
     if constexpr (zanna::platform::kHostWindows) {
         const std::string objLibName = std::string(libBaseName) + "_obj.lib";
+        /// Choose the first existing Windows candidate, retaining the first
+        /// candidate as the deterministic missing-file path for rebuild logic.
         auto pickFirstExisting =
             [](const std::vector<std::filesystem::path> &candidates) -> std::filesystem::path {
             for (const auto &candidate : candidates) {
@@ -882,6 +954,7 @@ std::filesystem::path runtimeArchivePath(const std::filesystem::path &buildDir,
     return std::filesystem::path("src/runtime") / libName;
 }
 
+/// @copydoc supportLibraryPath
 std::filesystem::path supportLibraryPath(const std::filesystem::path &buildDir,
                                          std::string_view libBaseName) {
     const auto configuredPath = installedLibraryPathInDir(configuredInstalledLibDir(), libBaseName);
@@ -912,6 +985,7 @@ std::filesystem::path supportLibraryPath(const std::filesystem::path &buildDir,
     return fallbackSupportLibraryPath(libBaseName);
 }
 
+/// @copydoc ziaFrontendClosureLibs
 const std::vector<std::string> &ziaFrontendClosureLibs() {
     static const std::vector<std::string> kLibs = {
         "fe_zia",
@@ -931,6 +1005,7 @@ const std::vector<std::string> &ziaFrontendClosureLibs() {
     return kLibs;
 }
 
+/// @copydoc basicFrontendClosureLibs
 const std::vector<std::string> &basicFrontendClosureLibs() {
     static const std::vector<std::string> kLibs = {
         "fe_common",
@@ -953,6 +1028,7 @@ const std::vector<std::string> &basicFrontendClosureLibs() {
 // Link context
 // =========================================================================
 
+/// @copydoc hasComponent
 bool hasComponent(const LinkContext &ctx, RtComponent c) {
     for (auto rc : ctx.requiredComponents)
         if (rc == c)
@@ -962,7 +1038,15 @@ bool hasComponent(const LinkContext &ctx, RtComponent c) {
 
 /// @brief Common implementation: resolve components, discover archives, rebuild missing.
 /// @details Shared by both prepareLinkContext (file-based) and
-///          prepareLinkContextFromSymbols (symbol-set-based).
+///          prepareLinkContextFromSymbols (symbol-set-based). Repeatedly scans
+///          selected archive members until runtime-component discovery reaches
+///          a fixed point, then detects frontend bridges and caches the result.
+/// @param symbols Initial external symbols.
+/// @param[out] ctx Fully resolved context on success; may contain partial state
+///                 on failure.
+/// @param out Stream receiving any target-build output.
+/// @param err Stream receiving archive and target-build diagnostics.
+/// @return Zero on success, one on archive inspection or build failure.
 static int resolveAndBuildArchives(const std::unordered_set<std::string> &symbols,
                                    LinkContext &ctx,
                                    std::ostream &out,
@@ -1005,11 +1089,13 @@ static int resolveAndBuildArchives(const std::unordered_set<std::string> &symbol
     }
 
     ctx.needsZiaFrontend =
+        /// Recognize Zia bridge symbols in C and namespace-qualified forms.
         std::any_of(closureSymbols.begin(), closureSymbols.end(), [](const std::string &sym) {
             return sym.rfind("rt_zia_", 0) == 0 || sym.rfind("_rt_zia_", 0) == 0 ||
                    sym.rfind("Zanna.Zia.", 0) == 0 || sym.rfind("_Zanna.Zia.", 0) == 0;
         });
     ctx.needsBasicFrontend =
+        /// Recognize BASIC bridge symbols in C and namespace-qualified forms.
         std::any_of(closureSymbols.begin(), closureSymbols.end(), [](const std::string &sym) {
             return sym.rfind("rt_basic_toolchain_", 0) == 0 ||
                    sym.rfind("_rt_basic_toolchain_", 0) == 0 ||
@@ -1032,6 +1118,7 @@ static int resolveAndBuildArchives(const std::unordered_set<std::string> &symbol
     return 0;
 }
 
+/// @copydoc prepareLinkContext
 int prepareLinkContext(const std::string &asmPath,
                        LinkContext &ctx,
                        std::ostream &out,
@@ -1046,6 +1133,7 @@ int prepareLinkContext(const std::string &asmPath,
     return resolveAndBuildArchives(symbols, ctx, out, err);
 }
 
+/// @copydoc prepareLinkContextFromSymbols
 int prepareLinkContextFromSymbols(const std::unordered_set<std::string> &symbols,
                                   LinkContext &ctx,
                                   std::ostream &out,
@@ -1057,6 +1145,7 @@ int prepareLinkContextFromSymbols(const std::unordered_set<std::string> &symbols
 // Tool invocation
 // =========================================================================
 
+/// @copydoc invokeAssembler
 int invokeAssembler(const std::vector<std::string> &ccArgs,
                     const std::string &asmPath,
                     const std::string &objPath,
@@ -1080,12 +1169,16 @@ int invokeAssembler(const std::vector<std::string> &ccArgs,
     return rr.exit_code;
 }
 
+/// @copydoc runExecutable
 int runExecutable(const std::string &exePath, std::ostream &out, std::ostream &err) {
     /// @brief Normalize an executable path before passing it to the process runner.
     /// @details POSIX does not search the current directory for bare command
     ///          names. When a caller gives `foo` instead of `./foo`, prefix the
     ///          current-directory component so freshly linked binaries run
     ///          consistently across host platforms.
+    /// @param path Caller-supplied UTF-8 executable path.
+    /// @return Original absolute/qualified path, or a current-directory-relative
+    ///         path on POSIX when @p path is a bare filename.
     auto commandPath = [](const std::string &path) -> std::string {
         if constexpr (zanna::platform::kHostWindows)
             return path;

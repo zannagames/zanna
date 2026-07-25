@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/BlockLayoutPass.cpp
+// File: src/codegen/aarch64/passes/BlockLayoutPass.cpp
 // Purpose: Greedy trace block layout for the AArch64 MIR pipeline. For each
 //          function, builds a name→index map and then extends a trace from the
 //          entry block by following unconditional branches. After reordering,
@@ -16,8 +16,8 @@
 //   - If the computed order matches the original, the reorder is skipped.
 // Ownership/Lifetime:
 //   - Mutates MFunction::blocks in place; borrows module only during run().
-// Links: codegen/aarch64/passes/BlockLayoutPass.hpp,
-//        codegen/aarch64/passes/PeepholePass.cpp (consumer of fall-through layout)
+// Links: src/codegen/aarch64/passes/BlockLayoutPass.hpp,
+//        src/codegen/aarch64/passes/PeepholePass.cpp (consumer of fall-through layout)
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,11 +31,24 @@
 #include <unordered_map>
 #include <vector>
 
+/**
+ * @file
+ * @brief Implements entry-rooted greedy trace ordering for AArch64 MIR.
+ *
+ * The algorithm computes a permutation of existing block indices, preserving
+ * each block object and its instructions. It avoids rebuilding the vector when
+ * the computed permutation is already the identity.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
 namespace {
 
-/// @brief Return true if @p opc is a conditional branch (BCond, Cbz, Cbnz, Tbz, Tbnz).
+/**
+ * @brief Tests whether an opcode is a conditional branch family.
+ * @param opc MIR opcode to classify.
+ * @return `true` for `BCond`, `Cbz`, `Cbnz`, `Tbz`, or `Tbnz`.
+ */
 static bool isConditionalBranch(MOpcode opc) {
     switch (opc) {
         case MOpcode::BCond:
@@ -49,7 +62,13 @@ static bool isConditionalBranch(MOpcode opc) {
     }
 }
 
-/// @brief Return the index of the label target of @p instr if it is unplaced, else nullopt.
+/**
+ * @brief Resolves an instruction's final label operand to an unplaced block.
+ * @param instr Branch-like instruction whose last operand is inspected.
+ * @param nameToIdx Block-name to original-index map.
+ * @param placed Placement bitmap parallel to the original block vector.
+ * @return Target index when known and unplaced, otherwise `std::nullopt`.
+ */
 static std::optional<std::size_t> lookupUnplacedTarget(
     const MInstr &instr,
     const std::unordered_map<std::string, std::size_t> &nameToIdx,
@@ -62,7 +81,11 @@ static std::optional<std::size_t> lookupUnplacedTarget(
     return it->second;
 }
 
-/// @brief Reorder the blocks of a single function using the greedy trace.
+/**
+ * @brief Computes and applies greedy trace layout to one function.
+ * @param[in,out] fn Function whose block vector may be permuted.
+ * @post The original entry block remains first and every original block appears once.
+ */
 static void layoutFunction(MFunction &fn) {
     const std::size_t n = fn.blocks.size();
     if (n <= 1)
@@ -156,6 +179,12 @@ static void layoutFunction(MFunction &fn) {
 
 } // namespace
 
+/**
+ * @brief Applies greedy block layout independently to every MIR function.
+ * @param[in,out] module Module containing functions to reorder.
+ * @param diags Unused diagnostic sink.
+ * @return Always `true`.
+ */
 bool BlockLayoutPass::run(AArch64Module &module, Diagnostics & /*diags*/) {
     for (MFunction &fn : module.mir)
         layoutFunction(fn);

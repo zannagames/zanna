@@ -5,10 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/ra/Allocator.cpp
+// File: src/codegen/aarch64/ra/Allocator.cpp
 // Purpose: Core linear-scan register allocator implementation for AArch64.
-//          Contains CFG construction, liveness analysis, spill logic,
-//          register materialization, and per-block allocation.
+//          Integrates shared CFG liveness with slot pinning, spill logic,
+//          register materialization, call handling, and per-block allocation.
 //
 // Key invariants:
 //   - All virtual registers are resolved to physical registers after run().
@@ -44,18 +44,26 @@
 #include <stdexcept>
 #include <utility>
 
+/// @file
+/// @brief Implements stateful linear allocation and spill rewriting for AArch64 MIR.
+
 namespace zanna::codegen::aarch64::ra {
 
 namespace {
 
 /// @brief Return true if @p pr is one of the reserved emergency scratch registers
 ///        (kScratchGPR/GPR2/GPR3 or kScratchFPR/FPR2) that must not be released to the pool.
+/// @param pr Physical register to classify.
+/// @return `true` when @p pr belongs to the permanently reserved emergency set.
 bool isReservedScratch(PhysReg pr) {
     return pr == kScratchGPR || pr == kScratchGPR2 || pr == kScratchGPR3 || pr == kScratchFPR ||
            pr == kScratchFPR2;
 }
 
-/// @brief Return true if @p pr already appears in the @p scratch list (already acquired).
+/// @brief Test whether a scratch register was already acquired for this instruction.
+/// @param scratch Current instruction's acquired scratch list.
+/// @param pr Physical register to query.
+/// @return `true` when @p pr already appears in @p scratch.
 bool scratchAlreadyUsed(const std::vector<PhysReg> &scratch, PhysReg pr) {
     return std::find(scratch.begin(), scratch.end(), pr) != scratch.end();
 }
@@ -66,6 +74,11 @@ bool scratchAlreadyUsed(const std::vector<PhysReg> &scratch, PhysReg pr) {
 ///          value before the source operand is materialized. Rewriting the use
 ///          keeps the current instruction correct while allowing the old vreg
 ///          state to be retired or spilled.
+/// @param[in,out] ins Instruction whose matching virtual use operands are rewritten.
+/// @param vreg Virtual-register identifier to replace.
+/// @param cls Required register class of a matching operand.
+/// @param phys Resident physical register substituted for the virtual use.
+/// @return `true` when at least one use operand was rewritten.
 bool rewriteVirtualUseToResidentPhys(MInstr &ins, uint16_t vreg, RegClass cls, PhysReg phys) {
     bool rewritten = false;
     for (std::size_t opIdx = 0; opIdx < ins.ops.size(); ++opIdx) {
@@ -103,6 +116,14 @@ bool rewriteVirtualUseToResidentPhys(MInstr &ins, uint16_t vreg, RegClass cls, P
 /// FP op (`FMLA`: rd is use+def, defeating def-reuse) would present 3 simultaneous
 /// FPR uses and require adding `kScratchFPR3`. Keep the scratch sets in sync with
 /// the maximum-arity instruction of each class.
+///
+/// @param candidates Ordered reserved-register set for one register class.
+/// @param canReuseDefScratch Whether an already acquired scratch may also serve
+///                           this def-only operand.
+/// @param scratch Scratch registers already acquired for the instruction.
+/// @param blocked Explicit physical operands that candidates must not clobber.
+/// @return Selected reserved scratch register.
+/// @throws std::runtime_error when no candidate satisfies the constraints.
 PhysReg chooseFromScratchSet(std::initializer_list<PhysReg> candidates,
                              bool canReuseDefScratch,
                              const std::vector<PhysReg> &scratch,
@@ -135,6 +156,7 @@ PhysReg chooseFromScratchSet(std::initializer_list<PhysReg> candidates,
 /// @param scratch          Registers already acquired this instruction.
 /// @param blocked          Explicit physical operands that must not be clobbered.
 /// @return A reserved scratch register suitable for the operand class.
+/// @throws std::runtime_error when every class-specific candidate conflicts.
 PhysReg chooseEmergencyScratch(bool fprClass,
                                bool canReuseDefScratch,
                                const std::vector<PhysReg> &scratch,
@@ -152,6 +174,7 @@ PhysReg chooseEmergencyScratch(bool fprClass,
 // Construction
 // =========================================================================
 
+/// @copydoc LinearAllocator::LinearAllocator
 LinearAllocator::LinearAllocator(MFunction &fn, const TargetInfo &ti) : fn_(fn), ti_(ti), fb_(fn) {
     // Argument registers are allocatable, except those whose INCOMING value is
     // still consumed by the lowered code: a physical-register USE that is not
@@ -187,6 +210,7 @@ LinearAllocator::LinearAllocator(MFunction &fn, const TargetInfo &ti) : fn_(fn),
 // Entry point
 // =========================================================================
 
+/// @copydoc LinearAllocator::run
 AllocationResult LinearAllocator::run() {
     blockExitStates_.resize(fn_.blocks.size());
 
@@ -210,6 +234,7 @@ AllocationResult LinearAllocator::run() {
     return AllocationResult{};
 }
 
+/// @copydoc LinearAllocator::assignPinnedSlots
 void LinearAllocator::assignPinnedSlots() {
     const std::size_t blockCount = fn_.blocks.size();
     if (blockCount == 0) {
@@ -258,9 +283,15 @@ void LinearAllocator::assignPinnedSlots() {
     // the worst) is disqualified: pinning requires that every access to the
     // slot flows through the rewritable forms below. Slots never written by
     // this function (caller-populated stack params) are also excluded.
+    /// @brief Weighted access evidence for one frame-pointer-relative slot.
     struct SlotStats {
+        /// Sum of loop-depth-weighted supported accesses.
         double weight{0.0};
+
+        /// Whether the function supplies the slot's value.
         bool written{false};
+
+        /// Whether the most recently classified access is FPR-class.
         bool fpr{false};
     };
 
@@ -356,6 +387,7 @@ void LinearAllocator::assignPinnedSlots() {
     if (ranked.empty()) {
         return;
     }
+    /// Rank hotter slots first with frame offset as a deterministic tie break.
     std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) {
         if (a.second->weight != b.second->weight)
             return a.second->weight > b.second->weight;
@@ -366,6 +398,13 @@ void LinearAllocator::assignPinnedSlots() {
     // pools (never the reserved scratch registers, which are not pool
     // members). Each pinned register is removed from its pool for the whole
     // function and recorded as used so the prologue saves it.
+    /// Remove the first target-designated callee-saved register from a pool.
+    ///
+    /// @param[in,out] pool Class-specific free register deque.
+    /// @param calleeSaved Target's ordered saved-register set for the class.
+    /// @param off Candidate slot offset, retained for diagnostic/debug symmetry.
+    /// @param[out] outReg Selected physical register.
+    /// @return `true` when a suitable pool member was found.
     auto pinFrom = [&](std::deque<PhysReg> &pool,
                        const std::vector<PhysReg> &calleeSaved,
                        int off,
@@ -418,6 +457,7 @@ void LinearAllocator::assignPinnedSlots() {
     }
 }
 
+/// @copydoc LinearAllocator::rewritePinnedSlotAccess
 bool LinearAllocator::rewritePinnedSlotAccess(MInstr &ins) {
     if (ins.ops.size() < 2 || ins.ops[1].kind != MOperand::Kind::Imm) {
         return false;
@@ -476,6 +516,7 @@ bool LinearAllocator::rewritePinnedSlotAccess(MInstr &ins) {
 // Cross-block register persistence
 // =========================================================================
 
+/// @copydoc LinearAllocator::restoreFromPredecessor
 void LinearAllocator::restoreFromPredecessor(std::size_t bi) {
     const auto &preds = liveness_.predecessors(bi);
     if (preds.size() != 1)
@@ -492,6 +533,7 @@ void LinearAllocator::restoreFromPredecessor(std::size_t bi) {
     // spill state before restoring any register-carried values; allocator
     // state from whichever block happened to be visited last is not valid on
     // a different CFG edge.
+    /// Reset each live-out state to the predecessor's canonical spill-backed form.
     const auto restoreSpills = [](auto &states, const auto &liveOut) {
         for (const uint16_t vid : liveOut) {
             auto it = states.find(vid);
@@ -508,6 +550,7 @@ void LinearAllocator::restoreFromPredecessor(std::size_t bi) {
 
     // Restore in sorted vreg order so register-pool mutation order is
     // independent of hash-map iteration order (deterministic codegen).
+    /// Return map keys in ascending order for deterministic pool mutation.
     const auto sortedKeys = [](const std::unordered_map<uint16_t, PhysReg> &map) {
         std::vector<uint16_t> keys;
         keys.reserve(map.size());
@@ -560,6 +603,7 @@ void LinearAllocator::restoreFromPredecessor(std::size_t bi) {
 // Next-use analysis
 // =========================================================================
 
+/// @copydoc LinearAllocator::computeNextUses
 void LinearAllocator::computeNextUses(const MBasicBlock &bb) {
     usePositionsGPR_.clear();
     usePositionsFPR_.clear();
@@ -587,24 +631,28 @@ void LinearAllocator::computeNextUses(const MBasicBlock &bb) {
     }
 }
 
+/// @copydoc LinearAllocator::isProtectedOperand
 bool LinearAllocator::isProtectedOperand(uint16_t vreg, RegClass cls) const {
     if (cls == RegClass::GPR)
         return protectedOperandGPR_.find(vreg) != protectedOperandGPR_.end();
     return protectedOperandFPR_.find(vreg) != protectedOperandFPR_.end();
 }
 
+/// @copydoc LinearAllocator::isProtectedPhys
 bool LinearAllocator::isProtectedPhys(PhysReg phys, RegClass cls) const {
     if (cls == RegClass::GPR)
         return protectedPhysGPR_.find(phys) != protectedPhysGPR_.end();
     return protectedPhysFPR_.find(phys) != protectedPhysFPR_.end();
 }
 
+/// @copydoc LinearAllocator::isLiveOut
 bool LinearAllocator::isLiveOut(uint16_t vreg, RegClass cls) const {
     if (cls == RegClass::GPR)
         return liveness_.liveOutGPR(currentBlockIdx_).contains(vreg);
     return liveness_.liveOutFPR(currentBlockIdx_).contains(vreg);
 }
 
+/// @copydoc LinearAllocator::nextUseAfterCall
 bool LinearAllocator::nextUseAfterCall(uint16_t vreg, RegClass cls) const {
     const auto &map = (cls == RegClass::GPR) ? usePositionsGPR_ : usePositionsFPR_;
     auto it = map.find(vreg);
@@ -628,6 +676,7 @@ bool LinearAllocator::nextUseAfterCall(uint16_t vreg, RegClass cls) const {
     return false;
 }
 
+/// @copydoc LinearAllocator::getNextUseDistance
 unsigned LinearAllocator::getNextUseDistance(uint16_t vreg, RegClass cls) const {
     const auto &map = (cls == RegClass::GPR) ? usePositionsGPR_ : usePositionsFPR_;
     auto it = map.find(vreg);
@@ -641,6 +690,7 @@ unsigned LinearAllocator::getNextUseDistance(uint16_t vreg, RegClass cls) const 
     return *pos - currentInstrIdx_;
 }
 
+/// @copydoc LinearAllocator::computeSpillLastUse
 unsigned LinearAllocator::computeSpillLastUse(uint16_t vreg,
                                               RegClass cls,
                                               bool forceLiveOut) const {
@@ -654,6 +704,7 @@ unsigned LinearAllocator::computeSpillLastUse(uint16_t vreg,
     return trueLastUse;
 }
 
+/// @copydoc LinearAllocator::ensureCurrentSpillSlot
 int LinearAllocator::ensureCurrentSpillSlot(uint16_t vreg, RegClass cls, bool forceLiveOut) {
     return fb_.ensureSpillWithReuse(
         vreg, computeSpillLastUse(vreg, cls, forceLiveOut), currentInstrIdx_);
@@ -663,6 +714,7 @@ int LinearAllocator::ensureCurrentSpillSlot(uint16_t vreg, RegClass cls, bool fo
 // Spilling
 // =========================================================================
 
+/// @copydoc LinearAllocator::spillVictim
 void LinearAllocator::spillVictim(RegClass cls, uint16_t id, std::vector<MInstr> &prefix) {
     auto &st = (cls == RegClass::GPR) ? gprStates_[id] : fprStates_[id];
     if (!st.hasPhys)
@@ -700,6 +752,7 @@ void LinearAllocator::spillVictim(RegClass cls, uint16_t id, std::vector<MInstr>
     st.spilled = true;
 }
 
+/// @copydoc LinearAllocator::selectLRUVictim
 uint16_t LinearAllocator::selectLRUVictim(RegClass cls) {
     auto &states = (cls == RegClass::GPR) ? gprStates_ : fprStates_;
     uint16_t victim = UINT16_MAX;
@@ -724,6 +777,7 @@ uint16_t LinearAllocator::selectLRUVictim(RegClass cls) {
     return victim;
 }
 
+/// @copydoc LinearAllocator::selectFurthestVictim
 uint16_t LinearAllocator::selectFurthestVictim(RegClass cls) {
     auto &states = (cls == RegClass::GPR) ? gprStates_ : fprStates_;
     uint16_t victim = UINT16_MAX;
@@ -753,6 +807,7 @@ uint16_t LinearAllocator::selectFurthestVictim(RegClass cls) {
     return victim;
 }
 
+/// @copydoc LinearAllocator::maybeSpillForPressure
 void LinearAllocator::maybeSpillForPressure(RegClass cls, std::vector<MInstr> &prefix) {
     if (cls == RegClass::GPR) {
         if (!pools_.gprFree.empty())
@@ -773,6 +828,7 @@ void LinearAllocator::maybeSpillForPressure(RegClass cls, std::vector<MInstr> &p
 // Register materialization
 // =========================================================================
 
+/// @copydoc LinearAllocator::materialize
 void LinearAllocator::materialize(MReg &r,
                                   bool isUse,
                                   bool isDef,
@@ -806,6 +862,7 @@ void LinearAllocator::materialize(MReg &r,
     r.idOrPhys = static_cast<uint16_t>(st.phys);
 }
 
+/// @copydoc LinearAllocator::handleSpilledOperand
 void LinearAllocator::handleSpilledOperand(MReg &r,
                                            bool fprClass,
                                            bool isUse,
@@ -870,6 +927,7 @@ void LinearAllocator::handleSpilledOperand(MReg &r,
     scratch.push_back(tmp);
 }
 
+/// @copydoc LinearAllocator::assignNewPhysReg
 void LinearAllocator::assignNewPhysReg(VState &st, uint16_t vregId, bool fprClass) {
     PhysReg phys;
     if (fprClass) {
@@ -900,6 +958,7 @@ void LinearAllocator::assignNewPhysReg(VState &st, uint16_t vregId, bool fprClas
     }
 }
 
+/// @copydoc LinearAllocator::trackCalleeSavedPhys
 void LinearAllocator::trackCalleeSavedPhys(PhysReg pr) {
     if (isGPR(pr)) {
         if (std::find(ti_.calleeSavedGPR.begin(), ti_.calleeSavedGPR.end(), pr) !=
@@ -914,6 +973,7 @@ void LinearAllocator::trackCalleeSavedPhys(PhysReg pr) {
     }
 }
 
+/// @copydoc LinearAllocator::isCalleeSaved
 bool LinearAllocator::isCalleeSaved(PhysReg pr, RegClass cls) const noexcept {
     if (cls == RegClass::GPR) {
         return std::find(ti_.calleeSavedGPR.begin(), ti_.calleeSavedGPR.end(), pr) !=
@@ -928,6 +988,7 @@ bool LinearAllocator::isCalleeSaved(PhysReg pr, RegClass cls) const noexcept {
 // Block allocation
 // =========================================================================
 
+/// @copydoc LinearAllocator::allocateBlock
 void LinearAllocator::allocateBlock(MBasicBlock &bb) {
     fb_.beginNewBlock();
 
@@ -962,6 +1023,7 @@ void LinearAllocator::allocateBlock(MBasicBlock &bb) {
         // liveOut sets are unordered; process them in sorted vreg order so the
         // emitted spill sequence and the register-pool release order do not
         // depend on the STL implementation's hash iteration order.
+        /// Copy a live-out set into deterministic virtual-register order.
         const auto sortedLiveOut = [](const std::unordered_set<uint16_t> &set) {
             std::vector<uint16_t> sorted(set.begin(), set.end());
             std::sort(sorted.begin(), sorted.end());
@@ -1040,6 +1102,7 @@ void LinearAllocator::allocateBlock(MBasicBlock &bb) {
     bb.instrs = std::move(rewritten);
 }
 
+/// @copydoc LinearAllocator::handleCall
 void LinearAllocator::handleCall(MInstr &ins, std::vector<MInstr> &rewritten) {
     bool isArrayObjGet = false;
     if (!ins.ops.empty() && ins.ops[0].kind == MOperand::Kind::Label) {
@@ -1055,6 +1118,7 @@ void LinearAllocator::handleCall(MInstr &ins, std::vector<MInstr> &rewritten) {
     // between STL implementations and codegen must stay byte-identical
     // across platforms.
     std::vector<MInstr> preCall;
+    /// Spill or retire every resident value held in a caller-saved register.
     const auto spillCallerSavedResidents = [&](RegClass cls) {
         auto &states = (cls == RegClass::GPR) ? gprStates_ : fprStates_;
         std::vector<uint16_t> resident;
@@ -1162,6 +1226,7 @@ void LinearAllocator::handleCall(MInstr &ins, std::vector<MInstr> &rewritten) {
         pendingGetBarrier_ = true;
 }
 
+/// @copydoc LinearAllocator::evictPhysDefClobbers
 void LinearAllocator::evictPhysDefClobbers(MInstr &ins, std::vector<MInstr> &prefix) {
     for (std::size_t opIdx = 0; opIdx < ins.ops.size(); ++opIdx) {
         const auto &op = ins.ops[opIdx];
@@ -1230,6 +1295,7 @@ void LinearAllocator::evictPhysDefClobbers(MInstr &ins, std::vector<MInstr> &pre
     }
 }
 
+/// @copydoc LinearAllocator::releaseCallReserved
 void LinearAllocator::releaseCallReserved() {
     for (PhysReg phys : reservedForCall_) {
         if (isFPR(phys))
@@ -1240,6 +1306,7 @@ void LinearAllocator::releaseCallReserved() {
     reservedForCall_.clear();
 }
 
+/// @copydoc LinearAllocator::retireCallOperandAfterCall
 void LinearAllocator::retireCallOperandAfterCall(uint16_t vreg, RegClass cls) {
     auto &states = cls == RegClass::GPR ? gprStates_ : fprStates_;
     auto it = states.find(vreg);
@@ -1260,6 +1327,7 @@ void LinearAllocator::retireCallOperandAfterCall(uint16_t vreg, RegClass cls) {
     st.dirty = false;
 }
 
+/// @copydoc LinearAllocator::allocateInstruction
 void LinearAllocator::allocateInstruction(MInstr &ins, std::vector<MInstr> &rewritten) {
     // Pinned-slot accesses become register moves before any other handling;
     // the move's vreg operand then materializes through the normal path.
@@ -1362,6 +1430,7 @@ void LinearAllocator::allocateInstruction(MInstr &ins, std::vector<MInstr> &rewr
 // Cleanup
 // =========================================================================
 
+/// @copydoc LinearAllocator::releaseScratch
 void LinearAllocator::releaseScratch(std::vector<PhysReg> &scratch) {
     for (auto pr : scratch) {
         if (isReservedScratch(pr))
@@ -1380,6 +1449,7 @@ void LinearAllocator::releaseScratch(std::vector<PhysReg> &scratch) {
     }
 }
 
+/// @copydoc LinearAllocator::releaseBlockState
 void LinearAllocator::releaseBlockState() {
     // Defensive: a marshalling def without a following call in the same block
     // must not leak reserved argument registers into the next block.
@@ -1388,6 +1458,7 @@ void LinearAllocator::releaseBlockState() {
     // Release in sorted vreg order: the pool is a FIFO, so the order registers
     // return to it shapes every later allocation. Hash-map iteration order
     // would make the emitted code differ between STL implementations.
+    /// Return all residents of one class in deterministic vreg order.
     const auto releaseAll = [&](RegClass cls) {
         auto &states = (cls == RegClass::GPR) ? gprStates_ : fprStates_;
         std::vector<uint16_t> resident;
@@ -1415,6 +1486,7 @@ void LinearAllocator::releaseBlockState() {
     releaseAll(RegClass::FPR);
 }
 
+/// @copydoc LinearAllocator::recordCalleeSavedUsage
 void LinearAllocator::recordCalleeSavedUsage() {
     fn_.savedGPRs.clear();
     fn_.savedFPRs.clear();

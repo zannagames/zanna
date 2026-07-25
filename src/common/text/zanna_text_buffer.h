@@ -18,6 +18,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file zanna_text_buffer.h
+ * @brief Declares the exception-safe C ABI for Zanna's shared text buffer.
+ *
+ * The API uses opaque handles, explicit byte spans, and caller-visible lengths
+ * so C consumers can edit and retrieve data containing embedded NUL bytes.
+ */
+
 #pragma once
 
 #include <stdbool.h>

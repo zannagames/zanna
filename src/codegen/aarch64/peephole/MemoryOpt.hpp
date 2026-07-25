@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/MemoryOpt.hpp
+// File: src/codegen/aarch64/peephole/MemoryOpt.hpp
 // Purpose: Declarations for memory optimizations: LDP/STP merging,
 //          store-load forwarding, and MADD fusion.
 //
@@ -29,17 +29,46 @@
 #include <cstddef>
 #include <vector>
 
+/// @file
+/// @brief Declares local load/store and multiply-add peephole rewrites.
+
 namespace zanna::codegen::aarch64::peephole {
 
-/// @brief Try to merge consecutive ldr/str into ldp/stp.
+/// @brief Merge adjacent scalar FP-relative accesses into a load/store pair.
+///
+/// Supports GPR and FPR eight-byte loads or stores whose offsets are adjacent,
+/// pair-aligned, and encodable by the AArch64 pair instruction. Load
+/// destinations must be distinct. The pair is normalized to ascending address
+/// order regardless of the original instruction order.
+///
+/// @param[in,out] instrs Instruction sequence containing the candidate pair.
+/// @param idx Index of the first scalar access.
+/// @param[in,out] stats Statistics updated when a merge succeeds.
+/// @return `true` when two instructions were replaced by one `LDP` or `STP`.
 [[nodiscard]] bool tryLdpStpMerge(std::vector<MInstr> &instrs,
                                   std::size_t idx,
                                   PeepholeStats &stats);
 
-/// @brief Store-load forwarding within a basic block.
+/// @brief Forward FP-relative scalar stores to later same-slot loads.
+///
+/// Replaces a load with a same-class register move while the stored register
+/// and memory value remain available. Overlapping stores, calls, control flow,
+/// source-register definitions, and arbitrary-base memory stop the scan.
+///
+/// @param[in,out] instrs Block-local instruction sequence to rewrite.
+/// @param[in,out] stats Statistics updated for each forwarded load.
+/// @return Number of loads replaced by register moves.
 std::size_t forwardStoreLoads(std::vector<MInstr> &instrs, PeepholeStats &stats);
 
-/// @brief Try to fuse mul+add into madd.
+/// @brief Fuse an adjacent integer multiply and addition into `MAddRRRR`.
+///
+/// The multiply result must be exactly one add input and must be dead after the
+/// add. Either commutative add-input position is accepted.
+///
+/// @param[in,out] instrs Instruction sequence containing the candidate pair.
+/// @param idx Index of the `MulRRR` candidate.
+/// @param[in,out] stats Statistics updated when a fusion succeeds.
+/// @return `true` when the multiply and add were replaced by one instruction.
 [[nodiscard]] bool tryMaddFusion(std::vector<MInstr> &instrs,
                                  std::size_t idx,
                                  PeepholeStats &stats);

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/peephole/ArithSimplify.cpp
+// File: src/codegen/x86_64/peephole/ArithSimplify.cpp
 // Purpose: Arithmetic simplification peephole sub-passes for the x86-64 backend.
 //          Implements MOV-zero to XOR, CMP-zero to TEST, arithmetic identity
 //          elimination, and multiply strength reduction.
@@ -14,12 +14,15 @@
 //   - Strength reduction only applies when EFLAGS semantics are preserved.
 // Ownership/Lifetime:
 //   - Stateless; all state is owned by the caller.
-// Links: codegen/x86_64/peephole/ArithSimplify.hpp,
-//        codegen/x86_64/peephole/PeepholeCommon.hpp
+// Links: src/codegen/x86_64/peephole/ArithSimplify.hpp,
+//        src/codegen/x86_64/peephole/PeepholeCommon.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "ArithSimplify.hpp"
+
+/// @file
+/// @brief Implements flag-aware arithmetic identity and strength reductions.
 
 namespace zanna::codegen::x64::peephole {
 
@@ -29,6 +32,7 @@ namespace zanna::codegen::x64::peephole {
 ///          breaks the dependency chain on the previous value of @p regOperand.
 /// @param instr Instruction rewritten in place.
 /// @param regOperand The destination/source register operand (used twice).
+/// @pre The caller has proved that the new EFLAGS definition is unobservable.
 void rewriteToXor(MInstr &instr, Operand regOperand) {
     instr.opcode = MOpcode::XORrr32;
     instr.operands.clear();
@@ -38,9 +42,11 @@ void rewriteToXor(MInstr &instr, Operand regOperand) {
 
 /// @brief Rewrite @p instr to @c "TEST reg, reg" — the canonical zero-test.
 /// @details Converts a @c CMP reg, #0 into a self-test that produces the
-///          same EFLAGS (ZF=1 iff register is zero) with a smaller encoding.
+///          same condition flags consumed by backend branches (including
+///          ZF=1 iff the register is zero) with a smaller encoding.
 /// @param instr Instruction rewritten in place.
 /// @param regOperand Register being compared (used twice in the new TEST).
+/// @post Source-location metadata and other non-opcode fields remain unchanged.
 void rewriteToTest(MInstr &instr, Operand regOperand) {
     instr.opcode = MOpcode::TESTrr;
     instr.operands.clear();
@@ -60,7 +66,8 @@ void rewriteToTest(MInstr &instr, Operand regOperand) {
 /// @param instrs Instruction stream being scanned.
 /// @param idx Index of the candidate.
 /// @param stats Pass-wide statistics accumulator (updated on hit).
-/// @return True when the instruction is a removable identity.
+/// @return @c true when the instruction is a removable identity.
+/// @pre @p idx is less than @c instrs.size().
 bool tryArithmeticIdentity(const std::vector<MInstr> &instrs,
                            std::size_t idx,
                            PeepholeStats &stats) {
@@ -128,7 +135,8 @@ bool tryArithmeticIdentity(const std::vector<MInstr> &instrs,
 /// @param idx Index of the candidate IMUL.
 /// @param knownConsts Per-block constant tracking map.
 /// @param stats Pass statistics accumulator.
-/// @return True when the rewrite was applied.
+/// @return @c true when the rewrite was applied.
+/// @pre @p idx is less than @c instrs.size().
 bool tryStrengthReduction(std::vector<MInstr> &instrs,
                           std::size_t idx,
                           const RegConstMap &knownConsts,

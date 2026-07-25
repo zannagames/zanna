@@ -17,12 +17,24 @@
 //   - Handlers return false only on unrecoverable lowering errors.
 // Ownership/Lifetime:
 //   - Stateless free functions; all mutable state flows through LoweringContext&.
-// Links: codegen/aarch64/InstrLowering.hpp,
-//        codegen/aarch64/LowerILToMIR.cpp (orchestration),
-//        codegen/aarch64/OpcodeDispatch.cpp (dispatch table),
-//        codegen/aarch64/OpcodeMappings.hpp (opcode→condition tables)
+// Links: src/codegen/aarch64/InstrLowering.hpp,
+//        src/codegen/aarch64/LowerILToMIR.cpp (orchestration),
+//        src/codegen/aarch64/OpcodeDispatch.cpp (dispatch table),
+//        src/codegen/aarch64/OpcodeMappings.hpp (opcode→condition tables)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Implements AArch64 IL operand materialization, ABI call marshalling,
+ *        and opcode-specific MIR lowering.
+ *
+ * Values are materialized from constants, parameters, frame addresses, cached
+ * temporaries, or recursively lowered producers. Calls share the common
+ * AAPCS64 argument planner, including aggregate chunks and Darwin variadic
+ * rules. String-specific paths make retain/spend decisions explicit so MIR
+ * preserves runtime ownership.
+ */
 
 #include "InstrLowering.hpp"
 #include "A64ImmediateUtils.hpp"
@@ -52,6 +64,8 @@ namespace zanna::codegen::aarch64 {
 /// @brief Return the AArch64 condition-code string for an IL comparison opcode.
 /// @details Delegates to lookupAnyCondition() from OpcodeMappings.hpp which covers
 ///          both integer (icmp_*) and float (fcmp_*) comparisons.
+/// @param op IL comparison opcode.
+/// @return Pointer to a static AArch64 condition spelling.
 static const char *condForOpcode(il::core::Opcode op) {
     return lookupAnyCondition(op);
 }
@@ -100,6 +114,9 @@ static const char *condForOpcode(il::core::Opcode op) {
 }
 
 /// @brief Validate an aggregate chunk byte offset for use as a MIR immediate.
+/// @param byteOffset Unsigned byte displacement from an aggregate base.
+/// @param offsetOut Receives the signed MIR immediate on success.
+/// @return `true` when @p byteOffset fits `long long`.
 [[nodiscard]] static bool checkedAggregateChunkOffset(std::size_t byteOffset,
                                                       long long &offsetOut) noexcept {
     if (byteOffset > static_cast<std::size_t>(std::numeric_limits<long long>::max())) {
@@ -184,6 +201,8 @@ struct MaterializedCallArg {
 };
 
 /// @brief Map canonical runtime names to the concrete linker symbol, preserving user symbols.
+/// @param name Canonical runtime name or user-defined symbol.
+/// @return Concrete linker symbol spelling.
 std::string mapExternalSymbol(std::string_view name) {
     if (auto mapped = il::runtime::mapCanonicalRuntimeName(name))
         return std::string(*mapped);
@@ -191,6 +210,8 @@ std::string mapExternalSymbol(std::string_view name) {
 }
 
 /// @brief Return the direct callee name from either modern or legacy call encoding.
+/// @param ins Direct-call instruction to inspect.
+/// @return Static callee name, or an empty string for an indirect/malformed call.
 std::string directCalleeName(const il::core::Instr &ins) {
     if (!ins.callee.empty())
         return ins.callee;
@@ -214,6 +235,9 @@ bool isDirectCallee(const il::core::Instr &ins, std::string_view runtimeName) {
 }
 
 /// @brief Emit AND-with-1 to mask an i1 value into its canonical 0-or-1 form.
+/// @param out Machine block receiving materialization and mask instructions.
+/// @param srcVReg Source GPR virtual register.
+/// @param nextVRegId Monotonic allocator advanced for two temporaries.
 /// @return New vreg holding `srcVReg & 1`.
 uint16_t emitMaskedI1Value(MBasicBlock &out, uint16_t srcVReg, uint16_t &nextVRegId) {
     const uint16_t mask = allocateNextVReg(nextVRegId);
@@ -227,6 +251,10 @@ uint16_t emitMaskedI1Value(MBasicBlock &out, uint16_t srcVReg, uint16_t &nextVRe
     return masked;
 }
 
+/// @brief Select a width-specific GPR load opcode for an IL type.
+/// @param kind Loaded IL scalar type.
+/// @param frameRelative Select FP-relative rather than arbitrary-base addressing.
+/// @return Matching unsigned narrow or full-width MIR load opcode.
 MOpcode gprLoadOpcodeForType(il::core::Type::Kind kind, bool frameRelative) {
     switch (kind) {
         case il::core::Type::Kind::I1:
@@ -240,6 +268,10 @@ MOpcode gprLoadOpcodeForType(il::core::Type::Kind kind, bool frameRelative) {
     }
 }
 
+/// @brief Select a width-specific GPR store opcode for an IL type.
+/// @param kind Stored IL scalar type.
+/// @param frameRelative Select FP-relative rather than arbitrary-base addressing.
+/// @return Matching narrow or full-width MIR store opcode.
 MOpcode gprStoreOpcodeForType(il::core::Type::Kind kind, bool frameRelative) {
     switch (kind) {
         case il::core::Type::Kind::I1:
@@ -254,6 +286,8 @@ MOpcode gprStoreOpcodeForType(il::core::Type::Kind kind, bool frameRelative) {
 }
 
 /// @brief Look up the named-argument count for a known variadic callee.
+/// @param callee Direct callee name.
+/// @param knownVarArgNamedArgCounts Optional lookup table.
 /// @return nullopt when @p callee is not in the table.
 std::optional<std::size_t> lookupKnownVarArgNamedArgs(
     std::string_view callee,
@@ -267,6 +301,9 @@ std::optional<std::size_t> lookupKnownVarArgNamedArgs(
 }
 
 /// @brief Test whether @p callee is a known variadic runtime/library function.
+/// @param callee Direct callee name.
+/// @param knownVarArgNamedArgCounts Optional lookup table.
+/// @return `true` when @p callee has fixed-prefix metadata.
 bool isKnownVarArgCallee(
     std::string_view callee,
     const std::unordered_map<std::string, std::size_t> *knownVarArgNamedArgCounts) {
@@ -275,6 +312,10 @@ bool isKnownVarArgCallee(
 
 /// @brief Materialise a 64-bit FP value via the integer bit-pattern + FMOV GPR→FPR.
 /// @details Used when the FP immediate doesn't fit AArch64's FMOV immediate encoding.
+/// @param out Machine block receiving the two-instruction sequence.
+/// @param dstVReg Destination FPR virtual register.
+/// @param bits IEEE-754 bit pattern.
+/// @param nextVRegId Monotonic allocator advanced for the temporary GPR.
 void emitF64BitsToVReg(MBasicBlock &out, uint16_t dstVReg, uint64_t bits, uint16_t &nextVRegId) {
     const uint16_t bitsGpr = allocateNextVReg(nextVRegId);
     out.instrs.push_back(MInstr{
@@ -386,15 +427,25 @@ bool marshalCallArgs(const std::vector<MaterializedCallArg> &args,
     return true;
 }
 
+/// @brief Count reference-spending uses of one string temporary.
+/// @param fn Function whose instructions and branch arguments are scanned.
+/// @param resultId String temporary identifier.
+/// @return Conservative spend count used by call-result retain elision.
+[[nodiscard]] unsigned countStringSpendingUses(const il::core::Function &fn, unsigned resultId);
+
 /// @brief Copy a call's return value out of the ABI return register into a fresh vreg.
 /// @details Picks `intReturnReg` or `f64ReturnReg` based on `ins.type`. Registers
 ///          the vreg in @p tempVReg / @p tempRegClass so later uses resolve. For
-///          string returns, also emits `bl rt_str_retain_maybe` to bump the
-///          reference count; for I1 returns, masks to canonical 0/1.
-/// @return The vreg holding the captured (and possibly retained/masked) result,
-///         or 0 if the instruction has no result.
-[[nodiscard]] unsigned countStringSpendingUses(const il::core::Function &fn, unsigned resultId);
-
+///          string returns, may emit `bl rt_str_retain_maybe`; for I1 returns,
+///          masks to canonical 0/1.
+/// @param ins Call instruction whose result metadata is consumed.
+/// @param fn Enclosing function used to analyze string-spending uses.
+/// @param ti Target ABI return-register description.
+/// @param out Machine block receiving capture/retain/mask instructions.
+/// @param tempVReg Result-temp to virtual-register map updated on success.
+/// @param tempRegClass Result-temp register-class map updated on success.
+/// @param nextVRegId Monotonic virtual-register allocator.
+/// @return The vreg holding the captured result, or zero when there is no result.
 uint16_t captureCallResult(const il::core::Instr &ins,
                            const il::core::Function &fn,
                            const TargetInfo &ti,
@@ -437,6 +488,9 @@ uint16_t captureCallResult(const il::core::Instr &ins,
 }
 
 /// @brief Index of @p ins within @p bb (StableList has no pointer arithmetic).
+/// @param bb Basic block containing @p ins.
+/// @param ins Instruction whose stable-list index is required.
+/// @return Zero-based index, or zero when no matching address is found.
 [[nodiscard]] std::size_t indexOfInstr(const il::core::BasicBlock &bb, const il::core::Instr &ins) {
     for (std::size_t i = 0; i < bb.instructions.size(); ++i) {
         if (&bb.instructions[i] == &ins)
@@ -453,6 +507,9 @@ uint16_t captureCallResult(const il::core::Instr &ins,
 ///          the retain is kept). The defensive call-result retain may only be
 ///          elided when total spends fit in the transferred reference —
 ///          `concat(%s, %s)` spends twice and MUST keep the retain.
+/// @param fn Function whose operands and branch arguments are scanned.
+/// @param resultId String temporary produced by the call.
+/// @return Conservative number of reference-spending uses.
 [[nodiscard]] unsigned countStringSpendingUses(const il::core::Function &fn, unsigned resultId) {
     unsigned spends = 0;
     for (const auto &block : fn.blocks) {
@@ -490,6 +547,9 @@ uint16_t captureCallResult(const il::core::Instr &ins,
 ///          override that convention only for arguments explicitly classified
 ///          as consumed. A helper that retains an argument still borrows the
 ///          caller's reference and therefore needs no defensive caller clone.
+/// @param ins Candidate call instruction.
+/// @param argIdx Zero-based operand index.
+/// @return `true` when the callee does not consume the caller's reference.
 [[nodiscard]] bool isBorrowedCallArg(const il::core::Instr &ins, std::size_t argIdx) {
     if (ins.op != il::core::Opcode::Call)
         return false;
@@ -509,6 +569,11 @@ uint16_t captureCallResult(const il::core::Instr &ins,
 ///             own reference keeps the value alive through the window
 ///             (runtime helpers cannot touch local slots, and consuming
 ///             argument positions always keep their own load retain).
+/// @param fn Enclosing function used for cross-block use analysis.
+/// @param loadBlock Block containing the load.
+/// @param loadIdx Zero-based instruction index of the load.
+/// @param resultId String temporary produced by the load.
+/// @return `true` when an existing ownership carrier dominates all uses.
 [[nodiscard]] bool strLoadRetainElidable(const il::core::Function &fn,
                                          const il::core::BasicBlock &loadBlock,
                                          std::size_t loadIdx,
@@ -599,6 +664,8 @@ uint16_t captureCallResult(const il::core::Instr &ins,
 }
 
 /// @brief Bump the refcount on a runtime-string vreg via `bl rt_str_retain_maybe`.
+/// @param out Machine block receiving the ABI move and runtime call.
+/// @param strVReg GPR virtual register containing the string handle.
 void retainStringVReg(MBasicBlock &out, uint16_t strVReg) {
     out.instrs.push_back(MInstr{
         MOpcode::MovRR, {MOperand::regOp(PhysReg::X0), MOperand::vregOp(RegClass::GPR, strVReg)}});
@@ -606,6 +673,8 @@ void retainStringVReg(MBasicBlock &out, uint16_t strVReg) {
 }
 
 /// @brief Look up the recorded byte length for a global string literal symbol.
+/// @param sym Literal label.
+/// @param stringLiteralByteLengths Optional literal metadata map.
 /// @return nullopt when @p sym is not in the table.
 std::optional<std::size_t> lookupStringLiteralByteLen(
     const std::string &sym,
@@ -672,6 +741,12 @@ uint16_t emitConstStrGlobalToVReg(
 ///          read as "if immediate handle here, else handle Temp" — the four
 ///          immediate kinds share a common shape (push instr, return) and were
 ///          repeating boilerplate around outVReg/outCls assignment.
+/// @param v Candidate immediate IL value.
+/// @param out Machine block receiving materialization instructions.
+/// @param nextVRegId Monotonic virtual-register allocator.
+/// @param outVReg Receives the materialized virtual-register id.
+/// @param outCls Receives its register class.
+/// @return `true` for a supported immediate kind.
 static bool materializeImmediateValue(const il::core::Value &v,
                                       MBasicBlock &out,
                                       uint16_t &nextVRegId,
@@ -725,6 +800,14 @@ static bool materializeImmediateValue(const il::core::Value &v,
 ///          Behaviour preserved from the inline block formerly inside
 ///          `materializeValueToVReg`. Splits param classification (GPR vs FPR
 ///          sequence indexing) from stack-vs-register decision.
+/// @param v Temporary that may identify an entry-block parameter.
+/// @param bb Entry basic block and parameter list.
+/// @param ti Target ABI argument-register orders.
+/// @param out Machine block receiving the ABI move or stack load.
+/// @param nextVRegId Monotonic virtual-register allocator.
+/// @param outVReg Receives the materialized virtual-register id.
+/// @param outCls Receives its register class.
+/// @return `true` when @p v is a valid block parameter.
 static bool materializeEntryParam(const il::core::Value &v,
                                   const il::core::BasicBlock &bb,
                                   const TargetInfo &ti,
@@ -810,6 +893,18 @@ static bool materializeEntryParam(const il::core::Value &v,
 ///        ConstStr, AddrOf, GEP, comparisons, Load).
 /// @details Returns true on success. Recursively calls
 ///          `materializeValueToVReg` for nested operands.
+/// @param v Temporary whose producer is sought in @p bb.
+/// @param bb Basic block containing the producer.
+/// @param ti Target ABI description.
+/// @param fb Frame layout used for local addresses.
+/// @param out Machine block receiving recursively emitted MIR.
+/// @param tempVReg Existing temporary-to-vreg cache, updated on success.
+/// @param tempRegClass Existing temporary-to-class cache, updated on success.
+/// @param nextVRegId Monotonic virtual-register allocator.
+/// @param outVReg Receives the producer result virtual register.
+/// @param outCls Receives its register class.
+/// @param stringLiteralByteLengths Optional literal size metadata.
+/// @return `true` when the producer shape is supported.
 static bool materializeFromProducer(
     const il::core::Value &v,
     const il::core::BasicBlock &bb,

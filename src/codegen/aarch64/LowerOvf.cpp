@@ -5,19 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/LowerOvf.cpp
+// File: src/codegen/aarch64/LowerOvf.cpp
 // Purpose: Expand overflow-checked arithmetic pseudo-opcodes into guarded
 //          AArch64 sequences. Executes between IL→MIR lowering and register
 //          allocation; all operands remain virtual registers throughout.
 // Key invariants:
 //   - A single shared trap block (Ltrap_ovf_<fn>) is reused per function.
-//   - The trap block is created before iterating so fn.blocks is not
-//     reallocated mid-walk.
+//   - When needed, the trap block is established before rewriting blocks so
+//     fn.blocks is not reallocated while block references are held.
 //   - add/sub overflow uses ADDS/SUBS + b.vs; mul overflow uses smulh+cmp+b.ne.
 // Ownership/Lifetime:
 //   - Rewrites MFunction in place; borrows fn only during the call.
-// Links: codegen/aarch64/LowerOvf.hpp,
-//        codegen/aarch64/passes/LoweringPass.cpp (caller),
+// Links: src/codegen/aarch64/LowerOvf.hpp,
+//        src/codegen/aarch64/passes/LoweringPass.cpp (caller),
 //        docs/zannalib/game/core.md (overflow semantics)
 //
 //===----------------------------------------------------------------------===//
@@ -30,11 +30,28 @@
 #include <utility>
 #include <vector>
 
+/**
+ * @file
+ * @brief Implements AArch64 checked-arithmetic pseudo-instruction expansion.
+ *
+ * Addition and subtraction use AArch64's signed-overflow flag. Multiplication
+ * compares the signed high half of the full product with the sign extension
+ * implied by its retained low half. The pass creates temporaries only for the
+ * multiplication sequence and allocates their IDs above the function's
+ * existing virtual-register range.
+ */
+
 namespace zanna::codegen::aarch64 {
 
 namespace {
 
-/// @brief Check if an opcode is an overflow-checked pseudo.
+/**
+ * @brief Tests whether an opcode requires checked-arithmetic expansion.
+ *
+ * @param opc Machine opcode to classify.
+ * @return `true` for the five signed-overflow pseudo-opcodes handled by this
+ *         pass; otherwise `false`.
+ */
 [[nodiscard]] bool isOverflowPseudo(MOpcode opc) {
     switch (opc) {
         case MOpcode::AddOvfRRR:
@@ -48,7 +65,14 @@ namespace {
     }
 }
 
-/// @brief Find a basic block by name in the function.
+/**
+ * @brief Finds a basic block by its exact MIR label.
+ *
+ * @param fn Function whose block list is searched without modification.
+ * @param name Exact block name to match.
+ * @return The block's zero-based index, or `std::nullopt` when no block has
+ *         the requested name.
+ */
 [[nodiscard]] std::optional<std::size_t> findBlock(const MFunction &fn, const std::string &name) {
     for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
         if (fn.blocks[i].name == name)
@@ -59,6 +83,14 @@ namespace {
 
 } // namespace
 
+/**
+ * @brief Expands all signed-overflow arithmetic pseudos in a MIR function.
+ *
+ * @param[in,out] fn Function whose original blocks are rewritten in place.
+ * @post Checked add/subtract operations set flags and branch on `vs`; checked
+ *       multiplies compare their signed high half and branch on `ne`.
+ * @post All inserted guards share a block that invokes `rt_trap_ovf`.
+ */
 void lowerOverflowOps(MFunction &fn) {
     // Reuse the per-function shared overflow trap block created during IL->MIR
     // lowering when one exists (a single `bl rt_trap_ovf` body — matched
@@ -67,6 +99,12 @@ void lowerOverflowOps(MFunction &fn) {
     // Otherwise fall back to a fresh assembler-local label: `L...` stays out
     // of the symbol table on Mach-O (.subsections_via_symbols) and resolves
     // as a normal non-exported label on ELF.
+    /**
+     * @brief Locates an already-lowered overflow trap block by its contents.
+     *
+     * @return The index of the first single-instruction block that calls
+     *         `rt_trap_ovf`, or `std::nullopt` if none exists.
+     */
     auto findExistingOvfTrap = [&fn]() -> std::optional<std::size_t> {
         for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
             const auto &candidate = fn.blocks[i];
@@ -84,6 +122,15 @@ void lowerOverflowOps(MFunction &fn) {
         existingOvfTrap ? fn.blocks[*existingOvfTrap].name : "Ltrap_ovf_" + fn.name;
     std::optional<std::size_t> trapIndex{};
 
+    /**
+     * @brief Resolves or creates the shared overflow trap block.
+     *
+     * The resolved index is cached so repeated calls do not search or append
+     * another block.
+     *
+     * @return Stable index of the shared block in `fn.blocks`.
+     * @post The returned block exists and has the label held in `trapLabel`.
+     */
     auto ensureTrapBlock = [&]() -> std::size_t {
         if (trapIndex)
             return *trapIndex;
@@ -214,9 +261,9 @@ void lowerOverflowOps(MFunction &fn) {
         }
     }
 
-    // Note: the trap block contains a `bl rt_trap` call, but rt_trap is noreturn.
-    // LegalizePass skips trap blocks when refreshing isLeaf so that the hot path
-    // can still benefit from leaf-function optimizations.
+    // The shared trap block contains `bl rt_trap_ovf`. LegalizePass therefore
+    // classifies the function as non-leaf even though the call is on a
+    // no-returning error path.
 }
 
 } // namespace zanna::codegen::aarch64

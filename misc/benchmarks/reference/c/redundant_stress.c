@@ -11,15 +11,36 @@
 //   - Standalone translation unit; no cross-layer dependencies.
 // Ownership/Lifetime:
 //   - No long-lived state; all allocations are scoped to the run.
-// Links: docs/codemap.md
+// Links: examples/il/benchmarks/redundant_stress.il, docs/internals/testing.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file misc/benchmarks/reference/c/redundant_stress.c
+ * @brief Native reference for redundant-expression and constant-folding stress.
+ *
+ * @details
+ * Each iteration deliberately repeats one index-dependent expression and
+ * rebuilds three constant arithmetic chains. The structure supplies common
+ * subexpression elimination and sparse constant propagation opportunities.
+ * Masking the accumulator to 28 bits keeps the checksum bounded throughout the
+ * roughly fifty-million-iteration workload.
+ */
 
 /* redundant_stress.c — Redundant computation / constant propagation benchmark (50M iterations).
    Equivalent to examples/il/benchmarks/redundant_stress.il */
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * @brief Execute the redundant-computation kernel and return its checksum.
+ * @param argc Hosted argument count. Each user argument adds one iteration.
+ * @param argv Hosted argument vector; its contents are intentionally unused.
+ * @return The bounded accumulator's least-significant eight bits.
+ *
+ * @pre `argc >= 1`, and the derived loop indices keep all signed arithmetic
+ *      representable by `int64_t`.
+ */
 int main(int argc, char **argv)
 {
     (void)argv;

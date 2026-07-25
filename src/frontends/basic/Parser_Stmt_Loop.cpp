@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file Parser_Stmt_Loop.cpp
+/// @brief Implements BASIC WHILE, DO, FOR, NEXT, and EXIT parsing.
+/// @details Loop bodies are collected by StatementSequencer and transferred
+///          into owned AST nodes. This parser records syntactic loop forms;
+///          nesting and target validity are left to later validation.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/Parser.hpp"
 #include "frontends/basic/Parser_Stmt_ControlHelpers.hpp"
@@ -96,7 +102,9 @@ StmtPtr Parser::parseDoStatement() {
 /// @details Recognizes two forms:
 ///          1. FOR var = start TO end [STEP step] ... NEXT
 ///          2. FOR EACH element IN array ... NEXT
-///          Statements are collected until the matching `NEXT`.
+///          Statements are collected until `NEXT`; an optional following soft
+///          identifier is consumed but is not matched against the opening
+///          variable by this routine.
 ///
 /// @return Newly allocated @ref ForStmt or @ref ForEachStmt describing the loop.
 StmtPtr Parser::parseForStatement() {
@@ -176,10 +184,10 @@ StmtPtr Parser::parseNextStatement() {
 
 /// @brief Parse an `EXIT` statement for breaking out of loops.
 ///
-/// @details Accepts an optional loop-kind keyword (`FOR`, `WHILE`, or `DO`).
-///          When omitted the statement defaults to `EXIT WHILE` for
-///          compatibility.  Invalid keywords trigger diagnostics and the parser
-///          synthesises a no-op sentinel so compilation can continue.
+/// @details Accepts `FOR`, `WHILE`, `DO`, `SUB`, or `FUNCTION` after EXIT.
+///          When no recognized keyword follows, the node defaults to the WHILE
+///          kind and leaves the unrecognized token untouched; this routine does
+///          not emit a diagnostic for the omission.
 ///
 /// @return Newly allocated @ref ExitStmt describing the exit semantics.
 StmtPtr Parser::parseExitStatement() {

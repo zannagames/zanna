@@ -1,0 +1,195 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_tile_behavior_probe.zia
+// Purpose: Verify production tile collision, property, animation, and autotile
+//          authoring transactions in the 2D scene editor.
+// Key invariants:
+//   - Every accepted behavior edit is one exact-undo history transaction.
+//   - Rejected and no-op edits leave content, revision, and history untouched.
+//   - Inspector drafts rebuild from canonical typed runtime state.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, document, and editor.
+// Links: zannastudio/src/ui/scene_tile_behavior_2d.zia,
+//        zannastudio/src/ui/scene_editor_2d.zia,
+//        docs/adr/0176-typed-tile-behavior-sections.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_tile_behavior_probe;
+
+// ============================================================================
+// MODULE: scene_tile_behavior_probe
+// PURPOSE: Pin Studio's tile-behavior authoring transaction contract.
+//
+// WHERE-THIS-FITS: RTSceneEditorTests pins the runtime typed-section model.
+//          This probe pins the editor's validation, commit, rollback, and
+//          inspector-draft behavior above it.
+//
+// TEACHING-NOTE: Command functions are driven directly, exactly as the pumped
+//          widget intents call them, so the probe exercises the same
+//          production path without synthesizing every pointer event.
+// ============================================================================
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+func Fail(shell: app_shell.AppShell, reason: String) {
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Tile Behavior Probe", 1120, 760);
+
+    var editor = new scene_editor_2d.SceneEditor2D();
+    editor.Setup(shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    if editor.ReplaceScene(8, 6, 16) == false {
+        Fail(shell, "scene fixture");
+        return;
+    }
+
+    // Collision: one transaction, exact no-op, exact undo/redo.
+    var revision = editor.GetRevision();
+    var undoCount = editor.undoStack.count();
+    if editor.SetTileBehaviorCollision(7, 1) == false
+       or editor.scene.TileCollision(7) != 1
+       or editor.GetRevision() != revision + 1
+       or editor.undoStack.count() != undoCount + 1 {
+        Fail(shell, "collision transaction");
+        return;
+    }
+    var collisionContent = sceneDoc.content;
+    if Str.Contains(collisionContent, "\"collision\"") == false {
+        Fail(shell, "collision serialization");
+        return;
+    }
+    if editor.SetTileBehaviorCollision(7, 1)
+       or sceneDoc.content != collisionContent
+       or editor.GetRevision() != revision + 1 {
+        Fail(shell, "collision no-op");
+        return;
+    }
+    if editor.SetTileBehaviorCollision(0, 1)
+       or editor.SetTileBehaviorCollision(4096, 1)
+       or editor.SetTileBehaviorCollision(7, 9)
+       or sceneDoc.content != collisionContent {
+        Fail(shell, "collision rejection");
+        return;
+    }
+    if editor.Undo() == false
+       or editor.scene.TileCollision(7) != 0
+       or editor.Redo() == false
+       or sceneDoc.content != collisionContent {
+        Fail(shell, "collision exact undo/redo");
+        return;
+    }
+
+    // Typed tile properties: int and bool kinds, rejection, removal.
+    revision = editor.GetRevision();
+    if editor.SetTileBehaviorProperty(7, "damage", "int", "3") == false
+       or editor.scene.TilePropertyInt(7, "damage", -1) != 3
+       or editor.SetTileBehaviorProperty(7, "slippery", "bool", "true") == false
+       or editor.scene.TilePropertyBool(7, "slippery", false) == false
+       or editor.GetRevision() != revision + 2 {
+        Fail(shell, "typed tile property transactions");
+        return;
+    }
+    var propertyContent = sceneDoc.content;
+    if editor.SetTileBehaviorProperty(7, "damage", "int", "not-a-number")
+       or editor.SetTileBehaviorProperty(7, "", "int", "5")
+       or sceneDoc.content != propertyContent {
+        Fail(shell, "tile property rejection");
+        return;
+    }
+    if editor.RemoveTileBehaviorProperty(7, "slippery") == false
+       or editor.scene.TilePropertyKind(7, "slippery") != ""
+       or editor.RemoveTileBehaviorProperty(7, "slippery") {
+        Fail(shell, "tile property removal");
+        return;
+    }
+
+    // Animations: per-frame durations, malformed drafts, clear.
+    revision = editor.GetRevision();
+    if editor.SetTileBehaviorAnim(5, "5, 6, 7", "120, 90, 120") == false
+       or Seq.get_Count(editor.scene.TileAnimFrames(5)) != 3
+       or editor.GetRevision() != revision + 1 {
+        Fail(shell, "animation transaction");
+        return;
+    }
+    var animContent = sceneDoc.content;
+    if Str.Contains(animContent, "\"durations\":[120,90,120]") == false {
+        Fail(shell, "animation serialization");
+        return;
+    }
+    if editor.SetTileBehaviorAnim(5, "5, 6", "120")
+       or editor.SetTileBehaviorAnim(5, "5, banana", "120, 90")
+       or editor.SetTileBehaviorAnim(5, "", "")
+       or sceneDoc.content != animContent {
+        Fail(shell, "animation rejection");
+        return;
+    }
+    if editor.ClearTileBehaviorAnim(5) == false
+       or Seq.get_Count(editor.scene.TileAnimFrames(5)) != 0
+       or editor.ClearTileBehaviorAnim(5)
+       or Str.Contains(sceneDoc.content, "\"animations\"") {
+        Fail(shell, "animation clear");
+        return;
+    }
+
+    // Autotiles: exactly sixteen variants, rejection, clear.
+    if editor.SetTileBehaviorAutotile(
+           9, "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16") == false
+       or Seq.get_Count(editor.scene.AutotileVariants(9)) != 16 {
+        Fail(shell, "autotile transaction");
+        return;
+    }
+    var autotileContent = sceneDoc.content;
+    if editor.SetTileBehaviorAutotile(9, "1,2,3")
+       or sceneDoc.content != autotileContent {
+        Fail(shell, "autotile rejection");
+        return;
+    }
+    if editor.ClearTileBehaviorAutotile(9) == false
+       or Str.Contains(sceneDoc.content, "\"autotiles\"") {
+        Fail(shell, "autotile clear");
+        return;
+    }
+
+    // Inspector drafts rebuild from canonical typed state.
+    if editor.SetTileBehaviorAnim(1, "1, 2", "80, 80") == false {
+        Fail(shell, "draft fixture");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.tileBehavior.animFramesInput.Text != "1, 2"
+       or editor.tileBehavior.animDurationsInput.Text != "80, 80" {
+        Fail(shell, "inspector draft rebuild");
+        return;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/NameMangling.hpp
+// File: src/codegen/common/linker/NameMangling.hpp
 // Purpose: Shared Mach-O/Darwin symbol name mangling utilities.
 //          Centralizes the underscore-prefix convention so that all linker
 //          and object file writer code uses a single mangling point.
@@ -18,6 +18,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file NameMangling.hpp
+ * @brief Centralizes Darwin underscore mangling and platform-aware symbol lookup.
+ */
+
 #pragma once
 
 #include "codegen/common/linker/LinkTypes.hpp"
@@ -27,8 +32,11 @@
 
 namespace zanna::codegen::linker {
 
-/// Apply the Darwin/Mach-O underscore convention to a symbol name.
-/// Local labels (starting with 'L' or '.') and empty names are returned as-is.
+/// @brief Applies the Darwin/Mach-O external-symbol underscore convention.
+/// @param name Logical symbol name.
+/// @return @p name unchanged for empty names and local labels beginning with
+///         `L` or `.`, otherwise a copy with one underscore prepended.
+/// @note This function does not detect already-mangled external names.
 inline std::string machoMangle(const std::string &name) {
     if (name.empty())
         return name;
@@ -37,9 +45,12 @@ inline std::string machoMangle(const std::string &name) {
     return "_" + name;
 }
 
-/// Look up a symbol name in a map, falling back to the underscore-prefixed
-/// version if the plain name is not found (Mach-O convention).
-/// Returns the iterator to the found entry, or map.end() if neither exists.
+/// @brief Looks up both logical and Darwin-mangled spellings of a symbol.
+/// @tparam MapT Associative container exposing `find`, `end`, and string keys.
+/// @param map Symbol map to search.
+/// @param name Requested spelling.
+/// @return Iterator to an exact, de-underscored, or underscore-prefixed match,
+///         in that priority order, or `map.end()`.
 template <typename MapT>
 auto findWithMachoFallback(MapT &map, const std::string &name) -> decltype(map.find(name)) {
     auto it = map.find(name);
@@ -55,9 +66,14 @@ auto findWithMachoFallback(MapT &map, const std::string &name) -> decltype(map.f
     return map.find("_" + name);
 }
 
-/// Look up a symbol with platform-appropriate spelling fallbacks. ELF and COFF
-/// treat leading underscores as part of the symbol name; only Mach-O receives
-/// Darwin underscore alias lookup.
+/// @brief Looks up a symbol with target-platform spelling rules.
+/// @details macOS uses `findWithMachoFallback`; Linux and Windows require an
+///          exact key because a leading underscore is semantically significant.
+/// @tparam MapT Associative container exposing `find` and `end`.
+/// @param map Symbol map to search.
+/// @param name Requested symbol spelling.
+/// @param platform Target platform.
+/// @return Matching iterator or `map.end()`.
 template <typename MapT>
 auto findWithPlatformFallback(MapT &map, const std::string &name, LinkPlatform platform)
     -> decltype(map.find(name)) {

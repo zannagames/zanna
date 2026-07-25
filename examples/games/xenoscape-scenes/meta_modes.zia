@@ -1,0 +1,359 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/meta_modes.zia
+// Purpose: Scores region ranks and owns Time Trial, Boss Rush, and New Game+ state.
+// Key invariants:
+//   - Ranks use time, damage, discoveries, and optional objectives—not score.
+//   - Postgame modes unlock only from persistent completion state.
+// Ownership/Lifetime:
+//   - Game owns one MetaProgression per active expedition profile.
+// Links: game.zia, save.zia, hub.zia, meta_probe.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module meta_modes;
+
+final META_REGION_COUNT = 10;
+final REGION_RANK_UNRANKED = 0;
+final REGION_RANK_D = 1;
+final REGION_RANK_C = 2;
+final REGION_RANK_B = 3;
+final REGION_RANK_A = 4;
+final REGION_RANK_S = 5;
+final BOSS_RUSH_PAR_TIME_MS = 720000;
+
+/// @brief Immutable-style aggregate returned by one regional rank calculation.
+class RegionRankResult {
+    expose Integer score;
+    expose Integer rank;
+
+    /// @brief Construct a bounded regional result.
+    ///
+    /// @param calculatedScore Composite score in 0..1000.
+    /// @param calculatedRank One `REGION_RANK_*` id.
+    /// @return Nothing. Stores borrowed scalar values only.
+    expose func init(calculatedScore: Integer, calculatedRank: Integer) {
+        score = calculatedScore;
+        if score < 0 { score = 0; }
+        if score > 1000 { score = 1000; }
+        rank = calculatedRank;
+        if rank < REGION_RANK_D or rank > REGION_RANK_S {
+            rank = REGION_RANK_D;
+        }
+    }
+}
+
+/// @brief Return the authored par time for one campaign region.
+///
+/// @param region Zero-based stable region id.
+/// @return Positive par time in milliseconds; invalid ids use ten minutes.
+func regionParTimeMs(region: Integer) -> Integer {
+    if region == 0 { return 420000; }
+    if region == 1 { return 540000; }
+    if region == 2 { return 600000; }
+    if region == 3 { return 540000; }
+    if region == 4 { return 600000; }
+    if region == 5 { return 660000; }
+    if region == 6 { return 600000; }
+    if region == 7 { return 660000; }
+    if region == 8 { return 720000; }
+    if region == 9 { return 780000; }
+    return 600000;
+}
+
+/// @brief Calculate a rank from the four commercial performance dimensions.
+///
+/// Time contributes 400 points, damage avoidance 250, four discoveries 250,
+/// and completing all optional discoveries 100. Time falls linearly to zero at
+/// double par; damage loses 35 points per HP but cannot become negative.
+///
+/// @param region Zero-based stable region id.
+/// @param timeMs Nonnegative regional completion time.
+/// @param damageTaken Nonnegative HP lost during the region.
+/// @param discoveries Optional discovery count in 0..4.
+/// @param optionalComplete True when every optional discovery is complete.
+/// @return New result with composite score and D/C/B/A/S rank.
+func calculateRegionRank(region: Integer, timeMs: Integer,
+                         damageTaken: Integer, discoveries: Integer,
+                         optionalComplete: Boolean) -> RegionRankResult {
+    var par = regionParTimeMs(region);
+    var boundedTime = timeMs;
+    if boundedTime < 0 { boundedTime = 0; }
+    var timeScore = 400;
+    if boundedTime > par {
+        timeScore = 400 - (boundedTime - par) * 400 / par;
+        if timeScore < 0 { timeScore = 0; }
+    }
+    var boundedDamage = damageTaken;
+    if boundedDamage < 0 { boundedDamage = 0; }
+    var damageScore = 250 - boundedDamage * 35;
+    if damageScore < 0 { damageScore = 0; }
+    var boundedDiscoveries = discoveries;
+    if boundedDiscoveries < 0 { boundedDiscoveries = 0; }
+    if boundedDiscoveries > 4 { boundedDiscoveries = 4; }
+    var discoveryScore = boundedDiscoveries * 250 / 4;
+    var optionalScore = 0;
+    if optionalComplete { optionalScore = 100; }
+    var total = timeScore + damageScore + discoveryScore + optionalScore;
+    return new RegionRankResult(total, regionRankForScore(total));
+}
+
+/// @brief Calculate one Boss Rush rank from total clock and cumulative damage.
+///
+/// Time contributes 600 points and falls linearly from par to zero at twice par.
+/// Damage avoidance contributes 400 points and loses 30 points per HP. This
+/// intentionally excludes campaign discoveries because the simulator contains
+/// only the four authored boss arenas.
+///
+/// @param timeMs Nonnegative four-encounter completion time in milliseconds.
+/// @param damageTaken Nonnegative cumulative HP lost during the sequence.
+/// @return New bounded result using the same D/C/B/A/S thresholds as regions.
+func calculateBossRushRank(timeMs: Integer,
+                           damageTaken: Integer) -> RegionRankResult {
+    var boundedTime = timeMs;
+    if boundedTime < 0 { boundedTime = 0; }
+    var timeScore = 600;
+    if boundedTime > BOSS_RUSH_PAR_TIME_MS {
+        timeScore = 600 -
+            (boundedTime - BOSS_RUSH_PAR_TIME_MS) * 600 /
+            BOSS_RUSH_PAR_TIME_MS;
+        if timeScore < 0 { timeScore = 0; }
+    }
+    var boundedDamage = damageTaken;
+    if boundedDamage < 0 { boundedDamage = 0; }
+    var damageScore = 400 - boundedDamage * 30;
+    if damageScore < 0 { damageScore = 0; }
+    var total = timeScore + damageScore;
+    return new RegionRankResult(total, regionRankForScore(total));
+}
+
+/// @brief Map a composite result score to its release rank tier.
+///
+/// @param score Candidate score, normally in 0..1000.
+/// @return One D/C/B/A/S rank id.
+func regionRankForScore(score: Integer) -> Integer {
+    if score >= 850 { return REGION_RANK_S; }
+    if score >= 700 { return REGION_RANK_A; }
+    if score >= 550 { return REGION_RANK_B; }
+    if score >= 400 { return REGION_RANK_C; }
+    return REGION_RANK_D;
+}
+
+/// @brief Convert a regional rank id to its single-letter UI label.
+///
+/// @param rank One `REGION_RANK_*` id.
+/// @return S/A/B/C/D or `--` when unranked/invalid.
+func regionRankLabel(rank: Integer) -> String {
+    if rank == REGION_RANK_S { return "S"; }
+    if rank == REGION_RANK_A { return "A"; }
+    if rank == REGION_RANK_B { return "B"; }
+    if rank == REGION_RANK_C { return "C"; }
+    if rank == REGION_RANK_D { return "D"; }
+    return "--";
+}
+
+/// @brief Test whether a region's Time Trial is unlocked.
+///
+/// @param region Zero-based region id.
+/// @param completionMask Persistent completed-region mask.
+/// @return True only when the corresponding region is complete.
+func timeTrialUnlocked(region: Integer, completionMask: Integer) -> Boolean {
+    return metaMaskHas(completionMask, region);
+}
+
+/// @brief Test whether normal-ending postgame modes are unlocked.
+///
+/// @param completionMask Persistent completed-region mask.
+/// @return True when The Core (region nine) is complete.
+func normalEndingUnlocked(completionMask: Integer) -> Boolean {
+    return metaMaskHas(completionMask, 9);
+}
+
+/// @brief Test the exact all-abilities and all-primary-lore true-ending gate.
+///
+/// @param completionMask Persistent completed-region mask.
+/// @param abilityMask Persistent six-ability mask.
+/// @param loreFound Number of collected primary lore records.
+/// @param loreTotal Positive authored primary lore total.
+/// @return True only after the normal ending with all abilities and lore.
+func trueEndingUnlocked(completionMask: Integer, abilityMask: Integer,
+                        loreFound: Integer, loreTotal: Integer) -> Boolean {
+    if normalEndingUnlocked(completionMask) == false { return false; }
+    if abilityMask != 63 or loreTotal <= 0 { return false; }
+    return loreFound >= loreTotal;
+}
+
+/// @brief Return enemy HP scaling for an optional New Game+ expedition.
+///
+/// @param active Whether New Game+ is active.
+/// @return 135 when active and 100 otherwise.
+func newGamePlusEnemyHpPercent(active: Boolean) -> Integer {
+    if active { return 135; }
+    return 100;
+}
+
+/// @brief Return authored encounter-density scaling for New Game+.
+///
+/// @param active Whether New Game+ is active.
+/// @return 150 when active and 100 otherwise.
+func newGamePlusEncounterPercent(active: Boolean) -> Integer {
+    if active { return 150; }
+    return 100;
+}
+
+/// @brief Persistent best region results and active New Game+ choice.
+class MetaProgression {
+    hide List[Integer] bestTimes;
+    hide List[Integer] bestRanks;
+    hide Boolean newGamePlusActive;
+
+    /// @brief Construct empty per-region records and ordinary campaign mode.
+    ///
+    /// @return Nothing. Allocates two fixed ten-entry lists.
+    expose func init() { reset(); }
+
+    /// @brief Reset every regional result and disable New Game+.
+    ///
+    /// @return Nothing. Restores clean-profile state.
+    expose func reset() {
+        bestTimes = [];
+        bestRanks = [];
+        var i = 0;
+        while i < META_REGION_COUNT {
+            bestTimes.add(0);
+            bestRanks.add(REGION_RANK_UNRANKED);
+            i = i + 1;
+        }
+        newGamePlusActive = false;
+    }
+
+    /// @brief Restore serialized best times, packed ranks, and NG+ choice.
+    ///
+    /// @param times Borrowed list of up to ten nonnegative millisecond times.
+    /// @param packedRanks Base-six packed rank ids.
+    /// @param ngPlusActive Serialized active-mode flag.
+    /// @return Nothing. Invalid entries clamp to unranked/default values.
+    expose func restore(times: List[Integer], packedRanks: Integer,
+                        ngPlusActive: Boolean) {
+        reset();
+        var packed = packedRanks;
+        if packed < 0 { packed = 0; }
+        var i = 0;
+        while i < META_REGION_COUNT {
+            var time = 0;
+            if i < times.length() { time = times.get(i); }
+            if time < 0 { time = 0; }
+            bestTimes.set(i, time);
+            var rank = packed % 6;
+            if rank < REGION_RANK_UNRANKED or rank > REGION_RANK_S {
+                rank = REGION_RANK_UNRANKED;
+            }
+            bestRanks.set(i, rank);
+            packed = packed / 6;
+            i = i + 1;
+        }
+        newGamePlusActive = ngPlusActive;
+    }
+
+    /// @brief Record one completion when it improves time or rank.
+    ///
+    /// @param region Zero-based region id.
+    /// @param result Calculated rank result.
+    /// @param timeMs Nonnegative completion time in milliseconds.
+    /// @return True when either persistent best changed; false for invalid/no best.
+    expose func record(region: Integer, result: RegionRankResult,
+                       timeMs: Integer) -> Boolean {
+        if region < 0 or region >= META_REGION_COUNT or timeMs < 0 {
+            return false;
+        }
+        var changed = false;
+        var oldTime = bestTimes.get(region);
+        if oldTime == 0 or timeMs < oldTime {
+            bestTimes.set(region, timeMs);
+            changed = true;
+        }
+        if result.rank > bestRanks.get(region) {
+            bestRanks.set(region, result.rank);
+            changed = true;
+        }
+        return changed;
+    }
+
+    /// @brief Enable or disable New Game+ subject to normal-ending unlock.
+    ///
+    /// @param active Requested active flag.
+    /// @param completionMask Persistent completed-region mask.
+    /// @return True when accepted; false when enabling before normal ending.
+    expose func setNewGamePlusActive(active: Boolean,
+                                     completionMask: Integer) -> Boolean {
+        if active and normalEndingUnlocked(completionMask) == false {
+            return false;
+        }
+        newGamePlusActive = active;
+        return true;
+    }
+
+    /// @brief Report whether New Game+ scaling is currently active.
+    ///
+    /// @return Current mode flag.
+    expose func isNewGamePlusActive() -> Boolean { return newGamePlusActive; }
+
+    /// @brief Read one region's best completion time.
+    ///
+    /// @param region Zero-based region id.
+    /// @return Best milliseconds, or zero for no result/invalid id.
+    expose func getBestTime(region: Integer) -> Integer {
+        if region < 0 or region >= META_REGION_COUNT { return 0; }
+        return bestTimes.get(region);
+    }
+
+    /// @brief Read one region's best rank tier.
+    ///
+    /// @param region Zero-based region id.
+    /// @return One rank id, or UNRANKED for invalid/no result.
+    expose func getBestRank(region: Integer) -> Integer {
+        if region < 0 or region >= META_REGION_COUNT {
+            return REGION_RANK_UNRANKED;
+        }
+        return bestRanks.get(region);
+    }
+
+    /// @brief Borrow the fixed best-time list for SaveManager serialization.
+    ///
+    /// @return Ten-entry millisecond list owned by this MetaProgression.
+    expose func getBestTimes() -> List[Integer] { return bestTimes; }
+
+    /// @brief Pack ten rank ids as base-six digits for compact SaveData storage.
+    ///
+    /// @return Nonnegative packed rank integer.
+    expose func getPackedRanks() -> Integer {
+        var packed = 0;
+        var multiplier = 1;
+        var i = 0;
+        while i < META_REGION_COUNT {
+            packed = packed + bestRanks.get(i) * multiplier;
+            multiplier = multiplier * 6;
+            i = i + 1;
+        }
+        return packed;
+    }
+}
+
+/// @brief Test one completion-mask bit without requiring bitwise syntax.
+///
+/// @param mask Nonnegative packed mask.
+/// @param index Bit index in 0..61.
+/// @return True when the indexed bit is set.
+func metaMaskHas(mask: Integer, index: Integer) -> Boolean {
+    if mask < 0 or index < 0 or index >= 62 { return false; }
+    var bit = 1;
+    var i = 0;
+    while i < index { bit = bit * 2; i = i + 1; }
+    return (mask / bit) % 2 == 1;
+}

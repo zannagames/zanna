@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/BasicCompletion.cpp
+// File: src/frontends/basic/BasicCompletion.cpp
 // Purpose: Implementation of the BASIC code-completion engine.
 // Key invariants:
 //   - Keywords and builtins are static provider lists
@@ -14,9 +14,17 @@
 //   - Runtime members use RuntimeClasses registry
 // Ownership/Lifetime:
 //   - All returned items are fully owned
-// Links: frontends/basic/BasicCompletion.hpp
+// Links: src/frontends/basic/BasicCompletion.hpp,
+//        src/frontends/basic/BasicAnalysis.hpp,
+//        src/frontends/basic/OopIndex.hpp,
+//        src/il/runtime/classes/RuntimeClasses.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file BasicCompletion.cpp
+ * @brief Implements cached BASIC completion providers and deterministic ranking.
+ */
 
 #include "frontends/basic/BasicCompletion.hpp"
 
@@ -31,13 +39,16 @@ namespace il::frontends::basic {
 
 // --- Constructor / Destructor ---
 
+/// @brief Initialize an empty engine with a fresh source manager.
 BasicCompletionEngine::BasicCompletionEngine()
     : sm_(std::make_unique<il::support::SourceManager>()) {}
 
+/// @brief Destroy the current cached analysis and owned source manager.
 BasicCompletionEngine::~BasicCompletionEngine() = default;
 
 // --- Cache ---
 
+/// @copydoc BasicCompletionEngine::fnv1a()
 uint64_t BasicCompletionEngine::fnv1a(std::string_view data) {
     uint64_t hash = 0xcbf29ce484222325ULL;
     for (char c : data) {
@@ -47,12 +58,14 @@ uint64_t BasicCompletionEngine::fnv1a(std::string_view data) {
     return hash;
 }
 
+/// @copydoc BasicCompletionEngine::clearCache()
 void BasicCompletionEngine::clearCache() {
     cache_ = {};
 }
 
 // --- Context extraction ---
 
+/// @copydoc BasicCompletionEngine::extractContext()
 BasicCompletionEngine::Context BasicCompletionEngine::extractContext(std::string_view src,
                                                                      int line,
                                                                      int col) const {
@@ -124,6 +137,8 @@ BasicCompletionEngine::Context BasicCompletionEngine::extractContext(std::string
 // --- Helpers ---
 
 /// @brief Lower-case a string for case-insensitive label/prefix matching.
+/// @param s Byte string to fold using the C locale's character classification.
+/// @return Copy with every byte converted through `std::tolower`.
 static std::string toLowerStr(const std::string &s) {
     std::string lower;
     lower.reserve(s.size());
@@ -135,6 +150,10 @@ static std::string toLowerStr(const std::string &s) {
 /// @brief Test whether @p label begins with @p prefix, case-insensitively.
 /// @details An empty prefix matches everything. The match is anchored at
 ///          position 0 (true prefix), not a free substring search.
+/// @param label Candidate completion label.
+/// @param prefix Requested case-insensitive prefix.
+/// @return True when @p prefix is empty or @p label begins with @p prefix after
+///         case folding.
 static bool prefixMatch(const std::string &label, const std::string &prefix) {
     if (prefix.empty())
         return true;
@@ -144,6 +163,9 @@ static bool prefixMatch(const std::string &label, const std::string &prefix) {
 }
 
 /// @brief Combine authored documentation for a runtime class.
+/// @param runtimeClass Registry record whose summary and details are read.
+/// @return Summary, details, or both separated by a blank line; empty when
+///         neither field contains text.
 static std::string runtimeClassDocumentation(const il::runtime::RuntimeClass &runtimeClass) {
     std::string documentation = runtimeClass.summary ? runtimeClass.summary : "";
     if (runtimeClass.details && *runtimeClass.details) {
@@ -156,6 +178,7 @@ static std::string runtimeClassDocumentation(const il::runtime::RuntimeClass &ru
 
 // --- Providers ---
 
+/// @copydoc BasicCompletionEngine::provideKeywords()
 std::vector<CompletionItem> BasicCompletionEngine::provideKeywords(
     const std::string &prefix) const {
     static const char *keywords[] = {
@@ -181,13 +204,18 @@ std::vector<CompletionItem> BasicCompletionEngine::provideKeywords(
     return items;
 }
 
+/// @copydoc BasicCompletionEngine::provideSnippets()
 std::vector<CompletionItem> BasicCompletionEngine::provideSnippets(
     const std::string &prefix) const {
     std::vector<CompletionItem> items;
 
+    /// Static snippet metadata copied into completion items when selected.
     struct Snippet {
+        ///< Popup label used for matching.
         const char *label;
+        ///< Editor snippet text with placeholder markers.
         const char *insert;
+        ///< Concise construct description.
         const char *detail;
     };
 
@@ -218,10 +246,14 @@ std::vector<CompletionItem> BasicCompletionEngine::provideSnippets(
     return items;
 }
 
+/// @copydoc BasicCompletionEngine::provideBuiltins()
 std::vector<CompletionItem> BasicCompletionEngine::provideBuiltins(
     const std::string &prefix) const {
+    /// Name and signature metadata for one intrinsic completion.
     static const struct {
+        ///< BASIC intrinsic spelling.
         const char *name;
+        ///< Human-readable invocation and result signature.
         const char *detail;
     } builtins[] = {
         {"ABS", "ABS(n) -> number"},
@@ -267,6 +299,7 @@ std::vector<CompletionItem> BasicCompletionEngine::provideBuiltins(
     return items;
 }
 
+/// @copydoc BasicCompletionEngine::provideScopeSymbols()
 std::vector<CompletionItem> BasicCompletionEngine::provideScopeSymbols(
     const SemanticAnalyzer &sema, const std::string &prefix) const {
     std::vector<CompletionItem> items;
@@ -326,6 +359,7 @@ std::vector<CompletionItem> BasicCompletionEngine::provideScopeSymbols(
     return items;
 }
 
+/// @copydoc BasicCompletionEngine::provideMemberCompletions()
 std::vector<CompletionItem> BasicCompletionEngine::provideMemberCompletions(
     const SemanticAnalyzer &sema, const Context &ctx) const {
     std::vector<CompletionItem> items;
@@ -381,6 +415,7 @@ std::vector<CompletionItem> BasicCompletionEngine::provideMemberCompletions(
     return items;
 }
 
+/// @copydoc BasicCompletionEngine::provideRuntimeMembers()
 std::vector<CompletionItem> BasicCompletionEngine::provideRuntimeMembers(
     const std::string &className, const std::string &prefix) const {
     std::vector<CompletionItem> items;
@@ -413,11 +448,13 @@ std::vector<CompletionItem> BasicCompletionEngine::provideRuntimeMembers(
 
 // --- Post-processing ---
 
+/// @copydoc BasicCompletionEngine::filterByPrefix()
 void BasicCompletionEngine::filterByPrefix(std::vector<CompletionItem> &items,
                                            const std::string &prefix) const {
     if (prefix.empty())
         return;
     std::string lp = toLowerStr(prefix);
+    /// Remove labels that do not contain the folded search text.
     items.erase(std::remove_if(items.begin(),
                                items.end(),
                                [&lp](const CompletionItem &item) {
@@ -427,9 +464,11 @@ void BasicCompletionEngine::filterByPrefix(std::vector<CompletionItem> &items,
                 items.end());
 }
 
+/// @copydoc BasicCompletionEngine::rank()
 void BasicCompletionEngine::rank(std::vector<CompletionItem> &items,
                                  const std::string &prefix) const {
     if (prefix.empty()) {
+        /// Without search text, provider priority alone determines ordering.
         std::sort(items.begin(), items.end(), [](const CompletionItem &a, const CompletionItem &b) {
             return a.sortPriority < b.sortPriority;
         });
@@ -446,6 +485,7 @@ void BasicCompletionEngine::rank(std::vector<CompletionItem> &items,
     for (size_t i = 0; i < order.size(); ++i)
         order[i] = i;
 
+    /// Compare cached lowercase labels through the documented affinity tiers.
     std::sort(order.begin(), order.end(), [&items, &lowerLabels, &lp](size_t ai, size_t bi) {
         const auto &a = items[ai];
         const auto &b = items[bi];
@@ -471,6 +511,7 @@ void BasicCompletionEngine::rank(std::vector<CompletionItem> &items,
     items = std::move(ranked);
 }
 
+/// @copydoc BasicCompletionEngine::deduplicate()
 void BasicCompletionEngine::deduplicate(std::vector<CompletionItem> &items) const {
     std::unordered_set<std::string> seen;
     seen.reserve(items.size());
@@ -488,6 +529,7 @@ void BasicCompletionEngine::deduplicate(std::vector<CompletionItem> &items) cons
 
 // --- Main entry point ---
 
+/// @copydoc BasicCompletionEngine::complete()
 std::vector<CompletionItem> BasicCompletionEngine::complete(
     std::string_view source, int line, int col, std::string_view filePath, int maxResults) {
     // Check cache

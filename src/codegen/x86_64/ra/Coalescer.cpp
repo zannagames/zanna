@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/ra/Coalescer.cpp
+// File: src/codegen/x86_64/ra/Coalescer.cpp
 // Purpose: Lower PX_COPY bundles into executable move sequences while
 //          respecting spill state managed by the linear-scan allocator.
 // Key invariants:
@@ -13,9 +13,9 @@
 //   - Generated code preserves the semantics of the original parallel copy.
 // Ownership/Lifetime:
 //   - Operates on MIR provided by the allocator; no ownership taken.
-// Links: codegen/x86_64/ra/Coalescer.hpp,
-//        codegen/x86_64/ra/Allocator.hpp,
-//        codegen/x86_64/ra/Spiller.hpp
+// Links: src/codegen/x86_64/ra/Coalescer.hpp,
+//        src/codegen/x86_64/ra/Allocator.hpp,
+//        src/codegen/x86_64/ra/Spiller.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,15 +46,24 @@ struct ScratchRelease {
     RegClass cls{RegClass::GPR}; ///< Register class for the allocator's bookkeeping.
 };
 
+/// @brief Concrete register or spill-slot node in the parallel-copy graph.
 struct CopyLocation {
+    /// @brief Storage category of the node.
     enum class Kind { Reg, Mem };
 
+    /// @brief Whether @c reg or @c slot identifies the location.
     Kind kind{Kind::Reg};
+    /// @brief Register bank used to distinguish otherwise equal locations.
     RegClass cls{RegClass::GPR};
+    /// @brief Physical register when @c kind is @c Reg.
     PhysReg reg{PhysReg::RAX};
+    /// @brief Spill-slot index when @c kind is @c Mem.
     int slot{-1};
 };
 
+/// @brief Converts a copy task's source into a uniform graph location.
+/// @param task Copy task to inspect.
+/// @return Register or spill-slot source location.
 [[nodiscard]] CopyLocation sourceLocation(const CopyTask &task) {
     if (task.src.kind == CopySource::Kind::Reg) {
         return CopyLocation{CopyLocation::Kind::Reg, task.cls, task.src.reg, -1};
@@ -62,6 +71,9 @@ struct CopyLocation {
     return CopyLocation{CopyLocation::Kind::Mem, task.cls, PhysReg::RAX, task.src.slot};
 }
 
+/// @brief Converts a copy task's destination into a uniform graph location.
+/// @param task Copy task to inspect.
+/// @return Register or spill-slot destination location.
 [[nodiscard]] CopyLocation destLocation(const CopyTask &task) {
     if (task.destKind == CopyTask::DestKind::Reg) {
         return CopyLocation{CopyLocation::Kind::Reg, task.cls, task.destReg, -1};
@@ -69,6 +81,10 @@ struct CopyLocation {
     return CopyLocation{CopyLocation::Kind::Mem, task.cls, PhysReg::RAX, task.destSlot};
 }
 
+/// @brief Compares two typed copy-graph locations.
+/// @param lhs First location.
+/// @param rhs Second location.
+/// @return @c true when kind, class, and register or slot identity match.
 [[nodiscard]] bool sameLocation(const CopyLocation &lhs, const CopyLocation &rhs) noexcept {
     if (lhs.kind != rhs.kind || lhs.cls != rhs.cls) {
         return false;
@@ -76,6 +92,10 @@ struct CopyLocation {
     return lhs.kind == CopyLocation::Kind::Reg ? lhs.reg == rhs.reg : lhs.slot == rhs.slot;
 }
 
+/// @brief Tests whether a task reads a specified copy-graph location.
+/// @param task Copy task whose source is inspected.
+/// @param location Candidate source location.
+/// @return @c true when the typed source matches @p location.
 [[nodiscard]] bool sourceMatchesLocation(const CopyTask &task,
                                          const CopyLocation &location) noexcept {
     if (location.kind == CopyLocation::Kind::Reg) {
@@ -91,12 +111,16 @@ struct CopyLocation {
 ///          by PX_COPY lowering for cycle breaking and memory-to-memory copies.
 ///          A PX_COPY bundle that explicitly names either register cannot be
 ///          lowered with those fixed scratch assumptions intact.
+/// @param reg Physical register to classify.
+/// @return @c true for R10 or R11.
 [[nodiscard]] bool isFixedGprScratch(PhysReg reg) noexcept {
     return reg == PhysReg::R10 || reg == PhysReg::R11;
 }
 
 /// @brief Validate a physical PX_COPY operand against fixed scratch registers.
-/// @throws std::runtime_error if a GPR copy operand explicitly names R10 or R11.
+/// @param cls Register class of @p reg.
+/// @param reg Explicit physical copy operand.
+/// @throws std::runtime_error If a GPR copy operand names R10 or R11.
 void rejectFixedScratchOperand(RegClass cls, PhysReg reg) {
     if (cls == RegClass::GPR && isFixedGprScratch(reg)) {
         throw std::runtime_error(
@@ -130,6 +154,8 @@ Coalescer::Coalescer(LinearScanAllocator &allocator, Spiller &spiller)
 ///          it should execute.
 /// @param instr @c PX_COPY instruction to lower.
 /// @param out Vector receiving the lowered instruction sequence.
+/// @throws std::runtime_error If operands are malformed, use reserved scratch
+///         registers, disagree in class, or require an unavailable register.
 void Coalescer::lower(const MInstr &instr, std::vector<MInstr> &out) {
     std::vector<MInstr> prefix{};
     std::vector<ScratchRelease> scratch{};
@@ -249,6 +275,7 @@ void Coalescer::lower(const MInstr &instr, std::vector<MInstr> &out) {
             continue;
         }
 
+        /// @brief Prefers a register-to-register edge as the cycle-breaking seed.
         auto it = std::find_if(tasks.begin(), tasks.end(), [](const CopyTask &t) {
             return t.destKind == CopyTask::DestKind::Reg && t.src.kind == CopySource::Kind::Reg;
         });
@@ -301,6 +328,7 @@ void Coalescer::lower(const MInstr &instr, std::vector<MInstr> &out) {
 ///          emitted.
 /// @param task Copy description built during @ref lower.
 /// @param generated Output buffer receiving the materialised instructions.
+/// @throws std::runtime_error If an XMM memory-to-memory copy cannot borrow a register.
 void Coalescer::emitCopyTask(const CopyTask &task, std::vector<MInstr> &generated) {
     if (task.destKind == CopyTask::DestKind::Mem) {
         if (task.src.kind == CopySource::Kind::Reg) {

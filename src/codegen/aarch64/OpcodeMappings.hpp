@@ -5,29 +5,28 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/OpcodeMappings.hpp
+// File: src/codegen/aarch64/OpcodeMappings.hpp
 // Purpose: Declarative IL-opcode -> AArch64-MIR-opcode lookup tables and the
 //          O(1) switch-based accessors that drive instruction selection during
 //          IL->MIR lowering (binary integer/FP arithmetic, integer/FP compare
 //          condition codes, and opcode-category predicates).
 // Key invariants:
-//   - The kBinaryIntOps/kBinaryFpOps/kCompareOps arrays are documentation/
-//     iteration mirrors only; lookupBinaryOp()/lookupCondition() are the
-//     authoritative selectors and must stay in sync with those tables.
+//   - The constexpr arrays support documentation and category iteration;
+//     lookupBinaryOp()/lookupCondition() are authoritative for selection and
+//     additionally encode cases such as division and register-based shifts.
 //   - Overflow opcodes (IAddOvf/ISubOvf/IMulOvf) map to dedicated *Ovf MIR
 //     opcodes; division has no immediate form on AArch64 (supportsImmediate
 //     is false for SDiv/UDiv and all FP ops).
-//   - FP compare condition codes follow the FCMP NaN/unordered convention
-//     (ordered preds need vc-masking; see FpCompareLowering.hpp) — keep this
-//     table consistent with that helper and il/core/Opcode.hpp.
+//   - FP compare condition codes are selected so FCMP's NZCV result directly
+//     implements ordered relational predicates and explicit ord/uno tests.
 //   - All returned pointers/strings reference static storage with program
 //     lifetime; callers may retain them freely.
 // Ownership/Lifetime:
 //   - Header-only constexpr/static data and stateless inline functions; no
 //     dynamic allocation and no retained mutable state.
-// Links: codegen/aarch64/MachineIR.hpp,
-//        codegen/aarch64/FpCompareLowering.hpp,
-//        il/core/Opcode.hpp, docs/internals/architecture.md
+// Links: src/codegen/aarch64/MachineIR.hpp,
+//        src/codegen/aarch64/FpCompareLowering.hpp,
+//        src/il/core/Opcode.hpp, docs/internals/architecture.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,38 +35,34 @@
 #include "codegen/aarch64/MachineIR.hpp"
 #include "il/core/Opcode.hpp"
 
-/// @brief AArch64-specific opcode mapping tables and lookup functions.
-///
-/// This namespace contains the declarative mappings between IL (intermediate
-/// language) opcodes and AArch64 MIR (machine IR) opcodes. These mappings drive
-/// the instruction selection phase of code generation, allowing the lowering
-/// pass to translate IL operations into equivalent AArch64 machine instructions.
-///
-/// The mappings are organized by operation category:
-/// - Binary integer operations (add, sub, mul, bitwise)
-/// - Binary floating-point operations (fadd, fsub, fmul, fdiv)
-/// - Comparison operations (icmp_eq, scmp_lt, etc.)
-///
-/// @see MachineIR.hpp for the MOpcode definitions
-/// @see il/core/Opcode.hpp for IL opcode definitions
+/**
+ * @file
+ * @brief Defines AArch64 IL-to-MIR opcode and condition-code mappings.
+ *
+ * The switch-based lookup functions are the instruction selector's
+ * authoritative constant-time interface. The constexpr arrays expose the
+ * common mapping categories for iteration and documentation. Every returned
+ * mapping pointer and condition string refers to static storage.
+ */
+
+/**
+ * @brief Contains the AArch64-specific opcode mapping tables and lookup helpers.
+ *
+ * Integer and floating-point arithmetic map to MIR opcodes, while comparisons
+ * map to the condition code consumed after `CMP` or `FCMP`.
+ *
+ * @see MachineIR.hpp
+ * @see il/core/Opcode.hpp
+ */
 namespace zanna::codegen::aarch64 {
 
-/// @brief Mapping entry for binary arithmetic IL operations to AArch64 instructions.
-///
-/// Each entry specifies how an IL binary operation should be lowered to AArch64
-/// machine instructions. Some operations support immediate operands (e.g., ADD
-/// can use ADD immediate form when one operand is a small constant), which
-/// enables more efficient code generation.
-///
-/// @par Immediate Support:
-/// When `supportsImmediate` is true and the right operand is a constant that
-/// fits in the instruction's immediate field, the code generator can emit the
-/// `immOp` form instead of loading the constant into a register first.
-///
-/// @par Example:
-/// For IL `%r = add %a, 5`:
-/// - If supportsImmediate=true, emit: `ADD Xr, Xa, #5`
-/// - If supportsImmediate=false, emit: `MOV Xtmp, #5; ADD Xr, Xa, Xtmp`
+/**
+ * @brief Describes register and optional immediate MIR forms for one binary IL opcode.
+ *
+ * `mirOp` is used when both operands reside in registers. When
+ * `supportsImmediate` is true, instruction lowering may select `immOp` after
+ * separately validating that the constant is encodable.
+ */
 struct BinaryOpMapping {
     il::core::Opcode ilOp{};      ///< The IL opcode this mapping applies to.
     MOpcode mirOp{};              ///< The register-register-register MIR opcode (e.g., ADD Xd, Xn, Xm).
@@ -75,21 +70,12 @@ struct BinaryOpMapping {
     MOpcode immOp{};              ///< The register-immediate MIR opcode (e.g., ADD Xd, Xn, #imm).
 };
 
-/// @brief Mapping entry for IL comparison operations to AArch64 condition codes.
-///
-/// AArch64 comparisons work in two steps: a CMP instruction sets the NZCV flags,
-/// then a conditional instruction (CSEL, B.cond, etc.) uses a condition code to
-/// check those flags. This mapping specifies which condition code corresponds
-/// to each IL comparison opcode.
-///
-/// @par Condition Codes:
-/// - "eq" / "ne" - Equal / Not equal (Z flag)
-/// - "lt" / "le" / "gt" / "ge" - Signed comparisons
-/// - "lo" / "ls" / "hi" / "hs" - Unsigned comparisons (lower/higher)
-///
-/// @par Example:
-/// For IL `%r = scmp_lt %a, %b` (signed less than):
-/// - Emit: `CMP Xa, Xb; CSET Xr, lt`
+/**
+ * @brief Associates an IL comparison with an AArch64 NZCV condition code.
+ *
+ * The condition is consumed after `CMP` or `FCMP` by instructions such as
+ * `CSET`, `CSEL`, and `B.cond`.
+ */
 struct CompareMapping {
     il::core::Opcode ilOp{};       ///< The IL comparison opcode.
     const char *condition{nullptr}; ///< The AArch64 condition code string (e.g., "eq", "lt").
@@ -104,16 +90,13 @@ struct UnaryOpMapping {
     MOpcode mirOp{};         ///< The MIR opcode for this unary operation.
 };
 
-/// @brief Mapping table for integer binary arithmetic operations.
-///
-/// Contains all supported integer operations: addition, subtraction,
-/// multiplication, bitwise AND/OR/XOR, and shift operations. Operations
-/// with overflow checking (IAddOvf, ISubOvf, IMulOvf) map to the same
-/// machine instructions as their non-checking counterparts; overflow
-/// detection is handled separately.
-///
-/// @note This table is provided for documentation and iteration. For actual
-///       lookups, use lookupBinaryOp() which provides O(1) access via switch.
+/**
+ * @brief Iteration table for common integer arithmetic and bitwise operations.
+ *
+ * Checked arithmetic maps to dedicated overflow pseudo-opcodes. This compact
+ * table does not encode every selector distinction: use `lookupBinaryOp()` for
+ * authoritative lowering, including division and register-based shift forms.
+ */
 constexpr BinaryOpMapping kBinaryIntOps[] = {
     {il::core::Opcode::Add, MOpcode::AddRRR, true, MOpcode::AddRI},
     {il::core::Opcode::IAddOvf, MOpcode::AddOvfRRR, true, MOpcode::AddOvfRI},
@@ -129,11 +112,13 @@ constexpr BinaryOpMapping kBinaryIntOps[] = {
     {il::core::Opcode::AShr, MOpcode::AsrRI, true, MOpcode::AsrRI},
 };
 
-/// @brief Mapping table for floating-point binary operations.
-///
-/// Contains mappings for double-precision floating-point arithmetic.
-/// Unlike integer operations, FP operations on AArch64 do not have
-/// immediate variants - all operands must be in registers.
+/**
+ * @brief Iteration table for binary64 arithmetic operations.
+ *
+ * AArch64 floating-point arithmetic has no immediate operand form, so every
+ * entry repeats its register opcode in `immOp` and sets `supportsImmediate`
+ * to false.
+ */
 constexpr BinaryOpMapping kBinaryFpOps[] = {
     {il::core::Opcode::FAdd, MOpcode::FAddRRR, false, MOpcode::FAddRRR},
     {il::core::Opcode::FSub, MOpcode::FSubRRR, false, MOpcode::FSubRRR},
@@ -141,14 +126,12 @@ constexpr BinaryOpMapping kBinaryFpOps[] = {
     {il::core::Opcode::FDiv, MOpcode::FDivRRR, false, MOpcode::FDivRRR},
 };
 
-/// @brief Mapping table for comparison operations to AArch64 condition codes.
-///
-/// Maps IL comparison opcodes to the AArch64 condition code suffix used
-/// with conditional instructions (CSEL, CSET, B.cond). Includes both
-/// signed comparisons (lt, le, gt, ge) and unsigned (lo, ls, hi, hs).
-///
-/// @note "lo"/"ls"/"hi"/"hs" are aliases for "cc"/"ls"/"hi"/"cs" but are
-///       preferred for unsigned comparisons as they're more readable.
+/**
+ * @brief Iteration table for integer comparisons and their NZCV conditions.
+ *
+ * Signed comparisons use `lt/le/gt/ge`; unsigned comparisons use the readable
+ * lower/higher aliases `lo/ls/hi/hs`.
+ */
 constexpr CompareMapping kCompareOps[] = {
     {il::core::Opcode::ICmpEq, "eq"},
     {il::core::Opcode::ICmpNe, "ne"},
@@ -162,21 +145,14 @@ constexpr CompareMapping kCompareOps[] = {
     {il::core::Opcode::UCmpGE, "hs"},
 };
 
-/// @brief Looks up the binary operation mapping for an IL opcode in O(1) time.
-///
-/// Uses a switch statement for constant-time lookup of binary operation
-/// mappings. Returns a pointer to a static BinaryOpMapping struct, or nullptr
-/// if the opcode is not a supported binary operation.
-///
-/// @par Supported Operations:
-/// - Integer: Add, Sub, Mul (and overflow variants), SDiv, UDiv, And, Or, Xor, Shl, LShr, AShr
-/// - Floating-point: FAdd, FSub, FMul, FDiv
-///
-/// @param op The IL opcode to look up.
-/// @return Pointer to the mapping struct, or nullptr if not a binary op.
-///
-/// @note This function returns pointers to static storage, so the returned
-///       pointer remains valid for the lifetime of the program.
+/**
+ * @brief Looks up the authoritative MIR forms for a binary IL opcode.
+ *
+ * @param op IL opcode to classify.
+ * @return Pointer to an immutable, function-local static mapping, or `nullptr`
+ *         when @p op is not a supported binary arithmetic/bitwise operation.
+ * @note The returned pointer remains valid for the lifetime of the program.
+ */
 inline const BinaryOpMapping *lookupBinaryOp(il::core::Opcode op) {
     using Opc = il::core::Opcode;
     switch (op) {
@@ -269,28 +245,13 @@ inline const BinaryOpMapping *lookupBinaryOp(il::core::Opcode op) {
     }
 }
 
-/// @brief Looks up the AArch64 condition code for an IL comparison opcode.
-///
-/// Returns the condition code string (e.g., "eq", "lt", "hi") that should be
-/// used with conditional instructions after a CMP. Uses a switch statement
-/// for O(1) lookup.
-///
-/// @par Condition Codes:
-/// | IL Opcode | AArch64 | Meaning                    |
-/// |-----------|---------|----------------------------|
-/// | ICmpEq    | "eq"    | Equal (Z=1)               |
-/// | ICmpNe    | "ne"    | Not equal (Z=0)           |
-/// | SCmpLT    | "lt"    | Signed less than          |
-/// | SCmpLE    | "le"    | Signed less or equal      |
-/// | SCmpGT    | "gt"    | Signed greater than       |
-/// | SCmpGE    | "ge"    | Signed greater or equal   |
-/// | UCmpLT    | "lo"    | Unsigned lower (carry=0)  |
-/// | UCmpLE    | "ls"    | Unsigned lower or same    |
-/// | UCmpGT    | "hi"    | Unsigned higher           |
-/// | UCmpGE    | "hs"    | Unsigned higher or same   |
-///
-/// @param op The IL comparison opcode.
-/// @return The condition code string, or nullptr if not a comparison opcode.
+/**
+ * @brief Looks up the condition code for an integer comparison.
+ *
+ * @param op IL opcode to classify.
+ * @return Pointer to a static AArch64 condition spelling, or `nullptr` when
+ *         @p op is not a supported integer comparison.
+ */
 inline const char *lookupCondition(il::core::Opcode op) {
     using Opc = il::core::Opcode;
     switch (op) {
@@ -319,7 +280,16 @@ inline const char *lookupCondition(il::core::Opcode op) {
     }
 }
 
-/// @brief Look up the AArch64 condition code for a floating-point compare.
+/**
+ * @brief Looks up the FCMP condition for a floating-point comparison.
+ *
+ * The selected relational conditions evaluate false for FCMP's unordered
+ * result; `FCmpOrd` and `FCmpUno` directly test the V flag with `vc` and `vs`.
+ *
+ * @param op IL opcode to classify.
+ * @return Pointer to a static condition spelling, or `nullptr` for a
+ *         non-floating-point comparison.
+ */
 [[nodiscard]] inline const char *lookupFpCondition(il::core::Opcode op) {
     switch (op) {
         case il::core::Opcode::FCmpEQ:
@@ -343,35 +313,45 @@ inline const char *lookupCondition(il::core::Opcode op) {
     }
 }
 
-/// @brief Look up the AArch64 condition code for any compare opcode.
+/**
+ * @brief Looks up the condition code for any supported integer or FP comparison.
+ *
+ * @param op IL opcode to classify.
+ * @return Static condition spelling, preferring the integer table, or
+ *         `nullptr` when @p op is not a comparison.
+ */
 [[nodiscard]] inline const char *lookupAnyCondition(il::core::Opcode op) {
     if (const char *cc = lookupCondition(op))
         return cc;
     return lookupFpCondition(op);
 }
 
-/// @brief Tests whether an IL opcode is any comparison operation.
-///
-/// Returns true for both integer and floating-point comparison opcodes. These
-/// ops require special handling in code generation because they lower to
-/// CMP/FCMP plus a condition-consuming sequence rather than plain arithmetic.
+/**
+ * @brief Tests whether an IL opcode is a supported integer or FP comparison.
+ *
+ * @param op IL opcode to classify.
+ * @return `true` when `lookupAnyCondition()` supplies a condition code.
+ */
 inline bool isCompareOp(il::core::Opcode op) {
     return lookupAnyCondition(op) != nullptr;
 }
 
-/// @brief Tests whether an IL opcode is a floating-point compare operation.
+/**
+ * @brief Tests whether an IL opcode is a supported floating-point comparison.
+ *
+ * @param op IL opcode to classify.
+ * @return `true` when `lookupFpCondition()` supplies a condition code.
+ */
 inline bool isFloatingPointCompareOp(il::core::Opcode op) {
     return lookupFpCondition(op) != nullptr;
 }
 
-/// @brief Tests whether an IL opcode is a floating-point arithmetic operation.
-///
-/// Returns true for FAdd, FSub, FMul, FDiv. These opcodes require different
-/// register classes (D0-D31 vector registers vs X0-X30 integer registers) and
-/// different instruction encodings than integer operations.
-///
-/// @param op The IL opcode to test.
-/// @return True if op is a floating-point arithmetic opcode, false otherwise.
+/**
+ * @brief Tests whether an IL opcode is binary floating-point arithmetic.
+ *
+ * @param op IL opcode to classify.
+ * @return `true` for `FAdd`, `FSub`, `FMul`, or `FDiv`; otherwise `false`.
+ */
 inline bool isFloatingPointOp(il::core::Opcode op) {
     switch (op) {
         case il::core::Opcode::FAdd:

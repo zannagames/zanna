@@ -27,6 +27,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file DataflowLiveness.hpp
+ * @brief Defines generic backward liveness fixed-point analysis for MIR CFGs.
+ */
+
 #pragma once
 
 #include "codegen/common/ICE.hpp"
@@ -42,7 +47,9 @@ namespace zanna::codegen::ra {
 /// @brief Result of backward dataflow liveness analysis.
 /// @tparam VregId Type used to identify virtual registers (typically uint16_t).
 template <typename VregId = uint16_t> struct DataflowResult {
+    ///< Per-block values live immediately before the block.
     std::vector<std::unordered_set<VregId>> liveIn;
+    ///< Per-block values live immediately after the block.
     std::vector<std::unordered_set<VregId>> liveOut;
 };
 
@@ -123,6 +130,7 @@ DataflowResult<VregId> solveBackwardDataflow(const std::vector<std::vector<std::
 ///
 /// @param succs Per-block successor indices.
 /// @return Per-block predecessor indices.
+/// @throws Internal compiler error when a successor index is out of range.
 inline std::vector<std::vector<std::size_t>> buildPredecessors(
     const std::vector<std::vector<std::size_t>> &succs) {
     std::vector<std::vector<std::size_t>> preds(succs.size());

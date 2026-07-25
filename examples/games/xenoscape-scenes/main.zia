@@ -1,0 +1,157 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/main.zia
+// Purpose: Selects package smoke mode or starts the Xenoscape game loop.
+// Key invariants:
+//   - Package smoke resolves files relative to both working and executable dirs.
+//   - Normal startup delegates ownership and lifetime to one Game instance.
+// Ownership/Lifetime:
+//   - Entry point owns its Game or short-lived RuntimeTuning object until exit.
+// Links: game.zia, tuning.zia, zanna.project, xenoscape.runtime.json
+//
+//===----------------------------------------------------------------------===//
+// =============================================================================
+// main.zia — The whole game in nine lines
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — A GAME'S ENTRY POINT IS TRIVIAL BY DESIGN
+// ----------------------------------------------------
+// Every Zia program launched as a binary runs the `start()` function
+// in its entry module.  Xenoscape's `zanna.project` points at this
+// file, so `start()` is the first thing that runs.
+//
+// A good game entry point does almost nothing: it constructs the
+// top-level object (the one that owns every other subsystem) and
+// hands control to its main loop.  Anything more — command-line
+// parsing, logging setup, asset preloading — belongs inside that
+// object's constructor or its run-loop, not here, because:
+//
+//   * You want a single well-known place where "the game starts".
+//   * Tests / probes (see `smoke_probe.zia`, `start_probe.zia`)
+//     build their own `Game` with their own lifetime, bypassing
+//     this file.
+//   * Factoring setup into `Game.init()` / `Game.run()` keeps the
+//     program's shape uniform: main.zia → Game → subsystems.
+//
+// WHERE THIS FITS
+// ---------------
+//     main.zia  (YOU ARE HERE — 9 lines, on purpose)
+//         │
+//         ▼
+//     game.zia — Game class: state machine, main loop, subsystems.
+//
+// If you are reading Xenoscape for the first time, this file tells
+// you exactly where to go next: `./game.zia`.
+// =============================================================================
+
+module main;
+
+bind Zanna.System.Environment as Env;
+bind Zanna.IO.File as File;
+bind Zanna.IO.Path as Path;
+bind Zanna.Terminal as Terminal;
+bind "./config";
+bind "./game";
+bind "./tuning";
+
+bind Parse = Zanna.Core.Parse;
+bind Str = Zanna.String;
+
+func hasArg(wanted: String) -> Boolean {
+    var count = Env.GetArgumentCount();
+    var i = 0;
+    while i < count {
+        if Env.GetArgument(i) == wanted { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+func resolvePackageSmokePath(path: String) -> String {
+    if File.Exists(path) { return path; }
+    var exePath = Path.Join(Path.ExeDir(), path);
+    if File.Exists(exePath) { return exePath; }
+    return path;
+}
+
+func runPackageSmoke() {
+    var tuningPath = resolvePackageSmokePath("xenoscape.runtime.json");
+    if !File.Exists(tuningPath) {
+        Terminal.Say("RESULT: missing_runtime_json");
+        Env.Exit(2);
+        return;
+    }
+
+    var jumpPath = resolvePackageSmokePath(Path.Join("sounds", "jump.wav"));
+    if !File.Exists(jumpPath) {
+        Terminal.Say("RESULT: missing_jump_wav");
+        Env.Exit(3);
+        return;
+    }
+
+    var tuning = new RuntimeTuning(tuningPath);
+    if tuning.getInt("presentation.sceneTransitionMs", -1) != 350 or
+       tuning.getBool("presentation.authoredArtEnabled", false) == false {
+        Terminal.Say("RESULT: bad_runtime_json");
+        Env.Exit(4);
+        return;
+    }
+
+    Terminal.Say("RESULT: package_smoke_ok");
+    Env.Exit(0);
+}
+
+/// @brief Program entry point.  Construct a Game and run it.
+///
+/// `run()` does not return until the player quits — it's the main
+/// loop plus teardown.  Nothing after it would ever execute.
+/// @brief Return the value following one flag argument, or empty.
+func argValue(flag: String) -> String {
+    var count = Env.GetArgumentCount();
+    var i = 0;
+    while i + 1 < count {
+        if Env.GetArgument(i) == flag { return Env.GetArgument(i + 1); }
+        i = i + 1;
+    }
+    return "";
+}
+
+/// @brief Map one region scene path to its campaign region number, or 0.
+/// @details Zanna Studio's Run Scene command appends `--scene <path>`; the
+///          game owns the interpretation (ADR 0181). Region scenes follow the
+///          `region-NN.scene` naming exported alongside this project.
+func sceneRegionFromPath(path: String) -> Integer {
+    var name = Path.Name(path);
+    if Str.StartsWith(name, "region-") == false { return 0; }
+    var digits = Str.MidLen(name, Str.get_Length("region-") + 1, 2);
+    var parsed = Parse.TryInt(digits);
+    if parsed.IsNone { return 0; }
+    var region = parsed.UnwrapI64();
+    if region < 1 or region > 10 { return 0; }
+    return region;
+}
+
+func start() {
+    if hasArg("--zanna-package-smoke") or
+       Env.GetVariable("ZANNA_XENOSCAPE_PACKAGE_SMOKE") == "1" {
+        runPackageSmoke();
+        return;
+    }
+    var scenePath = argValue("--scene");
+    if scenePath != "" {
+        sceneStartRegion = sceneRegionFromPath(scenePath);
+        if sceneStartRegion == 0 {
+            Terminal.Say(
+                "XENOSCAPE: --scene expects an exported region-NN.scene");
+        }
+    }
+
+    var g = new Game();
+    g.run();
+}

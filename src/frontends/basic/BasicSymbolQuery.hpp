@@ -9,11 +9,21 @@
 // Purpose: Lightweight facade for common symbol/type queries during lowering.
 // Key invariants: All methods are const and perform no mutation; zero-copy
 //                 where possible via string_view returns.
-// Ownership/Lifetime: Holds references to Lowerer and SemanticAnalyzer; caller
-//                     must ensure they outlive this object.
-// Links: docs/internals/codemap.md
+// Ownership/Lifetime: Holds one Lowerer reference and reaches SemanticAnalyzer
+//                     through it; the Lowerer must outlive this object.
+// Links: src/frontends/basic/BasicSymbolQuery.cpp,
+//        src/frontends/basic/Lowerer.hpp,
+//        src/frontends/basic/SemanticAnalyzer.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file BasicSymbolQuery.hpp
+ * @brief Declares read-only symbol, type, scope, and class queries for lowering.
+ *
+ * The facade stores one borrowed Lowerer reference and performs each lookup
+ * against live lowering or semantic-analysis state without caching results.
+ */
 
 #pragma once
 
@@ -31,8 +41,8 @@ class OopIndex;
 
 /// @brief Lightweight facade for symbol/type queries during BASIC lowering.
 /// @details Consolidates common lookup patterns that appear across lowering,
-///          scanning, and OOP code. This facade is cheap to construct (two
-///          pointers) and all methods are const, making it suitable for
+///          scanning, and OOP code. This facade is cheap to construct (one
+///          reference) and all methods are const, making it suitable for
 ///          passing by value to helper functions.
 ///
 /// Common query patterns supported:
@@ -52,6 +62,7 @@ class BasicSymbolQuery {
   public:
     /// @brief Construct a query facade from a lowerer.
     /// @param lowerer Lowering context providing symbol tables and OOP index.
+    /// @warning @p lowerer must outlive this facade.
     explicit BasicSymbolQuery(const Lowerer &lowerer) noexcept;
 
     // =========================================================================
@@ -103,11 +114,15 @@ class BasicSymbolQuery {
     // =========================================================================
 
     /// @brief Get the class name for an object-typed symbol.
+    /// @details Checks direct symbol metadata first, then the lowerer's module
+    ///          class cache used for array-element and object class tracking.
     /// @param name Symbol identifier to query.
-    /// @return Qualified class name if symbol is an object, empty otherwise.
+    /// @return Qualified class name when either source knows one, empty otherwise.
     [[nodiscard]] std::string getObjectClassForSymbol(std::string_view name) const;
 
     /// @brief Get the element class for an object array.
+    /// @details Directly queries the lowerer's module array-element class cache
+    ///          without independently confirming the symbol's array type.
     /// @param name Array symbol identifier.
     /// @return Element class name if symbol is an object array, empty otherwise.
     [[nodiscard]] std::string getObjectArrayElementClass(std::string_view name) const;
@@ -126,11 +141,15 @@ class BasicSymbolQuery {
     // =========================================================================
 
     /// @brief Look up the inferred type from semantic analysis.
+    /// @details Converts scalar integer, float, string, and Boolean categories
+    ///          to AST Type. Arrays, objects, unknown types, missing symbols,
+    ///          and an absent analyzer yield `std::nullopt`.
     /// @param name Variable name to query.
     /// @return Inferred type if semantic analysis recorded one, nullopt otherwise.
     [[nodiscard]] std::optional<Type> lookupInferredType(std::string_view name) const;
 
   private:
+    ///< Borrowed lowering context supplying every query's live state.
     const Lowerer &lowerer_;
 };
 

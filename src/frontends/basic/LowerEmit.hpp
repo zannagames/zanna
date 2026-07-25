@@ -5,13 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/LowerEmit.hpp
+// File: src/frontends/basic/LowerEmit.hpp
 // Purpose: Declares IR emission helpers and lowering routines for BASIC.
 // Key invariants: Control-flow labels remain deterministic via BlockNamer.
 // Ownership/Lifetime: Operates on Lowerer state without owning AST or module.
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file LowerEmit.hpp
+ * @brief Provides the legacy class-body declaration fragment for BASIC lowering.
+ *
+ * The fragment groups procedure, statement, expression, and low-level IL
+ * emission members by access level. It is intended for textual inclusion inside
+ * a Lowerer class definition rather than as a standalone declaration header.
+ */
 
 #pragma once
 
@@ -31,6 +40,8 @@ void collectProcedureSignatures(const Program &prog);
 void collectVars(const Program &prog);
 
 /// @brief Discover variables in a list of statements (used for nested scopes).
+/// @details Null statement pointers are ignored while the remaining AST nodes
+///          contribute their referenced and declared symbols.
 /// @param stmts Vector of statement pointers to scan for variable usage.
 void collectVars(const std::vector<const Stmt *> &stmts);
 
@@ -57,15 +68,22 @@ struct ProcedureConfig {
 
 private:
 /// @brief Lower shared procedure scaffolding for FUNCTION/SUB declarations.
+/// @param name Source-level procedure name used for signature lookup and mangling.
+/// @param params Ordered formal parameters to materialize.
+/// @param body Owned AST statements comprising the procedure body.
+/// @param config Return type and stage-specific emission callbacks.
 void lowerProcedure(const std::string &name,
                     const std::vector<Param> &params,
                     const std::vector<StmtPtr> &body,
                     const ProcedureConfig &config);
 /// @brief Stack-allocate parameters and seed local map.
+/// @param params Ordered formal parameters whose incoming values are materialized.
 void materializeParams(const std::vector<Param> &params);
 /// @brief Reset procedure-level lowering state between FUNCTION/SUB bodies.
 /// @details Clears the local variable map, block namer counters, and any
 ///          accumulated deferred-release lists so the next procedure starts clean.
+/// @post Procedure-local symbols, control-flow state, and deferred temporaries
+///       no longer refer to the preceding procedure.
 void resetLoweringState();
 
 /// @brief Lower a single BASIC statement into IL instructions.
@@ -194,17 +212,30 @@ void lowerReturn(const ReturnStmt &stmt);
 /// @return Indices for test/then blocks and ELSE/exit blocks.
 IfBlocks emitIfBlocks(size_t conds);
 /// @brief Evaluate @p cond and branch to @p thenBlk or @p falseBlk.
+/// @param cond Condition expression to lower.
+/// @param testBlk Block in which condition evaluation begins.
+/// @param thenBlk Destination selected by a true condition.
+/// @param falseBlk Destination selected by a false condition.
+/// @param loc Source location attached to emitted control-flow instructions.
 void lowerIfCondition(const Expr &cond,
                       BasicBlock *testBlk,
                       BasicBlock *thenBlk,
                       BasicBlock *falseBlk,
                       il::support::SourceLoc loc);
 /// @brief Lower a boolean expression directly into a conditional branch.
+/// @param expr Boolean-valued expression to lower.
+/// @param trueBlk Destination selected by a true result.
+/// @param falseBlk Destination selected by a false result.
+/// @param loc Source location attached to emitted instructions.
 void lowerCondBranch(const Expr &expr,
                      BasicBlock *trueBlk,
                      BasicBlock *falseBlk,
                      il::support::SourceLoc loc);
 /// @brief Lower a THEN/ELSE branch and link to exit.
+/// @param stmt Optional branch body; null denotes an empty branch.
+/// @param thenBlk Block receiving the branch body.
+/// @param exitIdx Stable index of the join block in the active function.
+/// @param loc Source location attached to emitted branch instructions.
 /// @return True if branch falls through to exit block.
 bool lowerIfBranch(const Stmt *stmt,
                    BasicBlock *thenBlk,
@@ -314,7 +345,7 @@ void lowerTryCatch(const TryCatchStmt &stmt);
 // =========================================================================
 
 /// @brief Return the IL type used for BASIC boolean values (i1).
-/// @return The IlType representing a 1-bit boolean.
+/// @return The IL type descriptor representing a one-bit boolean.
 IlType ilBoolTy();
 
 /// @brief Emit a boolean constant as an IL i1 value.
@@ -377,7 +408,8 @@ Value emitConstI64(std::int64_t v);
 
 /// @brief Emit a zero-extension from i1 to i64.
 /// @details Used to convert boolean comparison results (i1) into BASIC
-///          integer values (i64) where -1 represents true.
+///          integer-width values. A true bit becomes 1; callers requiring
+///          BASIC's canonical -1 representation must normalize separately.
 /// @param val The i1 value to extend.
 /// @return The zero-extended i64 value.
 Value emitZext1ToI64(Value val);

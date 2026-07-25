@@ -24,8 +24,11 @@ module scene_component_authoring_controller;
 bind "scene_component_authoring";
 bind "scene_component_palette";
 bind "scene_component_schema";
+bind "scene_schema_migration";
 
 bind Clock = Zanna.Time.Clock;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
 
 /// @brief Shared file-authoring controller used by both scene inspectors.
 class SceneComponentAuthoringController {
@@ -36,6 +39,12 @@ class SceneComponentAuthoringController {
     expose String message;
     expose Boolean handled;
     hide Integer lastExternalPollMs;
+    hide Integer migrationStage;
+    hide String migrationOldKey;
+    hide String migrationOldKind;
+    hide String migrationNewKey;
+    hide String migrationNewKind;
+    hide scene_schema_migration.SchemaMigrationResult migrationPlan;
 
     expose func init() {
         session =
@@ -46,6 +55,12 @@ class SceneComponentAuthoringController {
         message = "";
         handled = false;
         lastExternalPollMs = -1;
+        migrationStage = 0;
+        migrationOldKey = "";
+        migrationOldKind = "";
+        migrationNewKey = "";
+        migrationNewKind = "";
+        migrationPlan = null;
     }
 
     /// @brief Load a new owner path and reset incompatible file history.
@@ -115,6 +130,16 @@ class SceneComponentAuthoringController {
         -> Boolean {
         handled = false;
         if palette == null { return false; }
+        if palette.TakeMigrationDismissRequested() {
+            handled = true;
+            ClearMigrationOffer(palette);
+            return false;
+        }
+        if palette.TakeMigrateRequested() {
+            handled = true;
+            RunMigrationStep(palette);
+            return false;
+        }
         if palette.TakeReloadRequested() {
             handled = true;
             Reload(palette);
@@ -210,7 +235,10 @@ class SceneComponentAuthoringController {
                 PublishState(palette);
                 return false;
             }
-            return ApplyEdit(
+            var oldKey = field.key;
+            var oldValueKind =
+                scene_component_schema.ValueKind(field.kind);
+            var updated = ApplyEdit(
                 scene_component_authoring.UpdateField(
                     session.currentText,
                     component.name,
@@ -219,9 +247,20 @@ class SceneComponentAuthoringController {
                     palette.fieldLabelInput.Text,
                     palette.DraftFieldKind(),
                     palette.fieldDefaultInput.Text,
-                    palette.fieldDescriptionInput.Text),
+                    palette.fieldDescriptionInput.Text,
+                    palette.DraftFieldOptions()),
                 palette,
                 "Updated project component field " + field.key + ".");
+            if updated {
+                OfferMigrationAfterFieldSave(
+                    palette,
+                    oldKey,
+                    oldValueKind,
+                    Str.Trim(palette.fieldKeyInput.Text),
+                    scene_component_schema.ValueKind(
+                        palette.DraftFieldKind()));
+            }
+            return updated;
         }
         if palette.TakeDeleteFieldRequested() {
             handled = true;
@@ -302,6 +341,132 @@ class SceneComponentAuthoringController {
         palette: scene_component_palette.SceneComponentPalette,
         successMessage: String) -> Boolean {
         return ApplyEdit(edit, palette, successMessage);
+    }
+
+    /// @brief Offer explicit scene migration after a rename or retype.
+    hide func OfferMigrationAfterFieldSave(
+        palette: scene_component_palette.SceneComponentPalette,
+        oldKey: String,
+        oldValueKind: String,
+        newKey: String,
+        newValueKind: String) {
+        if oldKey == newKey and oldValueKind == newValueKind {
+            ClearMigrationOffer(palette);
+            return;
+        }
+        migrationStage = 1;
+        migrationOldKey = oldKey;
+        migrationOldKind = oldValueKind;
+        migrationNewKey = newKey;
+        migrationNewKind = newValueKind;
+        migrationPlan = null;
+        var change = "\"" + oldKey + "\" is now \"" + newKey + "\"";
+        if oldValueKind != newValueKind {
+            change = change + " (" + oldValueKind + " to "
+                + newValueKind + ")";
+        }
+        palette.SetMigrationOffer(
+            "Schema field " + change + ". Existing scene values were not "
+            + "changed. Scan this workspace root to migrate them?",
+            "Scan Scenes");
+    }
+
+    /// @brief Advance the explicit scan-then-confirm migration flow one step.
+    hide func RunMigrationStep(
+        palette: scene_component_palette.SceneComponentPalette) {
+        if migrationStage <= 0 or path == "" {
+            ClearMigrationOffer(palette);
+            return;
+        }
+        var root = Path.Directory(path);
+        if migrationStage == 1 {
+            migrationPlan = scene_schema_migration.Scan(
+                root, migrationOldKey, migrationOldKind);
+            if migrationPlan.error != "" {
+                palette.SetMigrationOffer(migrationPlan.error, "");
+                migrationStage = 0;
+                return;
+            }
+            var matched = migrationPlan.MatchedFiles();
+            if matched == 0 {
+                var text = "No scenes in " + root + " carry \""
+                    + migrationOldKey + "\" as " + migrationOldKind + ".";
+                if migrationPlan.truncated {
+                    text = text + " The bounded scan was truncated.";
+                }
+                palette.SetMigrationOffer(text, "");
+                migrationStage = 0;
+                return;
+            }
+            migrationStage = 2;
+            var summary = "" + matched + " scene(s) carry \""
+                + migrationOldKey + "\".";
+            summary = summary + SkippedSummary(migrationPlan);
+            if migrationPlan.truncated {
+                summary = summary + " The bounded scan was truncated.";
+            }
+            summary = summary
+                + " Confirm to rewrite each file atomically; open documents "
+                + "surface the standard external-change conflict flow.";
+            palette.SetMigrationOffer(summary, "Confirm Migration");
+            return;
+        }
+        var applied = scene_schema_migration.Apply(
+            migrationOldKey,
+            migrationOldKind,
+            migrationNewKey,
+            migrationNewKind,
+            migrationPlan);
+        migrationStage = 0;
+        migrationPlan = null;
+        if applied.error != "" {
+            palette.SetMigrationOffer(applied.error, "");
+            return;
+        }
+        var migrated = 0;
+        var failed = 0;
+        var recordIndex = 0;
+        while recordIndex < applied.records.count() {
+            var record = applied.records.get(recordIndex);
+            recordIndex = recordIndex + 1;
+            if record.applied {
+                migrated = migrated + 1;
+            } else if record.matches > 0 and record.reason != "" {
+                failed = failed + 1;
+            }
+        }
+        var report = "Migrated " + migrated + " scene(s).";
+        if failed > 0 {
+            report = report + " " + failed
+                + " file(s) were left unchanged and reported.";
+        }
+        report = report + SkippedSummary(applied);
+        palette.SetMigrationOffer(report, "");
+    }
+
+    /// @brief Summarize non-migratable records for the offer label.
+    hide func SkippedSummary(
+        result: scene_schema_migration.SchemaMigrationResult) -> String {
+        var skipped = 0;
+        var recordIndex = 0;
+        while recordIndex < result.records.count() {
+            var record = result.records.get(recordIndex);
+            if record.matches <= 0 and record.reason != "" {
+                skipped = skipped + 1;
+            }
+            recordIndex = recordIndex + 1;
+        }
+        if skipped == 0 { return ""; }
+        return " " + skipped + " file(s) were skipped: 3D or unloadable "
+            + "scenes migrate manually.";
+    }
+
+    /// @brief Remove any pending or reported migration offer.
+    hide func ClearMigrationOffer(
+        palette: scene_component_palette.SceneComponentPalette) {
+        migrationStage = 0;
+        migrationPlan = null;
+        palette.SetMigrationOffer("", "");
     }
 
     hide func ApplyEdit(

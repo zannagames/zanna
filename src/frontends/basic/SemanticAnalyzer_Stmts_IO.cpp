@@ -12,11 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
+/// @file SemanticAnalyzer_Stmts_IO.cpp
 /// @brief Semantic checks for BASIC IO statements (PRINT, INPUT, OPEN, etc.).
-/// @details Each routine validates operand types, enforces channel usage
-///          invariants, and emits diagnostics through
-///          @ref SemanticDiagnostics when contracts are violated.
+/// @details The routines visit payload expressions, apply explicit path/channel
+///          type rules where implemented, track literal open channels for
+///          reopen warnings and procedure rollback, resolve INPUT targets, and
+///          reject mutation of active FOR control variables.
 
 #include "frontends/basic/SemanticAnalyzer_Stmts_IO.hpp"
 #include "frontends/basic/ASTUtils.hpp"
@@ -25,10 +26,12 @@
 
 namespace il::frontends::basic::semantic_analyzer_detail {
 
-/// @brief Construct an IO statement context that shares analyzer state.
+/// @brief Constructs an IO statement context over shared analyzer state.
 /// @details Wraps the common @ref StmtShared base so helpers can access
 ///          diagnostics and loop-tracking facilities without duplicating
 ///          plumbing code.
+/// @param analyzer Analyzer borrowed by the base context.
+/// @post No loop or lexical stack is modified.
 IOStmtContext::IOStmtContext(SemanticAnalyzer &analyzer) noexcept : StmtShared(analyzer) {}
 
 } // namespace il::frontends::basic::semantic_analyzer_detail
@@ -46,9 +49,10 @@ void SemanticAnalyzer::visit(const ClsStmt &) {
 }
 
 /// @brief Validate the COLOR statement operands.
-/// @details Ensures the foreground expression is numeric and, when present, the
-///          background expression is also numeric to match BASIC semantics.
-///          Violations produce diagnostics via @ref requireNumeric.
+/// @details Requires the foreground and optional background expressions to be
+///          integer or float. Unknown recovery types are tolerated by
+///          @ref requireNumeric.
+/// @param s Statement with required foreground and optional background.
 void SemanticAnalyzer::visit(const ColorStmt &s) {
     requireNumeric(*s.fg, "COLOR foreground must be numeric");
     if (s.bg)
@@ -56,16 +60,18 @@ void SemanticAnalyzer::visit(const ColorStmt &s) {
 }
 
 /// @brief Validate SLEEP statement operand.
-/// @details Requires the duration expression to be numeric; narrowing occurs
-///          during lowering to a 32-bit integer as expected by the runtime.
+/// @details Requires the duration expression to be integer or float while
+///          tolerating unknown recovery type.
+/// @param s Statement whose required duration node is dereferenced.
 void SemanticAnalyzer::visit(const SleepStmt &s) {
     requireNumeric(*s.ms, "SLEEP duration must be numeric");
 }
 
 /// @brief Validate LOCATE statement operands.
-/// @details Requires the row expression to be numeric and conditionally checks
-///          the column expression when supplied, mirroring the runtime
-///          expectations of the LOCATE statement.
+/// @details Requires the row and optional column to be integer or float while
+///          tolerating unknown recovery types. No coordinate range check occurs
+///          here.
+/// @param s Statement whose row is required and column is optional.
 void SemanticAnalyzer::visit(const LocateStmt &s) {
     requireNumeric(*s.row, "LOCATE row must be numeric");
     if (s.col)
@@ -82,6 +88,7 @@ void SemanticAnalyzer::visit(const CursorStmt &) {
 /// @brief Analyze a PRINT statement for semantic correctness.
 /// @details Traverses each printed expression (ignoring pure separators) so any
 ///          nested semantic issues are diagnosed before code generation.
+/// @param p Statement whose expression items are visited in order.
 void SemanticAnalyzer::analyzePrint(const PrintStmt &p) {
     for (const auto &it : p.items)
         if (it.kind == PrintItem::Kind::Expr && it.expr)
@@ -89,8 +96,9 @@ void SemanticAnalyzer::analyzePrint(const PrintStmt &p) {
 }
 
 /// @brief Analyze a PRINT# or WRITE# statement.
-/// @details Validates the optional channel expression and each argument payload
-///          by visiting them in turn.
+/// @details Visits the optional channel and each non-null payload in order. This
+///          routine does not independently require the channel to be integer.
+/// @param p Channel-output statement to traverse.
 void SemanticAnalyzer::analyzePrintCh(const PrintChStmt &p) {
     if (p.channelExpr)
         visitExpr(*p.channelExpr);
@@ -100,9 +108,13 @@ void SemanticAnalyzer::analyzePrintCh(const PrintChStmt &p) {
 }
 
 /// @brief Analyze an OPEN statement including type checks and channel tracking.
-/// @details Verifies the mode is supported, validates operand types, and records
-///          channel mutations so later CLOSE statements can be checked for
-///          balance. Emits warnings for channels reopened without closing.
+/// @details Accepts Input, Output, Append, Binary, and Random modes; other enum
+///          values emit `B4001`. The optional path must be string and channel
+///          integer, with unknown tolerated for recovery. A literal channel
+///          already in @ref openChannels_ emits warning `B3002`; a newly opened
+///          literal is inserted and logged for procedure rollback. Dynamic
+///          channels cannot be tracked.
+/// @param stmt Mutable OPEN statement whose expressions may be annotated.
 void SemanticAnalyzer::analyzeOpen(OpenStmt &stmt) {
     const bool modeValid =
         stmt.mode == OpenStmt::Mode::Input || stmt.mode == OpenStmt::Mode::Output ||
@@ -153,9 +165,11 @@ void SemanticAnalyzer::analyzeOpen(OpenStmt &stmt) {
 }
 
 /// @brief Analyze a CLOSE statement and update channel bookkeeping.
-/// @details Ensures the channel expression is numeric and, when it resolves to a
-///          literal channel, records that the descriptor has been closed so the
-///          warning state remains accurate.
+/// @details A missing channel is accepted. A present channel must be integer or
+///          unknown. A literal currently modeled open is erased and its prior
+///          open state logged for procedure rollback; closing an untracked
+///          literal emits no warning.
+/// @param stmt Mutable CLOSE statement.
 void SemanticAnalyzer::analyzeClose(CloseStmt &stmt) {
     if (!stmt.channelExpr)
         return;
@@ -180,8 +194,10 @@ void SemanticAnalyzer::analyzeClose(CloseStmt &stmt) {
 }
 
 /// @brief Analyze a SEEK statement for channel and position correctness.
-/// @details Visits both operands, emitting diagnostics when non-numeric values
-///          are supplied.
+/// @details Visits each optional operand independently and requires integer
+///          when its type is known. No open-channel or position-range check is
+///          performed.
+/// @param stmt Mutable SEEK statement.
 void SemanticAnalyzer::analyzeSeek(SeekStmt &stmt) {
     if (stmt.channelExpr) {
         Type channelTy = visitExpr(*stmt.channelExpr);
@@ -207,9 +223,12 @@ void SemanticAnalyzer::analyzeSeek(SeekStmt &stmt) {
 }
 
 /// @brief Analyze an INPUT statement targeting variables in the current scope.
-/// @details Visits the optional prompt expression and resolves each listed
-///          variable, reporting diagnostics when attempting to mutate loop
-///          control variables.
+/// @details Visits the optional prompt without imposing a type, skips empty
+///          target names, resolves/tracks each remaining target as an input
+///          definition, and emits the shared loop-variable mutation diagnostic
+///          for exact names active in a FOR loop.
+/// @param inp Mutable INPUT statement; target strings may be replaced by scoped
+///            resolved names.
 void SemanticAnalyzer::analyzeInput(InputStmt &inp) {
     IOStmtContext ctx(*this);
     if (inp.prompt)
@@ -224,8 +243,10 @@ void SemanticAnalyzer::analyzeInput(InputStmt &inp) {
 }
 
 /// @brief Analyze an INPUT# statement targeting a specific channel.
-/// @details Resolves the target variable and reports loop-variable mutations in
-///          the same fashion as @ref analyzeInput.
+/// @details Resolves each non-empty target name as an input definition and
+///          checks active FOR-variable mutation. This routine does not visit or
+///          type-check a channel expression.
+/// @param inp Mutable channel-input statement whose target names may be resolved.
 void SemanticAnalyzer::analyzeInputCh(InputChStmt &inp) {
     IOStmtContext ctx(*this);
     for (auto &ref : inp.targets) {
@@ -240,7 +261,9 @@ void SemanticAnalyzer::analyzeInputCh(InputChStmt &inp) {
 
 /// @brief Analyze a LINE INPUT# statement.
 /// @details Visits the optional channel expression and destination expression to
-///          ensure nested semantics are validated.
+///          ensure nested semantics are validated. It imposes no channel,
+///          destination, or string-specific type requirement here.
+/// @param inp Mutable line-input statement.
 void SemanticAnalyzer::analyzeLineInputCh(LineInputChStmt &inp) {
     if (inp.channelExpr)
         visitExpr(*inp.channelExpr);

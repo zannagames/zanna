@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/fastpaths/FastPaths_Call.cpp
+// File: src/codegen/aarch64/fastpaths/FastPaths_Call.cpp
 // Purpose: Fast-path pattern matching for call operations.
 //          Handles call @callee(args...) → ret patterns with register and stack
 //          argument marshalling, cycle detection/breaking for register moves,
@@ -16,8 +16,8 @@
 //   - Uses scratch registers for intermediate computations.
 // Ownership/Lifetime:
 //   - Stateless free functions; FastPathContext is borrowed for the call duration.
-// Links: codegen/aarch64/fastpaths/FastPathsInternal.hpp,
-//        codegen/aarch64/LoweringContext.hpp
+// Links: src/codegen/aarch64/fastpaths/FastPathsInternal.hpp,
+//        src/codegen/aarch64/LoweringContext.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,6 +29,16 @@
 
 #include <unordered_map>
 #include <unordered_set>
+
+/**
+ * @file
+ * @brief Implements AArch64 direct-call-and-return fast-path lowering.
+ *
+ * The fast path proves that preceding IL can be safely elided or
+ * rematerialized, marshals register/stack and variadic arguments, preserves
+ * parameter-home semantics, resolves register-move cycles, and returns the
+ * direct callee result.
+ */
 
 namespace zanna::codegen::aarch64::fastpaths {
 
@@ -48,7 +58,14 @@ struct Move {
 constexpr std::size_t kScratchPoolSize = 2;
 const PhysReg scratchPool[kScratchPoolSize] = {kScratchGPR, kScratchGPR2};
 
-/// @brief Check if a value is an entry parameter and get its index.
+/**
+ * @brief Resolves an IL temporary to its entry-parameter index.
+ * @param bb Entry block whose parameters are searched.
+ * @param argOrder ABI argument order retained for the shared helper signature.
+ * @param v Candidate IL value.
+ * @param[out] outIdx Parameter index on success.
+ * @return `true` when @p v names an entry parameter.
+ */
 bool isParamTemp(const il::core::BasicBlock &bb,
                  const std::array<PhysReg, kMaxGPRArgs> &argOrder,
                  const il::core::Value &v,
@@ -63,10 +80,16 @@ bool isParamTemp(const il::core::BasicBlock &bb,
     return false;
 }
 
-/// @brief Build a map from parameter temp ID to the alloca temp that stores it.
-/// @details Scans for store(alloca_result, param_temp) pairs; result maps param_id → alloca_id.
-/// @param bb The block to scan.
-/// @return Map from param vreg ID to its home alloca vreg ID.
+/**
+ * @brief Builds entry-parameter to home-alloca associations.
+ *
+ * Only stores whose destination was defined by an `Alloca` in the same block
+ * and whose value is a temporary are considered. The first home observed for
+ * a parameter is retained.
+ *
+ * @param bb Block to scan.
+ * @return Map from parameter temporary ID to alloca-result temporary ID.
+ */
 std::unordered_map<unsigned, unsigned> buildParamHomeAllocaMap(const il::core::BasicBlock &bb) {
     std::unordered_set<unsigned> localAllocas;
     for (const auto &instr : bb.instructions) {
@@ -88,14 +111,25 @@ std::unordered_map<unsigned, unsigned> buildParamHomeAllocaMap(const il::core::B
     return homes;
 }
 
-/// @brief Compute a temporary value into a destination register.
-/// @returns true if the computation was successful
+/**
+ * @brief Rematerializes a supported pure producer into a physical scratch register.
+ *
+ * Handles entry-parameter integer arithmetic, shifts, and comparisons in
+ * register/register or parameter/immediate form.
+ *
+ * @param prod Producer instruction to reproduce.
+ * @param dstReg Physical destination register.
+ * @param bb Entry block used to resolve parameter operands.
+ * @param argOrder Integer ABI argument-register order.
+ * @param[in,out] bbMir Block receiving rematerialization instructions.
+ * @return `true` when the producer shape was supported and emitted.
+ */
 bool computeTempTo(const il::core::Instr &prod,
                    PhysReg dstReg,
                    const il::core::BasicBlock &bb,
                    const std::array<PhysReg, kMaxGPRArgs> &argOrder,
                    MBasicBlock &bbMir) {
-    // RR emit helper
+    /// @brief Emits a three-register operation from two entry parameters.
     auto rr_emit = [&](MOpcode opc, unsigned p0, unsigned p1) {
         const PhysReg r0 = argOrder[p0];
         const PhysReg r1 = argOrder[p1];
@@ -103,7 +137,7 @@ bool computeTempTo(const il::core::Instr &prod,
             MInstr{opc, {MOperand::regOp(dstReg), MOperand::regOp(r0), MOperand::regOp(r1)}});
     };
 
-    // RI emit helper
+    /// @brief Emits or legalizes a parameter/immediate operation.
     auto ri_emit = [&](MOpcode opc, unsigned p0, long long imm) {
         const PhysReg r0 = argOrder[p0];
         if (opc == MOpcode::AddRI || opc == MOpcode::SubRI || opc == MOpcode::AddOvfRI ||
@@ -123,6 +157,7 @@ bool computeTempTo(const il::core::Instr &prod,
                                                                        : MOpcode::AddRRR,
                 (opc == MOpcode::AddOvfRI || opc == MOpcode::SubOvfRI) ? MOpcode::SubOvfRRR
                                                                        : MOpcode::SubRRR,
+                /// @brief Materializes a non-encodable immediate in reserved `x16`.
                 [&](long long materializedImm) {
                     const MOperand scratch = MOperand::regOp(PhysReg::X16);
                     bbMir.instrs.push_back(
@@ -261,6 +296,17 @@ bool computeTempTo(const il::core::Instr &prod,
 
 } // namespace
 
+/**
+ * @brief Attempts a direct call whose result is returned immediately.
+ *
+ * Complex argument banks, floating-point values, varargs, strings, and boolean
+ * results use generalized call lowering after recreating parameter homes.
+ * Simpler integer-only calls use a physical-register move plan with cycle
+ * breaking and limited pure-producer rematerialization.
+ *
+ * @param[in,out] ctx Fast-path state and output MIR.
+ * @return Completed MIR function on a safe match, otherwise `std::nullopt`.
+ */
 std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
     if (ctx.fn.blocks.empty())
         return std::nullopt;
@@ -297,6 +343,7 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
         std::unordered_set<unsigned> homeAllocas;
         for (const auto &entry : paramHomes)
             homeAllocas.insert(entry.second);
+        /// @brief Tests whether a preceding producer supplies a direct call argument.
         auto feedsCall = [&](const il::core::Instr &pre) {
             if (!pre.result)
                 return false;
@@ -541,6 +588,11 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
     }
 
     // Resolve reg moves with scratch X9 to break cycles
+    /**
+     * @brief Tests whether a register is still a pending move destination.
+     * @param r Physical register to query.
+     * @return `true` when a pending move will overwrite @p r.
+     */
     auto hasDst = [&](PhysReg r) {
         for (auto &m : moves)
             if (m.dst == r)

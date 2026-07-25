@@ -1125,6 +1125,20 @@ hide func DispatchBuildDebugCommands(ctx: command_context.CommandContext,
                                              ctx.appSettings.saveAllBeforeBuild);
         }
     }
+    var runSceneTriggered =
+        dispatch_helpers.Triggered("runscene", null, null, cpSelected);
+    if ctx.scene2DEditor != null
+       and ctx.scene2DEditor.TakeRunSceneRequested() {
+        runSceneTriggered = true;
+    }
+    if runSceneTriggered {
+        if dispatch_helpers.CanStartBuildCommand(ctx.shell, ctx.dbgSession, "Run Scene") {
+            build_commands.handleRunScene(ctx.shell, ctx.docMgr, ctx.projMgr,
+                                          ctx.engine, ctx.tabs, ctx.buildSys,
+                                          ctx.locStore,
+                                          ctx.appSettings.saveAllBeforeBuild);
+        }
+    }
     if dispatch_helpers.Triggered("run", ctx.shell.menuChrome.miRun, null, cpSelected) {
         if dispatch_helpers.CanStartBuildCommand(ctx.shell, ctx.dbgSession, "Run") {
             build_commands.handleRun(ctx.shell, ctx.docMgr, ctx.projMgr,

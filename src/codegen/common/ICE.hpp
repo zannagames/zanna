@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/ICE.hpp
+// File: src/codegen/common/ICE.hpp
 // Purpose: Internal Compiler Error (ICE) reporting utility for codegen passes.
 //          Provides a macro that always fires (even in release builds) and
 //          prints a clean diagnostic before aborting, replacing raw assert()
@@ -26,6 +26,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+
+/// @file
+/// @brief Provides release-active internal compiler error termination.
 
 namespace zanna::codegen::common {
 

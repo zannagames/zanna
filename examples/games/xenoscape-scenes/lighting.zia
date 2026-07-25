@@ -1,0 +1,269 @@
+// =============================================================================
+// lighting.zia — Darkness overlay + dynamic 2D lights
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — ATMOSPHERE FROM LIGHT
+// --------------------------------
+// One of the cheapest ways to make a 2D platformer feel atmospheric
+// is a darkness overlay with a few soft, glowing light sources
+// blended on top of it.  Torches in corridors, a lamp on the
+// player's helmet, a red pulse when a boss changes phase — those
+// effects completely change how a scene *feels* without changing a
+// single pixel of the underlying artwork.
+//
+// This file is a thin wrapper over `Zanna.Game.Lighting2D`, a
+// runtime class that implements the overlay + lights for us.  We
+// add three pieces of game-specific polish on top:
+//
+//   1. Per-biome darkness levels (`DARK_CAVERN` = 160, `DARK_SURFACE`
+//      = 0, ...).  Different levels of the game feel different
+//      because they *are* lit differently.
+//   2. A fixed palette of light-source types (`LIGHT_TORCH`,
+//      `LIGHT_CRYSTAL`, ...).  Keeping the spawnable light types
+//      in one file makes it easy to tune colours consistently.
+//   3. Named convenience wrappers like `flashExplosion(x,y)` —
+//      every code site that triggers an explosion writes the
+//      same one-liner, so if the visual recipe changes, we only
+//      edit here.
+//
+// HOW THE RUNTIME WORKS (QUICK VERSION)
+// -------------------------------------
+// `Lighting2D` is a software-rendered effect.  Every frame you:
+//   * Set a global darkness level (0 = fully lit, 255 = pitch
+//     black) and a tint color.
+//   * Add any transient "dynamic lights" (explosions, bullet
+//     trails) with `AddLight(x, y, radius, color, lifetime)`.
+//     These auto-expire after `lifetime` frames.
+//   * Add "tile lights" — lights attached to static world tiles
+//     (torches, crystals) — via `AddTileLight(x, y, radius,
+//     color)`.  These don't persist; you call it every frame
+//     while the tile is visible.
+//   * Call `Draw()` after your regular scene draw.  The runtime
+//     composites a darkness layer over the screen, then blends the
+//     colored glow discs on top (source-over) — the lights are
+//     additive glows, not holes cut through the darkness, so the
+//     scene under a light is tinted, not fully revealed.
+//
+// WHERE THIS FITS
+// ---------------
+//     game.zia     ──► holds a LightingSystem as part of its
+//                      per-frame pipeline.
+//
+//     level.zia    ──► emits tile lights (torches, crystals,
+//                      lava vents) during tile rendering.
+//
+//     player.zia   ──► the player-helmet light travels with the
+//                      player; handled internally by Lighting2D
+//                      via `SetPlayerLight`.
+//
+//     enemy.zia / projectile.zia / particles.zia
+//                  ──► call flashExplosion / flashBullet for
+//                      transient lights.
+//
+//     renderer.zia ──► calls `lighting.draw(canvas, camX, camY)`
+//                      as the final post-process.
+//
+// HOW TO READ THIS FILE
+// ---------------------
+//   1. The `LIGHT_*` id table (currently informational; future
+//      code may dispatch on these).
+//   2. `MAX_DYN_LIGHTS` — hard cap on concurrent transient
+//      lights; when the pool is full a new light is silently
+//      dropped (older lights are not evicted).
+//   3. `DARK_*` table — target darkness per biome, chosen by
+//      hand to match the mood (surface fully lit, cavern
+//      nearly black, corrupted core practically pitch).
+//   4. `LightingSystem` class — construction, per-frame
+//      update/draw, and the convenience `flash*` helpers.
+//
+// =============================================================================
+
+module lighting;
+
+bind Zanna.Graphics;
+bind Zanna.Game;
+bind "./config";
+bind "./palette";
+
+//=============================================================================
+// LIGHT-SOURCE TYPE IDs
+//=============================================================================
+// Identifiers for the kinds of lights the game spawns.  Currently
+// informational (the runtime treats all lights uniformly by colour
+// + radius), but keeping named constants lets higher layers read
+// like a storybook: `lighting.addLight(LIGHT_TORCH, ...)` instead
+// of `lighting.addLight(2, ...)`.
+final LIGHT_NONE = 0;
+final LIGHT_PLAYER = 1;     // Helmet lamp travelling with the player.
+final LIGHT_TORCH = 2;      // Warm orange wall torch.
+final LIGHT_CRYSTAL = 3;    // Cool blue crystal glow.
+final LIGHT_LAVA = 4;       // Hot orange lava vents.
+final LIGHT_BIOLUM = 5;     // Green/cyan bioluminescent fungi.
+final LIGHT_EXPLOSION = 6;  // Short bright white flash.
+final LIGHT_BULLET = 7;     // Cyan bullet trail.
+final LIGHT_PICKUP = 8;     // Gold pickup glow.
+final LIGHT_BOSS = 9;       // Red boss-aura pulse.
+
+/// @brief Hard cap on concurrent transient lights.
+///
+/// The runtime preallocates this many slots; new `AddLight` calls
+/// when the pool is full silently drop the request (or evict the
+/// oldest — see the Lighting2D runtime docs).  32 is enough for a
+/// busy combat scene.
+final MAX_DYN_LIGHTS = 32;
+
+//=============================================================================
+// BIOME DARKNESS LEVELS
+//=============================================================================
+// One number per biome, hand-tuned to match its mood.  0 means the
+// overlay is off entirely (fully lit scene); 255 means pitch black
+// except where a light source cuts a hole.
+final DARK_SURFACE = 0;       // Crash site — fully lit.
+final DARK_CAVERN = 160;      // Fungal caverns — very dark.
+final DARK_CRYSTAL = 120;     // Crystal depths — moderate; crystals glow.
+final DARK_THERMAL = 80;      // Thermal vents — lava provides some light.
+final DARK_RUINS = 100;       // Overgrowth ruins — dappled shade.
+final DARK_FROZEN = 60;       // Frozen abyss — dim but not black.
+final DARK_CORRUPTED = 180;   // Corrupted core — nearly pitch.
+final DARK_UNDERWATER = 140;  // Underground lake — murky.
+
+//=============================================================================
+// LIGHTING SYSTEM
+//=============================================================================
+
+/// @brief The game's wrapper around `Zanna.Game.Lighting2D`.
+///
+/// One instance lives on `Game` and is handed to subsystems that
+/// add lights (level tiles, enemies spawning explosions, pickups).
+/// The per-frame rhythm is:
+///     1. Subsystems call `addLight` / `drawTileLight` during
+///        their draw pass.
+///     2. After every entity has drawn, the renderer calls
+///        `draw(canvas, camX, camY, playerScreenX, playerScreenY)`
+///        which composites the darkness overlay.
+///     3. `update()` advances lifetimes / expires dead lights
+///        (called once per frame from game.tick).
+class LightingSystem {
+    /// @brief No-arg init — does nothing.  Call `initLighting`
+    ///        with a palette reference before using anything.
+    ///        (The two-phase init mirrors every other subsystem
+    ///        in this codebase, which lets `Game` construct
+    ///        fields at once then wire dependencies afterwards.)
+    expose func init() {}
+    hide Palette pal;
+    hide Lighting2D lit;
+    hide Integer flickerT;        // frame counter driving the light flicker (#10)
+    hide Integer playerLightBase; // base player-light radius (flickered each frame)
+    hide Integer playerLightCol;  // base player-light colour
+
+    /// @brief Finish construction.  Allocates the Lighting2D
+    ///        runtime instance and installs default values.
+    ///
+    /// Player-light defaults: 180-unit radius, a neutral
+    /// helmet-grey tint.  Biomes override these at level-load
+    /// time via `setDarkness` / `setDarkColor`.
+    expose func initLighting(p: Palette) {
+        pal = p;
+        lit = Lighting2D.New(MAX_DYN_LIGHTS);
+        lit.Darkness = 0;                     // start fully-lit
+        lit.TintColor = Color.RGB(0, 0, 10);  // near-black
+        flickerT = 0;
+        playerLightBase = 180;
+        playerLightCol = Color.RGB(60, 70, 80);
+        lit.SetPlayerLight(playerLightBase, playerLightCol);
+    }
+
+    /// @brief Set darkness level (0..255).  `level.zia` calls
+    ///        this when the player enters a new biome.
+    expose func setDarkness(level: Integer) {
+        lit.Darkness = level;
+    }
+
+    /// @brief Set the tint colour of the darkness overlay.
+    ///        Not pure black — a slightly blue-tinted overlay
+    ///        reads as "deep cave" whereas a green tint reads
+    ///        as "fungal ecosystem".
+    expose func setDarkColor(color: Integer) {
+        lit.TintColor = color;
+    }
+
+    /// @brief Spawn a transient light.  `lifetimeFrames` is the
+    ///        number of frames before it auto-expires — pick
+    ///        small numbers (3..20) for visual punch.
+    ///
+    /// Position is in *world* coordinates; the runtime handles
+    /// camera offset internally at draw time.
+    expose func addLight(x: Integer, y: Integer, radius: Integer,
+                         color: Integer, lifetimeFrames: Integer) {
+        lit.AddLight(x, y, radius, color, lifetimeFrames);
+    }
+
+    /// @brief Per-frame tick — advance light lifetimes, purge
+    ///        dead ones.  Called from `game.update()` once a
+    ///        frame, before draw.
+    /// @brief Cheap per-frame radius flicker: ~92%..107% of `base`, offset by
+    ///        `seed` so neighbouring tile lights don't pulse in lockstep (#10).
+    hide func flicker(base: Integer, seed: Integer) -> Integer {
+        var w = (flickerT * 9 + seed * 7) % 16;   // 0..15
+        return base * (92 + w) / 100;
+    }
+
+    expose func update() {
+        // Living lights (#10): a subtle radius flutter on the player's lamp
+        // reads as a torch / helmet-light flicker in dark biomes.
+        flickerT = flickerT + 1;
+        lit.SetPlayerLight(flicker(playerLightBase, 0), playerLightCol);
+        lit.Update();
+    }
+
+    /// @brief Composite the darkness overlay onto the canvas.
+    ///
+    /// Call this *after* all scene drawing — it's a
+    /// post-process pass.  Fully-lit biomes (Darkness == 0)
+    /// short-circuit so you pay nothing for the nominal path.
+    expose func draw(canvas: Canvas, camX: Integer, camY: Integer,
+                     playerScreenX: Integer, playerScreenY: Integer) {
+        if lit.Darkness <= 0 { return; }
+        lit.Draw(canvas, camX, camY, playerScreenX, playerScreenY);
+    }
+
+    /// @brief Emit a tile-attached light (torch, crystal, lava
+    ///        vent) at the given screen coordinates.
+    ///
+    /// Called every frame from the tile renderer.  The runtime
+    /// accumulates tile lights and clears them on `Draw`, so you
+    /// must call this on every visible lit tile every frame;
+    /// don't cache.  Cheap enough — it's just a ring buffer add.
+    ///
+    /// We centre the light on the tile by adding
+    /// `TILE_SIZE / 2` to both coordinates.
+    expose func drawTileLight(_canvas: Canvas, screenX: Integer, screenY: Integer,
+                              radius: Integer, color: Integer) {
+        if lit.Darkness <= 0 { return; }
+        var cx = screenX + TILE_SIZE / 2;
+        var cy = screenY + TILE_SIZE / 2;
+        lit.AddTileLight(cx, cy, flicker(radius, screenX), color);
+    }
+
+    /// @brief Bright, short, warm: the visual language of "boom".
+    expose func flashExplosion(x: Integer, y: Integer) {
+        lit.AddLight(x, y, 120, Color.RGB(255, 200, 100), 8);
+    }
+
+    /// @brief Tiny, quick, cyan: a projectile streak.
+    expose func flashBullet(x: Integer, y: Integer) {
+        lit.AddLight(x, y, 40, Color.RGB(68, 238, 255), 3);
+    }
+
+    /// @brief Medium, lingering, gold: a collected powerup.
+    expose func flashPickup(x: Integer, y: Integer) {
+        lit.AddLight(x, y, 80, Color.RGB(255, 221, 34), 12);
+    }
+
+    /// @brief Huge, slow, red: a boss stage change.
+    ///        Synced to HUD / music cues elsewhere.
+    expose func flashBossPhase(x: Integer, y: Integer) {
+        lit.AddLight(x, y, 300, Color.RGB(255, 50, 50), 20);
+    }
+}

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/IdentityElim.cpp
+// File: src/codegen/aarch64/peephole/IdentityElim.cpp
 // Purpose: Identity move elimination and consecutive move folding for
 //          the AArch64 peephole optimizer.
 //
@@ -25,6 +25,9 @@
 #include "PeepholeCommon.hpp"
 
 #include <algorithm>
+
+/// @file
+/// @brief Implements redundant-move recognition and adjacent copy forwarding.
 
 namespace zanna::codegen::aarch64::peephole {
 
@@ -59,6 +62,12 @@ bool isIdentityFMovRR(const MInstr &instr) noexcept {
 ///          redefinition kills it. If neither occurs, allocator-provided
 ///          carried-exit metadata accounts for uses in successor blocks that
 ///          have no local instruction marking the live-out value.
+/// @param instrs Block-local instruction sequence containing the move pair.
+/// @param secondMoveIndex Index of the pair's second instruction.
+/// @param reg Intermediate physical register whose liveness is queried.
+/// @param carriedExitRegs Optional sorted live-through register identifiers.
+/// @return `true` when @p reg is used before redefinition or is live through
+///         the block exit.
 static bool usedAfterMovePairOrCarried(const std::vector<MInstr> &instrs,
                                        std::size_t secondMoveIndex,
                                        const MOperand &reg,

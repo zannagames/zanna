@@ -11,13 +11,22 @@
 // Phase: Signature Collection (runs during program scanning)
 //
 // Key Invariants:
-// - Signatures are indexed by both qualified and unqualified names
-// - Canonical name aliases enable case-insensitive lookup
+// - Each signature has one emitted-name key plus a canonical unqualified alias
+// - Canonical aliases support case-insensitive unqualified lookup
 // - Parameter types include array/object/byref classification
 //
 // Ownership/Lifetime: Operates on borrowed Lowerer instance.
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file Lowerer_Procedure_Signatures.cpp
+ * @brief Implements procedure signature indexing, aliasing, and lookup.
+ *
+ * Collection clears the preceding run, stores each signature under its emitted
+ * qualified-or-unqualified name, and records one canonical unqualified alias.
+ * Cached signature pointers remain valid only until the maps are mutated.
+ */
 
 #include "frontends/basic/AST.hpp"
 #include "frontends/basic/ASTUtils.hpp"
@@ -40,14 +49,14 @@ using pipeline_detail::coreTypeForAstType;
 ///          parameter and return types into IL types stored in the owning
 ///          @ref Lowerer.  Array parameters are normalised to pointer types so
 ///          later lowering logic can allocate the appropriate slots without
-///          inspecting the AST again.
+///          inspecting the AST again. Both the dedicated procedure list and
+///          namespace declarations nested in the main statement tree are scanned.
 /// @param prog Program whose declarations should be indexed.
 void ProcedureLowering::collectProcedureSignatures(const Program &prog) {
     lowerer.procSignatures.clear();
     lowerer.procNameAliases.clear();
 
-    // Local helpers to reduce duplication when constructing and registering
-    // procedure signatures from AST declarations.
+    /// Build an IL signature from one return type and AST parameter sequence.
     auto buildSig = [&](il::core::Type ret, const auto &params) {
         Lowerer::ProcedureSignature sig;
         sig.retType = ret;
@@ -73,6 +82,7 @@ void ProcedureLowering::collectProcedureSignatures(const Program &prog) {
         return sig;
     };
 
+    /// Register under the emitted name and add a canonical unqualified alias.
     auto registerSig =
         [&](const std::string &unqual, const std::string &qual, Lowerer::ProcedureSignature sig) {
             const bool hasQual = !qual.empty();
@@ -101,6 +111,7 @@ void ProcedureLowering::collectProcedureSignatures(const Program &prog) {
     }
 
     // Also scan namespace blocks in main for nested procedures.
+    /// Recursively collect declarations nested in namespace statement bodies.
     std::function<void(const std::vector<StmtPtr> &)> scan;
     scan = [&](const std::vector<StmtPtr> &stmts) {
         for (const auto &stmtPtr : stmts) {
@@ -196,8 +207,10 @@ const Lowerer::ProcedureSignature *Lowerer::findProcSignature(const std::string 
 }
 
 /// @brief Resolve a procedure call name to its canonical IL function name.
-/// @details Uses the alias table to convert case-insensitive BASIC names to
-///          the exact IL function identifier used during emission.
+/// @details First probes the alias map using @p name exactly. If absent, it
+///          canonicalizes a possibly dotted/suffixed qualified name and returns
+///          that spelling only when a signature key exists. Otherwise the input
+///          is preserved.
 /// @param name Procedure name as written in the source.
 /// @return Canonical IL name or the original name if no alias exists.
 std::string Lowerer::resolveCalleeName(const std::string &name) const {

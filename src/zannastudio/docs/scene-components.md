@@ -109,7 +109,7 @@ scene moves to another workspace root.
 
 | Member | Required | Contract |
 | --- | --- | --- |
-| Root `version` | Yes | Numeric integer `1`. |
+| Root `version` | Yes | Numeric integer `1` or `2`. |
 | Root `components` | Yes | Array with at most 128 entries. |
 | Component `name` | Yes | Stable portable identifier, at most 64 characters; unique without regard to case. |
 | Component `target` | Yes | `2d-object`, `3d-node`, or `both`. |
@@ -117,7 +117,9 @@ scene moves to another workspace root.
 | Component `description` | No | Display text, at most 1,024 characters. |
 | Component `fields` | Yes | Between 1 and 64 fields. |
 | Field `key` | Yes | Portable scene-data key, at most 128 characters; unique within the component. |
-| Field `type` | Yes | `string`, `int`, `float`, `bool`, or `null`. |
+| Field `type` | Yes | `string`, `int`, `float`, `bool`, or `null`; version 2 adds `enum` and `asset`. |
+| Field `choices` | For `enum` | 1..64 distinct portable identifiers (unique without regard to case, at most 64 characters each). |
+| Field `assetKinds` | No (`asset` only) | 1..4 unique values from `image`, `audio`, `scene`, `any`; defaults to `["any"]`. |
 | Field `label` | No | Non-empty display text, at most 128 characters; defaults to `key`. |
 | Field `description` | No | Display text, at most 1,024 characters. |
 | Field `default` | No | JSON scalar matching `type`; string defaults are at most 16,384 characters. |
@@ -134,6 +136,32 @@ Omitted defaults are deterministic:
 | `float` | `0.0` |
 | `bool` | `false` |
 | `null` | null |
+| `enum` | The first choice |
+| `asset` | Empty string |
+
+## Version 2: Enum And Asset Fields
+
+Version-2 files (ADR 0178) may declare `enum` fields with a `choices` list and
+`asset` fields whose `assetKinds` filter the editor's project asset browser.
+Both author ordinary **string** scene values, so game code reads them through
+the existing typed string getters and version-1 runtime consumers need no new
+kind. An enum `default` must be a declared choice. The structured schema form
+always writes the lowest version its content requires, so a file that stops
+using version-2 kinds returns to `"version": 1`. A version-2 file presented to
+an older Studio is rejected wholesale, exactly like any unknown version.
+
+## Migration Assistant
+
+Renaming or retyping a saved field offers — never performs automatically — a
+bounded workspace migration. The offer first scans the schema's workspace root
+read-only, counting exact-kind matches in `.scene`/`.level` files and listing
+`.vscn` files as manual-migration refusals, then requires a second explicit
+confirmation before writing. Application is per-file transactional: each file
+re-validates its scanned modification time and match count, rewrites
+completely, and saves atomically — or is refused and reported byte-identical.
+Conversions are limited to representation-preserving cases (rename within one
+kind, anything to string); everything else is refused. Documents open in
+Studio surface the standard external-change conflict flow afterward.
 
 The complete file is limited to 1 MB, with at most 2,048 fields across all
 components. Studio rejects the entire file if any entry is malformed or any

@@ -21,6 +21,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file Lowerer_Procedure_Variables.cpp
+ * @brief Implements symbol discovery, slot typing, and variable storage lookup.
+ *
+ * AST traversal is read-only. Symbol/cache state belongs to Lowerer, emitted
+ * addresses belong to the active function or runtime module-variable service,
+ * and returned storage descriptors carry only borrowed IL values.
+ */
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/AstWalker.hpp"
 #include "frontends/basic/Lowerer.hpp"
@@ -55,30 +64,35 @@ namespace {
 class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
   public:
     /// @brief Create a walker bound to the current lowering instance.
-    /// @param lowerer Owning lowering driver whose symbol tables are updated.
+    /// @param lowerer Borrowed lowering driver whose symbol tables are updated.
     explicit VarCollectWalker(Lowerer &lowerer) noexcept : lowerer_(lowerer), tracker_(lowerer) {}
 
     /// @brief Record usage of a scalar variable expression.
+    /// @param expr Scalar reference whose name is tracked.
     void after(const VarExpr &expr) {
         tracker_.trackScalar(expr.name);
     }
 
     /// @brief Record usage of an array element expression.
+    /// @param expr Array access whose base name is tracked.
     void after(const ArrayExpr &expr) {
         tracker_.trackArray(expr.name);
     }
 
     /// @brief Record usage of an array lower-bound expression.
+    /// @param expr LBOUND query whose array name is tracked.
     void after(const LBoundExpr &expr) {
         tracker_.trackArray(expr.name);
     }
 
     /// @brief Record usage of an array upper-bound expression.
+    /// @param expr UBOUND query whose array name is tracked.
     void after(const UBoundExpr &expr) {
         tracker_.trackArray(expr.name);
     }
 
     /// @brief Track variables introduced by DIM statements.
+    /// @param stmt DIM declaration inspected before its children.
     void before(const DimStmt &stmt) {
         if (stmt.name.empty())
             return;
@@ -95,6 +109,7 @@ class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
     }
 
     /// @brief Track constant declarations.
+    /// @param stmt CONST declaration inspected before its initializer.
     void before(const ConstStmt &stmt) {
         if (stmt.name.empty())
             return;
@@ -103,6 +118,7 @@ class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
     }
 
     /// @brief Track STATIC variable declarations.
+    /// @param stmt STATIC declaration inspected before its initializer.
     void before(const StaticStmt &stmt) {
         if (stmt.name.empty())
             return;
@@ -112,6 +128,7 @@ class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
     }
 
     /// @brief Track variables re-dimensioned at runtime.
+    /// @param stmt REDIM statement inspected before its bounds.
     void before(const ReDimStmt &stmt) {
         if (stmt.name.empty())
             return;
@@ -120,6 +137,7 @@ class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
     }
 
     /// @brief Track optional catch variable introduced by TRY/CATCH.
+    /// @param stmt TRY/CATCH node containing the optional binding.
     void before(const TryCatchStmt &stmt) {
         if (stmt.catchVar && !stmt.catchVar->empty()) {
             lowerer_.markSymbolReferenced(*stmt.catchVar);
@@ -127,6 +145,7 @@ class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
     }
 
     /// @brief Track resource variable introduced by USING.
+    /// @param stmt USING node containing resource name and qualified type.
     void before(const UsingStmt &stmt) {
         if (!stmt.varName.empty()) {
             lowerer_.markSymbolReferenced(stmt.varName);
@@ -145,6 +164,7 @@ class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
     }
 
     /// @brief Record loop induction variables referenced by FOR statements.
+    /// @param stmt FOR node containing an optional variable expression.
     void before(const ForStmt &stmt) {
         if (stmt.varExpr) {
             if (auto *varExpr = as<VarExpr>(*stmt.varExpr)) {
@@ -154,12 +174,14 @@ class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
     }
 
     /// @brief Record loop induction variables referenced by NEXT statements.
+    /// @param stmt NEXT node containing an optional variable name.
     void before(const NextStmt &stmt) {
         if (!stmt.var.empty())
             lowerer_.markSymbolReferenced(stmt.var);
     }
 
     /// @brief Record variables that participate in INPUT statements.
+    /// @param stmt INPUT node containing scalar target names.
     void before(const InputStmt &stmt) {
         for (const auto &name : stmt.vars) {
             tracker_.trackScalar(name);
@@ -167,7 +189,9 @@ class VarCollectWalker final : public BasicAstWalker<VarCollectWalker> {
     }
 
   private:
+    /// Parent lowerer receiving declarations and type metadata.
     Lowerer &lowerer_;
+    /// Shared symbol-tracking policy bound to @ref lowerer_.
     ProcedureSymbolTracker tracker_;
 };
 
@@ -263,9 +287,11 @@ Type inferVariableTypeForLowering(const Lowerer &lowerer, std::string_view name)
 Lowerer::SlotType Lowerer::getSlotType(std::string_view name) const {
     SlotType info;
     AstType astTy = inferVariableTypeForLowering(*this, name);
+    /// Recognize the generic Object spelling without case sensitivity.
     auto isGenericObject = [](std::string_view cls) {
         return string_utils::iequals(cls, "object");
     };
+    /// Recognize runtime String class spellings that use `str` storage.
     auto isRuntimeStringObject = [](std::string_view cls) {
         return string_utils::iequals(cls, il::runtime::RTCLASS_STRING) ||
                string_utils::iequals(cls, "Zanna.System.String");
@@ -373,9 +399,10 @@ Lowerer::SlotType Lowerer::getSlotType(std::string_view name) const {
 // =============================================================================
 
 /// @brief Resolve storage location for a variable by name.
-/// @details Checks multiple sources in priority order: STATIC variables,
-///          local slots that shadow module globals, module-level runtime storage,
-///          and implicit class fields.
+/// @details Checks STATIC runtime storage first. A materialized local is used
+///          unless cross-procedure/module rules route it to runtime-backed
+///          module storage; an implicit active-class field is the final
+///          fallback. Empty and unresolved names return no descriptor.
 /// @param name Variable identifier to resolve.
 /// @param loc Source location for error reporting.
 /// @return Storage descriptor or nullopt if unresolved.
@@ -524,6 +551,7 @@ std::string Lowerer::resolveQualifiedClassCasing(const std::string &qname) const
     if (const ClassInfo *ci = oopIndex_.findClass(qname))
         return ci->qualifiedName.empty() ? qname : ci->qualifiedName;
     // Case-insensitive match over indexed classes
+    /// Create a lowercase copy for fallback class-name comparison.
     auto lower = [](const std::string &s) {
         std::string out;
         out.reserve(s.size());
@@ -567,6 +595,7 @@ const Lowerer::ClassLayout *Lowerer::findClassLayout(std::string_view className)
     if (it2 != classLayouts_.end())
         return &it2->second;
     // Case-insensitive fallback
+    /// Lowercase an owned key for case-insensitive layout fallback.
     auto lower = [](std::string s) {
         for (auto &c : s)
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

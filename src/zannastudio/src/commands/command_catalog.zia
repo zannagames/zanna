@@ -98,6 +98,7 @@ expose func DefaultCommandSpecs() -> List[CommandSpec] {
     AddSpec(specs, "build", "Build", "Compile the current file or project", "Ctrl+Shift+B", "", true);
     AddSpec(specs, "buildrun", "Build and Run", "Build and run the current file or project", "F5", "", true);
     AddSpec(specs, "run", "Run", "Run the current file or project through the Zanna toolchain", "Ctrl+F5", "", true);
+    AddSpec(specs, "runscene", "Run Scene", "Run the owning project with the active saved scene path appended", "", "", true);
     AddSpec(specs, "stopjob", "Stop Running Job", "Terminate the active build or run process", "Shift+F5", "", true);
     AddSpec(specs, "debugstart", "Start Debugging", "Launch the active file in the debug protocol", "F6", "", true);
     AddSpec(specs, "debugcontinue", "Continue Debugging", "Continue a paused debug session", "F7", "", true);
@@ -278,7 +279,7 @@ expose func CategoryForCommand(id: String) -> String {
        or id == "createmissingbind" {
         return "Refactor";
     }
-    if id == "build" or id == "buildrun" or id == "run" or id == "stopjob" {
+    if id == "build" or id == "buildrun" or id == "run" or id == "runscene" or id == "stopjob" {
         return "Build";
     }
     if Str.StartsWith(id, "debug") or id == "togglebreakpoint" {

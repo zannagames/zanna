@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/RelocApplier.cpp
+// File: src/codegen/common/linker/RelocApplier.cpp
 // Purpose: Applies relocations to merged output section data.
 // Key invariants:
 //   - Dispatches by object file format (ELF/Mach-O/COFF) since reloc type
@@ -15,6 +15,22 @@
 // Links: codegen/common/linker/RelocApplier.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file RelocApplier.cpp
+ * @brief Implements checked, format-aware relocation patching for native links.
+ *
+ * The relocation applier resolves symbol virtual addresses against the merged
+ * output layout, validates each patch site and target encoding, and writes the
+ * resulting ELF, Mach-O, or COFF fixup into its output section. It also handles
+ * architecture-specific GOT relaxation, AArch64 page and TLS relocations,
+ * Mach-O bind/rebase bookkeeping, and Windows unwind-table ordering.
+ *
+ * All address arithmetic that must be representable is checked before any bytes
+ * are modified. Absolute 64-bit relocations are the intentional exception:
+ * their object-format semantics define the result as the low 64 bits of
+ * symbol-plus-addend.
+ */
 
 #include "codegen/common/linker/RelocApplier.hpp"
 #include "codegen/common/AArch64RelocUtil.hpp"
@@ -36,6 +52,15 @@ using zanna::codegen::objfile::writeLE16;
 using zanna::codegen::objfile::writeLE32;
 using zanna::codegen::objfile::writeLE64;
 
+/// @brief Write a signed 32-bit PC-relative relocation after checking its range.
+/// @param patch Destination of the four-byte little-endian displacement.
+/// @param value Signed displacement to encode.
+/// @param obj Object file used to qualify any diagnostic.
+/// @param symName Referenced symbol name, or empty for an anonymous target.
+/// @param kind Human-readable relocation kind used in diagnostics.
+/// @param err Stream that receives an out-of-range diagnostic.
+/// @return `true` after writing the displacement; `false` when @p value cannot
+///         be represented by a signed 32-bit field.
 static bool writeCheckedRel32(uint8_t *patch,
                               int64_t value,
                               const ObjFile &obj,
@@ -54,6 +79,13 @@ static bool writeCheckedRel32(uint8_t *patch,
     return true;
 }
 
+/// @brief Require an AArch64 branch displacement to be instruction aligned.
+/// @param disp Byte displacement from the branch instruction to its target.
+/// @param obj Object file used to qualify any diagnostic.
+/// @param symName Referenced symbol name, if available.
+/// @param kind Human-readable branch relocation kind.
+/// @param err Stream that receives an alignment diagnostic.
+/// @return `true` when @p disp is a multiple of four; otherwise `false`.
 static bool checkAArch64BranchAlignment(int64_t disp,
                                         const ObjFile &obj,
                                         const std::string &symName,
@@ -68,6 +100,13 @@ static bool checkAArch64BranchAlignment(int64_t disp,
     return false;
 }
 
+/// @brief Check the natural alignment required by a scaled AArch64 page offset.
+/// @param pageOff Unscaled offset within a 4 KiB page.
+/// @param shift Base-two scale exponent encoded by the load/store instruction.
+/// @param obj Object file used to qualify any diagnostic.
+/// @param symName Referenced symbol name.
+/// @param err Stream that receives an alignment diagnostic.
+/// @return `true` when @p pageOff is aligned to `1 << shift` bytes.
 static bool checkPageOffsetAlignment(uint32_t pageOff,
                                      uint32_t shift,
                                      const ObjFile &obj,
@@ -81,19 +120,38 @@ static bool checkPageOffsetAlignment(uint32_t pageOff,
     return false;
 }
 
+/// @brief Decode the scale of an AArch64 unsigned-offset load/store instruction.
+/// @param insn Instruction word to inspect.
+/// @param shift Receives the base-two byte-scale exponent on success.
+/// @return `true` when @p insn uses the supported unsigned-offset encoding.
 static bool aarch64UnsignedLdStOffsetShift(uint32_t insn, uint32_t &shift) {
     return zanna::codegen::a64UnsignedLdStOffsetShift(insn, shift);
 }
 
+/// @brief Determine whether an instruction is an AArch64 unsigned-offset load/store.
+/// @param insn Instruction word to inspect.
+/// @return `true` for a supported unsigned-offset load/store encoding.
 [[maybe_unused]] static bool isAArch64UnsignedLdStOffset(uint32_t insn) {
     uint32_t ignored = 0;
     return aarch64UnsignedLdStOffsetShift(insn, ignored);
 }
 
+/// @brief Determine whether an instruction is an AArch64 ADD-immediate operation.
+/// @param insn Instruction word to inspect.
+/// @return `true` when the instruction can accept a 12-bit ADD relocation.
 static bool isAArch64AddImmediate(uint32_t insn) {
     return zanna::codegen::isA64AddImmediate(insn);
 }
 
+/// @brief Patch the immediate field of an AArch64 ADD-immediate instruction.
+/// @param patch Address of the four-byte instruction word to update.
+/// @param imm12 Unshifted immediate value to place in instruction bits 21:10.
+/// @param obj Object file used to qualify any diagnostic.
+/// @param symName Referenced symbol name, if available.
+/// @param kind Human-readable relocation kind.
+/// @param err Stream that receives opcode or range diagnostics.
+/// @return `true` after patching; `false` for an incompatible opcode or an
+///         immediate larger than 12 bits.
 static bool writeAArch64AddImmediate12(uint8_t *patch,
                                        uint32_t imm12,
                                        const ObjFile &obj,
@@ -120,14 +178,31 @@ static bool writeAArch64AddImmediate12(uint8_t *patch,
     return true;
 }
 
+/// @brief Recognize an AArch64 64-bit LDR with an unsigned immediate offset.
+/// @param insn Instruction word to inspect.
+/// @return `true` when @p insn has the `LDR X, [X, #imm]` encoding.
 static bool isAArch64LdrXUnsignedOffset(uint32_t insn) {
     return (insn & 0xFFC00000u) == 0xF9400000u;
 }
 
+/// @brief Determine whether a byte belongs to the x86-64 REX prefix range.
+/// @param byte Candidate instruction byte.
+/// @return `true` for values from `0x40` through `0x4f`.
 static bool isX64RexPrefix(uint8_t byte) {
     return (byte & 0xF0u) == 0x40u;
 }
 
+/// @brief Validate the instruction shape required for local GOTPCRELX relaxation.
+/// @details The relaxed instruction must be a RIP-relative MOV. The
+///          `R_X86_64_REX_GOTPCRELX` form additionally requires the preceding
+///          byte to be a REX prefix.
+/// @param obj Object file used to qualify any diagnostic.
+/// @param rel Relocation whose exact GOTPCRELX form is being validated.
+/// @param patch Address of the four-byte displacement field.
+/// @param patchOff Offset of @p patch within the merged output section.
+/// @param symName Referenced symbol name, if available.
+/// @param err Stream that receives malformed-instruction diagnostics.
+/// @return `true` when the surrounding instruction can be safely relaxed.
 static bool validateGotPCRelXMov(const ObjFile &obj,
                                  const ObjReloc &rel,
                                  const uint8_t *patch,
@@ -152,19 +227,33 @@ static bool validateGotPCRelXMov(const ObjFile &obj,
     return true;
 }
 
+/// @brief Recognize AArch64 unconditional immediate branch opcodes.
+/// @param insn Instruction word to inspect.
+/// @return `true` for either `B` or `BL`.
 static bool isAArch64Branch26Opcode(uint32_t insn) {
     return (insn & 0x7C000000u) == 0x14000000u; // B or BL.
 }
 
+/// @brief Recognize an AArch64 ADRP instruction.
+/// @param insn Instruction word to inspect.
+/// @return `true` when @p insn uses the ADRP encoding.
 static bool isAArch64AdrpOpcode(uint32_t insn) {
     return (insn & 0x9F000000u) == 0x90000000u;
 }
 
+/// @brief Recognize AArch64 instructions carrying a 19-bit branch displacement.
+/// @param insn Instruction word to inspect.
+/// @return `true` for `B.cond`, `CBZ`, or `CBNZ`.
 static bool isAArch64CondBr19Opcode(uint32_t insn) {
     return ((insn & 0xFF000010u) == 0x54000000u) || // B.cond.
            ((insn & 0x7E000000u) == 0x34000000u);   // CBZ/CBNZ.
 }
 
+/// @brief Add two unsigned 64-bit values without wrapping.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param out Receives the sum on success and is unchanged on overflow.
+/// @return `true` when the mathematical sum fits in `uint64_t`.
 static bool checkedAddU64(uint64_t lhs, uint64_t rhs, uint64_t &out) {
     if (lhs > std::numeric_limits<uint64_t>::max() - rhs)
         return false;
@@ -172,12 +261,22 @@ static bool checkedAddU64(uint64_t lhs, uint64_t rhs, uint64_t &out) {
     return true;
 }
 
+/// @brief Compute the unsigned magnitude of a signed 64-bit value.
+/// @details The formulation is valid for `INT64_MIN`, whose positive magnitude
+///          cannot be represented by `int64_t`.
+/// @param value Signed value to measure.
+/// @return The magnitude of @p value as an unsigned integer.
 static uint64_t int64Magnitude(int64_t value) {
     if (value >= 0)
         return static_cast<uint64_t>(value);
     return static_cast<uint64_t>(-(value + 1)) + 1;
 }
 
+/// @brief Add a signed relocation addend to an unsigned address without wrapping.
+/// @param base Unsigned base address.
+/// @param addend Signed addend to apply.
+/// @param out Receives the mathematical result on success.
+/// @return `true` when the result lies in the `uint64_t` range.
 static bool checkedAddSignedU64(uint64_t base, int64_t addend, uint64_t &out) {
     if (addend >= 0)
         return checkedAddU64(base, static_cast<uint64_t>(addend), out);
@@ -189,6 +288,11 @@ static bool checkedAddSignedU64(uint64_t base, int64_t addend, uint64_t &out) {
     return true;
 }
 
+/// @brief Compute a signed difference between two unsigned addresses.
+/// @param lhs Address from which @p rhs is subtracted.
+/// @param rhs Address to subtract.
+/// @param out Receives `lhs - rhs` on success.
+/// @return `true` when the difference is representable by `int64_t`.
 static bool checkedAddressDelta(uint64_t lhs, uint64_t rhs, int64_t &out) {
     if (lhs >= rhs) {
         const uint64_t delta = lhs - rhs;
@@ -206,6 +310,15 @@ static bool checkedAddressDelta(uint64_t lhs, uint64_t rhs, int64_t &out) {
     return true;
 }
 
+/// @brief Compute the checked relocation target address `S + A`.
+/// @param S Resolved symbol address.
+/// @param A Signed relocation addend.
+/// @param obj Object file used to qualify any diagnostic.
+/// @param symName Referenced symbol name, if available.
+/// @param kind Human-readable relocation kind.
+/// @param err Stream that receives an address-overflow diagnostic.
+/// @param target Receives the target address on success.
+/// @return `true` when `S + A` is representable by `uint64_t`.
 static bool checkedRelocTarget(uint64_t S,
                                int64_t A,
                                const ObjFile &obj,
@@ -222,6 +335,15 @@ static bool checkedRelocTarget(uint64_t S,
     return false;
 }
 
+/// @brief Compute the checked PC-relative relocation delta `target - P`.
+/// @param target Fully resolved relocation target.
+/// @param P Virtual address of the relocation place.
+/// @param obj Object file used to qualify any diagnostic.
+/// @param symName Referenced symbol name, if available.
+/// @param kind Human-readable relocation kind.
+/// @param err Stream that receives a range diagnostic.
+/// @param delta Receives the signed displacement on success.
+/// @return `true` when the displacement is representable by `int64_t`.
 static bool checkedRelocDelta(uint64_t target,
                               uint64_t P,
                               const ObjFile &obj,
@@ -242,10 +364,21 @@ static bool checkedRelocDelta(uint64_t target,
 /// @details ELF, Mach-O, and COFF 64-bit absolute relocations write the low
 ///          64 bits of S + A. Converting the signed addend to uint64_t makes
 ///          high-bit addends deterministic and avoids undefined signed overflow.
+/// @param S Resolved symbol address.
+/// @param A Signed relocation addend.
+/// @return The low 64 bits of `S + A`.
 static uint64_t wrappingAbs64Target(uint64_t S, int64_t A) noexcept {
     return S + static_cast<uint64_t>(A);
 }
 
+/// @brief Validate and convert a relocation result to an unsigned 32-bit value.
+/// @param value Signed intermediate value to convert.
+/// @param obj Object file used to qualify any diagnostic.
+/// @param symName Referenced symbol name, if available.
+/// @param kind Human-readable relocation kind.
+/// @param err Stream that receives a range diagnostic.
+/// @param out Receives the converted value on success.
+/// @return `true` when @p value lies in the inclusive `uint32_t` range.
 static bool checkedU32Value(int64_t value,
                             const ObjFile &obj,
                             const std::string &symName,
@@ -269,6 +402,15 @@ static bool checkedU32Value(int64_t value,
 ///          instead of inlining ~25 LOC of overflow + bounds + zero-fill checks per
 ///          relocation. Outputs the place virtual address @p P and the patch file
 ///          offset @p patchOff on success.
+/// @param outSec Merged output section containing the input chunk.
+/// @param obj Object file that owns the relocation.
+/// @param rel Relocation whose patch location is required.
+/// @param chunkBase Byte offset of the input section in @p outSec.
+/// @param secVA Virtual address of @p outSec.
+/// @param err Stream that receives overflow, zero-fill, or bounds diagnostics.
+/// @param P Receives the relocation place virtual address.
+/// @param patchOff Receives the byte offset of the patch in @p outSec.
+/// @return `true` when the relocation begins at a valid file-backed byte.
 static bool computeRelocPatchSite(const OutputSection &outSec,
                                   const ObjFile &obj,
                                   const ObjReloc &rel,
@@ -329,6 +471,8 @@ static bool sortWindowsPdata(LinkLayout &layout, LinkArch arch, std::ostream &er
         for (size_t i = 0; i < recordCount; ++i)
             std::memcpy(records[i].data(), sec.data.data() + i * recordSize, recordSize);
 
+        /// Compare unwind records by the little-endian function-start RVA in
+        /// their first four bytes; stability preserves the order of equal keys.
         std::stable_sort(records.begin(), records.end(), [](const auto &a, const auto &b) {
             return readLE32(a.data()) < readLE32(b.data());
         });
@@ -339,24 +483,40 @@ static bool sortWindowsPdata(LinkLayout &layout, LinkArch arch, std::ostream &er
     return true;
 }
 
-/// Pre-built reverse index: (objIdx, secIdx) → (outSecIdx, outputOffset).
-/// Built once at the start of applyRelocations(), replaces the previous O(S×C)
-/// linear scan with O(1) amortized lookup per relocation.
+/// @brief Placement of one input section within a merged output section.
+/// @details Entries form the values of the reverse location index built once by
+///          @ref buildLocationMap, replacing repeated linear layout scans with
+///          amortized constant-time lookups during relocation.
 struct OutputLocation {
+    ///< Index of the containing output section in `LinkLayout::sections`.
     size_t outSecIdx = 0;
+    ///< Byte offset at which the input section's merged chunk begins.
     size_t outputOffset = 0;
+    ///< Original input-section memory size used for symbol bounds checks.
     size_t inputSize = 0;
 };
 
+/// @brief Reverse index from an object/section pair to its output placement.
 using LocationMap = std::unordered_map<InputSectionKey, OutputLocation, InputSectionKeyHash>;
 
+/// @brief Virtual-address extent of the statically allocated TLS image.
+/// @details Thread-local variable descriptor sections are deliberately excluded;
+///          only sections that contribute bytes to the per-thread image expand
+///          this half-open range.
 struct TlsImageInfo {
+    ///< Whether at least one qualifying TLS section was encountered.
     bool present = false;
+    ///< Lowest virtual address occupied by the TLS image.
     uint64_t startVA = 0;
+    ///< One-past-the-highest virtual address occupied by the TLS image.
     uint64_t endVA = 0;
 };
 
-/// Build the reverse-index map from the link layout.
+/// @brief Build a reverse index for all non-synthetic input-section chunks.
+/// @param layout Completed section layout whose chunk placements are indexed.
+/// @param map Receives mappings from `(object, section)` keys to placements.
+/// @param err Stream that receives a duplicate-placement diagnostic.
+/// @return `true` when every input section has at most one output placement.
 static bool buildLocationMap(const LinkLayout &layout, LocationMap &map, std::ostream &err) {
     for (size_t si = 0; si < layout.sections.size(); ++si) {
         for (const auto &chunk : layout.sections[si].chunks) {
@@ -379,6 +539,15 @@ static bool buildLocationMap(const LinkLayout &layout, LocationMap &map, std::os
 ///          page-offset relocation may be separated from the page relocation by scheduler-inserted
 ///          instructions, so pairing is based on relocation metadata plus the ADRP destination
 ///          register used as the LDR base, not raw instruction adjacency.
+/// @param obj Object containing the candidate relocation pair.
+/// @param arch Target architecture used to classify candidate relocations.
+/// @param sec Input section whose relocations are searched.
+/// @param outSec Merged output section containing @p sec.
+/// @param chunkBase Offset of @p sec within @p outSec.
+/// @param pageOffRel GOT page-offset relocation needing its paired ADRP.
+/// @param ldrBaseReg Register used as the base of the LDR being relaxed.
+/// @return The nearest eligible preceding ADRP patch offset, or `std::nullopt`
+///         when no metadata- and register-matching relocation exists.
 static std::optional<size_t> findMatchingAArch64GotPageRelocOffset(const ObjFile &obj,
                                                                    LinkArch arch,
                                                                    const ObjSection &sec,
@@ -416,7 +585,14 @@ static std::optional<size_t> findMatchingAArch64GotPageRelocOffset(const ObjFile
     return bestPatchOff;
 }
 
-/// Look up the output section and offset for a given (objIndex, secIndex).
+/// @brief Look up the output placement of an input section.
+/// @param locMap Reverse placement index to query.
+/// @param objIdx Index of the owning object file.
+/// @param secIdx One-based input-section index within the object.
+/// @param outSecIdx Receives the containing output-section index.
+/// @param outOffset Receives the input chunk's byte offset in that section.
+/// @param inputSize Optionally receives the original input-section size.
+/// @return `true` when the input section was placed in the output layout.
 static bool findOutputLocation(const LocationMap &locMap,
                                size_t objIdx,
                                uint32_t secIdx,
@@ -433,6 +609,14 @@ static bool findOutputLocation(const LocationMap &locMap,
     return true;
 }
 
+/// @brief Compute the address range occupied by the static TLS image.
+/// @details Only allocated TLS data sections contribute to the range; Mach-O
+///          thread-variable descriptor sections do not contain per-thread data
+///          and are skipped.
+/// @param layout Link layout whose output sections are examined.
+/// @param info Receives the union extent of all qualifying TLS sections.
+/// @param err Stream that receives an address-overflow diagnostic.
+/// @return `true` when every TLS section end address is representable.
 static bool computeTlsImageInfo(const LinkLayout &layout, TlsImageInfo &info, std::ostream &err) {
     for (const auto &sec : layout.sections) {
         if (!sec.alloc || !sec.tls || sec.tlvDescriptors)
@@ -459,6 +643,16 @@ static bool computeTlsImageInfo(const LinkLayout &layout, TlsImageInfo &info, st
     return true;
 }
 
+/// @brief Compute an AArch64 TLS offset relative to the static TLS image start.
+/// @param S Resolved address of the thread-local symbol.
+/// @param A Signed relocation addend.
+/// @param obj Object file used to qualify any diagnostic.
+/// @param symName Referenced symbol name, if available.
+/// @param kind Human-readable TLS relocation kind.
+/// @param tlsImage Address extent of the static TLS image.
+/// @param err Stream that receives missing-image, overflow, or bounds diagnostics.
+/// @param tprel Receives `(S + A) - tlsImage.startVA` on success.
+/// @return `true` when a TLS image exists and the target is within or after its start.
 static bool computeAArch64TlsTprel(uint64_t S,
                                    int64_t A,
                                    const ObjFile &obj,
@@ -489,9 +683,17 @@ static bool computeAArch64TlsTprel(uint64_t S,
     return true;
 }
 
-/// Resolve a local symbol address from the object's symbol table.
-/// For symbols not in globalSyms (e.g., static functions), compute their
-/// address from their section and offset within the output layout.
+/// @brief Resolve a local or absolute object symbol to its final virtual address.
+/// @details Section-relative symbols are resolved through the reverse placement
+///          map and rejected when their offsets exceed the original input
+///          section bounds.
+/// @param sym Symbol-table entry to resolve.
+/// @param objIdx Index of the symbol's object in the link input vector.
+/// @param locMap Reverse input-to-output placement index.
+/// @param layout Final output layout supplying section virtual addresses.
+/// @param addr Receives the resolved virtual address.
+/// @param resolvedOutSecIdx Optionally receives the containing output-section index.
+/// @return `true` when the symbol is absolute or has a valid placed definition.
 static bool resolveLocalSymAddr(const ObjSymbol &sym,
                                 size_t objIdx,
                                 const LocationMap &locMap,
@@ -521,6 +723,19 @@ static bool resolveLocalSymAddr(const ObjSymbol &sym,
     return true;
 }
 
+/// @brief Resolve a global symbol name and optionally identify its output section.
+/// @details Name lookup honors platform spelling fallbacks. Definitions backed
+///          by placed input sections are recomputed from the layout; absolute
+///          and already-resolved synthetic or dynamic entries are returned
+///          directly.
+/// @param symName Name requested by the relocation.
+/// @param globalSyms Global symbol table to search.
+/// @param locMap Reverse input-to-output placement index.
+/// @param layout Final output layout supplying section virtual addresses.
+/// @param platform Target platform controlling alternate symbol spellings.
+/// @param addr Receives the resolved address.
+/// @param resolvedOutSecIdx Optionally receives a concrete output-section index.
+/// @return `true` when a usable definition or pre-resolved address is found.
 static bool resolveGlobalSymLocation(
     const std::string &symName,
     const std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
@@ -564,6 +779,14 @@ static bool resolveGlobalSymLocation(
     return true;
 }
 
+/// @brief Find the synthetic GOT entry corresponding to a symbol.
+/// @details The canonical lookup uses the `__got_` prefix. On macOS the helper
+///          also tries the opposite leading-underscore spelling so Mach-O input
+///          names and synthetic linker names can meet at the same entry.
+/// @param globalSyms Mutable global symbol table containing synthetic GOT entries.
+/// @param symName Referenced symbol's input spelling.
+/// @param platform Target platform controlling Mach-O name fallback.
+/// @return An iterator to the GOT symbol, or `globalSyms.end()` if absent.
 static auto findGotSymbol(std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
                           const std::string &symName,
                           LinkPlatform platform) -> decltype(globalSyms.find(symName)) {
@@ -581,6 +804,11 @@ static auto findGotSymbol(std::unordered_map<std::string, GlobalSymEntry> &globa
     return it;
 }
 
+/// @brief Test whether a symbol has an addressable synthetic GOT entry.
+/// @param globalSyms Global symbol table containing synthetic GOT entries.
+/// @param symName Referenced symbol's input spelling.
+/// @param platform Target platform controlling Mach-O name fallback.
+/// @return `true` when the corresponding GOT entry exists and has a final address.
 static bool hasResolvedGotSymbol(std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
                                  const std::string &symName,
                                  LinkPlatform platform) {
@@ -590,9 +818,15 @@ static bool hasResolvedGotSymbol(std::unordered_map<std::string, GlobalSymEntry>
 
 // Relocation classification (RelocAction, classifyReloc) is in RelocClassify.hpp.
 
-// First pass of applyRelocations: resolve every defined global symbol's final
-// virtual address from its output-section placement. Returns false (with a
-// diagnostic) on address overflow.
+/// @brief Resolve every defined global symbol before relocation patching begins.
+/// @details Absolute symbols are copied directly, placed definitions are
+///          computed from output section/chunk offsets, and previously resolved
+///          synthetic definitions are retained. A defined symbol whose input
+///          section was not placed is treated as a layout error.
+/// @param layout Link layout whose global symbol entries are updated in place.
+/// @param locMap Reverse input-to-output placement index.
+/// @param err Stream that receives placement, bounds, or overflow diagnostics.
+/// @return `true` when every non-dynamic definition has a valid final address.
 static bool resolveGlobalSymbolAddresses(LinkLayout &layout,
                                          const LocationMap &locMap,
                                          std::ostream &err) {
@@ -634,6 +868,7 @@ static bool resolveGlobalSymbolAddresses(LinkLayout &layout,
     return true;
 }
 
+/// @copydoc zanna::codegen::linker::applyRelocations
 bool applyRelocations(const std::vector<ObjFile> &objects,
                       LinkLayout &layout,
                       const std::unordered_set<std::string> &dynamicSyms,
@@ -769,6 +1004,9 @@ bool applyRelocations(const std::vector<ObjFile> &objects,
                 if (!computeRelocPatchSite(outSec, obj, rel, chunkBase, secVA, err, P, patchOff))
                     return false;
                 uint8_t *patch = outSec.data.data() + patchOff;
+
+                /// Validate that a relocation field fits both its original
+                /// input chunk and the file-backed merged output bytes.
                 auto requirePatchBytes = [&](size_t width, const char *kind) -> bool {
                     // The fixup must fit within the *input chunk*, not merely within the
                     // merged output section. Input sections are concatenated (with
@@ -786,6 +1024,8 @@ bool applyRelocations(const std::vector<ObjFile> &objects,
                     return false;
                 };
 
+                /// Require a relocation target to belong to a concrete output
+                /// section, as needed by section-relative COFF encodings.
                 auto requireTargetOutputSection = [&](const char *kind) -> bool {
                     if (hasSymOutputSection)
                         return true;

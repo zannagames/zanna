@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/ISel.cpp
+// File: src/codegen/x86_64/ISel.cpp
 // Purpose: Define instruction selection helpers that map pseudo Machine IR
 //          emitted by LowerILToMIR into concrete x86-64 encodings.
 // Key invariants:
@@ -17,8 +17,8 @@
 // Ownership/Lifetime:
 //   - Operates entirely in-place on Machine IR borrowed from callers without
 //     allocating persistent auxiliary structures.
-// Links: codegen/x86_64/ISel.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/ISel.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,6 +37,16 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+/**
+ * @file
+ * @brief Implements x86-64 MIR legalization, select expansion, and address folds.
+ *
+ * Selection is deliberately performed before register allocation. Helpers use
+ * operand-role metadata and whole-function virtual-register use checks to
+ * preserve destructive two-operand semantics, EFLAGS observability, and values
+ * that cross basic-block boundaries while reducing MIR to encodable forms.
+ */
 
 namespace zanna::codegen::x64 {
 
@@ -105,6 +115,8 @@ void ensureMovzxAfterSetcc(MBasicBlock &block, std::size_t index) {
 /// @details Helper used while scanning the function to find the next available
 ///          virtual register id; only virtual (non-physical) operands update
 ///          the running maximum.
+/// @param reg Register descriptor to observe.
+/// @param maxId Running maximum updated for a virtual register.
 void observeVirtualRegister(const OpReg &reg, uint16_t &maxId) noexcept {
     if (!reg.isPhys) {
         maxId = std::max(maxId, reg.idOrPhys);
@@ -151,6 +163,7 @@ void observeVirtualRegister(const OpReg &reg, uint16_t &maxId) noexcept {
 ///          which rely on @c uint16_t register ids.
 /// @param nextVreg Running counter updated in place; receives the new id.
 /// @return @c Operand carrying the freshly allocated virtual GPR.
+/// @throws std::runtime_error Through @c phaseAUnsupported if ids are exhausted.
 [[nodiscard]] Operand makeTempGprOperand(uint32_t &nextVreg) {
     if (nextVreg >= std::numeric_limits<uint16_t>::max()) {
         phaseAUnsupported("too many virtual registers in function");
@@ -171,6 +184,7 @@ void observeVirtualRegister(const OpReg &reg, uint16_t &maxId) noexcept {
 /// @param nextVreg Running counter used to allocate the temporary virtual reg id.
 /// @param registerOpcode Register-register opcode to substitute when lifting.
 /// @return True when a MOVri was inserted (caller must adjust its iterator).
+/// @throws std::runtime_error Through @c phaseAUnsupported if ids are exhausted.
 bool materialiseImmediateRhs(MBasicBlock &block,
                              std::size_t index,
                              uint32_t &nextVreg,
@@ -198,7 +212,9 @@ bool materialiseImmediateRhs(MBasicBlock &block,
 }
 
 /// @brief Normalise CMP opcodes and materialise unencodable immediates.
-///
+/// @param block Basic block containing the comparison.
+/// @param index Candidate instruction index.
+/// @param nextVreg Running temporary-register counter.
 /// @return True when a MOVri was inserted before @p index.
 bool legaliseCmp(MBasicBlock &block, std::size_t index, uint32_t &nextVreg) {
     if (index >= block.instructions.size()) {
@@ -262,7 +278,9 @@ bool legaliseCmp(MBasicBlock &block, std::size_t index, uint32_t &nextVreg) {
 ///          because those map directly to x86-64 ALU encodings. Larger
 ///          immediates, or subtraction immediates whose negation cannot be
 ///          encoded, are materialised in a temporary GPR.
-///
+/// @param block Basic block containing the arithmetic instruction.
+/// @param index Candidate instruction index.
+/// @param nextVreg Running temporary-register counter.
 /// @return True when a MOVri was inserted before @p index.
 bool legaliseAddSub(MBasicBlock &block, std::size_t index, uint32_t &nextVreg) {
     auto &instr = block.instructions[index];
@@ -310,7 +328,9 @@ bool legaliseAddSub(MBasicBlock &block, std::size_t index, uint32_t &nextVreg) {
 ///          Larger constants are materialised into temporary GPRs. Additionally
 ///          rewrites register self-XOR into the canonical 32-bit self-XOR used by
 ///          later peephole passes to recognise zeroing patterns.
-///
+/// @param block Basic block containing the bitwise instruction.
+/// @param index Candidate instruction index.
+/// @param nextVreg Running temporary-register counter.
 /// @return True when a MOVri was inserted before @p index.
 bool legaliseBitwise(MBasicBlock &block, std::size_t index, uint32_t &nextVreg) {
     auto &instr = block.instructions[index];
@@ -318,6 +338,7 @@ bool legaliseBitwise(MBasicBlock &block, std::size_t index, uint32_t &nextVreg) 
         return false;
     }
 
+    /// Select an immediate or register form for one bitwise opcode pair.
     const auto convertForm = [&](MOpcode rr, MOpcode ri) -> bool {
         if (instr.opcode != rr && instr.opcode != ri) {
             return false;
@@ -663,6 +684,10 @@ std::size_t countVirtualRegisterUsesInFunction(const MFunction &func, uint16_t v
 ///          use count before deleting a virtual-register definition. Without
 ///          the whole-function side of the check, a single local use can hide
 ///          a live use in a later basic block.
+/// @param func Function whose blocks are scanned.
+/// @param localBlock Block excluded from the scan.
+/// @param vreg Virtual register id to find.
+/// @return @c true if any other block reads @p vreg.
 bool virtualRegisterUsedOutsideBlock(const MFunction &func,
                                      const MBasicBlock &localBlock,
                                      uint16_t vreg) {
@@ -680,6 +705,9 @@ bool virtualRegisterUsedOutsideBlock(const MFunction &func,
 }
 
 /// @brief Compare two register descriptors for exact register identity.
+/// @param lhs First register descriptor.
+/// @param rhs Second register descriptor.
+/// @return @c true when physicality, class, and identifier all match.
 bool sameMachineRegister(const OpReg &lhs, const OpReg &rhs) noexcept {
     return lhs.isPhys == rhs.isPhys && lhs.cls == rhs.cls && lhs.idOrPhys == rhs.idOrPhys;
 }
@@ -689,6 +717,9 @@ bool sameMachineRegister(const OpReg &lhs, const OpReg &rhs) noexcept {
 ///          role-aware so destructive two-operand instructions count as defs,
 ///          while memory operands only contribute address uses. A call is
 ///          conservatively treated as clobbering any physical register.
+/// @param instr Instruction to inspect.
+/// @param needle Register whose definition is queried.
+/// @return @c true when @p instr defines or conservatively clobbers @p needle.
 bool instructionDefinesRegister(const MInstr &instr, const OpReg &needle) {
     if (needle.isPhys && instr.opcode == MOpcode::CALL) {
         return true;
@@ -710,6 +741,11 @@ bool instructionDefinesRegister(const MInstr &instr, const OpReg &needle) {
 }
 
 /// @brief Check whether @p reg is redefined in [@p begin, @p end).
+/// @param block Block containing the bounded interval.
+/// @param reg Register to track.
+/// @param begin First instruction index, inclusive.
+/// @param end Past-the-end instruction index, clamped to the block size.
+/// @return @c true when an instruction in the interval defines @p reg.
 bool registerRedefinedInRange(const MBasicBlock &block,
                               const OpReg &reg,
                               std::size_t begin,
@@ -724,6 +760,11 @@ bool registerRedefinedInRange(const MBasicBlock &block,
 }
 
 /// @brief Check whether virtual GPR @p vreg is redefined in [@p begin, @p end).
+/// @param block Block containing the bounded interval.
+/// @param vreg Virtual GPR identifier to track.
+/// @param begin First instruction index, inclusive.
+/// @param end Past-the-end instruction index.
+/// @return @c true when the interval redefines @p vreg.
 bool virtualRegisterRedefinedInRange(const MBasicBlock &block,
                                      uint16_t vreg,
                                      std::size_t begin,
@@ -736,6 +777,11 @@ bool virtualRegisterRedefinedInRange(const MBasicBlock &block,
 }
 
 /// @brief Check whether an address expression's base or index changes before use.
+/// @param mem Address expression whose input registers are tracked.
+/// @param block Block containing the interval.
+/// @param begin First instruction index, inclusive.
+/// @param end Past-the-end instruction index.
+/// @return @c true if the base or active index is redefined in the interval.
 bool addressInputsRedefinedInRange(const OpMem &mem,
                                    const MBasicBlock &block,
                                    std::size_t begin,
@@ -754,6 +800,12 @@ bool addressInputsRedefinedInRange(const OpMem &mem,
 ///          when the materialized value feeds the local test and nothing else.
 ///          Block-argument edge copies live in separate synthetic blocks, so the
 ///          check must scan the full function rather than only the current block.
+/// @param func Function whose uses are scanned.
+/// @param patternBlock Block containing the fold candidate.
+/// @param firstAllowedUse First local use index belonging to the pattern.
+/// @param lastAllowedUse Last local use index belonging to the pattern.
+/// @param needle Register operand whose other uses make the fold illegal.
+/// @return @c true when a use exists outside the allowed inclusive interval.
 bool registerUsedOutsideFoldPattern(const MFunction &func,
                                     const MBasicBlock &patternBlock,
                                     std::size_t firstAllowedUse,
@@ -808,11 +860,16 @@ bool flagsReadBeforeClobber(const std::vector<MInstr> &instrs, std::size_t index
 ///          and rewrites it so the branch uses the original compare flags
 ///          directly. This removes redundant boolean materialisation when the
 ///          compare result is consumed only by the terminating branch.
+/// @param func Function used for whole-function boolean-use validation.
+/// @param block Block containing the candidate chain.
+/// @param index Index of the leading comparison.
+/// @return @c true when the chain was replaced and redundant instructions erased.
 bool foldCompareBranch(const MFunction &func, MBasicBlock &block, std::size_t index) {
     if (index + 3 >= block.instructions.size()) {
         return false;
     }
 
+    /// Recognize compare opcodes whose EFLAGS can feed the replacement branch.
     const auto isCompare = [](MOpcode opcode) {
         return opcode == MOpcode::CMPrr || opcode == MOpcode::CMPri || opcode == MOpcode::UCOMIS;
     };
@@ -902,6 +959,8 @@ bool foldCompareBranch(const MFunction &func, MBasicBlock &block, std::size_t in
 /// @details Shared by SIB/IMUL/LEA folding passes. Indices past the block end
 ///          are silently skipped (defensive — callers should only push valid
 ///          indices but this matches the existing behaviour).
+/// @param block Block whose instruction vector is shortened.
+/// @param indices Candidate indices; sorted and deduplicated in place.
 void eraseInstructionsReverse(MBasicBlock &block, std::vector<std::size_t> &indices) {
     std::sort(indices.begin(), indices.end(), std::greater<std::size_t>());
     indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
@@ -923,7 +982,7 @@ ISel::ISel(const TargetInfo &target) noexcept : target_{&target} {}
 /// @brief Lower arithmetic pseudos into canonical Machine IR encodings.
 ///
 /// @details Walks every instruction in the function and normalises add/sub
-///          forms via @ref canonicaliseAddSub.  Floating-point instructions are
+///          forms via @ref legaliseAddSub.  Floating-point instructions are
 ///          currently emitted in legal form and therefore left untouched.  The
 ///          target reference is unused for Phase A but retained for future
 ///          expansion.
@@ -1065,22 +1124,33 @@ void ISel::lowerSelect(MFunction &func) const {
 void ISel::foldSibAddressing(MFunction &func) const {
     (void)target_;
 
+    /// @brief Candidate destructive shift definition and its SIB scale.
     struct ShlInfo {
+        /// Instruction index of the SHL definition.
         std::size_t defIdx{0};
+        /// Shifted virtual-register identifier.
         uint16_t srcVreg{0};
+        /// Encodable SIB scale: two, four, or eight.
         uint8_t scale{1}; // 2, 4, or 8
     };
 
+    /// @brief Candidate destructive add combining a base and shifted value.
     struct AddInfo {
+        /// Instruction index of the ADD definition.
         std::size_t defIdx{0};
+        /// Virtual register holding the unshifted base.
         uint16_t baseVreg{0};
+        /// Virtual register holding the scaled index.
         uint16_t shiftedVreg{0};
     };
 
     /// @brief MOVrr definition info for O(1) lookup.
     struct MovInfo {
+        /// Instruction index of the copy definition.
         std::size_t defIdx{0};
+        /// Source register identifier.
         uint16_t srcVreg{0};
+        /// Whether @ref srcVreg names a physical rather than virtual register.
         bool srcIsPhys{false};
     };
 
@@ -1271,8 +1341,8 @@ void ISel::foldSibAddressing(MFunction &func) const {
 void ISel::lowerMulToLea(MFunction &func) const {
     (void)target_;
 
-    // Map factor values {3, 5, 9} to the SIB scale {2, 4, 8}.
-    // scale = factor - 1; LEA [base + index*scale] = base*(1 + scale) = base*factor.
+    /// Map factors 3, 5, and 9 to their corresponding SIB scale.
+    /// A zero result marks a factor that cannot be strength-reduced this way.
     auto factorToScale = [](int64_t factor) -> uint8_t {
         if (factor == 3)
             return 2;
@@ -1287,9 +1357,13 @@ void ISel::lowerMulToLea(MFunction &func) const {
         // First pass: collect MOVri definitions of eligible constants
         // inside this block. Use legality is checked at function scope below
         // because the supplying constant register may be live into another block.
+        /// @brief Eligible constant definition that may feed an IMUL.
         struct MovRiDef {
+            /// Instruction index of the defining MOVri.
             std::size_t defIdx{0};
+            /// Multiplication factor loaded by the definition.
             int64_t factor{0};
+            /// Precomputed SIB scale equal to @ref factor minus one.
             uint8_t scale{0}; // precomputed LEA scale
         };
 
@@ -1398,6 +1472,7 @@ void ISel::lowerMulToLea(MFunction &func) const {
 ///          the ADDrr's flag write (LEA does not set flags).
 void ISel::synthesizeValueLea(MFunction &func) const {
     (void)target_;
+    /// Recognize virtual GPR descriptors accepted by value-LEA patterns.
     const auto isVirtGprOp = [](const OpReg &r) { return !r.isPhys && r.cls == RegClass::GPR; };
 
     for (auto &block : func.blocks) {
@@ -1481,6 +1556,7 @@ void ISel::synthesizeValueLea(MFunction &func) const {
             if (!t || !y || !shlDst || !k || !d || !x || !addDst || !addSrc)
                 continue;
 
+            /// Recognize virtual GPR descriptors accepted by the four-op shape.
             const auto isVirtGpr = [](const OpReg &r) {
                 return !r.isPhys && r.cls == RegClass::GPR;
             };

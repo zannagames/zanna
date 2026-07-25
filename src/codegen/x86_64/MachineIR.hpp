@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/MachineIR.hpp
+// File: src/codegen/x86_64/MachineIR.hpp
 // Purpose: Declare the minimal Machine IR representation for x86-64 codegen.
 // Key invariants:
 //   - Operand lists preserve emission order.
@@ -16,8 +16,8 @@
 // Ownership/Lifetime:
 //   - All IR nodes own their contained data via value semantics (vectors,
 //     strings); no external resource ownership.
-// Links: codegen/x86_64/MachineIR.cpp,
-//        codegen/x86_64/TargetX64.hpp
+// Links: src/codegen/x86_64/MachineIR.cpp,
+//        src/codegen/x86_64/TargetX64.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,27 +35,42 @@
 #include <variant>
 #include <vector>
 
+/**
+ * @file
+ * @brief Declares the value-semantic Machine IR used by the x86-64 backend.
+ *
+ * MIR represents virtual and physical registers, immediates, base/index memory
+ * addresses, symbolic references, target instructions and legalization pseudos,
+ * blocks, and functions. Construction helpers enforce architectural addressing
+ * constraints, while formatting helpers provide stable diagnostic dumps.
+ */
+
 namespace zanna::codegen::x64 {
 
-/// \brief Identifies a virtual register allocated by the Machine IR builder.
+/// @brief Identifies a virtual register allocated by the Machine IR builder.
 struct VReg {
     uint16_t id{0U};             ///< Unique id within a function.
     RegClass cls{RegClass::GPR}; ///< Register class constraining the allocation.
 };
 
-/// \brief Describes a register operand that may reference a virtual or physical register.
+/// @brief Describes a virtual or physical register operand.
 struct OpReg {
     bool isPhys{false};          ///< True when referencing a physical register.
     RegClass cls{RegClass::GPR}; ///< Register class of the operand.
     uint16_t idOrPhys{0U};       ///< Virtual id (if !isPhys) or PhysReg enum value.
 };
 
-/// \brief Immediate operand for integer values.
+/// @brief Signed 64-bit immediate operand.
 struct OpImm {
     int64_t val{0};
 };
 
-/// \brief Memory operand using a base (+ optional index*scale) plus displacement (RIP-less).
+/**
+ * @brief Memory address using a GPR base, optional GPR index/scale, and displacement.
+ *
+ * RIP-relative symbols use @ref OpRipLabel instead. Indexed construction rejects
+ * non-GPR registers, illegal scales, and physical RSP as an index.
+ */
 struct OpMem {
     OpReg base{};         ///< Base register supplying the address.
     OpReg index{};        ///< Optional index register (cls must be GPR when used).
@@ -74,10 +89,10 @@ struct OpRipLabel {
     std::string name{}; ///< Symbol name referenced relative to RIP.
 };
 
-/// \brief Union over all supported operand kinds.
+/// @brief Closed variant over every supported MIR operand kind.
 using Operand = std::variant<OpReg, OpImm, OpMem, OpLabel, OpRipLabel>;
 
-/// \brief Enumerates the opcode set required for Phase A.
+/// @brief Enumerates legal x86-64 MIR operations and pre-emission pseudos.
 enum class MOpcode {
     PUSH,         ///< Push register onto the stack.
     POP,          ///< Pop register from the stack.
@@ -172,8 +187,9 @@ enum class MOpcode {
     IMULOvfrr     ///< Signed multiplication pseudo with overflow check (dest, lhs, rhs).
 };
 
-/// \brief Machine instruction: opcode with ordered operands.
+/// @brief Machine instruction containing an opcode, ordered operands, and metadata.
 struct MInstr {
+    /// Sentinel indicating that a CALL has no deferred argument-lowering plan.
     static constexpr uint32_t kNoCallPlanId = UINT32_MAX;
 
     MOpcode opcode{MOpcode::MOVrr};     ///< Opcode for the instruction.
@@ -199,7 +215,7 @@ struct MInstr {
     MInstr &addOperand(Operand op);
 };
 
-/// \brief A sequence of machine instructions labelled for control flow.
+/// @brief Labelled, layout-ordered sequence of machine instructions.
 struct MBasicBlock {
     std::string label{};                ///< Symbolic label for the block.
     std::vector<MInstr> instructions{}; ///< Ordered list of instructions.
@@ -210,12 +226,12 @@ struct MBasicBlock {
     MInstr &append(MInstr instr);
 };
 
-/// \brief Metadata associated with a machine function.
+/// @brief ABI-relevant metadata associated with a machine function.
 struct FunctionMetadata {
     bool isVarArg{false}; ///< True when the function accepts variable arguments.
 };
 
-/// \brief Machine function: entry name, blocks, and metadata.
+/// @brief Owned machine function with layout-ordered blocks and label state.
 struct MFunction {
     std::string name{};                ///< Symbolic name of the function.
     std::vector<MBasicBlock> blocks{}; ///< Basic blocks forming the body.
@@ -270,6 +286,7 @@ struct MFunction {
 /// @param base Base register supplying the address.
 /// @param disp Signed byte displacement from the base.
 /// @return An Operand holding an OpMem without an index register.
+/// @throws std::invalid_argument If @p base is not a GPR.
 [[nodiscard]] Operand makeMemOperand(OpReg base, int32_t disp);
 
 /// \brief Construct a scaled-index memory operand.
@@ -278,6 +295,8 @@ struct MFunction {
 /// @param scale Scale factor applied to the index (1, 2, 4, or 8).
 /// @param disp  Signed byte displacement from base + index*scale.
 /// @return An Operand holding an OpMem with hasIndex == true.
+/// @throws std::invalid_argument If a register is not a GPR, @p scale is not
+///         1/2/4/8, or physical RSP is used as the index.
 [[nodiscard]] Operand makeMemOperand(OpReg base, OpReg index, uint8_t scale, int32_t disp);
 
 /// \brief Construct a label operand with the provided symbol name.
@@ -296,7 +315,7 @@ struct MFunction {
 
 /// \brief Render a register operand to string form.
 /// @param op The register operand to format.
-/// @return Human-readable string such as "%vreg3" or "%rax".
+/// @return Human-readable string such as `%v3:gpr` or `@rax:gpr`.
 [[nodiscard]] std::string toString(const OpReg &op);
 
 /// \brief Render an immediate operand to string form.
@@ -306,7 +325,7 @@ struct MFunction {
 
 /// \brief Render a memory operand to string form.
 /// @param op The memory operand to format.
-/// @return Human-readable string such as "8(%rbp)" or "(%rdi,%rsi,4)".
+/// @return Bracketed text such as `[@rbp:gpr + 8]`.
 [[nodiscard]] std::string toString(const OpMem &op);
 
 /// \brief Render a label operand to string form.

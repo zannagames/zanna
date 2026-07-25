@@ -5,13 +5,23 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/AstWalkerUtils.hpp
+// File: src/frontends/basic/AstWalkerUtils.hpp
 // Purpose: Provides helper utilities shared by BASIC AST walker implementations.
 // Key invariants: Utilities preserve traversal semantics defined by BasicAstWalker.
 // Ownership/Lifetime: Helpers operate on borrowed AST nodes without taking ownership.
-// Links: docs/internals/codemap.md
+// Links: src/frontends/basic/AstWalker.hpp,
+//        src/frontends/basic/AstWalkerUtils.cpp,
+//        docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file AstWalkerUtils.hpp
+ * @brief Defines child-ordering and hook helpers for BasicAstWalker.
+ *
+ * These templates centralize null handling, CRTP recovery, parent/child hook
+ * bracketing, ordered range traversal, and PRINT-item filtering.
+ */
 
 #pragma once
 
@@ -24,6 +34,8 @@ template <typename Derived> class BasicAstWalker;
 
 namespace il::frontends::basic::walker {
 /// @brief Determine whether a PRINT item carries an expression to visit.
+/// @param item PRINT item whose discriminator and payload pointer are checked.
+/// @return True only for an expression-kind item with a non-null expression.
 [[nodiscard]] bool printItemHasExpr(const PrintItem &item) noexcept;
 
 namespace detail {
@@ -35,6 +47,7 @@ namespace detail {
 /// @tparam Derived Concrete walker subclass.
 /// @param walker Walker viewed through its CRTP base.
 /// @return Reference to the concrete @p Derived walker.
+/// @pre @p walker is the BasicAstWalker base subobject of a Derived instance.
 template <typename Derived>
 [[nodiscard]] inline Derived &asDerived(BasicAstWalker<Derived> &walker) noexcept {
     return *static_cast<Derived *>(&walker);
@@ -50,6 +63,7 @@ template <typename Derived>
 /// @param walker Active walker.
 /// @param parent Node currently being visited.
 /// @param child Child being announced to the walker.
+/// @note This helper does not consult shouldVisitChildren().
 template <typename Derived, typename Parent, typename Child>
 inline void notifyChild(BasicAstWalker<Derived> &walker, const Parent &parent, const Child &child) {
     walker.callBeforeChild(parent, child);
@@ -60,6 +74,7 @@ inline void notifyChild(BasicAstWalker<Derived> &walker, const Parent &parent, c
 /// @param walker Active walker.
 /// @param parent Node owning the range.
 /// @param range Iterable of child nodes to announce (not recursed into).
+/// @note Range elements are values or references, not optional pointers.
 template <typename Derived, typename Parent, typename Range>
 inline void notifyChildRange(BasicAstWalker<Derived> &walker,
                              const Parent &parent,
@@ -77,6 +92,8 @@ inline void notifyChildRange(BasicAstWalker<Derived> &walker,
 /// @param walker Active walker.
 /// @param parent Node owning @p childPtr.
 /// @param childPtr Smart/raw pointer to an optional child (may be null).
+/// @note This helper assumes the caller has already honored the parent node's
+///       shouldVisitChildren() decision.
 template <typename Derived, typename Parent, typename Ptr>
 inline void visitOptionalChild(BasicAstWalker<Derived> &walker,
                                const Parent &parent,
@@ -94,6 +111,7 @@ inline void visitOptionalChild(BasicAstWalker<Derived> &walker,
 /// @param walker Active walker.
 /// @param parent Node owning the range.
 /// @param range Iterable of optional child pointers.
+/// @note Traversal order is exactly the range's iteration order.
 template <typename Derived, typename Parent, typename Range>
 inline void visitChildRange(BasicAstWalker<Derived> &walker,
                             const Parent &parent,
@@ -111,6 +129,7 @@ inline void visitChildRange(BasicAstWalker<Derived> &walker,
 /// @param walker Active walker.
 /// @param stmt PRINT statement owning @p item (used as the parent context).
 /// @param item PRINT item potentially holding an expression.
+/// @note Separator items and malformed expression items with null payloads are skipped.
 template <typename Derived>
 inline void visitPrintItem(BasicAstWalker<Derived> &walker,
                            const PrintStmt &stmt,

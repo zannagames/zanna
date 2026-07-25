@@ -1,0 +1,122 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/campaign_content.zia
+// Purpose: Names each region's landmark, traversal theme, mastery, and climax.
+// Key invariants:
+//   - Region ids match WorldGraph, objective, save, and teleporter ids.
+//   - Every valid region has non-placeholder authored content labels.
+// Ownership/Lifetime:
+//   - Functions are pure and own no resources or mutable state.
+// Links: level.zia, level_validation.zia, objectives.zia, game.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module campaign_content;
+
+bind "./abilities";
+
+final CAMPAIGN_SECRET_TARGET = 2;
+final CAMPAIGN_ROOM_TARGET = 8;
+
+/// @brief Return the permanent traversal reward associated with one region.
+///
+/// @param region Zero-based stable campaign region id.
+/// @return One `ABILITY_*` flag, or `ABILITY_NONE` when no ability is awarded.
+func regionAbilityReward(region: Integer) -> Integer {
+    if region == 1 { return ABILITY_DASH; }
+    if region == 2 { return ABILITY_CHARGE_SHOT; }
+    if region == 4 { return ABILITY_CHARGE_SHOT; }
+    if region == 5 { return ABILITY_GROUND_POUND; }
+    if region == 6 { return ABILITY_GRAPPLE; }
+    return ABILITY_NONE;
+}
+
+/// @brief Return the unmistakable navigation landmark for one region.
+///
+/// @param region Zero-based stable campaign region id.
+/// @return Authored landmark name, or `Unknown Landmark` for invalid ids.
+func regionLandmarkName(region: Integer) -> String {
+    if region == 0 { return "The Broken Keel"; }
+    if region == 1 { return "The Elder Mushroom"; }
+    if region == 2 { return "The Prism Cathedral"; }
+    if region == 3 { return "The Crown Observatory"; }
+    if region == 4 { return "The Leviathan Spillway"; }
+    if region == 5 { return "The Pressure Engine"; }
+    if region == 6 { return "The Worldroot Spire"; }
+    if region == 7 { return "The Cryogenic Nave"; }
+    if region == 8 { return "The Fracture Monolith"; }
+    if region == 9 { return "The Planetary Iris"; }
+    return "Unknown Landmark";
+}
+
+/// @brief Return the mechanically active regional traversal identity.
+///
+/// @param region Zero-based stable campaign region id.
+/// @return Concise mechanic label, or `Unknown Mechanic` for invalid ids.
+func regionMechanicName(region: Integer) -> String {
+    if region == 0 { return "Conveyors and one-way wreckage"; }
+    if region == 1 { return "Quicksand and regenerating caps"; }
+    if region == 2 { return "Crumble crystal and charged walls"; }
+    if region == 3 { return "Wind bridges and reverse conveyors"; }
+    if region == 4 { return "Silt drag and flooded one-way routes"; }
+    if region == 5 { return "Steam launches and pressure belts"; }
+    if region == 6 { return "Crumbling canopy and grapple lines"; }
+    if region == 7 { return "Low-friction ice traversal"; }
+    if region == 8 { return "Charged seals and collapsing distortion"; }
+    if region == 9 { return "Full traversal-system synthesis"; }
+    return "Unknown Mechanic";
+}
+
+/// @brief Return the authored traversal mastery beat for one region.
+///
+/// @param region Zero-based stable campaign region id.
+/// @return One concise challenge description, or a defensive fallback.
+func regionMasteryName(region: Integer) -> String {
+    if region == 0 { return "Wall-jump through the cooling trench"; }
+    if region == 1 { return "Escape the collapsing nursery veins"; }
+    if region == 2 { return "Chain double jumps through the glass chasm"; }
+    if region == 3 { return "Cross the skybridge against the wind"; }
+    if region == 4 { return "Charge through the tidal-lock route"; }
+    if region == 5 { return "Dash between synchronized steam bursts"; }
+    if region == 6 { return "Swing the unbroken canopy circuit"; }
+    if region == 7 { return "Preserve momentum across the wraith walk"; }
+    if region == 8 { return "Pound and grapple through the seal approach"; }
+    if region == 9 { return "Complete the Architect's ability gauntlet"; }
+    return "Master the regional traversal route";
+}
+
+/// @brief Return the boss, miniboss, chase, or narrative climax label.
+///
+/// @param region Zero-based stable campaign region id.
+/// @return Authored climax name, or `Unknown Climax` for invalid ids.
+func regionClimaxName(region: Integer) -> String {
+    if region == 0 { return "Beacon Warden"; }
+    if region == 1 { return "Spore Mother"; }
+    if region == 2 { return "Crystal Wyrm"; }
+    if region == 3 { return "Relay Custodian"; }
+    if region == 4 { return "Tide Leviathan"; }
+    if region == 5 { return "Magma Core"; }
+    if region == 6 { return "Verdant Colossus"; }
+    if region == 7 { return "Cryo Custodian"; }
+    if region == 8 { return "Null Harvester"; }
+    if region == 9 { return "The Architect"; }
+    return "Unknown Climax";
+}
+
+/// @brief Test whether all four authored content labels exist for one region.
+///
+/// @param region Zero-based stable campaign region id.
+/// @return True only for ids 0..9 with non-fallback contract labels.
+func regionContentAuthored(region: Integer) -> Boolean {
+    if region < 0 or region >= 10 { return false; }
+    return regionLandmarkName(region) != "Unknown Landmark" and
+           regionMechanicName(region) != "Unknown Mechanic" and
+           regionMasteryName(region) != "Unknown Mastery" and
+           regionClimaxName(region) != "Unknown Climax";
+}

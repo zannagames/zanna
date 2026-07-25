@@ -13,6 +13,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file LowerExpr.cpp
+ * @brief Implements core BASIC expression dispatch and coercion adapters.
+ *
+ * The routines in this unit lower variable, bound-query, unary, and binary
+ * expressions, delegate specialized operators to helper objects, and expose
+ * the Lowerer-facing wrappers around the shared emitter and coercion services.
+ */
+
 // Requires the consolidated Lowerer interface for expression lowering helpers.
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/LocationScope.hpp"
@@ -43,8 +52,10 @@ namespace il::frontends::basic {
 /// - Emitted IL: Issues a load from the stack slot recorded in the symbol
 ///   metadata, selecting pointer, string, floating, or boolean types as
 ///   required.
-/// - Side effects: Updates @ref curLoc so diagnostics and subsequent
-///   instructions are tagged with @p v's source location.
+/// - Side effects: Temporarily selects @p v's source location while resolving
+///   and loading the symbol, then restores the caller's location.
+/// - Failure behavior: unresolved storage is diagnosed by the resolver; debug
+///   builds assert, while release builds return a null pointer fallback.
 Lowerer::RVal Lowerer::lowerVarExpr(const VarExpr &v) {
     LocationScope loc(*this, v.loc);
 
@@ -65,10 +76,11 @@ Lowerer::RVal Lowerer::lowerVarExpr(const VarExpr &v) {
 
 /// @brief Lower a `UBOUND` query into an IL call and subtraction.
 ///
-/// @details Loads the array slot, calls into the runtime to obtain the logical
-///          length, and subtracts one to produce the highest valid index.  The
-///          helper assumes semantic analysis already verified the symbol is an
-///          array.
+/// @details Returns a semantically resolved constant bound when available.
+///          Otherwise it loads the materialized array pointer, selects the
+///          string, object, or integer-array length helper, and subtracts one.
+///          A missing slot emits B2000 plus a trap and returns an unreachable
+///          zero fallback for structural completeness.
 ///
 /// @param expr Array upper-bound expression.
 /// @return Pair containing the computed upper bound and its integer type.
@@ -122,8 +134,10 @@ Lowerer::RVal Lowerer::lowerUBoundExpr(const UBoundExpr &expr) {
 ///   @p emitElse populate it via @ref emitStore, and finally emits a
 ///   conditional branch via @ref emitCBr. Callers may translate the `i1`
 ///   result to BASIC logical words with @ref emitBasicLogicalI64.
-/// - Side effects: Mutates @ref cur and @ref curLoc while stitching together
-///   the control-flow graph and asserts both closures emitted their blocks.
+/// - Side effects: Changes the procedure context's current block while
+///   stitching the graph, restores the join block as the insertion point, and
+///   restores the caller's source location on return. Debug builds assert that
+///   both callbacks ran.
 Lowerer::RVal Lowerer::lowerBoolBranchExpr(Value cond,
                                            il::support::SourceLoc loc,
                                            const std::function<void(Value)> &emitThen,
@@ -175,7 +189,7 @@ Lowerer::Value Lowerer::emitConstI64(std::int64_t v) {
     return emitter().emitConstI64(v);
 }
 
-/// @brief Zero-extend an `i1` boolean into the BASIC logical integer form.
+/// @brief Zero-extend an `i1` boolean to an `i64` containing zero or one.
 ///
 /// @param val Boolean value to extend.
 /// @return Result of invoking the emitter helper.
@@ -200,18 +214,16 @@ Lowerer::Value Lowerer::emitBasicLogicalI64(Value b1) {
     return emitter().emitBasicLogicalI64(b1);
 }
 
-/// @brief Lower a unary BASIC expression, currently handling logical NOT.
+/// @brief Lower unary plus, arithmetic negation, or classic BASIC NOT.
 /// @param u Unary AST node to translate.
-/// @return Boolean result produced by evaluating @p u.
+/// @return Operand value for unary plus, a type-preserving numeric negation,
+///         or an `i64` bitwise complement for NOT.
 /// @details
-/// - Control flow: Evaluates the operand within the current block and then
-///   reuses @ref lowerBoolBranchExpr to create then/else continuations that
-///   store the negated boolean result.
-/// - Emitted IL: Optionally truncates the operand to `i1` via
-///   @ref emitUnary and emits stores of `false`/`true` constants produced by
-///   @ref emitBoolConst.
-/// - Side effects: Updates @ref curLoc so generated instructions are annotated
-///   with the operand's location.
+/// - Logical NOT coerces to `i64` and XORs with all bits set, so every bit is
+///   complemented rather than merely canonicalizing truthiness.
+/// - Unary plus delegates directly to the operand.
+/// - Negation uses floating subtraction for `f64`, checked integer negation for
+///   `i16`/`i32`/`i64`, and attempts `i64` coercion for other kinds.
 Lowerer::RVal Lowerer::lowerUnaryExpr(const UnaryExpr &u) {
     switch (u.op) {
         case UnaryExpr::Op::LogicalNot: {
@@ -255,28 +267,15 @@ Lowerer::RVal Lowerer::lowerUnaryExpr(const UnaryExpr &u) {
     return lowerExpr(*u.expr);
 }
 
-/// @brief Lower BASIC logical binary expressions, including short-circuiting.
-/// @param b Binary expression describing AND/OR semantics.
-/// @return Boolean value that reflects @p b's evaluation.
-/// @details
-/// - Control flow: For short-circuit variants the routine uses
-///   @ref lowerBoolBranchExpr to fork evaluation, only lowering the right-hand
-///   operand in the taken branch; non-short-circuit forms evaluate both sides
-///   eagerly and still funnel results through the helper to ensure a material
-///   slot exists.
-/// - Emitted IL: Converts operands to `i1` when required, emits stores of
-///   boolean constants, and relies on @ref lowerBoolBranchExpr to emit the
-///   conditional branch wiring.
-/// - Side effects: Updates @ref curLoc for each emitted instruction and may
-///   recursively call @ref lowerExpr on child expressions.
 /// @brief Dispatch lowering for all BASIC binary expressions.
 /// @param b Binary AST node to translate.
 /// @return Lowered value alongside its IL type.
 /// @details
 /// - Control flow: Delegates to specialized helpers for logical and numeric
 ///   categories, letting those routines introduce any necessary branching.
-/// - Emitted IL: Depends on the dispatched helper, ranging from control-flow
-///   merges to arithmetic instructions and runtime calls.
+/// - Emitted IL: Depends on the dispatched helper. Addition with either string
+///   operand first converts the other operand through PRINT# string formatting;
+///   other string comparisons require two string operands.
 /// - Side effects: May trigger recursive @ref lowerExpr invocations for both
 ///   operands and updates @ref curLoc through the delegated helpers.
 Lowerer::RVal Lowerer::lowerBinaryExpr(const BinaryExpr &b) {
@@ -363,14 +362,4 @@ Lowerer::RVal Lowerer::ensureF64(RVal v, il::support::SourceLoc loc) {
     return coerceToF64(std::move(v), loc);
 }
 
-/// @brief Entry point for lowering BASIC expressions to IL.
-/// @param expr Expression subtree to translate.
-/// @return Lowered value accompanied by its IL type.
-/// @details
-/// - Control flow: Performs type-directed dispatch, with individual cases
-///   optionally creating additional blocks through specialized helpers.
-/// - Emitted IL: Encompasses constant materialization, runtime calls, and
-///   instruction emission delegated to helper routines.
-/// - Side effects: Updates @ref curLoc, may mutate runtime requirement flags,
-///   and recursively lowers nested expressions.
 } // namespace il::frontends::basic

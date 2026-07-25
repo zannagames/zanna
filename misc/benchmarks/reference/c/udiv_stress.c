@@ -11,15 +11,36 @@
 //   - Standalone translation unit; no cross-layer dependencies.
 // Ownership/Lifetime:
 //   - No long-lived state; all allocations are scoped to the run.
-// Links: docs/codemap.md
+// Links: examples/il/benchmarks/udiv_stress.il, docs/internals/testing.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file misc/benchmarks/reference/c/udiv_stress.c
+ * @brief Native reference implementation of the unsigned-division benchmark.
+ *
+ * @details
+ * Positive loop indices are divided by eight ascending powers of two. Because
+ * every dividend and divisor is positive, the C signed divisions have the same
+ * quotient as the IL benchmark's unsigned operations. A 28-bit accumulator
+ * mask keeps the running checksum bounded.
+ */
 
 /* udiv_stress.c — Unsigned division stress benchmark (50M iterations).
    Equivalent to examples/il/benchmarks/udiv_stress.il */
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * @brief Execute the power-of-two division kernel and return its checksum.
+ * @param argc Hosted argument count. Each user argument adds one positive loop
+ *             index to the workload.
+ * @param argv Hosted argument vector; its contents are intentionally unused.
+ * @return The bounded quotient sum reduced to its least-significant eight bits.
+ *
+ * @pre `argc >= 1`, and the derived iteration count keeps all loop arithmetic
+ *      representable by `int64_t`.
+ */
 int main(int argc, char **argv)
 {
     (void)argv;

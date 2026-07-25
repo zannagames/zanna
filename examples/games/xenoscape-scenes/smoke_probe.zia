@@ -1,0 +1,149 @@
+// =============================================================================
+// smoke_probe.zia — One-frame headless render check
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — TINY HEADLESS PROBES ARE A GREAT IDEA
+// ------------------------------------------------
+// "Did the game actually start?  Did the renderer paint
+// anything?  Did the level load?"  These are the kinds of
+// "didn't crash, AND we put pixels on the screen" checks you
+// want to run in CI.  Hand-driving the game with a click-
+// driver is heavy; what you actually want is:
+//
+//   * Construct the full subsystem stack like a real game
+//     would.
+//   * Render exactly one frame to an off-screen canvas.
+//   * Compare a known pixel before vs after the tile pass —
+//     if those pixels are equal, the tile renderer didn't
+//     run, and we print a fail line.
+//   * If we made it through, print `RESULT: ok` and exit.
+//
+// CI greps for `RESULT: ok` to pass / fail the probe.
+//
+// HOW THE PROBE BUILDS A "GAME-IN-MINIATURE"
+// ------------------------------------------
+//   1. Construct every subsystem the renderer reads from
+//      (Palette, SpriteFactory, Level, Player, EnemyManager,
+//      ProjectilePool, PickupManager, ParticleSystem, HUD,
+//      GameCamera, Renderer).  This proves they all
+//      construct cleanly.
+//   2. Load level 1 and snap the camera to the player.
+//   3. Sample the screen at a tile-centre pixel BEFORE the
+//      tile pass runs.
+//   4. Run the renderer's `renderPlaying` pass.
+//   5. Sample the same pixel AFTER.  If unchanged, the
+//      tile renderer is broken (or the level is empty); fail.
+//   6. Otherwise emit `RESULT: ok`.
+//
+// This is genuinely the simplest end-to-end verification
+// you can run for a renderer.  No mouse, no input, no time
+// step — one frame, one pixel comparison.
+//
+// WHY NOT DRIVE INPUT?
+// --------------------
+// Driving input gets us into testing-the-game-loop territory
+// quickly.  This probe deliberately stays at "did all the
+// parts wire up + did one frame render?" — the cheapest
+// possible safety net that catches the most common build
+// regressions.  The companion `start_probe.zia` adds a few
+// frames of input simulation; together they're enough.
+//
+// =============================================================================
+
+module smoke_probe;
+
+bind Zanna.Graphics;
+bind Zanna.Terminal as Terminal;
+bind "./config";
+bind "./palette";
+bind "./sprites";
+bind "./player";
+bind "./enemy";
+bind "./projectile";
+bind "./level";
+bind "./camera";
+bind "./particles";
+bind "./pickups";
+bind "./hud";
+bind "./renderer";
+
+/// @brief Probe entry: build → render → check → exit.
+///        Prints "RESULT: ok" on success, otherwise a
+///        descriptive failure line.
+func main() {
+    // Construct the asset + visual stack.  Each `new` here
+    // doubles as a "this class still constructs cleanly"
+    // smoke check.
+    var pal = new Palette();
+    var sprites = new SpriteFactory(pal);
+    var level = new Level();
+    level.loadLevel(1);
+    level.updateTileAnims(16);
+
+    // Player at the level's spawn point.
+    var player = new Player();
+    player.spawn(level.playerStartX, level.playerStartY);
+
+    // Enemies + bullets + pickups + visual systems.
+    var enemies = new EnemyManager();
+    enemies.spawnFromLevel(level);
+    var bullets = new ProjectilePool();
+    var pickups = new PickupManager();
+    pickups.spawnFromLevel(level);
+    var particles = new ParticleSystem(pal);
+    var hudObj = new HUD(pal);
+    hudObj.update(0, 0, 16);
+
+    // Camera centred on the player.
+    var camera = new GameCamera(pal);
+    camera.setLevelSize(level.levelWidth, level.levelHeight);
+    camera.snapTo(player.centerX(), player.centerY());
+
+    // Renderer.
+    var renderObj = new Renderer(pal);
+    renderObj.update(16);
+
+    // Off-screen canvas.  Same dimensions as the game so the
+    // renderer's hard-coded sizes line up.
+    var canvas = Canvas.New("XENOSCAPE Smoke", SCREEN_W, SCREEN_H);
+
+    // Pixel we'll sample: centre of a known tile in the
+    // visible window.  Sampling at the *background* stage
+    // gives us "what colour the sky is here"; sampling
+    // *after* the tile pass should be different (the tile
+    // colour) iff the tile renderer ran.
+    var sampleX = 2 * TILE_SIZE + TILE_SIZE / 2 - camera.x;
+    var sampleY = GROUND_ROW * TILE_SIZE + TILE_SIZE / 2 - camera.y;
+
+    camera.drawBackground(canvas, level.levelTheme, sprites);
+    var bgSample = canvas.GetPixel(sampleX, sampleY);
+
+    // The full play-state render pass.
+    renderObj.renderPlaying(canvas,
+                            camera,
+                            level,
+                            player,
+                            enemies,
+                            bullets,
+                            pickups,
+                            particles,
+                            hudObj,
+                            sprites,
+                            0,
+                            0,
+                            1);
+    var tileSample = canvas.GetPixel(sampleX, sampleY);
+    if tileSample == bgSample {
+        // The tile renderer didn't change our sample pixel.
+        // Could be: tile pass not running, level empty, or
+        // sample location is sky-only.  Either way fail loud.
+        Terminal.Say("RESULT: tile_render_missing");
+        canvas.Close();
+        return;
+    }
+    canvas.Flip();
+    canvas.Close();
+
+    Terminal.Say("RESULT: ok");
+}

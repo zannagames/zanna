@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/PreRegAllocOpt.cpp
+// File: src/codegen/x86_64/PreRegAllocOpt.cpp
 // Purpose: Implement conservative x86-64 MIR cleanup before register
 //          allocation. The traversal and safety conditions live in the shared
 //          PreRAForwardCopy template; this file supplies the x86-64 MIR
@@ -15,9 +15,9 @@
 //   - Single-use copy elimination does not cross block boundaries.
 // Ownership/Lifetime:
 //   - Stateless; mutates caller-owned MFunction in place.
-// Links: codegen/common/PreRAForwardCopy.hpp,
-//        codegen/x86_64/PreRegAllocOpt.hpp,
-//        codegen/x86_64/OperandRoles.hpp
+// Links: src/codegen/common/PreRAForwardCopy.hpp,
+//        src/codegen/x86_64/PreRegAllocOpt.hpp,
+//        src/codegen/x86_64/OperandRoles.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,15 +29,30 @@
 #include <cstdlib>
 #include <variant>
 
+/**
+ * @file
+ * @brief Implements x86-64 traits and load fusion for pre-RA MIR cleanup.
+ *
+ * The shared forward-copy engine receives target-specific copy, boundary,
+ * register-definition, and use-scan semantics through X64PreRATraits. A second
+ * pass folds a provably single-use load into an ALU memory operand without
+ * crossing stores, calls, control flow, or address-register clobbers.
+ */
+
 namespace zanna::codegen::x64 {
 namespace {
 
 /// @brief Compare two register operands for equality (phys flag, class, id).
+/// @param lhs First register.
+/// @param rhs Second register.
+/// @return @c true for exact register identity.
 [[nodiscard]] bool sameReg(const OpReg &lhs, const OpReg &rhs) noexcept {
     return lhs.isPhys == rhs.isPhys && lhs.cls == rhs.cls && lhs.idOrPhys == rhs.idOrPhys;
 }
 
 /// @brief Predicate: is @p opcode a pure register-to-register copy?
+/// @param opcode Opcode to classify.
+/// @return @c true for GPR or scalar-double register copies.
 [[nodiscard]] bool isCopyOpcode(MOpcode opcode) noexcept {
     return opcode == MOpcode::MOVrr || opcode == MOpcode::MOVSDrr;
 }
@@ -46,6 +61,8 @@ namespace {
 /// @details Implicit-register sequences (CQO/IDIV), pseudos expanded later
 ///          (PX_COPY, SELECT, checked arithmetic), and control flow all stop
 ///          the forwarding scan.
+/// @param opcode Opcode to classify.
+/// @return @c true when forwarding must stop before this operation.
 [[nodiscard]] bool isNonCallBoundaryOpcode(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::RET:
@@ -82,6 +99,9 @@ namespace {
 }
 
 /// @brief Predicate: does @p mem reference @p reg via base or index?
+/// @param mem Address expression to inspect.
+/// @param reg Register to find.
+/// @return @c true when @p reg participates in the address.
 [[nodiscard]] bool memUsesReg(const OpMem &mem, const OpReg &reg) noexcept {
     if (sameReg(mem.base, reg))
         return true;
@@ -94,14 +114,23 @@ struct X64PreRATraits {
     using InstrT = MInstr;
     using RegT = OpReg;
 
+    /// @brief Access a block's mutable instruction sequence.
+    /// @param block Block to access.
+    /// @return Mutable instruction vector.
     static std::vector<MInstr> &instrs(MBasicBlock &block) {
         return block.instructions;
     }
 
+    /// @brief Access a block's read-only instruction sequence.
+    /// @param block Block to access.
+    /// @return Const instruction vector.
     static const std::vector<MInstr> &instrs(const MBasicBlock &block) {
         return block.instructions;
     }
 
+    /// @brief Test whether a copy reads and writes the same register.
+    /// @param instr Candidate instruction.
+    /// @return @c true for an identity MOVrr or MOVSDrr.
     static bool isIdentityCopy(const MInstr &instr) {
         if (!isCopyOpcode(instr.opcode) || instr.operands.size() != 2)
             return false;
@@ -110,6 +139,11 @@ struct X64PreRATraits {
         return dst && src && sameReg(*dst, *src);
     }
 
+    /// @brief Decode a safe virtual-to-virtual forwarding copy.
+    /// @param instr Candidate copy instruction.
+    /// @param dst Destination register output.
+    /// @param src Source register output.
+    /// @return @c true when the copy may participate in forwarding.
     static bool isForwardableCopy(const MInstr &instr, OpReg &dst, OpReg &src) {
         if (!isCopyOpcode(instr.opcode) || instr.operands.size() != 2)
             return false;
@@ -126,6 +160,10 @@ struct X64PreRATraits {
         return true;
     }
 
+    /// @brief Query role-aware definitions of one register.
+    /// @param instr Instruction to inspect.
+    /// @param reg Register to find.
+    /// @return @c true when an explicit def operand names @p reg.
     static bool definesReg(const MInstr &instr, const OpReg &reg) {
         for (std::size_t idx = 0; idx < instr.operands.size(); ++idx) {
             const auto [isUse, isDef] = operandRoles(instr, idx);
@@ -139,14 +177,24 @@ struct X64PreRATraits {
         return false;
     }
 
+    /// @brief Recognize a CALL boundary.
+    /// @param instr Instruction to classify.
+    /// @return @c true for CALL.
     static bool isCall(const MInstr &instr) {
         return instr.opcode == MOpcode::CALL;
     }
 
+    /// @brief Recognize a non-call straight-line forwarding boundary.
+    /// @param instr Instruction to classify.
+    /// @return Result of the target opcode boundary classifier.
     static bool isNonCallBoundary(const MInstr &instr) {
         return isNonCallBoundaryOpcode(instr.opcode);
     }
 
+    /// @brief Count direct and address uses of a copy destination.
+    /// @param instr Instruction whose use operands are scanned.
+    /// @param dst Copy destination register.
+    /// @return Use counts and the direct operand index when applicable.
     static common::PreRAUseScan scanUses(const MInstr &instr, const OpReg &dst) {
         common::PreRAUseScan scan{};
         for (std::size_t opIdx = 0; opIdx < instr.operands.size(); ++opIdx) {
@@ -175,6 +223,10 @@ struct X64PreRATraits {
         return scan;
     }
 
+    /// @brief Replace a direct destination use with the copy's source operand.
+    /// @param use Consumer instruction to rewrite.
+    /// @param operandIndex Direct-use operand index.
+    /// @param copy Two-operand source copy.
     static void forwardUse(MInstr &use, std::size_t operandIndex, const MInstr &copy) {
         use.operands[operandIndex] = copy.operands[1];
     }
@@ -185,6 +237,8 @@ struct X64PreRATraits {
 namespace {
 
 /// @brief Map a reg-reg ALU opcode onto its memory-operand (rm) form.
+/// @param opcode Register-register opcode to map.
+/// @return Memory-source equivalent, or LABEL as a no-form sentinel.
 [[nodiscard]] MOpcode memFormFor(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::ADDrr:
@@ -207,11 +261,16 @@ namespace {
 }
 
 /// @brief Predicate: does @p opcode write to memory?
+/// @param opcode Opcode to classify.
+/// @return @c true for GPR, scalar-double, or full-XMM stores.
 [[nodiscard]] bool isStoreOpcode(MOpcode opcode) noexcept {
     return opcode == MOpcode::MOVrm || opcode == MOpcode::MOVSDrm || opcode == MOpcode::MOVUPSrm;
 }
 
 /// @brief Predicate: does @p op mention virtual GPR @p reg (directly or via a memory operand)?
+/// @param op Operand to inspect.
+/// @param reg Register to find.
+/// @return @c true for a direct register or address-component mention.
 [[nodiscard]] bool operandMentionsReg(const Operand &op, const OpReg &reg) noexcept {
     if (const auto *r = std::get_if<OpReg>(&op))
         return sameReg(*r, reg);
@@ -221,6 +280,10 @@ namespace {
 }
 
 /// @brief Count every mention of @p reg across @p fn except @p skip.
+/// @param fn Function to scan.
+/// @param reg Register whose mentions are counted.
+/// @param skip Instruction excluded by address identity.
+/// @return Number of direct and memory-address mentions.
 [[nodiscard]] std::size_t countMentionsExcept(const MFunction &fn,
                                               const OpReg &reg,
                                               const MInstr *skip) noexcept {

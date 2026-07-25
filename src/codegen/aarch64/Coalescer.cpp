@@ -16,9 +16,19 @@
 //     which is later cleaned up by the peephole pass.
 // Ownership/Lifetime:
 //   - Modifies MFunction in place; caller owns the MFunction.
-// Links: codegen/aarch64/Coalescer.hpp
+// Links: src/codegen/aarch64/Coalescer.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Implements conservative pre-allocation copy coalescing for AArch64 MIR.
+ *
+ * Instructions are linearized in block layout order to build whole-function
+ * virtual-register intervals. A move is merged only for a source-to-destination
+ * handoff at the same instruction position; intervals and candidates are
+ * recomputed after every rewrite, then resulting identity moves are erased.
+ */
 
 #include "codegen/aarch64/Coalescer.hpp"
 
@@ -161,6 +171,8 @@ static void rewriteVReg(MFunction &fn, RegClass cls, uint16_t oldVReg, uint16_t 
 }
 
 /// @brief Collect candidate move instructions for coalescing.
+/// @param fn Machine function to scan.
+/// @return Virtual-to-virtual, same-class, non-identity move locations.
 static std::vector<CoalesceCandidate> collectCandidates(const MFunction &fn) {
     std::vector<CoalesceCandidate> candidates;
 
@@ -195,6 +207,8 @@ static std::vector<CoalesceCandidate> collectCandidates(const MFunction &fn) {
 }
 
 /// @brief Run one round of coalescing for a given register class.
+/// @param fn Machine function modified in place.
+/// @param cls Register class processed independently.
 /// @return The number of moves coalesced.
 static unsigned coalesceClass(MFunction &fn, RegClass cls) {
     unsigned coalesced = 0;
@@ -276,6 +290,7 @@ static unsigned coalesceClass(MFunction &fn, RegClass cls) {
 }
 
 /// @brief Remove identity moves (MovRR/FMovRR where src == dst vreg).
+/// @param fn Machine function whose blocks are compacted in place.
 static void removeIdentityMoves(MFunction &fn) {
     for (auto &bb : fn.blocks) {
         std::vector<MInstr> filtered;
@@ -294,6 +309,9 @@ static void removeIdentityMoves(MFunction &fn) {
 
 } // namespace
 
+/// @brief Coalesce safe GPR and FPR virtual-register copies in @p fn.
+/// @param fn Machine function modified in place.
+/// @post Coalesced identity moves are removed from their blocks.
 void coalesce(MFunction &fn) {
     // Coalesce GPR and FPR classes independently.
     coalesceClass(fn, RegClass::GPR);

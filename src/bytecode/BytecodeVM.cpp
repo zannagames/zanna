@@ -17,6 +17,23 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file
+ * @brief Implements bytecode validation, interpretation, traps, debugging, and
+ *        callback-aware runtime dispatch for `BytecodeVM`.
+ *
+ * The VM has two dispatch implementations: the portable switch loop in this
+ * file and the computed-goto loop in `BytecodeVM_threaded.cpp`. Both share the
+ * frame, operand-stack, string-ownership, memory-safety, and exception state
+ * maintained here. This file also adapts runtime APIs whose callbacks may refer
+ * to either tree-walker IL functions or tagged bytecode functions.
+ *
+ * Loaded modules are borrowed during synchronous execution. Runtime operations
+ * that may outlive the caller instead capture shared module snapshots and an
+ * `ExecutionEnvironment`, ensuring that worker callbacks never retain pointers
+ * into a caller-owned module.
+ */
+
 #include "bytecode/BytecodeVM.hpp"
 #include "bytecode/BytecodeSemantics.hpp"
 #include "il/core/Module.hpp"
@@ -70,19 +87,26 @@ namespace {
 
 /// @brief True if parameter @p index of runtime signature @p sig is a string,
 ///        so the caller knows that argument participates in string ownership.
+/// @param sig Runtime signature to inspect; may be null.
+/// @param index Zero-based parameter index.
+/// @return `true` only when the indexed parameter exists and has string type.
 bool runtimeParamIsString(const il::runtime::RuntimeSignature *sig, size_t index) {
     return sig && index < sig->paramTypes.size() &&
            sig->paramTypes[index].kind == il::core::Type::Kind::Str;
 }
 
+/// @brief Install callback-aware handlers shared by the tree-walker and bytecode VMs.
 void registerUnifiedVmRuntimeHandlers();
 
 /// @brief No-op runtime trap observer; installed so the runtime's trap-signal
 ///        hook has a valid target while the bytecode VM handles traps itself.
+/// @details Both callback arguments are intentionally ignored.
 void bytecodeRuntimeTrapPassthrough(const il::vm::RuntimeTrapSignal &, void *) {}
 
 /// @brief Default numeric error code for a trap kind when none is supplied
 ///        (DivideByZero→0, Overflow→4, Bounds→7, NullPointer→91, else 0).
+/// @param trapKind Trap category whose conventional code is requested.
+/// @return Stable runtime error code associated with @p trapKind.
 int32_t defaultBytecodeTrapErrorCode(TrapKind trapKind) {
     switch (trapKind) {
         case TrapKind::DivideByZero:
@@ -100,6 +124,8 @@ int32_t defaultBytecodeTrapErrorCode(TrapKind trapKind) {
 
 /// @brief Stable human-readable name for a trap kind (for diagnostics/traces);
 ///        returns "Unknown" for any value outside the enum.
+/// @param trapKind Trap category to format.
+/// @return Pointer to a static, null-terminated name.
 const char *bytecodeTrapKindName(TrapKind trapKind) {
     switch (trapKind) {
         case TrapKind::DivideByZero:
@@ -197,12 +223,14 @@ thread_local const BytecodeModule *tlsActiveBytecodeModule = nullptr;
 
 /// @brief The BytecodeVM executing on the current thread, or NULL — lets
 ///        runtime handlers detect a bytecode caller and adapt accordingly.
+/// @return Borrowed thread-local VM pointer, or null outside bytecode execution.
 BytecodeVM *activeBytecodeVMInstance() {
     return tlsActiveBytecodeVM;
 }
 
 /// @brief The BytecodeModule active on the current thread (used when spawning
 ///        worker threads that must run bytecode entry points).
+/// @return Borrowed thread-local module pointer, or null when no module is active.
 const BytecodeModule *activeBytecodeModule() {
     return tlsActiveBytecodeModule;
 }
@@ -217,6 +245,7 @@ namespace {
 class ActiveBytecodeModuleGuard final {
   public:
     /// @brief Publish @p module as the active bytecode module for this thread.
+    /// @param module Borrowed module to expose until this guard is destroyed.
     explicit ActiveBytecodeModuleGuard(const BytecodeModule *module)
         : previous_(tlsActiveBytecodeModule) {
         tlsActiveBytecodeModule = module;
@@ -239,6 +268,7 @@ class ActiveBytecodeModuleGuard final {
 /// @brief RAII: make @p vm the thread-active VM for the guard's lifetime,
 ///        restoring the previous one on scope exit (supports re-entrant
 ///        bytecode execution, e.g. a runtime callback into bytecode).
+/// @param vm Borrowed VM to expose on the current thread.
 ActiveBytecodeVMGuard::ActiveBytecodeVMGuard(BytecodeVM *vm)
     : previous_(tlsActiveBytecodeVM), current_(vm) {
     tlsActiveBytecodeVM = vm;
@@ -292,10 +322,11 @@ BytecodeVM::~BytecodeVM() {
 }
 
 /// @brief Reset the string cache slots for the loaded module.
-///
-/// The runtime expects managed rt_string handles, not raw C strings. Handles
-/// are materialized lazily by @ref getStringLiteral so worker VMs only create
-/// literals they actually execute.
+/// @details Releases any live cached handles before sizing the cache to the
+///          current module's string pool. The runtime expects managed
+///          `rt_string` handles, not raw C strings; handles are materialized
+///          lazily by @ref getStringLiteral so worker VMs only create literals
+///          they actually execute.
 void BytecodeVM::initStringCache() {
     // Release any existing cache
     for (rt_string &s : stringCache_) {
@@ -315,6 +346,8 @@ void BytecodeVM::initStringCache() {
 ///        @p idx; returns NULL if there is no module or @p idx is out of range.
 /// @details Handles are created on first use so a worker VM only allocates the
 ///          literals it actually executes.
+/// @param idx Zero-based module string-pool index.
+/// @return Borrowed cached runtime handle, or null for an invalid index.
 rt_string BytecodeVM::getStringLiteral(uint16_t idx) {
     if (!module_ || idx >= module_->stringPool.size())
         return nullptr;
@@ -330,6 +363,8 @@ rt_string BytecodeVM::getStringLiteral(uint16_t idx) {
 /// @brief True if runtime function @p name takes ownership of string args via
 ///        a *clone* (caller keeps its reference). Must mirror rtgen's
 ///        needsConsumingStringHandler() — e.g. rt_str_concat.
+/// @param name Runtime registry name to classify.
+/// @return `true` when the bridge must pass retained clones of string arguments.
 bool BytecodeVM::runtimeCallConsumesClonedStringArgs(std::string_view name) {
     // Keep this list aligned with rtgen's needsConsumingStringHandler().
     return name == "rt_str_concat" || name == "Zanna.String.Concat";
@@ -338,6 +373,8 @@ bool BytecodeVM::runtimeCallConsumesClonedStringArgs(std::string_view name) {
 /// @brief True if runtime function @p name consumes the *caller's owned*
 ///        string reference (e.g. rt_str_release_maybe) — the slot's ownership
 ///        flag must be cleared after the call.
+/// @param name Runtime registry name to classify.
+/// @return `true` when ownership transfers directly from VM argument slots.
 bool BytecodeVM::runtimeCallConsumesOwnedStringArgs(std::string_view name) {
     return name == "rt_str_release_maybe";
 }
@@ -345,6 +382,10 @@ bool BytecodeVM::runtimeCallConsumesOwnedStringArgs(std::string_view name) {
 /// @brief For a clone-consuming runtime call, return a copy of @p args with an
 ///        extra retain on each string parameter, so the callee can consume its
 ///        reference while the VM's originals stay valid. Empty if N/A.
+/// @param ref Native-call descriptor and ownership metadata.
+/// @param args Borrowed contiguous argument slots.
+/// @param argCount Number of slots available at @p args.
+/// @return Retained argument copy, or an empty vector when cloning is unnecessary.
 std::vector<BCSlot> BytecodeVM::cloneRuntimeStringArgs(const NativeFuncRef &ref,
                                                        const BCSlot *args,
                                                        size_t argCount) const {
@@ -367,6 +408,8 @@ std::vector<BCSlot> BytecodeVM::cloneRuntimeStringArgs(const NativeFuncRef &ref,
 
 /// @brief Drop the extra retains added by @ref cloneRuntimeStringArgs once the
 ///        runtime call has returned (balances the clone's reference counts).
+/// @param ref Native-call descriptor used to identify string parameters.
+/// @param args Mutable cloned slots whose extra references are released.
 void BytecodeVM::releaseRuntimeStringArgs(const NativeFuncRef &ref,
                                           std::vector<BCSlot> &args) const {
     if (args.empty())
@@ -388,6 +431,10 @@ void BytecodeVM::releaseRuntimeStringArgs(const NativeFuncRef &ref,
 ///          BCSlots as VM Slots, and dispatches by descriptor or by name. A
 ///          RuntimeTrapSignal is converted to a VM trap (via dispatchTrap, or
 ///          a hard trap if unhandled) and the call reports failure.
+/// @param ref Native runtime function and signature metadata.
+/// @param args Borrowed VM argument slots; string ownership remains with the VM.
+/// @param argCount Number of argument slots.
+/// @param result Receives the runtime return bits on success.
 /// @return true on normal return (@p result set); false if the call trapped.
 bool BytecodeVM::invokeRuntimeBridgeNative(const NativeFuncRef &ref,
                                            BCSlot *args,
@@ -431,6 +478,9 @@ bool BytecodeVM::invokeRuntimeBridgeNative(const NativeFuncRef &ref,
 /// @brief After an owned-consuming runtime call, clear the VM-side ownership
 ///        flag on each string arg so the VM won't double-release a handle the
 ///        callee already took ownership of.
+/// @param ref Native-call descriptor used to identify consumed parameters.
+/// @param args Borrowed argument slots whose ownership flags may be cleared.
+/// @param argCount Number of argument slots.
 void BytecodeVM::dismissConsumedStringArgs(const NativeFuncRef &ref,
                                            BCSlot *args,
                                            uint8_t argCount) {
@@ -451,12 +501,15 @@ void BytecodeVM::dismissConsumedStringArgs(const NativeFuncRef &ref,
 
 /// @brief Register a C++ handler for native function @p name, overriding any
 ///        prior handler of that name (used for builtins not in the bridge).
+/// @param name Exact runtime symbol used by bytecode native-call entries.
+/// @param handler Callable stored by value in the VM handler table.
 void BytecodeVM::registerNativeHandler(const std::string &name, NativeHandler handler) {
     nativeHandlers_[name] = std::move(handler);
 }
 
 /// @brief Snapshot the tunable execution settings (bridge enabled, dispatch
 ///        mode, trusted flag, native handler table) for transfer to a worker VM.
+/// @return Self-contained copy of settings; it does not retain this VM.
 BytecodeVM::ExecutionEnvironment BytecodeVM::captureExecutionEnvironment() const {
     ExecutionEnvironment env;
     env.runtimeBridgeEnabled = runtimeBridgeEnabled_;
@@ -468,6 +521,9 @@ BytecodeVM::ExecutionEnvironment BytecodeVM::captureExecutionEnvironment() const
 }
 
 /// @brief Apply a previously captured execution environment onto this VM.
+/// @param env Settings and native handlers to copy.
+/// @details Trusted dispatch is enabled only if both @p env requests it and the
+///          currently loaded module passed structural validation.
 void BytecodeVM::applyExecutionEnvironment(const ExecutionEnvironment &env) {
     runtimeBridgeEnabled_ = env.runtimeBridgeEnabled;
     useThreadedDispatch_ = env.useThreadedDispatch;
@@ -479,6 +535,7 @@ void BytecodeVM::applyExecutionEnvironment(const ExecutionEnvironment &env) {
 
 /// @brief Convenience: copy @p other's execution environment onto this VM
 ///        (used when a spawned worker VM should mirror its parent's config).
+/// @param other Source VM; module and transient execution state are not copied.
 void BytecodeVM::copyExecutionEnvironmentFrom(const BytecodeVM &other) {
     applyExecutionEnvironment(other.captureExecutionEnvironment());
 }
@@ -488,6 +545,9 @@ void BytecodeVM::copyExecutionEnvironmentFrom(const BytecodeVM &other) {
 ///          every instruction, validates inline-word payloads, verifies branch
 ///          targets land on instruction boundaries, and checks side-table
 ///          indices before trusted dispatch can be enabled.
+/// @param module Candidate module; may be null.
+/// @param failure Receives the first trap kind and explanatory message.
+/// @return `true` only when every module-level and function-level invariant holds.
 bool BytecodeVM::validateModuleForLoad(const BytecodeModule *module,
                                        ModuleValidationFailure &failure) const {
     auto fail = [&failure](TrapKind kind, std::string message) {
@@ -574,6 +634,11 @@ bool BytecodeVM::validateModuleForLoad(const BytecodeModule *module,
 ///          that index module tables, checks variable-length instruction
 ///          payloads, then verifies every branch/EH/switch target points to a
 ///          valid instruction boundary rather than into an inline data word.
+/// @param module Module that owns @p func and its referenced tables.
+/// @param func Function whose code and metadata are validated.
+/// @param functionIndex Expected position of @p func in the module table.
+/// @param failure Receives the first validation error.
+/// @return `true` when the function is safe for validated dispatch.
 bool BytecodeVM::validateFunctionForLoad(const BytecodeModule &module,
                                          const BytecodeFunction &func,
                                          size_t functionIndex,
@@ -838,6 +903,8 @@ bool BytecodeVM::validateFunctionForLoad(const BytecodeModule &module,
 }
 
 /// @brief Check whether a function pointer belongs to the currently loaded module.
+/// @param func Candidate function address.
+/// @return `true` when @p func exactly identifies an element of the loaded table.
 bool BytecodeVM::functionBelongsToModule(const BytecodeFunction *func) const {
     if (!module_ || !func)
         return false;
@@ -853,6 +920,8 @@ bool BytecodeVM::functionBelongsToModule(const BytecodeFunction *func) const {
 ///        globals get an owned rt_string from their init bytes; scalar
 ///        globals are memcpy'd from their baked init image) plus the string
 ///        literal cache. Safe to call again to re-load a different module.
+/// @param module Borrowed module that must outlive every synchronous execution.
+/// @post On validation failure the VM is trapped and no module is published.
 void BytecodeVM::load(const BytecodeModule *module) {
     registerUnifiedVmRuntimeHandlers();
     resetExecutionState();
@@ -906,6 +975,8 @@ void BytecodeVM::load(const BytecodeModule *module) {
 
 /// @brief Index of @p slot within the value stack (the key into the parallel
 ///        string-ownership bitmap). Asserts the pointer is in range.
+/// @param slot Address of a slot in `valueStack_`.
+/// @return Zero-based slot index.
 size_t BytecodeVM::slotIndex(const BCSlot *slot) const {
     assert(slot >= valueStack_.data());
     assert(slot < valueStack_.data() + valueStack_.size());
@@ -914,17 +985,24 @@ size_t BytecodeVM::slotIndex(const BCSlot *slot) const {
 
 /// @brief True if @p slot currently holds an owned string reference (the VM
 ///        is responsible for releasing it).
+/// @param slot Address of a slot in `valueStack_`.
+/// @return Ownership bit associated with @p slot.
 bool BytecodeVM::slotOwnsString(const BCSlot *slot) const {
     return valueStackStringOwned_.owns(slotIndex(slot));
 }
 
 /// @brief Set/clear @p slot's "owns string reference" flag.
+/// @param slot Address of a slot in `valueStack_`.
+/// @param owns New ownership state.
 void BytecodeVM::setSlotOwnsString(const BCSlot *slot, bool owns) {
     valueStackStringOwned_.set(slotIndex(slot), owns);
 }
 
 /// @brief True if local slot @p idx of @p frame is typed as a string (so its
 ///        contents are reference-counted).
+/// @param frame Frame whose local-type bitmap is consulted.
+/// @param idx Zero-based local index.
+/// @return `true` when the local exists in the bitmap and is string-typed.
 bool BytecodeVM::localIsString(const BCFrame &frame, uint32_t idx) const {
     return idx < frame.func->localIsString.size() && frame.func->localIsString[idx] != 0;
 }
@@ -933,6 +1011,8 @@ bool BytecodeVM::localIsString(const BCFrame &frame, uint32_t idx) const {
 /// @return true if NULL or a valid handle; otherwise traps (RuntimeError,
 ///         naming @p site) and returns false. Guards against type-confused
 ///         slots corrupting the runtime string heap.
+/// @param ptr Candidate runtime string handle.
+/// @param site Operation name included in a generated trap.
 bool BytecodeVM::validateStringHandle(const void *ptr, const char *site) {
     if (!ptr || rt_string_is_handle(ptr))
         return true;
@@ -949,6 +1029,7 @@ bool BytecodeVM::validateStringHandle(const void *ptr, const char *site) {
 /// @brief If @p slot owns a string, release that reference and clear both the
 ///        pointer and the ownership flag (idempotent; tolerates a bad handle
 ///        by just dropping it).
+/// @param slot Mutable value-stack slot.
 void BytecodeVM::releaseOwnedString(BCSlot *slot) {
     if (!slotOwnsString(slot))
         return;
@@ -967,6 +1048,9 @@ void BytecodeVM::releaseOwnedString(BCSlot *slot) {
 ///          Non-null slots are validated before the reference count is incremented
 ///          so type-confused stack data traps instead of corrupting the runtime
 ///          string heap.
+/// @param slot Mutable value-stack slot to retain and mark owning.
+/// @param site Operation name included in a validation trap.
+/// @return `true` on success; `false` after trapping on an invalid handle.
 bool BytecodeVM::retainStringSlot(BCSlot *slot, const char *site) {
     if (!slot->ptr) {
         setSlotOwnsString(slot, false);
@@ -984,6 +1068,10 @@ bool BytecodeVM::retainStringSlot(BCSlot *slot, const char *site) {
 ///          accidentally release an alias. When @p src owns a non-null runtime
 ///          string handle, the copied handle is validated and retained before
 ///          @p dst becomes owning.
+/// @param dst Destination value-stack slot.
+/// @param src Source value-stack slot.
+/// @param site Operation name included in a validation trap.
+/// @return `true` when the copy and any required retain succeeded.
 bool BytecodeVM::copyStackSlotRetainingString(BCSlot *dst, const BCSlot *src, const char *site) {
     *dst = *src;
     setSlotOwnsString(dst, false);
@@ -999,6 +1087,8 @@ bool BytecodeVM::copyStackSlotRetainingString(BCSlot *dst, const BCSlot *src, co
 }
 
 /// @brief Duplicate the top operand stack slot, preserving string ownership.
+/// @param site Operation name included in any validation trap.
+/// @return `true` when the duplicate was produced.
 bool BytecodeVM::duplicateTopSlot(const char *site) {
     if (!copyStackSlotRetainingString(sp_, sp_ - 1, site))
         return false;
@@ -1007,6 +1097,8 @@ bool BytecodeVM::duplicateTopSlot(const char *site) {
 }
 
 /// @brief Duplicate the top two operand stack slots, preserving string ownership.
+/// @param site Operation name included in any validation trap.
+/// @return `true` when both duplicates were produced.
 bool BytecodeVM::duplicateTopTwoSlots(const char *site) {
     BCSlot *dst0 = sp_;
     BCSlot *dst1 = sp_ + 1;
@@ -1023,6 +1115,7 @@ bool BytecodeVM::duplicateTopTwoSlots(const char *site) {
 }
 
 /// @brief Release @p count owned operand stack slots and move the stack pointer down.
+/// @param count Number of topmost slots to destroy.
 void BytecodeVM::popOwnedSlots(size_t count) {
     for (size_t i = 0; i < count; ++i)
         releaseOwnedString(--sp_);
@@ -1055,6 +1148,9 @@ void BytecodeVM::rotateTopThreeSlots() {
 
 /// @brief Push local slot @p idx onto the operand stack; if the local is a
 ///        string, retain the reference and mark the new slot as owning it.
+/// @param idx Local index in the current frame.
+/// @param site Operation name included in any trap.
+/// @return `true` when the local was pushed successfully.
 bool BytecodeVM::pushLocal(uint32_t idx, const char *site) {
     BCSlot *dst = sp_++;
     *dst = fp_->locals[idx];
@@ -1075,6 +1171,9 @@ bool BytecodeVM::pushLocal(uint32_t idx, const char *site) {
 ///        releases the old value, then transfers the stack slot's reference
 ///        (retaining only if the source did not already own it) so the net
 ///        reference count stays balanced.
+/// @param idx Local index in the current frame.
+/// @param site Operation name included in any trap.
+/// @return `true` when the value and ownership were stored successfully.
 bool BytecodeVM::storeLocal(uint32_t idx, const char *site) {
     BCSlot *src = --sp_;
     BCSlot *dst = fp_->locals + idx;
@@ -1106,6 +1205,7 @@ bool BytecodeVM::storeLocal(uint32_t idx, const char *site) {
 }
 
 /// @brief Pop a return value, unwind the current frame, and push the value to the caller.
+/// @return `true` when execution should continue or halt normally; `false` on trap.
 bool BytecodeVM::returnValueFromFrame() {
     BCSlot *resultSlot = --sp_;
     BCSlot result = *resultSlot;
@@ -1135,6 +1235,7 @@ bool BytecodeVM::returnValueFromFrame() {
 }
 
 /// @brief Unwind a void-returning frame and halt when it was the entry frame.
+/// @return `true` when execution should continue or halt normally; `false` on trap.
 bool BytecodeVM::returnVoidFromFrame() {
     if (!popFrame()) {
         state_ = VMState::Halted;
@@ -1151,6 +1252,9 @@ bool BytecodeVM::returnVoidFromFrame() {
 }
 
 /// @brief Push global slot @p idx onto the operand stack with string retain semantics.
+/// @param idx Global-table index.
+/// @param site Operation name included in any trap.
+/// @return `true` when the global was pushed successfully.
 bool BytecodeVM::loadGlobal(uint16_t idx, const char *site) {
     if (idx >= globals_.size()) {
         trap(TrapKind::InvalidOpcode, "LOAD_GLOBAL index out of range");
@@ -1173,6 +1277,9 @@ bool BytecodeVM::loadGlobal(uint16_t idx, const char *site) {
 }
 
 /// @brief Pop the operand stack into global slot @p idx, transferring string ownership.
+/// @param idx Global-table index.
+/// @param site Operation name included in any trap.
+/// @return `true` when the value was stored successfully.
 bool BytecodeVM::storeGlobal(uint16_t idx, const char *site) {
     BCSlot *src = --sp_;
     BCSlot value = *src;
@@ -1200,6 +1307,8 @@ bool BytecodeVM::storeGlobal(uint16_t idx, const char *site) {
 }
 
 /// @brief Release any owned string references held in a call's argument slots.
+/// @param args First argument slot.
+/// @param argCount Number of consecutive slots to release.
 void BytecodeVM::releaseCallArgs(BCSlot *args, uint8_t argCount) {
     for (uint8_t i = 0; i < argCount; ++i)
         releaseOwnedString(args + i);
@@ -1207,6 +1316,7 @@ void BytecodeVM::releaseCallArgs(BCSlot *args, uint8_t argCount) {
 
 /// @brief Release owned string references in every local of @p frame and clear
 ///        the ownership flags — called when a frame is torn down.
+/// @param frame Frame whose local slots are being destroyed.
 void BytecodeVM::releaseFrameLocals(const BCFrame &frame) {
     for (uint32_t i = 0; i < frame.func->numLocals; ++i) {
         if (localIsString(frame, i))
@@ -1236,6 +1346,8 @@ void BytecodeVM::releaseOwnedGlobals() {
 /// @brief Reverse-map a raw pointer to a global slot to its global index, or
 ///        SIZE_MAX if @p ptr is not the address of a global (lets GEP/store
 ///        opcodes detect writes that target a string global).
+/// @param ptr Candidate address.
+/// @return Matching global index, or `SIZE_MAX`.
 size_t BytecodeVM::globalIndexForAddress(const void *ptr) const {
     if (!ptr)
         return SIZE_MAX;
@@ -1248,6 +1360,7 @@ size_t BytecodeVM::globalIndexForAddress(const void *ptr) const {
 
 /// @brief Release the string reference owned by global @p idx (no-op if the
 ///        global is not an owned string), clearing pointer and ownership flag.
+/// @param idx Global-table index.
 void BytecodeVM::releaseOwnedGlobalString(size_t idx) {
     if (idx >= globals_.size() || idx >= globalsStringOwned_.size() ||
         globalsStringOwned_[idx] == 0)
@@ -1263,6 +1376,9 @@ void BytecodeVM::releaseOwnedGlobalString(size_t idx) {
 /// @details Raw memory stores can target an interior byte of a global BCSlot via
 ///          GEP. Ownership bookkeeping must therefore detect overlap, not only
 ///          exact slot-address equality.
+/// @param ptr First byte of the candidate store range.
+/// @param bytes Range width; zero is treated as one byte.
+/// @return First overlapped global index, or `SIZE_MAX` when there is no overlap.
 size_t BytecodeVM::globalIndexForAddressRange(const void *ptr, size_t bytes) const {
     if (!ptr || globals_.empty())
         return SIZE_MAX;
@@ -1282,6 +1398,8 @@ size_t BytecodeVM::globalIndexForAddressRange(const void *ptr, size_t bytes) con
 
 /// @brief Before a raw (untyped) store through a pointer that aliases a string
 ///        global, release the global's old reference so it isn't leaked.
+/// @param ptr First byte of the store destination.
+/// @param bytes Store width.
 void BytecodeVM::clearGlobalStringOwnershipForRawStore(void *ptr, size_t bytes) {
     const size_t idx = globalIndexForAddressRange(ptr, bytes);
     if (idx == SIZE_MAX)
@@ -1291,6 +1409,8 @@ void BytecodeVM::clearGlobalStringOwnershipForRawStore(void *ptr, size_t bytes) 
 
 /// @brief Mark the string global aliased by @p ptr as owned/not-owned after a
 ///        typed store transferred a reference into it.
+/// @param ptr Exact global slot address.
+/// @param owns New ownership state.
 void BytecodeVM::setGlobalStringOwnershipForAddress(void *ptr, bool owns) {
     const size_t idx = globalIndexForAddress(ptr);
     if (idx == SIZE_MAX || idx >= globalsStringOwned_.size())
@@ -1331,12 +1451,19 @@ void BytecodeVM::resetExecutionState() {
 
 /// @brief Current operand-stack depth of @p frame given stack pointer @p sp
 ///        (slots pushed since the frame's stack base).
+/// @param frame Frame that defines the operand-stack base.
+/// @param sp Current stack pointer.
+/// @return Number of live operand slots in @p frame.
 uint32_t BytecodeVM::operandDepth(const BCFrame &frame, const BCSlot *sp) const {
     return static_cast<uint32_t>(sp - frame.stackBase);
 }
 
 /// @brief Verifier guard: trap (InvalidOpcode) unless @p pc is within @p func's
 ///        code. Part of the untrusted-bytecode safety net.
+/// @param func Function whose code bounds apply.
+/// @param pc Candidate program counter.
+/// @param site Operation name included in a trap.
+/// @return `true` when @p pc identifies an instruction word.
 bool BytecodeVM::ensurePcInRange(const BytecodeFunction &func, uint32_t pc, const char *site) {
     if (pc < func.code.size())
         return true;
@@ -1346,6 +1473,11 @@ bool BytecodeVM::ensurePcInRange(const BytecodeFunction &func, uint32_t pc, cons
 
 /// @brief Verifier guard: trap unless @p words instruction words starting at
 ///        @p pc lie within @p func's code (overflow-safe in 64-bit).
+/// @param func Function whose code bounds apply.
+/// @param pc First word to inspect.
+/// @param words Required contiguous word count.
+/// @param site Operation name included in a trap.
+/// @return `true` when the entire word range is available.
 bool BytecodeVM::ensureWordsAvailable(const BytecodeFunction &func,
                                       uint32_t pc,
                                       uint32_t words,
@@ -1359,6 +1491,10 @@ bool BytecodeVM::ensureWordsAvailable(const BytecodeFunction &func,
 
 /// @brief Verifier guard: trap unless branch @p target is a valid code offset
 ///        in @p func.
+/// @param func Function whose code bounds apply.
+/// @param target Absolute target program counter.
+/// @param site Operation name included in a trap.
+/// @return `true` when @p target is within the code stream.
 bool BytecodeVM::ensureBranchTarget(const BytecodeFunction &func,
                                     uint32_t target,
                                     const char *site) {
@@ -1372,6 +1508,11 @@ bool BytecodeVM::ensureBranchTarget(const BytecodeFunction &func,
 ///        operand stack would underflow (too few inputs) or overflow the
 ///        frame's reserved depth. Run before executing each instruction in
 ///        untrusted mode so malformed bytecode cannot corrupt the stack.
+/// @param frame Current call frame and its declared stack limit.
+/// @param sp Current operand stack pointer.
+/// @param instr Encoded instruction to validate.
+/// @param site Dispatch implementation name included in a trap.
+/// @return `true` when the instruction's stack preconditions hold.
 bool BytecodeVM::ensureStackForInstruction(const BCFrame &frame,
                                            const BCSlot *sp,
                                            uint32_t instr,
@@ -1609,6 +1750,11 @@ bool BytecodeVM::ensureStackForInstruction(const BCFrame &frame,
 
 /// @brief Verifier guard: trap unless the operand-stack depth at a call site
 ///        exactly equals the callee's declared parameter count.
+/// @param func Candidate callee.
+/// @param caller Current caller frame, or null for an entry call.
+/// @param sp Stack pointer after arguments have been pushed.
+/// @param site Call path included in a trap.
+/// @return `true` when the call has exactly the declared number of arguments.
 bool BytecodeVM::ensureCallArity(const BytecodeFunction *func,
                                  const BCFrame *caller,
                                  const BCSlot *sp,
@@ -1631,6 +1777,10 @@ bool BytecodeVM::ensureCallArity(const BytecodeFunction *func,
 /// @brief Verifier guard: validate the callee's frame metadata (locals ≥
 ///        params) and that pushing its frame won't exceed stack limits,
 ///        before a new BCFrame is created.
+/// @param func Candidate callee.
+/// @param sp Stack pointer after arguments have been pushed.
+/// @param site Call path included in a trap.
+/// @return `true` when the frame fits in the fixed value-stack allocation.
 bool BytecodeVM::ensureFrameFootprint(const BytecodeFunction *func,
                                       const BCSlot *sp,
                                       const char *site) {
@@ -1654,6 +1804,8 @@ bool BytecodeVM::ensureFrameFootprint(const BytecodeFunction *func,
 
 /// @brief Execute the named function with @p args; traps if no module is
 ///        loaded or the name is unknown. Convenience over the pointer overload.
+/// @param funcName Exact name in the loaded module's function index.
+/// @param args Borrowed argument bits; the callee receives them as non-owning locals.
 /// @return The function's return slot (default-constructed on trap).
 BCSlot BytecodeVM::exec(const std::string &funcName, const std::vector<BCSlot> &args) {
     if (!module_) {
@@ -1678,6 +1830,9 @@ BCSlot BytecodeVM::exec(const std::string &funcName, const std::vector<BCSlot> &
 ///          runtime handlers can re-enter bytecode), resets execution state,
 ///          pushes @p args as the entry frame's initial locals, runs to
 ///          completion, and returns the result slot (default on trap).
+/// @param func Function owned by the currently loaded module.
+/// @param args Argument slots; count must equal `func->numParams`.
+/// @return Return slot on a clean value-returning halt, otherwise a zeroed slot.
 BCSlot BytecodeVM::exec(const BytecodeFunction *func, const std::vector<BCSlot> &args) {
     registerUnifiedVmRuntimeHandlers();
     if (!module_) {
@@ -1750,6 +1905,13 @@ BCSlot BytecodeVM::exec(const BytecodeFunction *func, const std::vector<BCSlot> 
 }
 
 /// @brief Invoke a void bytecode function without resetting the active VM.
+/// @details When called during bytecode execution, suspends the caller frame,
+///          executes the callback to a depth boundary, and restores the prior
+///          stack pointer and VM state. With no active frame it delegates to
+///          the top-level @ref exec path.
+/// @param func Void-returning callback in the loaded module.
+/// @param args Callback arguments; count must equal `func->numParams`.
+/// @return `true` on normal callback completion; `false` after a trap.
 bool BytecodeVM::invokeVoidReentrant(const BytecodeFunction *func,
                                      const std::vector<BCSlot> &args) {
     registerUnifiedVmRuntimeHandlers();
@@ -1825,6 +1987,13 @@ bool BytecodeVM::invokeVoidReentrant(const BytecodeFunction *func,
 }
 
 /// @brief Invoke a value-returning bytecode function without resetting the active VM.
+/// @details Preserves the suspended caller's stack and interpreter state while
+///          running the callback. The callback's result is copied out before
+///          its temporary operand slot is discarded.
+/// @param func Value-returning callback in the loaded module.
+/// @param args Callback arguments; count must equal `func->numParams`.
+/// @param out Optional destination initialized to a zeroed slot before execution.
+/// @return `true` on normal completion; `false` after a trap.
 bool BytecodeVM::invokeValueReentrant(const BytecodeFunction *func,
                                       const std::vector<BCSlot> &args,
                                       BCSlot *out) {
@@ -3365,8 +3534,11 @@ void BytecodeVM::run() {
     }
 }
 
-/// @brief Call a bytecode function, setting up a new stack frame.
 /// @brief Enter a function frame with arguments already pushed on the operand stack.
+/// @details Validates arity and frame footprint, turns the argument slots into
+///          locals, initializes remaining locals, and publishes the new frame.
+/// @param func Callee in the loaded module.
+/// @param site Call path included in validation traps.
 void BytecodeVM::enterCallFrame(const BytecodeFunction *func, const char *site) {
     if (!ensureFrameFootprint(func, sp_, site))
         return;
@@ -3432,6 +3604,9 @@ void BytecodeVM::call(const BytecodeFunction *func) {
 }
 
 /// @brief Enter a callback frame while a native runtime call is suspended.
+/// @param func Callback whose arguments are already on the operand stack.
+/// @details Uses the same frame construction as @ref call but labels failures
+///          as re-entrant callback setup errors.
 void BytecodeVM::callReentrant(const BytecodeFunction *func) {
     if (callStack_.size() >= kMaxCallDepth) {
         trap(TrapKind::StackOverflow, "call stack overflow");
@@ -3470,6 +3645,8 @@ bool BytecodeVM::popFrame() {
 /// @brief Raise a trap, halting execution with an error.
 /// @param kind The type of error that occurred.
 /// @param message Human-readable description of the error.
+/// @details Captures source-aware diagnostic text, releases transient owned
+///          strings, clears frames and handlers, and leaves globals intact.
 void BytecodeVM::trap(TrapKind kind, const char *message) {
     if (!(pendingTrapErrorCode_ && trapKind_ == kind))
         currentErrorCode_ = defaultBytecodeTrapErrorCode(kind);
@@ -3480,6 +3657,9 @@ void BytecodeVM::trap(TrapKind kind, const char *message) {
 }
 
 /// @brief Check for signed addition overflow.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param result Receives the mathematical sum when representable.
 /// @return true if overflow would occur, false if safe.
 /// Uses compiler builtins when available for efficiency.
 bool BytecodeVM::addOverflow(int64_t a, int64_t b, int64_t &result) {
@@ -3491,6 +3671,9 @@ bool BytecodeVM::addOverflow(int64_t a, int64_t b, int64_t &result) {
 }
 
 /// @brief Check for signed subtraction overflow.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param result Receives the mathematical difference when representable.
 /// @return true if overflow would occur, false if safe.
 bool BytecodeVM::subOverflow(int64_t a, int64_t b, int64_t &result) {
     const auto semantic = il::semantics::checkedSub(a, b, il::semantics::IntWidth::I64);
@@ -3501,6 +3684,9 @@ bool BytecodeVM::subOverflow(int64_t a, int64_t b, int64_t &result) {
 }
 
 /// @brief Check for signed multiplication overflow.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param result Receives the mathematical product when representable.
 /// @return true if overflow would occur, false if safe.
 bool BytecodeVM::mulOverflow(int64_t a, int64_t b, int64_t &result) {
     const auto semantic = il::semantics::checkedMul(a, b, il::semantics::IntWidth::I64);
@@ -3511,6 +3697,10 @@ bool BytecodeVM::mulOverflow(int64_t a, int64_t b, int64_t &result) {
 }
 
 /// @brief Signed 64-bit division with trap detection.
+/// @param a Dividend.
+/// @param b Divisor.
+/// @param result Receives the quotient on success.
+/// @param fault Receives the failure category, or `None` on success.
 /// @return true and sets @p result; false and sets @p fault to DivideByZero
 ///         (b==0) or Overflow (INT64_MIN / -1). Backs SDIV_I64[_CHK].
 bool BytecodeVM::safeSignedDiv(int64_t a, int64_t b, int64_t &result, TrapKind &fault) const {
@@ -3525,6 +3715,10 @@ bool BytecodeVM::safeSignedDiv(int64_t a, int64_t b, int64_t &result, TrapKind &
 }
 
 /// @brief Unsigned 64-bit division (operands reinterpreted as uint64).
+/// @param a Dividend bit pattern.
+/// @param b Divisor bit pattern.
+/// @param result Receives the quotient bit pattern on success.
+/// @param fault Receives `DivideByZero` on failure, or `None` on success.
 /// @return false with @p fault = DivideByZero when b==0, else true.
 bool BytecodeVM::safeUnsignedDiv(int64_t a, int64_t b, int64_t &result, TrapKind &fault) const {
     const auto semantic = il::semantics::unsignedDiv(a, b);
@@ -3539,6 +3733,10 @@ bool BytecodeVM::safeUnsignedDiv(int64_t a, int64_t b, int64_t &result, TrapKind
 
 /// @brief Signed 64-bit remainder; traps DivideByZero on b==0 and defines the
 ///        INT64_MIN % -1 corner as 0 (where the hardware op would fault).
+/// @param a Dividend.
+/// @param b Divisor.
+/// @param result Receives the remainder on success.
+/// @param fault Receives `DivideByZero` on failure, or `None` on success.
 bool BytecodeVM::safeSignedRem(int64_t a, int64_t b, int64_t &result, TrapKind &fault) const {
     const auto semantic = il::semantics::signedRem(a, b, il::semantics::IntWidth::I64);
     if (!semantic.ok()) {
@@ -3551,6 +3749,10 @@ bool BytecodeVM::safeSignedRem(int64_t a, int64_t b, int64_t &result, TrapKind &
 }
 
 /// @brief Unsigned 64-bit remainder; traps DivideByZero on b==0.
+/// @param a Dividend bit pattern.
+/// @param b Divisor bit pattern.
+/// @param result Receives the remainder bit pattern on success.
+/// @param fault Receives `DivideByZero` on failure, or `None` on success.
 bool BytecodeVM::safeUnsignedRem(int64_t a, int64_t b, int64_t &result, TrapKind &fault) const {
     const auto semantic = il::semantics::unsignedRem(a, b);
     if (!semantic.ok()) {
@@ -3563,6 +3765,10 @@ bool BytecodeVM::safeUnsignedRem(int64_t a, int64_t b, int64_t &result, TrapKind
 }
 
 /// @brief Checked signed negation; traps Overflow on -INT64_MIN.
+/// @param value Operand to negate.
+/// @param result Receives the negated value on success.
+/// @param fault Receives `Overflow` on failure, or `None` on success.
+/// @return `true` when @p value is safely negated.
 bool BytecodeVM::safeNegate(int64_t value, int64_t &result, TrapKind &fault) const {
     const auto semantic = il::semantics::negate(value);
     if (!semantic.ok()) {
@@ -3576,33 +3782,51 @@ bool BytecodeVM::safeNegate(int64_t value, int64_t &result, TrapKind &fault) con
 
 /// @brief Two's-complement wrapping add (no UB): computes in uint64 and
 ///        bit-copies back. Backs the non-checked ADD_I64.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @return Wrapped sum.
 int64_t BytecodeVM::wrappingAdd(int64_t a, int64_t b) noexcept {
     return il::semantics::wrapAdd(a, b);
 }
 
 /// @brief Two's-complement wrapping subtract (no UB).
+/// @param a Left operand.
+/// @param b Right operand.
+/// @return Wrapped difference.
 int64_t BytecodeVM::wrappingSub(int64_t a, int64_t b) noexcept {
     return il::semantics::wrapSub(a, b);
 }
 
 /// @brief Two's-complement wrapping multiply (no UB).
+/// @param a Left operand.
+/// @param b Right operand.
+/// @return Wrapped product.
 int64_t BytecodeVM::wrappingMul(int64_t a, int64_t b) noexcept {
     return il::semantics::wrapMul(a, b);
 }
 
 /// @brief Logical left shift with the shift amount masked to 0–63 (defined
 ///        for any shift; no UB from over-shift).
+/// @param value Bit pattern to shift.
+/// @param shift Shift count; only its low six bits are used.
+/// @return Shifted bit pattern represented as `int64_t`.
 int64_t BytecodeVM::wrappingShl(int64_t value, int64_t shift) noexcept {
     return il::semantics::shiftLeft(value, shift);
 }
 
 /// @brief Arithmetic (sign-extending) right shift, amount masked to 0–63 and
 ///        sign replication done manually so behavior is portable/defined.
+/// @param value Signed bit pattern to shift.
+/// @param shift Shift count; only its low six bits are used.
+/// @return Sign-extended shifted value.
 int64_t BytecodeVM::arithmeticShr(int64_t value, int64_t shift) noexcept {
     return il::semantics::arithmeticShiftRight(value, shift);
 }
 
 /// @brief Convert a double to i64 by truncation toward zero (F64_TO_I64_CHK).
+/// @param value Floating-point input.
+/// @param result Receives the converted integer on success.
+/// @param fault Receives `InvalidCast`, `Overflow`, or `None`.
 /// @return false with @p fault = InvalidCast (NaN/Inf) or Overflow (outside
 ///         [-2^63, 2^63)); otherwise true.
 bool BytecodeVM::truncF64ToI64(double value, int64_t &result, TrapKind &fault) noexcept {
@@ -3618,6 +3842,10 @@ bool BytecodeVM::truncF64ToI64(double value, int64_t &result, TrapKind &fault) n
 
 /// @brief Convert a double to i64 with round-to-nearest ties-to-even, same
 ///        InvalidCast/Overflow trapping as @ref truncF64ToI64.
+/// @param value Floating-point input.
+/// @param result Receives the rounded integer on success.
+/// @param fault Receives `InvalidCast`, `Overflow`, or `None`.
+/// @return `true` when @p value has an in-range finite result.
 bool BytecodeVM::roundF64ToI64(double value, int64_t &result, TrapKind &fault) noexcept {
     const auto semantic = il::semantics::fpToSiRte(value, il::semantics::IntWidth::I64);
     if (!semantic.ok()) {
@@ -3632,6 +3860,10 @@ bool BytecodeVM::roundF64ToI64(double value, int64_t &result, TrapKind &fault) n
 /// @brief Convert a double to u64 (round-to-nearest), returning the bit
 ///        pattern in @p result. Traps InvalidCast on NaN/Inf or a negative
 ///        value, Overflow at/above 2^64 (F64_TO_U64_CHK).
+/// @param value Floating-point input.
+/// @param result Receives the unsigned result's bit pattern.
+/// @param fault Receives `InvalidCast`, `Overflow`, or `None`.
+/// @return `true` when @p value has an in-range finite result.
 bool BytecodeVM::roundF64ToU64Bits(double value, int64_t &result, TrapKind &fault) noexcept {
     const auto semantic = il::semantics::fpToUiRte(value, il::semantics::IntWidth::I64);
     if (!semantic.ok()) {
@@ -3646,6 +3878,9 @@ bool BytecodeVM::roundF64ToU64Bits(double value, int64_t &result, TrapKind &faul
 /// @brief Raise a trap, preferring an in-bytecode handler: try dispatchTrap
 ///        (transfer to an EH handler block) and, if none catches it, fall
 ///        back to a hard @ref trap that unwinds the VM.
+/// @param kind Trap category.
+/// @param message Borrowed diagnostic text copied into VM trap state as needed.
+/// @param errorCode Runtime-compatible error code exposed to handlers.
 /// @return true if a handler took over (execution continues), else false.
 bool BytecodeVM::trapOrDispatch(TrapKind kind, const char *message, int32_t errorCode) {
     if (dispatchTrap(kind, errorCode, message))
@@ -3656,6 +3891,9 @@ bool BytecodeVM::trapOrDispatch(TrapKind kind, const char *message, int32_t erro
 
 /// @brief Bounds-check a local-slot index against the current frame; on
 ///        failure raises InvalidOpcode via @ref trapOrDispatch.
+/// @param idx Candidate local index.
+/// @param site Operation name included in the trap message.
+/// @return `true` when a current frame exists and @p idx is valid.
 bool BytecodeVM::ensureLocalIndex(uint32_t idx, const char *site) {
     if (fp_ && fp_->func && idx < fp_->func->numLocals)
         return true;
@@ -3669,6 +3907,10 @@ bool BytecodeVM::ensureLocalIndex(uint32_t idx, const char *site) {
 ///          guard because bytecode can interoperate with runtime objects. VM-owned
 ///          storage is stricter: accesses overlapping global slots or the alloca
 ///          arena must fit completely inside the corresponding live range.
+/// @param ptr First byte to access.
+/// @param bytes Requested width; zero is conservatively treated as one byte.
+/// @param site Operation name included in a trap.
+/// @return `true` when the range is permitted.
 bool BytecodeVM::ensureMemoryAccess(const void *ptr, size_t bytes, const char *site) {
     if (!ptr || reinterpret_cast<uintptr_t>(ptr) < 4096) {
         trapOrDispatch(TrapKind::NullPointer,
@@ -3717,6 +3959,12 @@ bool BytecodeVM::ensureMemoryAccess(const void *ptr, size_t bytes, const char *s
 /// @brief Compute a relative branch target without wrapping unsigned PCs.
 /// @details The compiler uses origins that are already at the post-opcode PC for
 ///          compact branches and at the offset-word PC for raw offset operands.
+/// @param func Function whose code bounds apply.
+/// @param basePc Signed-offset origin.
+/// @param offset Encoded relative displacement.
+/// @param target Receives the checked absolute program counter.
+/// @param site Operation name included in a trap.
+/// @return `true` when arithmetic and code bounds are valid.
 bool BytecodeVM::computeRelativeTarget(const BytecodeFunction &func,
                                        uint32_t basePc,
                                        int32_t offset,
@@ -3735,6 +3983,11 @@ bool BytecodeVM::computeRelativeTarget(const BytecodeFunction &func,
 }
 
 /// @brief Add a signed byte offset to @p base with null and wraparound checks.
+/// @param base Base address; null is valid only with a zero offset.
+/// @param offset Signed byte displacement.
+/// @param result Receives the adjusted address on success.
+/// @param site Operation name included in a trap.
+/// @return `true` when the address calculation does not wrap.
 bool BytecodeVM::addPointerOffset(void *base, int64_t offset, void *&result, const char *site) {
     result = nullptr;
     if (!base) {
@@ -3778,6 +4031,10 @@ bool BytecodeVM::addPointerOffset(void *base, int64_t offset, void *&result, con
 ///          overflow or arena exhaustion (16 MiB cap). The arena was reserved
 ///          at construction so it never reallocates — see the ctor note —
 ///          keeping previously handed-out alloca pointers valid.
+/// @param requestedSize Unaligned byte count requested by bytecode.
+/// @param ptr Receives the zero-initialized allocation.
+/// @param site Operation name included in a trap.
+/// @return `true` when allocation succeeds.
 bool BytecodeVM::allocateAlloca(int64_t requestedSize, void *&ptr, const char *site) {
     ptr = nullptr;
     if (requestedSize < 0) {
@@ -3854,6 +4111,9 @@ uint32_t BytecodeVM::currentFaultPc() const {
 
 /// @brief Block label associated with @p pc via the function's label table
 ///        (empty if unavailable) — used in trap diagnostics.
+/// @param func Function containing @p pc.
+/// @param pc Program counter to resolve.
+/// @return Copied block label, or an empty string.
 std::string BytecodeVM::currentBlockLabelForPc(const BytecodeFunction *func, uint32_t pc) const {
     if (!func || pc >= func->blockLabelTable.size())
         return {};
@@ -3862,6 +4122,9 @@ std::string BytecodeVM::currentBlockLabelForPc(const BytecodeFunction *func, uin
 
 /// @brief Resolve the source file path for @p pc from the function's
 ///        source-file table (empty if unknown) — used in trap diagnostics.
+/// @param func Function containing @p pc.
+/// @param pc Program counter to resolve.
+/// @return Copied source path, or an empty string.
 std::string BytecodeVM::currentSourcePathForPc(const BytecodeFunction *func, uint32_t pc) const {
     if (!module_ || !func)
         return {};
@@ -3885,6 +4148,10 @@ std::string BytecodeVM::currentSourcePathForPc(const BytecodeFunction *func, uin
 /// @brief Build the human-readable trap report string: trap kind name,
 ///        optional error code and message, and the faulting function /
 ///        block / source location resolved from the current frame.
+/// @param kind Trap category to format.
+/// @param errorCode Runtime-compatible numeric code.
+/// @param message Optional detail text.
+/// @return Complete diagnostic string suitable for `trapMessage_`.
 std::string BytecodeVM::formatTrapMessage(TrapKind kind,
                                           int32_t errorCode,
                                           const char *message) const {
@@ -3957,6 +4224,10 @@ void BytecodeVM::popExceptionHandler() {
 /// If found, restores the stack to the handler's saved state, pushes
 /// error information onto the operand stack, and transfers control
 /// to the handler. Returns false if the trap propagates to the top level.
+/// @param kind Trap category exposed to the handler.
+/// @param errorCode Numeric error code exposed to `ERR_GET_CODE`.
+/// @param message Optional diagnostic text captured in the trap record.
+/// @return `true` when a matching live handler receives control.
 bool BytecodeVM::dispatchTrap(TrapKind kind, int32_t errorCode, const char *message) {
     clearTrapRecord();
     trapKind_ = kind;
@@ -4054,6 +4325,7 @@ bool BytecodeVM::dispatchTrap(TrapKind kind, int32_t errorCode, const char *mess
 ///        the saved trap record, restore the captured value stack / call /
 ///        EH state, and continue at the faulting instruction (@p useNextPc
 ///        false) or the one after it (RESUME_NEXT).
+/// @param useNextPc Selects the post-fault PC rather than the faulting PC.
 /// @return false if the token does not match a valid trap record (the caller
 ///         then treats it as a hard error).
 bool BytecodeVM::resumeTrap(bool useNextPc) {
@@ -4123,6 +4395,7 @@ void BytecodeVM::clearBreakpoint(const std::string &funcName, uint32_t pc) {
 }
 
 /// @brief Clear all breakpoints in all functions.
+/// @post `breakpoints_` is empty.
 void BytecodeVM::clearAllBreakpoints() {
     breakpoints_.clear();
 }
@@ -4153,6 +4426,9 @@ bool BytecodeVM::checkBreakpoint() {
 /// @details The callback contract returns true to continue and false to pause.
 ///          Without a callback, a breakpoint or single-step request pauses by
 ///          default; VMState::Halted is used as the current pause state.
+/// @param isBreakpoint Whether the pause was caused by a registered breakpoint.
+/// @param pc Program counter reported to the debugger.
+/// @return `true` when execution should pause.
 bool BytecodeVM::requestDebugPause(bool isBreakpoint, uint32_t pc) {
     if (!fp_ || !fp_->func)
         return false;
@@ -4167,7 +4443,9 @@ bool BytecodeVM::requestDebugPause(bool isBreakpoint, uint32_t pc) {
 
 namespace {
 
-/// Payload for spawning a new bytecode VM thread.
+/// @brief Self-contained state for executing a bytecode entry on a worker thread.
+/// @details `moduleOwner` keeps the snapshot backing `module` and `entry`
+///          alive; the worker consumes and deletes the payload.
 struct BytecodeThreadPayload {
     std::shared_ptr<const BytecodeModule> moduleOwner{};
     const BytecodeModule *module = nullptr;
@@ -4177,7 +4455,9 @@ struct BytecodeThreadPayload {
     BytecodeVM::ExecutionEnvironment environment;
 };
 
-/// Payload for bytecode-backed Async.Run.
+/// @brief Self-contained state for executing `Async.Run` on a bytecode worker.
+/// @details The worker settles `promise`, releases transferred resources, and
+///          deletes the payload on every completion path.
 struct BytecodeAsyncPayload {
     std::shared_ptr<const BytecodeModule> moduleOwner{};
     const BytecodeModule *module = nullptr;
@@ -4190,6 +4470,8 @@ struct BytecodeAsyncPayload {
 
 /// @brief Drop a worker thread/async payload's owned argument object (no-op
 ///        if not owned or null).
+/// @param arg Runtime object passed to the worker.
+/// @param ownsArg Whether the worker owns a reference to @p arg.
 static void releaseWorkerArg(void *arg, bool ownsArg) {
     if (!ownsArg || !arg)
         return;
@@ -4201,6 +4483,10 @@ static void releaseWorkerArg(void *arg, bool ownsArg) {
 /// @details If the worker returned its own owned argument object, ownership is
 ///          transferred to the promise (no double free); otherwise the owned
 ///          argument is released and the result is set as owned.
+/// @param promise Promise to settle; must be valid.
+/// @param result Worker result object, possibly identical to `*ownedArg`.
+/// @param ownedArg Address of the payload's argument pointer.
+/// @param ownsArg Address of the payload's ownership flag.
 static void completeAsyncPromiseWithResult(void *promise,
                                            void *result,
                                            void **ownedArg,
@@ -4221,6 +4507,10 @@ static void completeAsyncPromiseWithResult(void *promise,
 
 /// @brief Settle an Async.Run promise with an @p error, first releasing any
 ///        owned worker argument so a failed task cannot leak it.
+/// @param promise Promise to reject; must be valid.
+/// @param error Runtime string passed to the promise error channel.
+/// @param ownedArg Address of the payload's argument pointer.
+/// @param ownsArg Address of the payload's ownership flag.
 static void completeAsyncPromiseWithError(void *promise,
                                           rt_string error,
                                           void **ownedArg,
@@ -4253,6 +4543,9 @@ static void publishAsyncFutureResult(void *result, void *future) {
 ///          environment, installs the active-VM/module thread context, and
 ///          invokes @c payload->entry with its argument. On failure writes a
 ///          message into @p errorBuf.
+/// @param payload Owned worker payload; deleted before return.
+/// @param errorBuf Optional output buffer for a null-terminated failure message.
+/// @param errorBufSize Capacity of @p errorBuf in bytes.
 /// @return true on clean completion, false on error (message in @p errorBuf).
 static bool runBytecodeThreadPayload(BytecodeThreadPayload *payload,
                                      char *errorBuf,
@@ -4301,14 +4594,19 @@ static bool runBytecodeThreadPayload(BytecodeThreadPayload *payload,
     return true;
 }
 
-/// Thread entry trampoline for bytecode VM threads.
+/// @brief C ABI trampoline for an ordinary bytecode-backed thread.
+/// @param raw Owned `BytecodeThreadPayload`; consumed by the worker.
+/// @details Aborts the runtime if bytecode setup or execution traps.
 extern "C" void bytecode_thread_entry_trampoline(void *raw) {
     char error[512];
     if (!runBytecodeThreadPayload(static_cast<BytecodeThreadPayload *>(raw), error, sizeof(error)))
         rt_abort(error[0] ? error : "Thread.Start: trapped bytecode worker");
 }
 
-/// Safe thread entry trampoline for bytecode VM threads.
+/// @brief C ABI trampoline for a trap-recoverable bytecode-backed thread.
+/// @param raw Owned `BytecodeThreadPayload`; consumed by the worker.
+/// @details Avoids live C++ objects across the runtime's `setjmp`/`longjmp`
+///          recovery boundary and re-raises failures through `rt_trap`.
 extern "C" void bytecode_thread_safe_entry_trampoline(void *raw) {
     // rt_thread_start_safe uses setjmp/longjmp for recovery, so this trampoline
     // must not hold live C++ objects across rt_trap().
@@ -4317,8 +4615,13 @@ extern "C" void bytecode_thread_safe_entry_trampoline(void *raw) {
         rt_trap(error[0] ? error : "Thread.StartSafe: trapped bytecode worker");
 }
 
-/// Resolve a bytecode function by pointer value.
-/// The bytecode VM uses tagged function pointers: high bit set, lower bits are function index.
+/// @brief Resolve a tagged or legacy raw bytecode function pointer.
+/// @details Tagged pointers use the high bit as a discriminator and store the
+///          function-table index in the remaining bits. Raw table-element
+///          pointers are accepted for compatibility.
+/// @param module Module whose function table owns the entry.
+/// @param entry Opaque runtime function value.
+/// @return Borrowed function pointer, or null when @p entry is invalid.
 static const BytecodeFunction *resolveBytecodeEntry(const BytecodeModule *module, void *entry) {
     if (!entry || !module)
         return nullptr;
@@ -4346,7 +4649,7 @@ static const BytecodeFunction *resolveBytecodeEntry(const BytecodeModule *module
     return nullptr;
 }
 
-/// Payload for standard VM thread spawning (duplicate of ThreadsRuntime.cpp)
+/// @brief Owned state passed to a tree-walker VM thread trampoline.
 struct VmThreadStartPayload {
     const il::core::Module *module = nullptr;
     std::shared_ptr<il::vm::VM::ProgramState> program;
@@ -4356,6 +4659,7 @@ struct VmThreadStartPayload {
     bool ownsArg = false;
 };
 
+/// @brief Owned state passed to a tree-walker `Async.Run` trampoline.
 struct VmAsyncRunPayload {
     const il::core::Module *module = nullptr;
     std::shared_ptr<il::vm::VM::ProgramState> program;
@@ -4366,6 +4670,7 @@ struct VmAsyncRunPayload {
     void *promise = nullptr;
 };
 
+/// @brief Persistent tree-walker callback state registered with an HTTP server.
 struct VmHttpHandlerPayload {
     const il::core::Module *module = nullptr;
     std::shared_ptr<il::vm::VM::ProgramState> program;
@@ -4373,6 +4678,7 @@ struct VmHttpHandlerPayload {
     const il::core::Function *entry = nullptr;
 };
 
+/// @brief Persistent bytecode callback state registered with an HTTP server.
 struct BytecodeHttpHandlerPayload {
     std::shared_ptr<const BytecodeModule> moduleOwner{};
     const BytecodeModule *module = nullptr;
@@ -4412,7 +4718,10 @@ static const BytecodeFunction *resolveClonedBytecodeEntry(
     return module->findFunction(originalEntry->name);
 }
 
-/// Standard VM thread entry trampoline
+/// @brief C ABI trampoline that executes a tree-walker IL thread entry.
+/// @param raw Owned `VmThreadStartPayload`; always released before return.
+/// @details Converts VM traps and C++ exceptions to runtime aborts after
+///          releasing the argument and retained external-function registry.
 extern "C" void vm_thread_entry_trampoline_bc(void *raw) {
     VmThreadStartPayload *payload = static_cast<VmThreadStartPayload *>(raw);
     if (!payload || !payload->module || !payload->entry) {
@@ -4468,7 +4777,10 @@ extern "C" void vm_thread_entry_trampoline_bc(void *raw) {
     delete payload;
 }
 
-/// Standard VM safe thread entry trampoline.
+/// @brief Trap-recoverable C ABI trampoline for a tree-walker IL thread entry.
+/// @param raw Owned `VmThreadStartPayload`; always released before return.
+/// @details Converts VM traps and C++ exceptions to `rt_trap`, allowing the
+///          safe thread runtime to capture them.
 extern "C" void vm_thread_safe_entry_trampoline_bc(void *raw) {
     VmThreadStartPayload *payload = static_cast<VmThreadStartPayload *>(raw);
     if (!payload || !payload->module || !payload->entry) {
@@ -4524,7 +4836,10 @@ extern "C" void vm_thread_safe_entry_trampoline_bc(void *raw) {
     delete payload;
 }
 
-/// Resolve IL function pointer to module function
+/// @brief Resolve an opaque raw pointer to an IL function owned by @p module.
+/// @param module Module whose function table is searched.
+/// @param entry Candidate raw function address.
+/// @return Borrowed matching function, or null.
 static const il::core::Function *resolveILEntry(const il::core::Module &module, void *entry) {
     if (!entry)
         return nullptr;
@@ -4536,7 +4851,10 @@ static const il::core::Function *resolveILEntry(const il::core::Module &module, 
     return nullptr;
 }
 
-/// Validate thread entry signature for standard VM
+/// @brief Validate the tree-walker `Thread.Start` callback signature.
+/// @param fn Candidate entry function.
+/// @details Traps unless @p fn returns `Unit` and accepts zero parameters or
+///          one pointer parameter.
 static void validateEntrySignature(const il::core::Function &fn) {
     using Kind = il::core::Type::Kind;
     if (fn.retType.kind != Kind::Void) {
@@ -4553,6 +4871,7 @@ static void validateEntrySignature(const il::core::Function &fn) {
 
 /// @brief Trap unless IL function @p fn matches the Async.Run entry shape
 ///        (ptr return, single ptr parameter).
+/// @param fn Candidate tree-walker callback.
 static void validateAsyncEntrySignature(const il::core::Function &fn) {
     using Kind = il::core::Type::Kind;
     if (fn.retType.kind != Kind::Ptr) {
@@ -4567,6 +4886,7 @@ static void validateAsyncEntrySignature(const il::core::Function &fn) {
 
 /// @brief Trap unless IL function @p fn matches the HttpServer.BindHandler
 ///        entry shape (void return, two ptr parameters).
+/// @param fn Candidate tree-walker callback.
 static void validateHttpHandlerSignature(const il::core::Function &fn) {
     using Kind = il::core::Type::Kind;
     if (fn.retType.kind != Kind::Void || fn.params.size() != 2 ||
@@ -4578,6 +4898,7 @@ static void validateHttpHandlerSignature(const il::core::Function &fn) {
 
 /// @brief Trap unless IL function @p fn matches the HttpsServer.BindHandler
 ///        entry shape (void return, two ptr parameters).
+/// @param fn Candidate tree-walker callback.
 static void validateHttpsHandlerSignature(const il::core::Function &fn) {
     using Kind = il::core::Type::Kind;
     if (fn.retType.kind != Kind::Void || fn.params.size() != 2 ||
@@ -4589,6 +4910,7 @@ static void validateHttpsHandlerSignature(const il::core::Function &fn) {
 
 /// @brief Trap unless bytecode function @p fn is a valid Thread.Start entry
 ///        (no return value; zero or one parameter).
+/// @param fn Candidate bytecode callback.
 static void validateBytecodeThreadEntrySignature(const BytecodeFunction &fn) {
     if (fn.hasReturn) {
         rt_trap("Thread.Start: invalid bytecode entry signature");
@@ -4602,6 +4924,7 @@ static void validateBytecodeThreadEntrySignature(const BytecodeFunction &fn) {
 
 /// @brief Trap unless bytecode function @p fn is a valid Async.Run entry
 ///        (returns a value; exactly one parameter).
+/// @param fn Candidate bytecode callback.
 static void validateBytecodeAsyncEntrySignature(const BytecodeFunction &fn) {
     if (!fn.hasReturn || fn.numParams != 1) {
         rt_trap("Async.Run: invalid bytecode entry signature");
@@ -4611,6 +4934,7 @@ static void validateBytecodeAsyncEntrySignature(const BytecodeFunction &fn) {
 
 /// @brief Trap unless bytecode function @p fn is a valid HttpServer
 ///        BindHandler entry (no return value; exactly two parameters).
+/// @param fn Candidate bytecode callback.
 static void validateBytecodeHttpHandlerSignature(const BytecodeFunction &fn) {
     if (fn.hasReturn || fn.numParams != 2) {
         rt_trap("HttpServer.BindHandler: invalid bytecode entry signature");
@@ -4620,6 +4944,7 @@ static void validateBytecodeHttpHandlerSignature(const BytecodeFunction &fn) {
 
 /// @brief Trap unless bytecode function @p fn is a valid HttpsServer
 ///        BindHandler entry (no return value; exactly two parameters).
+/// @param fn Candidate bytecode callback.
 static void validateBytecodeHttpsHandlerSignature(const BytecodeFunction &fn) {
     if (fn.hasReturn || fn.numParams != 2) {
         rt_trap("HttpsServer.BindHandler: invalid bytecode entry signature");
@@ -4627,6 +4952,9 @@ static void validateBytecodeHttpsHandlerSignature(const BytecodeFunction &fn) {
     }
 }
 
+/// @brief Thread-local dispatch context used by native Game3D callback trampolines.
+/// @details Exactly one VM/function pair is populated for each callback kind.
+///          `previous` permits nested game loops to restore an outer context.
 struct UnifiedGame3DCallbackScope {
     il::vm::VM *stdVm = nullptr;
     BytecodeVM *bcVm = nullptr;
@@ -4637,8 +4965,13 @@ struct UnifiedGame3DCallbackScope {
     UnifiedGame3DCallbackScope *previous = nullptr;
 };
 
+/// @brief Active Game3D callback context on the current thread.
 thread_local UnifiedGame3DCallbackScope *tlsUnifiedGame3DScope = nullptr;
 
+/// @brief Validate a tree-walker Game3D update callback.
+/// @param fn Candidate callback.
+/// @param api Runtime API name prefixed to the trap message.
+/// @details Traps unless the signature is `(Float) -> Unit`.
 static void validateGame3DUpdateSignature(const il::core::Function &fn, const char *api) {
     using Kind = il::core::Type::Kind;
     if (fn.retType.kind == Kind::Void && fn.params.size() == 1 &&
@@ -4650,6 +4983,10 @@ static void validateGame3DUpdateSignature(const il::core::Function &fn, const ch
     rt_trap(message.c_str());
 }
 
+/// @brief Validate a tree-walker Game3D overlay callback.
+/// @param fn Candidate callback.
+/// @param api Runtime API name prefixed to the trap message.
+/// @details Traps unless the signature is `() -> Unit`.
 static void validateGame3DOverlaySignature(const il::core::Function &fn, const char *api) {
     using Kind = il::core::Type::Kind;
     if (fn.retType.kind == Kind::Void && fn.params.empty())
@@ -4659,6 +4996,11 @@ static void validateGame3DOverlaySignature(const il::core::Function &fn, const c
     rt_trap(message.c_str());
 }
 
+/// @brief Validate a bytecode Game3D update callback.
+/// @param fn Candidate callback.
+/// @param api Runtime API name prefixed to the trap message.
+/// @details Bytecode stores only arity and return-presence metadata, so this
+///          enforces one parameter and no return value.
 static void validateBytecodeGame3DUpdateSignature(const BytecodeFunction &fn, const char *api) {
     if (!fn.hasReturn && fn.numParams == 1)
         return;
@@ -4667,6 +5009,10 @@ static void validateBytecodeGame3DUpdateSignature(const BytecodeFunction &fn, co
     rt_trap(message.c_str());
 }
 
+/// @brief Validate a bytecode Game3D overlay callback.
+/// @param fn Candidate callback.
+/// @param api Runtime API name prefixed to the trap message.
+/// @details Requires zero parameters and no return value.
 static void validateBytecodeGame3DOverlaySignature(const BytecodeFunction &fn, const char *api) {
     if (!fn.hasReturn && fn.numParams == 0)
         return;
@@ -4675,6 +5021,11 @@ static void validateBytecodeGame3DOverlaySignature(const BytecodeFunction &fn, c
     rt_trap(message.c_str());
 }
 
+/// @brief Resolve a Game3D callback in the active tree-walker VM.
+/// @param vm VM whose module is searched.
+/// @param entry Opaque runtime function value.
+/// @param api Runtime API name included in a resolution trap.
+/// @return Borrowed function pointer; traps and returns null if unresolved.
 static const il::core::Function *resolveStdGame3DCallback(il::vm::VM &vm,
                                                           void *entry,
                                                           const char *api) {
@@ -4687,6 +5038,11 @@ static const il::core::Function *resolveStdGame3DCallback(il::vm::VM &vm,
     return fn;
 }
 
+/// @brief Resolve a Game3D callback in the active bytecode module.
+/// @param module Module whose function table is searched.
+/// @param entry Tagged or raw bytecode function value.
+/// @param api Runtime API name included in a resolution trap.
+/// @return Borrowed function pointer; traps and returns null if unresolved.
 static const BytecodeFunction *resolveBytecodeGame3DCallback(const BytecodeModule *module,
                                                              void *entry,
                                                              const char *api) {
@@ -4699,6 +5055,10 @@ static const BytecodeFunction *resolveBytecodeGame3DCallback(const BytecodeModul
     return fn;
 }
 
+/// @brief Native Game3D update trampoline that re-enters the active VM.
+/// @param dt Simulation time step forwarded as the callback's sole argument.
+/// @details Selects the tree-walker or bytecode callback recorded in
+///          `tlsUnifiedGame3DScope` and converts all failures to runtime traps.
 extern "C" void unified_game3d_update_trampoline(double dt) {
     UnifiedGame3DCallbackScope *scope = tlsUnifiedGame3DScope;
     if (!scope) {
@@ -4744,6 +5104,9 @@ extern "C" void unified_game3d_update_trampoline(double dt) {
     rt_trap("Game3D.World3D: invalid VM update callback");
 }
 
+/// @brief Native Game3D overlay trampoline that re-enters the active VM.
+/// @details Invokes the zero-argument callback in `tlsUnifiedGame3DScope` and
+///          converts VM traps or C++ exceptions to runtime traps.
 extern "C" void unified_game3d_overlay_trampoline(void) {
     UnifiedGame3DCallbackScope *scope = tlsUnifiedGame3DScope;
     if (!scope) {
@@ -4784,6 +5147,12 @@ extern "C" void unified_game3d_overlay_trampoline(void) {
 }
 
 template <typename Fn>
+/// @brief Run a native Game3D loop with VM callback context and trap recovery.
+/// @tparam Fn Nullary callable that enters the native game loop.
+/// @param scope Callback dispatch context to publish thread-locally.
+/// @param fn Native loop invocation.
+/// @details Restores the previous callback context and runtime recovery target
+///          before propagating any captured native trap.
 static void invokeUnifiedGame3DLoop(UnifiedGame3DCallbackScope &scope, Fn &&fn) {
     char trapMessage[512] = "";
     int trapped = 0;
@@ -4808,6 +5177,11 @@ static void invokeUnifiedGame3DLoop(UnifiedGame3DCallbackScope &scope, Fn &&fn) 
         rt_trap(trapMessage);
 }
 
+/// @brief Bridge `World3D.run` callbacks for either interpreter backend.
+/// @param args Runtime ABI slots containing `(world, update)`.
+/// @param result Unused void-result storage.
+/// @details Re-enters the active VM when the update is interpreted, otherwise
+///          chains to the previously registered or native handler.
 static void unified_game3d_run_handler(void **args, void *result) {
     (void)result;
     void *world = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -4846,6 +5220,9 @@ static void unified_game3d_run_handler(void **args, void *result) {
     rt_game3d_world_run(world, update);
 }
 
+/// @brief Bridge `World3D.runWithOverlay` update and overlay callbacks.
+/// @param args Runtime ABI slots containing `(world, update, overlay)`.
+/// @param result Unused void-result storage.
 static void unified_game3d_run_with_overlay_handler(void **args, void *result) {
     (void)result;
     void *world = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -4897,6 +5274,9 @@ static void unified_game3d_run_with_overlay_handler(void **args, void *result) {
     rt_game3d_world_run_with_overlay(world, update, overlay);
 }
 
+/// @brief Bridge `World3D.runFixed` callbacks for either interpreter backend.
+/// @param args Runtime ABI slots containing `(world, step, update)`.
+/// @param result Unused void-result storage.
 static void unified_game3d_run_fixed_handler(void **args, void *result) {
     (void)result;
     void *world = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -4938,6 +5318,9 @@ static void unified_game3d_run_fixed_handler(void **args, void *result) {
     rt_game3d_world_run_fixed(world, step, update);
 }
 
+/// @brief Bridge `World3D.runFixedWithOverlay` callbacks for either interpreter.
+/// @param args Runtime ABI slots containing `(world, step, update, overlay)`.
+/// @param result Unused void-result storage.
 static void unified_game3d_run_fixed_with_overlay_handler(void **args, void *result) {
     (void)result;
     void *world = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -4992,6 +5375,9 @@ static void unified_game3d_run_fixed_with_overlay_handler(void **args, void *res
     rt_game3d_world_run_fixed_with_overlay(world, step, update, overlay);
 }
 
+/// @brief Bridge bounded `World3D.runFrames` callbacks for either interpreter.
+/// @param args Runtime ABI slots containing `(world, frames, step, update)`.
+/// @param result Unused void-result storage.
 static void unified_game3d_run_frames_handler(void **args, void *result) {
     (void)result;
     void *world = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -5034,6 +5420,9 @@ static void unified_game3d_run_frames_handler(void **args, void *result) {
     rt_game3d_world_run_frames(world, frames, step, update);
 }
 
+/// @brief Bridge one-shot `World3D.drawOverlay` callbacks for either interpreter.
+/// @param args Runtime ABI slots containing `(world, overlay)`.
+/// @param result Unused void-result storage.
 static void unified_game3d_draw_overlay_handler(void **args, void *result) {
     (void)result;
     void *world = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -5074,7 +5463,13 @@ static void unified_game3d_draw_overlay_handler(void **args, void *result) {
     rt_game3d_world_draw_overlay(world, overlay);
 }
 
-/// Handler for Zanna.Threads.Thread.Start - handles both standard VM and BytecodeVM.
+/// @brief Handle `Zanna.Threads.Thread.Start` for either interpreter backend.
+/// @param args Runtime ABI slots containing `(entry, argument)`.
+/// @param result Optional slot receiving the native thread handle.
+/// @details Resolves and validates an interpreted entry, snapshots the backing
+///          program/module state into a worker payload, and starts the matching
+///          native trampoline. Calls outside an interpreter chain to the prior
+///          handler or native runtime.
 static void unified_thread_start_handler(void **args, void *result) {
     void *entry = nullptr;
     void *arg = nullptr;
@@ -5177,7 +5572,11 @@ static void unified_thread_start_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = thread;
 }
 
-/// Handler for Zanna.Threads.Thread.StartOwned - handles both standard VM and BytecodeVM.
+/// @brief Handle `Thread.StartOwned`, transferring the argument to the worker.
+/// @param args Runtime ABI slots containing `(entry, owned argument)`.
+/// @param result Optional slot receiving the native thread handle.
+/// @details Mirrors @ref unified_thread_start_handler while ensuring every
+///          setup-failure and worker-completion path releases the owned object.
 static void unified_thread_start_owned_handler(void **args, void *result) {
     void *entry = nullptr;
     void *arg = nullptr;
@@ -5284,8 +5683,11 @@ static void unified_thread_start_owned_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = thread;
 }
 
-/// Handler for Zanna.Threads.Thread.StartSafe - handles both standard VM and BytecodeVM.
-/// Uses rt_thread_start_safe to wrap execution in trap recovery via setjmp/longjmp.
+/// @brief Handle trap-recoverable `Thread.StartSafe` for either interpreter.
+/// @param args Runtime ABI slots containing `(entry, argument)`.
+/// @param result Optional slot receiving the safe-thread handle.
+/// @details Uses `rt_thread_start_safe` and the safe trampolines so native
+///          `setjmp`/`longjmp` recovery can capture interpreted traps.
 static void unified_thread_start_safe_handler(void **args, void *result) {
     void *entry = nullptr;
     void *arg = nullptr;
@@ -5388,7 +5790,11 @@ static void unified_thread_start_safe_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = thread;
 }
 
-/// Handler for Zanna.Threads.Thread.StartSafeOwned - handles both standard VM and BytecodeVM.
+/// @brief Handle `Thread.StartSafeOwned` with trap recovery and argument transfer.
+/// @param args Runtime ABI slots containing `(entry, owned argument)`.
+/// @param result Optional slot receiving the safe-thread handle.
+/// @details Combines the safe-thread recovery contract with deterministic
+///          release of the owned argument on all setup and completion paths.
 static void unified_thread_start_safe_owned_handler(void **args, void *result) {
     void *entry = nullptr;
     void *arg = nullptr;
@@ -5498,6 +5904,7 @@ static void unified_thread_start_safe_owned_handler(void **args, void *result) {
 /// @brief C ABI trampoline: run a standard-VM Async.Run entry from a bytecode
 ///        context. Decodes the payload, executes the entry, settles the
 ///        promise with the result or error, and frees the payload + owned arg.
+/// @param raw Owned `VmAsyncRunPayload`.
 extern "C" void vm_async_run_entry_trampoline_bc(void *raw) {
     VmAsyncRunPayload *payload = static_cast<VmAsyncRunPayload *>(raw);
     if (!payload || !payload->module || !payload->entry || !payload->promise) {
@@ -5553,6 +5960,7 @@ extern "C" void vm_async_run_entry_trampoline_bc(void *raw) {
 /// @brief C ABI trampoline: run a bytecode Async.Run entry on a worker VM,
 ///        settling its promise with the returned result or an error and
 ///        releasing the payload.
+/// @param raw Owned `BytecodeAsyncPayload`.
 extern "C" void bytecode_async_entry_trampoline(void *raw) {
     BytecodeAsyncPayload *payload = static_cast<BytecodeAsyncPayload *>(raw);
     if (payload && payload->moduleOwner)
@@ -5604,6 +6012,9 @@ extern "C" void bytecode_async_entry_trampoline(void *raw) {
 /// @brief C ABI trampoline: dispatch one HTTP request to a standard-VM
 ///        bind-handler from a bytecode context (@p req/@p res are the
 ///        request/response objects).
+/// @param raw Borrowed persistent `VmHttpHandlerPayload`.
+/// @param req Borrowed runtime request object.
+/// @param res Borrowed runtime response object.
 extern "C" void vm_http_handler_dispatch_bc(void *raw, void *req, void *res) {
     auto *payload = static_cast<VmHttpHandlerPayload *>(raw);
     if (!payload || !payload->module || !payload->entry) {
@@ -5630,6 +6041,9 @@ extern "C" void vm_http_handler_dispatch_bc(void *raw, void *req, void *res) {
 /// @brief C ABI trampoline: dispatch one HTTP request to a bytecode
 ///        bind-handler, invoking its entry on the active VM with the
 ///        request/response pair.
+/// @param raw Borrowed persistent `BytecodeHttpHandlerPayload`.
+/// @param req Borrowed runtime request object.
+/// @param res Borrowed runtime response object.
 extern "C" void bytecode_http_handler_dispatch(void *raw, void *req, void *res) {
     auto *payload = static_cast<BytecodeHttpHandlerPayload *>(raw);
     if (payload && payload->moduleOwner)
@@ -5660,6 +6074,7 @@ extern "C" void bytecode_http_handler_dispatch(void *raw, void *req, void *res) 
 
 /// @brief C ABI destructor for a standard-VM HTTP handler payload (called by
 ///        the runtime when the bound handler is torn down).
+/// @param raw Owned `VmHttpHandlerPayload`, or null.
 extern "C" void destroy_vm_http_handler_payload_bc(void *raw) {
     auto *payload = static_cast<VmHttpHandlerPayload *>(raw);
     if (!payload)
@@ -5669,6 +6084,7 @@ extern "C" void destroy_vm_http_handler_payload_bc(void *raw) {
 }
 
 /// @brief C ABI destructor for a bytecode HTTP handler payload.
+/// @param raw Owned `BytecodeHttpHandlerPayload`.
 extern "C" void destroy_bytecode_http_handler_payload(void *raw) {
     delete static_cast<BytecodeHttpHandlerPayload *>(raw);
 }
@@ -5677,6 +6093,8 @@ extern "C" void destroy_bytecode_http_handler_payload(void *raw) {
 ///        standard VM and the bytecode VM: detects which engine the entry
 ///        belongs to, validates its signature, and registers the matching
 ///        dispatch + payload-destructor trampolines.
+/// @param args Runtime ABI slots containing `(server, route tag, entry)`.
+/// @param result Optional result slot forwarded to prior/native handlers.
 static void unified_http_server_bind_handler(void **args, void *result) {
     (void)result;
 
@@ -5759,6 +6177,8 @@ static void unified_http_server_bind_handler(void **args, void *result) {
 
 /// @brief HTTPS counterpart of @ref unified_http_server_bind_handler (same
 ///        dual-engine dispatch over a TLS server).
+/// @param args Runtime ABI slots containing `(server, route tag, entry)`.
+/// @param result Optional result slot forwarded to prior/native handlers.
 static void unified_https_server_bind_handler(void **args, void *result) {
     (void)result;
 
@@ -5842,6 +6262,9 @@ static void unified_https_server_bind_handler(void **args, void *result) {
 /// @brief Runtime handler for Async.Run usable from both engines: validates
 ///        the entry signature, builds the appropriate async payload, and
 ///        schedules it on a worker, returning the promise.
+/// @param args Runtime ABI slots containing `(entry, argument)`.
+/// @param result Optional slot receiving the future handle.
+/// @param owned Whether the worker takes an owned reference to the argument.
 static void unified_async_run_impl(void **args, void *result, bool owned) {
     void *entry = nullptr;
     void *arg = nullptr;
@@ -5991,12 +6414,16 @@ static void unified_async_run_impl(void **args, void *result, bool owned) {
     publishAsyncFutureResult(result, future);
 }
 
-/// Handler for Zanna.Threads.Async.Run — the arg is borrowed (native parity, VDOC-127).
+/// @brief Handle `Async.Run`; the argument is borrowed (native parity, VDOC-127).
+/// @param args Runtime ABI slots containing `(entry, argument)`.
+/// @param result Optional slot receiving the future handle.
 static void unified_async_run_handler(void **args, void *result) {
     unified_async_run_impl(args, result, /*owned=*/false);
 }
 
-/// Handler for Zanna.Threads.Async.RunOwned — the Future owns the arg on every backend.
+/// @brief Handle `Async.RunOwned`; the future owns the argument on every backend.
+/// @param args Runtime ABI slots containing `(entry, owned argument)`.
+/// @param result Optional slot receiving the future handle.
 static void unified_async_run_owned_handler(void **args, void *result) {
     unified_async_run_impl(args, result, /*owned=*/true);
 }
@@ -6006,6 +6433,8 @@ static void unified_async_run_owned_handler(void **args, void *result) {
 ///          the native C implementation, which casts the opaque VM function
 ///          value to a native pointer — undefined behavior. Trap with a clear
 ///          message when either interpreted backend is active.
+/// @param api Runtime API name included in the trap message.
+/// @return `true` after trapping for an active interpreter; otherwise `false`.
 static bool asyncCallbackUnsupportedOnVm(const char *api) {
     if (il::vm::activeVMInstance() || activeBytecodeVMInstance()) {
         rt_trap((std::string(api) +
@@ -6017,6 +6446,9 @@ static bool asyncCallbackUnsupportedOnVm(const char *api) {
     return false;
 }
 
+/// @brief Dispatch `Async.RunCancellable`, rejecting interpreted callbacks.
+/// @param args Runtime ABI slots containing `(entry, argument, token)`.
+/// @param result Optional slot receiving the future handle.
 static void unified_async_run_cancellable_handler(void **args, void *result) {
     if (asyncCallbackUnsupportedOnVm("Async.RunCancellable"))
         return;
@@ -6027,6 +6459,9 @@ static void unified_async_run_cancellable_handler(void **args, void *result) {
     publishAsyncFutureResult(result, future);
 }
 
+/// @brief Dispatch owned `Async.RunCancellable`, rejecting interpreted callbacks.
+/// @param args Runtime ABI slots containing `(entry, owned argument, token)`.
+/// @param result Optional slot receiving the future handle.
 static void unified_async_run_cancellable_owned_handler(void **args, void *result) {
     if (asyncCallbackUnsupportedOnVm("Async.RunCancellableOwned"))
         return;
@@ -6037,6 +6472,9 @@ static void unified_async_run_cancellable_owned_handler(void **args, void *resul
     publishAsyncFutureResult(result, future);
 }
 
+/// @brief Dispatch `Async.Map`, rejecting interpreted mapper callbacks.
+/// @param args Runtime ABI slots containing `(future, mapper, argument)`.
+/// @param result Optional slot receiving the mapped future.
 static void unified_async_map_handler(void **args, void *result) {
     if (asyncCallbackUnsupportedOnVm("Async.Map"))
         return;
@@ -6047,6 +6485,9 @@ static void unified_async_map_handler(void **args, void *result) {
     publishAsyncFutureResult(result, mapped);
 }
 
+/// @brief Dispatch owned `Async.Map`, rejecting interpreted mapper callbacks.
+/// @param args Runtime ABI slots containing `(future, mapper, owned argument)`.
+/// @param result Optional slot receiving the mapped future.
 static void unified_async_map_owned_handler(void **args, void *result) {
     if (asyncCallbackUnsupportedOnVm("Async.MapOwned"))
         return;
@@ -6062,6 +6503,12 @@ static void unified_async_map_owned_handler(void **args, void *result) {
 ///          same result as the native parallel path while keeping the bytecode function value
 ///          (a tagged module-function index, not native code) runnable. The callback must be
 ///          `(Integer) -> Unit`. A trapped iteration stops the loop.
+/// @param vm Active VM used for re-entrant callback execution.
+/// @param module Module used to resolve @p func.
+/// @param start Inclusive first index.
+/// @param end Exclusive final index.
+/// @param func Tagged or raw bytecode callback value.
+/// @param api Runtime API name included in traps.
 static void runBytecodeParallelForRange(BytecodeVM &vm,
                                         const BytecodeModule &module,
                                         int64_t start,
@@ -6088,6 +6535,11 @@ static void runBytecodeParallelForRange(BytecodeVM &vm,
 /// @details The bytecode VM cannot dispatch its tagged function values onto native pool threads,
 ///          so the task runs immediately on the calling thread. The callback must be
 ///          `(Ptr) -> Unit` or take no parameters.
+/// @param vm Active VM used for re-entrant execution.
+/// @param module Module used to resolve @p callback.
+/// @param callback Tagged or raw bytecode callback value.
+/// @param arg Opaque argument forwarded when the callback accepts one parameter.
+/// @param api Runtime API name included in traps.
 static void runBytecodePoolTask(
     BytecodeVM &vm, const BytecodeModule &module, void *callback, void *arg, const char *api) {
     const BytecodeFunction *fn = resolveBytecodeEntry(&module, callback);
@@ -6111,6 +6563,10 @@ static void runBytecodePoolTask(
 /// @brief Invoke a sequence of zero-argument callbacks sequentially on the active BytecodeVM.
 /// @details Each sequence element is a tagged bytecode function value; the actions run in order on
 ///          the calling thread. Callbacks must be `() -> Unit`. A trapped action stops the run.
+/// @param vm Active VM used for re-entrant execution.
+/// @param module Module used to resolve sequence entries.
+/// @param funcs Runtime sequence of opaque callback values; null is a no-op.
+/// @param api Runtime API name included in traps.
 static void runBytecodeInvoke(BytecodeVM &vm,
                               const BytecodeModule &module,
                               void *funcs,
@@ -6138,8 +6594,11 @@ static void runBytecodeInvoke(BytecodeVM &vm,
     }
 }
 
-/// Handler for Zanna.Threads.Parallel.For — bridges the callback for the BytecodeVM; otherwise
-/// chains to the prior handler (tree-walker VM runs inline, native fans out across the pool).
+/// @brief Bridge `Parallel.For` for the bytecode VM, otherwise chain or run natively.
+/// @param args Runtime ABI slots containing `(start, end, callback)`.
+/// @param result Unused void-result storage forwarded to a prior handler.
+/// @details Bytecode callbacks run sequentially and re-entrantly; tree-walker
+///          and native calls retain their registered behavior.
 static void unified_parallel_for_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6160,8 +6619,11 @@ static void unified_parallel_for_handler(void **args, void *result) {
     rt_parallel_for(start, end, func);
 }
 
-/// Handler for Zanna.Threads.Parallel.ForPool — the pool is a native concurrency hint the bytecode
-/// VM ignores (the range runs sequentially); otherwise chains to the prior handler.
+/// @brief Bridge `Parallel.ForPool`, ignoring the pool for bytecode callbacks.
+/// @param args Runtime ABI slots containing `(start, end, callback, pool)`.
+/// @param result Unused void-result storage forwarded to a prior handler.
+/// @details The bytecode range runs sequentially; other backends chain or use
+///          the native pool.
 static void unified_parallel_for_pool_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6183,8 +6645,11 @@ static void unified_parallel_for_pool_handler(void **args, void *result) {
     rt_parallel_for_pool(start, end, func, pool);
 }
 
-/// Handler for Zanna.Threads.Pool.Submit — runs the task synchronously on the BytecodeVM and
-/// reports success; otherwise chains to the prior handler.
+/// @brief Bridge `Pool.Submit`, executing bytecode tasks synchronously.
+/// @param args Runtime ABI slots containing `(pool, callback, argument)`.
+/// @param result Optional Boolean slot receiving submission success.
+/// @details A null or shut-down pool rejects the bytecode submission; other
+///          backends chain or submit through the native runtime.
 static void unified_pool_submit_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6218,6 +6683,8 @@ static void unified_pool_submit_handler(void **args, void *result) {
 
 /// @brief SubmitOwned bridge: synchronous on the BytecodeVM, so the pool-side
 ///        retain/release nets out within the call (VDOC-128).
+/// @param args Runtime ABI slots containing `(pool, callback, owned argument)`.
+/// @param result Optional Boolean slot receiving submission success.
 static void unified_pool_submit_owned_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6243,8 +6710,9 @@ static void unified_pool_submit_owned_handler(void **args, void *result) {
         *reinterpret_cast<int8_t *>(result) = submitted;
 }
 
-/// Handler for Zanna.Threads.Parallel.Invoke — runs each action sequentially on the BytecodeVM;
-/// otherwise chains to the prior handler.
+/// @brief Bridge `Parallel.Invoke`, running bytecode actions sequentially.
+/// @param args Runtime ABI slots containing a sequence of callbacks.
+/// @param result Unused void-result storage forwarded to a prior handler.
 static void unified_parallel_invoke_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6261,8 +6729,9 @@ static void unified_parallel_invoke_handler(void **args, void *result) {
     rt_parallel_invoke(funcs);
 }
 
-/// Handler for Zanna.Threads.Parallel.InvokePool — pool ignored on the BytecodeVM (actions run
-/// sequentially); otherwise chains to the prior handler.
+/// @brief Bridge `Parallel.InvokePool`, ignoring the pool for bytecode actions.
+/// @param args Runtime ABI slots containing `(callbacks, pool)`.
+/// @param result Unused void-result storage forwarded to a prior handler.
 static void unified_parallel_invoke_pool_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6283,6 +6752,11 @@ static void unified_parallel_invoke_pool_handler(void **args, void *result) {
 /// @brief Run a `(Ptr) -> Unit` callback over each Seq element (VDOC-126).
 /// @details Sequential equivalent of the native Parallel.ForEach on the
 ///          BytecodeVM: same visible effects, single-threaded ordering.
+/// @param vm Active VM used for re-entrant callback execution.
+/// @param module Module used to resolve @p func.
+/// @param seq Borrowed runtime sequence; null is a no-op.
+/// @param func Tagged or raw bytecode callback value.
+/// @param api Runtime API name included in traps.
 static void runBytecodeSeqForEach(BytecodeVM &vm,
                                   const BytecodeModule &module,
                                   void *seq,
@@ -6310,6 +6784,12 @@ static void runBytecodeSeqForEach(BytecodeVM &vm,
 
 /// @brief Map a Seq through a `(Ptr) -> Ptr` callback (VDOC-126); returns an
 ///        owning Seq of the mapped values in order.
+/// @param vm Active VM used for re-entrant callback execution.
+/// @param module Module used to resolve @p func.
+/// @param seq Borrowed runtime sequence; null produces an empty sequence.
+/// @param func Tagged or raw bytecode mapper value.
+/// @param api Runtime API name included in traps.
+/// @return Newly allocated owning runtime sequence.
 static void *runBytecodeSeqMap(BytecodeVM &vm,
                                const BytecodeModule &module,
                                void *seq,
@@ -6341,6 +6821,13 @@ static void *runBytecodeSeqMap(BytecodeVM &vm,
 }
 
 /// @brief Left-fold a Seq through a `(Ptr, Ptr) -> Ptr` callback (VDOC-126).
+/// @param vm Active VM used for re-entrant callback execution.
+/// @param module Module used to resolve @p func.
+/// @param seq Borrowed runtime sequence; null returns @p identity.
+/// @param func Tagged or raw bytecode reducer value.
+/// @param identity Initial accumulator.
+/// @param api Runtime API name included in traps.
+/// @return Final accumulator, or the last value produced before a trap.
 static void *runBytecodeSeqReduce(BytecodeVM &vm,
                                   const BytecodeModule &module,
                                   void *seq,
@@ -6372,8 +6859,9 @@ static void *runBytecodeSeqReduce(BytecodeVM &vm,
     return acc;
 }
 
-/// Handler for Zanna.Threads.Parallel.ForEach — traps on the BytecodeVM (not bridged); otherwise
-/// chains to the prior handler (tree-walker traps too; native fans out across the pool).
+/// @brief Bridge `Parallel.ForEach` with sequential bytecode callback execution.
+/// @param args Runtime ABI slots containing `(sequence, callback)`.
+/// @param result Unused void-result storage forwarded to a prior handler.
 static void unified_parallel_foreach_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6392,7 +6880,10 @@ static void unified_parallel_foreach_handler(void **args, void *result) {
     rt_parallel_foreach(seq, func);
 }
 
-/// Handler for Zanna.Threads.Parallel.ForEachPool — see @ref unified_parallel_foreach_handler.
+/// @brief Pool-taking counterpart of @ref unified_parallel_foreach_handler.
+/// @param args Runtime ABI slots containing `(sequence, callback, pool)`.
+/// @param result Unused void-result storage forwarded to a prior handler.
+/// @details Bytecode execution is sequential and ignores the pool parameter.
 static void unified_parallel_foreach_pool_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6412,8 +6903,9 @@ static void unified_parallel_foreach_pool_handler(void **args, void *result) {
     rt_parallel_foreach_pool(seq, func, pool);
 }
 
-/// Handler for Zanna.Threads.Parallel.Map — traps on the BytecodeVM (not bridged); otherwise
-/// chains.
+/// @brief Bridge `Parallel.Map` with sequential bytecode mapper execution.
+/// @param args Runtime ABI slots containing `(sequence, mapper)`.
+/// @param result Optional slot receiving the newly allocated mapped sequence.
 static void unified_parallel_map_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6436,7 +6928,10 @@ static void unified_parallel_map_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = mapped;
 }
 
-/// Handler for Zanna.Threads.Parallel.MapPool — see @ref unified_parallel_map_handler.
+/// @brief Pool-taking counterpart of @ref unified_parallel_map_handler.
+/// @param args Runtime ABI slots containing `(sequence, mapper, pool)`.
+/// @param result Optional slot receiving the newly allocated mapped sequence.
+/// @details Bytecode execution is sequential and ignores the pool parameter.
 static void unified_parallel_map_pool_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6460,7 +6955,9 @@ static void unified_parallel_map_pool_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = mapped;
 }
 
-/// Handler for Zanna.Threads.Parallel.Reduce — traps on the BytecodeVM (not bridged); else chains.
+/// @brief Bridge `Parallel.Reduce` with a sequential bytecode left fold.
+/// @param args Runtime ABI slots containing `(sequence, reducer, identity)`.
+/// @param result Optional slot receiving the final accumulator.
 static void unified_parallel_reduce_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6486,7 +6983,10 @@ static void unified_parallel_reduce_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = reduced;
 }
 
-/// Handler for Zanna.Threads.Parallel.ReducePool — see @ref unified_parallel_reduce_handler.
+/// @brief Pool-taking counterpart of @ref unified_parallel_reduce_handler.
+/// @param args Runtime ABI slots containing `(sequence, reducer, identity, pool)`.
+/// @param result Optional slot receiving the final accumulator.
+/// @details Bytecode execution is sequential and ignores the pool parameter.
 static void unified_parallel_reduce_pool_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6518,6 +7018,10 @@ static void unified_parallel_reduce_pool_handler(void **args, void *result) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Execute a zero-argument, value-returning bytecode supplier reentrantly.
+/// @param vm Active VM used for re-entrant execution.
+/// @param module Module used to resolve @p handle.
+/// @param handle Tagged or raw supplier function value.
+/// @param api Runtime API name included in traps.
 /// @return The supplier's object result, or null after a trap.
 static void *runBytecodeSupplier(BytecodeVM &vm,
                                  const BytecodeModule &module,
@@ -6539,6 +7043,11 @@ static void *runBytecodeSupplier(BytecodeVM &vm,
 }
 
 /// @brief Execute a one-argument, value-returning bytecode callback reentrantly.
+/// @param vm Active VM used for re-entrant execution.
+/// @param module Module used to resolve @p callback.
+/// @param callback Tagged or raw bytecode function value.
+/// @param value Object passed to the callback.
+/// @param api Runtime API name included in traps.
 /// @return The callback's object result, or null after a trap.
 static void *runBytecodeCallback1(
     BytecodeVM &vm, const BytecodeModule &module, void *callback, void *value, const char *api) {
@@ -6560,6 +7069,10 @@ static void *runBytecodeCallback1(
 }
 
 /// @brief Run a pending handle-kind Lazy supplier on the active BytecodeVM.
+/// @param vm Active VM used for re-entrant supplier execution.
+/// @param module Module used to resolve a pending supplier handle.
+/// @param lazy Runtime Lazy object; unchanged if already complete.
+/// @param api Runtime API name included in traps.
 static void completeBytecodePendingLazy(BytecodeVM &vm,
                                         const BytecodeModule &module,
                                         void *lazy,
@@ -6570,8 +7083,11 @@ static void completeBytecodePendingLazy(BytecodeVM &vm,
     }
 }
 
-/// Handler for Zanna.Functional.Lazy.New — stores the bytecode supplier as a handle-kind
-/// Lazy so accessors can execute it reentrantly; otherwise chains to the prior handler.
+/// @brief Bridge `Lazy.New`, preserving bytecode suppliers as opaque handles.
+/// @param args Runtime ABI slots containing the supplier.
+/// @param result Optional slot receiving the new Lazy object.
+/// @details A bytecode supplier is validated and deferred for re-entrant
+///          execution; other backends chain or use the native wrapper.
 static void unified_lazy_new_handler(void **args, void *result) {
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
         if (const BytecodeModule *bcModule = activeBytecodeModule()) {
@@ -6602,7 +7118,9 @@ static void unified_lazy_new_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = lazy;
 }
 
-/// Handler for Zanna.Functional.Lazy.Get — completes a pending bytecode supplier first.
+/// @brief Bridge `Lazy.Get`, completing a pending bytecode supplier first.
+/// @param args Runtime ABI slots containing the Lazy object.
+/// @param result Optional slot receiving its object value.
 static void unified_lazy_get_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
@@ -6623,7 +7141,9 @@ static void unified_lazy_get_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = value;
 }
 
-/// Handler for Zanna.Functional.Lazy.GetStr — completes a pending bytecode supplier first.
+/// @brief Bridge `Lazy.GetStr`, completing a pending bytecode supplier first.
+/// @param args Runtime ABI slots containing the Lazy object.
+/// @param result Optional slot receiving its runtime string value.
 static void unified_lazy_get_str_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
@@ -6644,7 +7164,9 @@ static void unified_lazy_get_str_handler(void **args, void *result) {
         *reinterpret_cast<rt_string *>(result) = value;
 }
 
-/// Handler for Zanna.Functional.Lazy.GetI64 — completes a pending bytecode supplier first.
+/// @brief Bridge `Lazy.GetI64`, completing a pending bytecode supplier first.
+/// @param args Runtime ABI slots containing the Lazy object.
+/// @param result Optional slot receiving its integer value.
 static void unified_lazy_get_i64_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
@@ -6665,7 +7187,9 @@ static void unified_lazy_get_i64_handler(void **args, void *result) {
         *reinterpret_cast<int64_t *>(result) = value;
 }
 
-/// Handler for Zanna.Functional.Lazy.Force — completes a pending bytecode supplier first.
+/// @brief Bridge `Lazy.Force`, completing a pending bytecode supplier first.
+/// @param args Runtime ABI slots containing the Lazy object.
+/// @param result Unused void-result storage forwarded to a prior handler.
 static void unified_lazy_force_handler(void **args, void *result) {
     (void)result;
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
@@ -6683,8 +7207,11 @@ static void unified_lazy_force_handler(void **args, void *result) {
     rt_lazy_force(lazy);
 }
 
-/// Handler for Zanna.Functional.Lazy.Map — bridges the callback for the BytecodeVM;
-/// mirrors the C semantics (force source, apply, wrap pre-evaluated).
+/// @brief Bridge `Lazy.Map` for bytecode callbacks.
+/// @param args Runtime ABI slots containing `(lazy, mapper)`.
+/// @param result Optional slot receiving the mapped Lazy object.
+/// @details Mirrors native semantics by forcing the source, applying the
+///          mapper re-entrantly, and wrapping the transformed value.
 static void unified_lazy_map_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *callback = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
@@ -6714,8 +7241,11 @@ static void unified_lazy_map_handler(void **args, void *result) {
         *reinterpret_cast<void **>(result) = mapped;
 }
 
-/// Handler for Zanna.Functional.Lazy.AndThen — bridges the callback for the BytecodeVM;
-/// mirrors the C semantics (force source, return the callback's Lazy directly).
+/// @brief Bridge `Lazy.AndThen` for bytecode callbacks.
+/// @param args Runtime ABI slots containing `(lazy, callback)`.
+/// @param result Optional slot receiving the callback's Lazy object.
+/// @details Forces the source and returns the callback result directly rather
+///          than wrapping it in another Lazy.
 static void unified_lazy_and_then_handler(void **args, void *result) {
     void *lazy = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
     void *callback = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
@@ -6749,24 +7279,38 @@ static void unified_lazy_and_then_handler(void **args, void *result) {
 
 /// @brief Context threaded through the rt_cb_invoke* strategies for bytecode execution.
 struct BcInvokerCtx {
+    /// Borrowed active VM.
     BytecodeVM *vm;
+    /// Borrowed active module.
     const BytecodeModule *module;
+    /// API name used in trap diagnostics.
     const char *api;
 };
 
 /// @brief rt_cb_invoke1 strategy executing the callback on the active BytecodeVM.
+/// @param ctxRaw Borrowed `BcInvokerCtx`.
+/// @param fn Tagged or raw one-argument callback.
+/// @param arg Object forwarded to @p fn.
+/// @return Callback result object, or null after a trap.
 static void *bcInvoke1(void *ctxRaw, void *fn, void *arg) {
     auto *ctx = static_cast<BcInvokerCtx *>(ctxRaw);
     return runBytecodeCallback1(*ctx->vm, *ctx->module, fn, arg, ctx->api);
 }
 
 /// @brief rt_cb_invoke0 strategy executing the callback on the active BytecodeVM.
+/// @param ctxRaw Borrowed `BcInvokerCtx`.
+/// @param fn Tagged or raw zero-argument supplier.
+/// @return Supplier result object, or null after a trap.
 static void *bcInvoke0(void *ctxRaw, void *fn) {
     auto *ctx = static_cast<BcInvokerCtx *>(ctxRaw);
     return runBytecodeSupplier(*ctx->vm, *ctx->module, fn, ctx->api);
 }
 
 /// @brief rt_cb_invoke_pred strategy executing the predicate on the active BytecodeVM.
+/// @param ctxRaw Borrowed `BcInvokerCtx`.
+/// @param fn Tagged or raw one-argument predicate.
+/// @param arg Object forwarded to @p fn.
+/// @return One for a truthy callback result, otherwise zero.
 static int8_t bcInvokePred(void *ctxRaw, void *fn, void *arg) {
     auto *ctx = static_cast<BcInvokerCtx *>(ctxRaw);
     const BytecodeFunction *callback = resolveBytecodeEntry(ctx->module, fn);
@@ -6789,6 +7333,16 @@ static int8_t bcInvokePred(void *ctxRaw, void *fn, void *arg) {
 /// @brief Shared body for the eight Option/Result combinator handlers.
 /// @details Runs the combinator core with a bytecode invoker when a BytecodeVM is
 ///          active; otherwise chains to the prior handler or the native wrapper.
+/// @tparam CoreFn Callable type for the strategy-aware runtime core.
+/// @tparam Strategy Callback-invocation strategy type.
+/// @tparam NativeFn Callable type for the native wrapper fallback.
+/// @param args Runtime ABI slots containing `(receiver, callback)`.
+/// @param result Optional slot receiving the combined Option or Result.
+/// @param api Runtime API name used by bytecode callback traps.
+/// @param core Strategy-aware combinator implementation.
+/// @param strategy Bytecode callback invocation strategy.
+/// @param native Native callback wrapper used outside an interpreter.
+/// @param prior Previously registered runtime handler, if any.
 template <typename CoreFn, typename Strategy, typename NativeFn>
 static void dispatchBytecodeCombinator(void **args,
                                        void *result,
@@ -6819,6 +7373,9 @@ static void dispatchBytecodeCombinator(void **args,
         *reinterpret_cast<void **>(result) = combined;
 }
 
+/// @brief Bridge `Option.Map` through the active bytecode callback strategy.
+/// @param args Runtime ABI slots containing `(option, mapper)`.
+/// @param result Optional slot receiving the mapped Option.
 static void unified_option_map_handler(void **args, void *result) {
     dispatchBytecodeCombinator(args,
                                result,
@@ -6829,6 +7386,9 @@ static void unified_option_map_handler(void **args, void *result) {
                                gPriorOptionMapHandler);
 }
 
+/// @brief Bridge `Option.AndThen` through the active bytecode callback strategy.
+/// @param args Runtime ABI slots containing `(option, callback)`.
+/// @param result Optional slot receiving the flattened Option.
 static void unified_option_and_then_handler(void **args, void *result) {
     dispatchBytecodeCombinator(args,
                                result,
@@ -6839,6 +7399,9 @@ static void unified_option_and_then_handler(void **args, void *result) {
                                gPriorOptionAndThenHandler);
 }
 
+/// @brief Bridge `Option.OrElse` through the active bytecode supplier strategy.
+/// @param args Runtime ABI slots containing `(option, fallback supplier)`.
+/// @param result Optional slot receiving the selected Option.
 static void unified_option_or_else_handler(void **args, void *result) {
     dispatchBytecodeCombinator(args,
                                result,
@@ -6849,6 +7412,9 @@ static void unified_option_or_else_handler(void **args, void *result) {
                                gPriorOptionOrElseHandler);
 }
 
+/// @brief Bridge `Option.Filter` through the active bytecode predicate strategy.
+/// @param args Runtime ABI slots containing `(option, predicate)`.
+/// @param result Optional slot receiving the filtered Option.
 static void unified_option_filter_handler(void **args, void *result) {
     dispatchBytecodeCombinator(args,
                                result,
@@ -6859,6 +7425,9 @@ static void unified_option_filter_handler(void **args, void *result) {
                                gPriorOptionFilterHandler);
 }
 
+/// @brief Bridge `Result.Map` through the active bytecode callback strategy.
+/// @param args Runtime ABI slots containing `(result, mapper)`.
+/// @param result Optional slot receiving the mapped Result.
 static void unified_result_map_handler(void **args, void *result) {
     dispatchBytecodeCombinator(args,
                                result,
@@ -6869,6 +7438,9 @@ static void unified_result_map_handler(void **args, void *result) {
                                gPriorResultMapHandler);
 }
 
+/// @brief Bridge `Result.MapErr` through the active bytecode callback strategy.
+/// @param args Runtime ABI slots containing `(result, error mapper)`.
+/// @param result Optional slot receiving the mapped Result.
 static void unified_result_map_err_handler(void **args, void *result) {
     dispatchBytecodeCombinator(args,
                                result,
@@ -6879,6 +7451,9 @@ static void unified_result_map_err_handler(void **args, void *result) {
                                gPriorResultMapErrHandler);
 }
 
+/// @brief Bridge `Result.AndThen` through the active bytecode callback strategy.
+/// @param args Runtime ABI slots containing `(result, callback)`.
+/// @param result Optional slot receiving the flattened Result.
 static void unified_result_and_then_handler(void **args, void *result) {
     dispatchBytecodeCombinator(args,
                                result,
@@ -6889,6 +7464,9 @@ static void unified_result_and_then_handler(void **args, void *result) {
                                gPriorResultAndThenHandler);
 }
 
+/// @brief Bridge `Result.OrElse` through the active bytecode callback strategy.
+/// @param args Runtime ABI slots containing `(result, recovery callback)`.
+/// @param result Optional slot receiving the recovered Result.
 static void unified_result_or_else_handler(void **args, void *result) {
     dispatchBytecodeCombinator(args,
                                result,
@@ -6900,14 +7478,18 @@ static void unified_result_or_else_handler(void **args, void *result) {
 }
 
 /// @brief Install the dual-engine runtime handlers for callback-taking runtime APIs.
-/// @details Chains to any previously registered Thread/Async/Network/Game3D handlers.
-///          Idempotent via std::call_once; invoked from load()/exec() so bytecode
-///          programs get correct callback behavior.
+/// @details Captures and chains to any previously registered Thread, Async,
+///          Network, Game3D, Parallel, Lazy, Option, and Result handlers.
+///          Registration is idempotent via `std::call_once`; @ref load and
+///          @ref BytecodeVM::exec invoke it before bytecode can call a runtime
+///          API with an interpreted callback.
 void registerUnifiedVmRuntimeHandlers() {
     std::call_once(gUnifiedRuntimeHandlersOnce, []() {
         using il::runtime::signatures::make_signature;
         using il::runtime::signatures::SigParam;
 
+        /// Preserve an existing non-self handler so the unified shim can chain
+        /// calls made outside an interpreted VM.
         auto capturePriorHandler =
             [](std::string_view name, void *currentFn, UnifiedRuntimeHandler &outHandler) {
                 if (const il::vm::ExternDesc *existing = il::vm::RuntimeBridge::findExtern(name)) {

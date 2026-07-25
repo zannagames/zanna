@@ -14,12 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
-/// @brief Implements caching helpers for the BASIC lowering pipeline.
-/// @details The lowering context bundles references to the IR builder and the
-///          function being populated.  Housing the helper logic out-of-line keeps
-///          the header small and ensures all mapping rules remain documented in
-///          a single location.
+/// @file LoweringContext.cpp
+/// @brief Implements BASIC variable-slot and string-symbol name caches.
+/// @details The helpers in this file assign deterministic textual identifiers;
+///          they do not emit allocations, globals, blocks, or instructions.
+///          Callers remain responsible for materializing each returned name in
+///          the destination function or module.
 
 #include "frontends/basic/LoweringContext.hpp"
 #include "zanna/il/IRBuilder.hpp"
@@ -28,22 +28,20 @@
 namespace il::frontends::basic {
 
 /// @brief Construct a lowering context for a BASIC function.
-/// @details The context stores references to the builder and destination
-///          function so subsequent helpers can materialize blocks, stack slots,
-///          and literals without re-threading these dependencies through each
-///          call site.
-/// @param builder IR builder used to create blocks and instructions.
-/// @param func Function that will receive lowered IR.
+/// @details Stores non-owning references to the active builder and destination
+///          function and initializes empty per-context name caches.
+/// @param builder Builder associated with the lowering operation.
+/// @param func Function associated with the lowering operation.
+/// @pre @p builder and @p func outlive the constructed context.
 LoweringContext::LoweringContext(build::IRBuilder &builder, core::Function &func)
     : builder(builder), function(func) {}
 
-/// @brief Retrieve a stack slot name for BASIC variable @p name, creating one if needed.
-/// @details Lowers variables into `alloca`-style stack slots.  Previously issued
-///          names are cached so repeated lookups avoid allocating duplicate
-///          slots.  When creating a new slot the method prefixes the BASIC name
-///          with "%" and appends `_slot` to keep generated IR descriptive.
+/// @brief Retrieve the cached slot identifier for @p name or assign one.
+/// @details A first lookup records the textual identifier `%<name>_slot`;
+///          subsequent lookups return the same string. This method does not
+///          emit an `alloca` or otherwise modify the destination function.
 /// @param name BASIC variable identifier.
-/// @return Unique slot label for the variable.
+/// @return The stable slot identifier associated with @p name in this context.
 std::string LoweringContext::getOrCreateSlot(const std::string &name) {
     auto it = varSlots.find(name);
     if (it != varSlots.end())
@@ -53,15 +51,13 @@ std::string LoweringContext::getOrCreateSlot(const std::string &name) {
     return slot;
 }
 
-/// @brief Intern the BASIC string literal @p value and return its IR symbol.
-///
-/// Maintains a mapping from literal text to generated identifiers, reusing
-/// existing entries without consuming new IDs. When a string is first seen it
-/// receives a label derived from an incrementing counter to keep identifiers
-/// stable across the module.  The names are fed into `addGlobalStr` to produce
-/// one global per unique literal, avoiding redundant data in the output module.
-/// @param value BASIC string literal to intern.
-/// @return Stable label bound to the string literal.
+/// @brief Retrieve the cached symbol for string @p value or assign one.
+/// @details A distinct value receives the next `.L<N>` name, beginning at
+///          `.L0`; repeated values reuse their existing name without advancing
+///          the counter. This method records only the mapping and does not add a
+///          global string to an IL module.
+/// @param value String value used as the cache key.
+/// @return The stable generated symbol associated with @p value in this context.
 std::string LoweringContext::getOrAddString(const std::string &value) {
     auto it = strings.find(value);
     if (it != strings.end())

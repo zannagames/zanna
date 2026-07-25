@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file RuntimeStatementLowerer_Assign.cpp
+/// @brief Implements lifetime-aware scalar and array-element assignment.
+/// @details Scalar stores coerce to slot representation and balance old/new
+///          string or object ownership. Array stores resolve local, module, and
+///          member-array metadata before selecting the element-specific runtime
+///          helper.
+
 #include "Lowerer.hpp"
 #include "RuntimeStatementLowerer.hpp"
 #include "frontends/basic/ASTUtils.hpp"
@@ -36,9 +43,10 @@ namespace il::frontends::basic {
 ///
 /// @details Handles boolean conversion, floating/integer promotion and
 ///          demotion, string retain/release, and object lifetime maintenance.
-///          The implementation mirrors BASIC semantics by ensuring integer
-///          booleans remain 0/1 and objects trigger retain/release helpers while
-///          generating deterministic clean-up paths.
+///          Runtime string objects are treated as string slots. Object stores
+///          retain the incoming pointer, release the old pointer, conditionally
+///          invoke an available class destructor, free the final reference, and
+///          continue before storing the new pointer.
 ///
 /// @param slotInfo Metadata describing the target slot's type and traits.
 /// @param slot     Value referencing the storage location.
@@ -144,10 +152,10 @@ void RuntimeStatementLowerer::assignScalarSlot(const Lowerer::SlotType &slotInfo
 /// @brief Store a value into a BASIC array element with range checks.
 ///
 /// @details Loads the target array metadata, evaluates the index expression,
-///          applies bounds checking helpers when required, and then performs the
-///          store while honouring string/object lifetime rules.  The helper keeps
-///          array bookkeeping (retain/release requirements) consistent across all
-///          assignment sites.
+///          resolves implicit/dotted member and module object-array information,
+///          and then selects string, object, F64, or I64 storage. Numeric values
+///          are coerced to the target representation; string/object helpers own
+///          their element lifetime semantics.
 ///
 /// @param target Array expression describing the destination element.
 /// @param value  Lowered right-hand side value being assigned.

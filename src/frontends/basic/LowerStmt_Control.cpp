@@ -11,6 +11,8 @@
 ///          statements while forwarding implementation to
 ///          @ref ControlStatementLowerer. The wrappers exist for API stability
 ///          and do not introduce additional logic beyond delegation.
+/// @invariant The owning Lowerer initializes ctrlStmtLowerer_ before any wrapper
+///            is called.
 //
 //===----------------------------------------------------------------------===//
 

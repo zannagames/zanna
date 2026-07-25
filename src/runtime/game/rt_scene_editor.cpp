@@ -312,6 +312,67 @@ struct PreservedSection {
     std::string canonicalJson;
 };
 
+// Typed tile-behavior and camera/lighting section state (ADR 0176, ADR 0177).
+// Loaders accept any int64 tile id so legacy files round-trip losslessly;
+// setters enforce Tilemap's 1..4095 behavior-table addressability. Unknown
+// members are retained as canonical JSON and re-emitted verbatim.
+constexpr int64_t kMinBehaviorTileId = 1;
+constexpr int64_t kMaxBehaviorTileId = 4095;
+constexpr int64_t kMaxTilePropertyEntries = 4096;
+constexpr int64_t kMaxTilePropertiesPerTile = 64;
+constexpr int64_t kMaxAnimFramesPerRule = 4096;
+constexpr int64_t kMaxTotalAnimFrames = 65536;
+constexpr size_t kAutotileVariantCount = 16;
+
+struct TileAnimation {
+    std::vector<int64_t> frames;
+    std::vector<int64_t> durations;
+    std::map<std::string, std::string> unknown;
+};
+
+struct AutotileRule {
+    std::array<int64_t, kAutotileVariantCount> variants{};
+    std::map<std::string, std::string> unknown;
+};
+
+struct TilePropertySet {
+    std::map<std::string, SceneScalar> values; // Int/Bool kinds only
+    std::map<std::string, std::string> unknown;
+
+    bool empty() const {
+        return values.empty() && unknown.empty();
+    }
+};
+
+struct TileBehaviorState {
+    std::map<int64_t, int64_t> collision; // tile -> kind (1 solid, 2 one-way-up)
+    int64_t collisionLayer{0};
+    bool hasCollisionLayer{false};
+    std::map<std::string, std::string> collisionUnknown;
+    std::map<int64_t, TilePropertySet> tileProperties;
+    std::map<std::string, std::string> tilePropertiesUnknown; // non-integer root keys
+    std::map<int64_t, TileAnimation> animations;
+    std::map<int64_t, AutotileRule> autotiles;
+
+    bool collisionEmpty() const {
+        return collision.empty() && !hasCollisionLayer && collisionUnknown.empty();
+    }
+
+    bool tilePropertiesEmpty() const {
+        return tileProperties.empty() && tilePropertiesUnknown.empty();
+    }
+};
+
+/// @brief Scene-global scalar section (camera, lighting): int/string fields only.
+struct SectionScalarState {
+    std::map<std::string, SceneScalar> fields;
+    std::map<std::string, std::string> unknown;
+
+    bool empty() const {
+        return fields.empty() && unknown.empty();
+    }
+};
+
 struct SceneState {
     int64_t version{kSceneVersion};
     std::string name;
@@ -324,6 +385,10 @@ struct SceneState {
     std::vector<Object> objects;
     std::map<std::string, SceneScalar> properties;
     std::map<std::string, PreservedSection> preservedSections;
+    TileBehaviorState behavior;
+    SectionScalarState camera;
+    SectionScalarState lighting;
+    size_t typedUnknownBytes{0};
     std::vector<Diagnostic> diagnostics;
     std::string lastError;
     std::string sourcePath;
@@ -762,9 +827,30 @@ bool isReservedTopLevelKey(const std::string &key) {
            key == "properties" || key == "layers" || key == "objects" || key == "tilemap";
 }
 
+size_t preservedSectionBytes(const SceneState &s) {
+    size_t total = s.typedUnknownBytes;
+    for (const auto &[_, section] : s.preservedSections)
+        total += section.canonicalJson.size();
+    return total;
+}
+
+/// @brief Reserve budget for one retained unknown section member (ADR 0176).
+bool reserveTypedUnknown(SceneState &s, const std::string &path, const std::string &json) {
+    if (preservedSectionBytes(s) + json.size() > kMaxPreservedBytes) {
+        addDiagnostic(s,
+                      "scene.schema.limit_exceeded",
+                      "error",
+                      "preserved scene sections exceed 4 MiB",
+                      path);
+        return false;
+    }
+    s.typedUnknownBytes += json.size();
+    return true;
+}
+
 void preserveSection(SceneState &s, const std::string &key, void *value) {
     std::string json = formatRuntimeJson(value);
-    size_t total = json.size();
+    size_t total = json.size() + s.typedUnknownBytes;
     for (const auto &[_, section] : s.preservedSections)
         total += section.canonicalJson.size();
     if (total > kMaxPreservedBytes) {
@@ -776,6 +862,397 @@ void preserveSection(SceneState &s, const std::string &key, void *value) {
         return;
     }
     s.preservedSections[key] = PreservedSection{key, std::move(json)};
+}
+
+bool strictIntegerKey(const std::string &key, int64_t &out) {
+    if (key.empty())
+        return false;
+    try {
+        size_t pos = 0;
+        out = std::stoll(key, &pos);
+        return pos == key.size();
+    } catch (...) {
+        return false;
+    }
+}
+
+void retainUnknownMember(SceneState &s,
+                         std::map<std::string, std::string> &unknown,
+                         const std::string &path,
+                         const std::string &key,
+                         void *value) {
+    std::string json = formatRuntimeJson(value);
+    if (reserveTypedUnknown(s, path + "/" + key, json))
+        unknown[key] = std::move(json);
+}
+
+void parseCollisionSection(SceneState &s, void *root) {
+    void *keys = rt_map_keys(root);
+    int64_t count = rt_seq_len(keys);
+    for (int64_t i = 0; i < count; ++i) {
+        rt_string keyStr = rt_seq_get_str(keys, i);
+        std::string key = toStd(keyStr);
+        void *value = rt_map_get(root, keyStr);
+        rt_string_unref(keyStr);
+        if (key == "layer") {
+            int64_t layer = 0;
+            if (jsonNumberToInt(value, layer)) {
+                s.behavior.collisionLayer = layer;
+                s.behavior.hasCollisionLayer = true;
+            } else {
+                addDiagnostic(s,
+                              "scene.schema.invalid_value",
+                              "warning",
+                              "collision layer must be an integer",
+                              "/collision/layer");
+            }
+            continue;
+        }
+        if (key == "solid" || key == "oneWayUp") {
+            if (!isSeq(value)) {
+                addDiagnostic(s,
+                              "scene.schema.invalid_value",
+                              "warning",
+                              "collision tile list must be an array",
+                              "/collision/" + key);
+                continue;
+            }
+            int64_t kind = key == "solid" ? RT_TILE_COLLISION_SOLID : RT_TILE_COLLISION_ONE_WAY_UP;
+            int64_t len = rt_seq_len(value);
+            for (int64_t ti = 0; ti < len; ++ti) {
+                int64_t tile = 0;
+                if (jsonNumberToInt(rt_seq_get(value, ti), tile))
+                    s.behavior.collision[tile] = kind;
+                else
+                    addDiagnostic(s,
+                                  "scene.schema.invalid_value",
+                                  "warning",
+                                  "collision tile id must be an integer",
+                                  "/collision/" + key);
+            }
+            continue;
+        }
+        retainUnknownMember(s, s.behavior.collisionUnknown, "/collision", key, value);
+    }
+    releaseObject(keys);
+}
+
+void parseTilePropertiesSection(SceneState &s, void *root) {
+    void *tileKeys = rt_map_keys(root);
+    int64_t count = rt_seq_len(tileKeys);
+    int64_t totalEntries = 0;
+    for (const auto &[_, props] : s.behavior.tileProperties)
+        totalEntries += static_cast<int64_t>(props.values.size());
+    for (int64_t i = 0; i < count; ++i) {
+        rt_string tileKey = rt_seq_get_str(tileKeys, i);
+        std::string key = toStd(tileKey);
+        void *props = rt_map_get(root, tileKey);
+        rt_string_unref(tileKey);
+        int64_t tileId = 0;
+        if (!strictIntegerKey(key, tileId) || !isMap(props)) {
+            retainUnknownMember(s, s.behavior.tilePropertiesUnknown, "/tileProperties", key, props);
+            continue;
+        }
+        TilePropertySet &target = s.behavior.tileProperties[tileId];
+        void *propKeys = rt_map_keys(props);
+        int64_t propCount = rt_seq_len(propKeys);
+        for (int64_t pi = 0; pi < propCount; ++pi) {
+            rt_string propKeyStr = rt_seq_get_str(propKeys, pi);
+            std::string propKey = toStd(propKeyStr);
+            void *raw = rt_map_get(props, propKeyStr);
+            rt_string_unref(propKeyStr);
+            int64_t intValue = 0;
+            SceneScalar scalar;
+            if (raw && rt_box_type(raw) == RT_BOX_I1)
+                scalar = makeBoolScalar(rt_unbox_i1(raw) != 0);
+            else if (jsonNumberToInt(raw, intValue))
+                scalar = makeIntScalar(intValue);
+            else {
+                retainUnknownMember(s, target.unknown, "/tileProperties/" + key, propKey, raw);
+                continue;
+            }
+            if (!validKey(propKey)) {
+                addDiagnostic(s,
+                              "scene.schema.limit_exceeded",
+                              "warning",
+                              "tile property key exceeds 128 bytes",
+                              "/tileProperties/" + key);
+                continue;
+            }
+            if (target.values.size() >= static_cast<size_t>(kMaxTilePropertiesPerTile) ||
+                totalEntries >= kMaxTilePropertyEntries) {
+                addDiagnostic(s,
+                              "scene.schema.limit_exceeded",
+                              "warning",
+                              "too many tile properties; later entries were dropped",
+                              "/tileProperties/" + key);
+                continue;
+            }
+            target.values[propKey] = std::move(scalar);
+            ++totalEntries;
+        }
+        releaseObject(propKeys);
+        if (target.empty())
+            s.behavior.tileProperties.erase(tileId);
+    }
+    releaseObject(tileKeys);
+}
+
+void parseAnimationsSection(SceneState &s, void *root) {
+    int64_t count = rt_seq_len(root);
+    int64_t totalFrames = 0;
+    for (const auto &[_, anim] : s.behavior.animations)
+        totalFrames += static_cast<int64_t>(anim.frames.size());
+    for (int64_t i = 0; i < count; ++i) {
+        void *record = rt_seq_get(root, i);
+        if (!isMap(record)) {
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "tile animation record must be an object",
+                          "/animations");
+            continue;
+        }
+        int64_t base = 0;
+        if (!jsonInt(record, "baseTile", base)) {
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "tile animation record is missing an integer baseTile",
+                          "/animations");
+            continue;
+        }
+        std::string path = "/animations/" + std::to_string(base);
+        void *frameList = mapGet(record, "frames");
+        int64_t frameCount = isSeq(frameList) ? rt_seq_len(frameList) : 0;
+        if (frameCount <= 0 || frameCount > kMaxAnimFramesPerRule) {
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "tile animation frames must be a 1..4096 entry array",
+                          path);
+            continue;
+        }
+        TileAnimation animation;
+        animation.frames.resize(static_cast<size_t>(frameCount));
+        bool validFrames = true;
+        for (int64_t fi = 0; fi < frameCount; ++fi)
+            validFrames = validFrames && jsonNumberToInt(rt_seq_get(frameList, fi),
+                                                         animation.frames[static_cast<size_t>(fi)]);
+        if (!validFrames) {
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "tile animation frames must be integers",
+                          path);
+            continue;
+        }
+        void *durationList = mapGet(record, "durations");
+        bool haveDurations = false;
+        if (isSeq(durationList) && rt_seq_len(durationList) == frameCount) {
+            animation.durations.resize(static_cast<size_t>(frameCount));
+            haveDurations = true;
+            for (int64_t fi = 0; fi < frameCount; ++fi) {
+                haveDurations = haveDurations &&
+                                jsonNumberToInt(rt_seq_get(durationList, fi),
+                                                animation.durations[static_cast<size_t>(fi)]) &&
+                                animation.durations[static_cast<size_t>(fi)] > 0;
+            }
+        }
+        if (!haveDurations) {
+            int64_t declaredFrames = 0;
+            int64_t ms = 0;
+            if (!jsonInt(record, "frameCount", declaredFrames) || declaredFrames != frameCount ||
+                !jsonInt(record, "msPerFrame", ms) || ms <= 0) {
+                addDiagnostic(s,
+                              "scene.schema.invalid_value",
+                              "warning",
+                              "tile animation needs per-frame durations or a "
+                              "matching frameCount with positive msPerFrame",
+                              path);
+                continue;
+            }
+            animation.durations.assign(static_cast<size_t>(frameCount), ms);
+        }
+        if (totalFrames + frameCount > kMaxTotalAnimFrames) {
+            addDiagnostic(s,
+                          "scene.schema.limit_exceeded",
+                          "warning",
+                          "too many tile animation frames; later rules were dropped",
+                          path);
+            continue;
+        }
+        void *memberKeys = rt_map_keys(record);
+        int64_t memberCount = rt_seq_len(memberKeys);
+        for (int64_t mi = 0; mi < memberCount; ++mi) {
+            rt_string memberStr = rt_seq_get_str(memberKeys, mi);
+            std::string member = toStd(memberStr);
+            void *value = rt_map_get(record, memberStr);
+            rt_string_unref(memberStr);
+            // frameCount/msPerFrame are a redundant legacy encoding of the
+            // canonical per-frame durations and are intentionally not retained.
+            if (member == "baseTile" || member == "frames" || member == "durations" ||
+                member == "frameCount" || member == "msPerFrame")
+                continue;
+            retainUnknownMember(s, animation.unknown, path, member, value);
+        }
+        releaseObject(memberKeys);
+        if (s.behavior.animations.count(base))
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "duplicate tile animation baseTile; the later rule wins",
+                          path);
+        else
+            totalFrames += frameCount;
+        s.behavior.animations[base] = std::move(animation);
+    }
+}
+
+void parseAutotilesSection(SceneState &s, void *root) {
+    int64_t count = rt_seq_len(root);
+    for (int64_t i = 0; i < count; ++i) {
+        void *rule = rt_seq_get(root, i);
+        if (!isMap(rule)) {
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "autotile rule must be an object",
+                          "/autotiles");
+            continue;
+        }
+        int64_t base = 0;
+        if (!jsonInt(rule, "baseTile", base)) {
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "autotile rule is missing an integer baseTile",
+                          "/autotiles");
+            continue;
+        }
+        std::string path = "/autotiles/" + std::to_string(base);
+        void *variants = mapGet(rule, "variants");
+        if (!isSeq(variants) ||
+            rt_seq_len(variants) < static_cast<int64_t>(kAutotileVariantCount)) {
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "autotile variants must be an array of at least 16 tile ids",
+                          path);
+            continue;
+        }
+        AutotileRule parsed;
+        bool ok = true;
+        for (size_t vi = 0; vi < kAutotileVariantCount; ++vi)
+            ok = ok && jsonNumberToInt(rt_seq_get(variants, static_cast<int64_t>(vi)),
+                                       parsed.variants[vi]);
+        if (!ok) {
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "autotile variants must be integers",
+                          path);
+            continue;
+        }
+        if (rt_seq_len(variants) > static_cast<int64_t>(kAutotileVariantCount))
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "autotile variants beyond the first 16 were dropped",
+                          path);
+        void *memberKeys = rt_map_keys(rule);
+        int64_t memberCount = rt_seq_len(memberKeys);
+        for (int64_t mi = 0; mi < memberCount; ++mi) {
+            rt_string memberStr = rt_seq_get_str(memberKeys, mi);
+            std::string member = toStd(memberStr);
+            void *value = rt_map_get(rule, memberStr);
+            rt_string_unref(memberStr);
+            if (member == "baseTile" || member == "variants")
+                continue;
+            retainUnknownMember(s, parsed.unknown, path, member, value);
+        }
+        releaseObject(memberKeys);
+        if (s.behavior.autotiles.count(base))
+            addDiagnostic(s,
+                          "scene.schema.invalid_value",
+                          "warning",
+                          "duplicate autotile baseTile; the later rule wins",
+                          path);
+        s.behavior.autotiles[base] = std::move(parsed);
+    }
+}
+
+void parseScalarSection(SceneState &s,
+                        SectionScalarState &section,
+                        const std::string &name,
+                        void *root) {
+    void *keys = rt_map_keys(root);
+    int64_t count = rt_seq_len(keys);
+    for (int64_t i = 0; i < count; ++i) {
+        rt_string keyStr = rt_seq_get_str(keys, i);
+        std::string key = toStd(keyStr);
+        void *value = rt_map_get(root, keyStr);
+        rt_string_unref(keyStr);
+        if (!validKey(key)) {
+            addDiagnostic(s,
+                          "scene.schema.limit_exceeded",
+                          "warning",
+                          name + " field key exceeds 128 bytes",
+                          "/" + name);
+            continue;
+        }
+        int64_t intValue = 0;
+        if (value && rt_string_is_handle(value)) {
+            std::string text = toStd(static_cast<rt_string>(value));
+            if (validStringValue(text)) {
+                section.fields[key] = makeStringScalar(std::move(text));
+                continue;
+            }
+        } else if (value && rt_box_type(value) == RT_BOX_STR) {
+            rt_string str = rt_unbox_str(value);
+            std::string text = toStd(str);
+            rt_string_unref(str);
+            if (validStringValue(text)) {
+                section.fields[key] = makeStringScalar(std::move(text));
+                continue;
+            }
+        } else if (jsonNumberToInt(value, intValue)) {
+            section.fields[key] = makeIntScalar(intValue);
+            continue;
+        }
+        retainUnknownMember(s, section.unknown, "/" + name, key, value);
+    }
+    releaseObject(keys);
+}
+
+/// @brief Route one known rich section into typed state (ADR 0176, ADR 0177).
+/// @return True when the section was consumed; false to preserve it verbatim.
+bool parseTypedSection(SceneState &s, const std::string &key, void *value) {
+    if (key == "collision" && isMap(value)) {
+        parseCollisionSection(s, value);
+        return true;
+    }
+    if (key == "tileProperties" && isMap(value)) {
+        parseTilePropertiesSection(s, value);
+        return true;
+    }
+    if (key == "animations" && isSeq(value)) {
+        parseAnimationsSection(s, value);
+        return true;
+    }
+    if (key == "autotiles" && isSeq(value)) {
+        parseAutotilesSection(s, value);
+        return true;
+    }
+    if (key == "camera" && isMap(value)) {
+        parseScalarSection(s, s.camera, "camera", value);
+        return true;
+    }
+    if (key == "lighting" && isMap(value)) {
+        parseScalarSection(s, s.lighting, "lighting", value);
+        return true;
+    }
+    return false;
 }
 
 void parsePreservedSections(SceneState &s, void *root) {
@@ -792,6 +1269,10 @@ void parsePreservedSections(SceneState &s, void *root) {
         if (isReservedTopLevelKey(key))
             continue;
         if (isKnownRichSection(key)) {
+            if (parseTypedSection(s, key, value))
+                continue;
+            // Wrong-shaped known sections stay preserved verbatim, exactly as
+            // before typed parsing existed; BuildTilemap treats them as no-ops.
             if (isMap(value) || isSeq(value))
                 preserveSection(s, key, value);
             else
@@ -1247,6 +1728,157 @@ void writeTiles(std::ostringstream &out, const std::vector<int64_t> &tiles) {
     out << "]";
 }
 
+/// @brief Emit one compact JSON object from pre-rendered members, sorted by key.
+void writeMergedObject(std::ostringstream &out,
+                       std::vector<std::pair<std::string, std::string>> members) {
+    std::sort(members.begin(), members.end(), [](const auto &a, const auto &b) {
+        return a.first < b.first;
+    });
+    out << "{";
+    for (size_t i = 0; i < members.size(); ++i) {
+        if (i)
+            out << ",";
+        out << jsonEscape(members[i].first) << ":" << members[i].second;
+    }
+    out << "}";
+}
+
+std::string intListJson(const std::vector<int64_t> &values) {
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i)
+            out << ",";
+        out << values[i];
+    }
+    out << "]";
+    return out.str();
+}
+
+void writeCollisionSection(std::ostringstream &out, const TileBehaviorState &b) {
+    std::vector<std::pair<std::string, std::string>> members;
+    if (b.hasCollisionLayer)
+        members.emplace_back("layer", std::to_string(b.collisionLayer));
+    std::vector<int64_t> solid;
+    std::vector<int64_t> oneWayUp;
+    for (const auto &[tile, kind] : b.collision) {
+        if (kind == RT_TILE_COLLISION_ONE_WAY_UP)
+            oneWayUp.push_back(tile);
+        else
+            solid.push_back(tile);
+    }
+    if (!solid.empty())
+        members.emplace_back("solid", intListJson(solid));
+    if (!oneWayUp.empty())
+        members.emplace_back("oneWayUp", intListJson(oneWayUp));
+    for (const auto &[key, json] : b.collisionUnknown)
+        members.emplace_back(key, json);
+    writeMergedObject(out, std::move(members));
+}
+
+void writeTilePropertiesSection(std::ostringstream &out, const TileBehaviorState &b) {
+    out << "{";
+    bool first = true;
+    for (const auto &[tile, props] : b.tileProperties) {
+        if (!first)
+            out << ",";
+        first = false;
+        out << jsonEscape(std::to_string(tile)) << ":";
+        std::vector<std::pair<std::string, std::string>> members;
+        for (const auto &[key, value] : props.values)
+            members.emplace_back(key, scalarToJson(value));
+        for (const auto &[key, json] : props.unknown)
+            members.emplace_back(key, json);
+        writeMergedObject(out, std::move(members));
+    }
+    for (const auto &[key, json] : b.tilePropertiesUnknown) {
+        if (!first)
+            out << ",";
+        first = false;
+        out << jsonEscape(key) << ":" << json;
+    }
+    out << "}";
+}
+
+void writeAnimationsSection(std::ostringstream &out, const TileBehaviorState &b) {
+    out << "[";
+    bool first = true;
+    for (const auto &[base, animation] : b.animations) {
+        if (!first)
+            out << ",";
+        first = false;
+        std::vector<std::pair<std::string, std::string>> members;
+        members.emplace_back("baseTile", std::to_string(base));
+        members.emplace_back("frames", intListJson(animation.frames));
+        members.emplace_back("durations", intListJson(animation.durations));
+        for (const auto &[key, json] : animation.unknown)
+            members.emplace_back(key, json);
+        writeMergedObject(out, std::move(members));
+    }
+    out << "]";
+}
+
+void writeAutotilesSection(std::ostringstream &out, const TileBehaviorState &b) {
+    out << "[";
+    bool first = true;
+    for (const auto &[base, rule] : b.autotiles) {
+        if (!first)
+            out << ",";
+        first = false;
+        std::vector<std::pair<std::string, std::string>> members;
+        members.emplace_back("baseTile", std::to_string(base));
+        members.emplace_back("variants", intListJson({rule.variants.begin(), rule.variants.end()}));
+        for (const auto &[key, json] : rule.unknown)
+            members.emplace_back(key, json);
+        writeMergedObject(out, std::move(members));
+    }
+    out << "]";
+}
+
+void writeScalarSection(std::ostringstream &out, const SectionScalarState &section) {
+    std::vector<std::pair<std::string, std::string>> members;
+    for (const auto &[key, value] : section.fields)
+        members.emplace_back(key, scalarToJson(value));
+    for (const auto &[key, json] : section.unknown)
+        members.emplace_back(key, json);
+    writeMergedObject(out, std::move(members));
+}
+
+/// @brief Emit one typed rich section when non-empty; return true when emitted.
+bool writeTypedSection(std::ostringstream &out, const SceneState &s, const std::string &key) {
+    if (key == "collision" && !s.behavior.collisionEmpty()) {
+        out << ",\n  \"collision\": ";
+        writeCollisionSection(out, s.behavior);
+        return true;
+    }
+    if (key == "tileProperties" && !s.behavior.tilePropertiesEmpty()) {
+        out << ",\n  \"tileProperties\": ";
+        writeTilePropertiesSection(out, s.behavior);
+        return true;
+    }
+    if (key == "animations" && !s.behavior.animations.empty()) {
+        out << ",\n  \"animations\": ";
+        writeAnimationsSection(out, s.behavior);
+        return true;
+    }
+    if (key == "autotiles" && !s.behavior.autotiles.empty()) {
+        out << ",\n  \"autotiles\": ";
+        writeAutotilesSection(out, s.behavior);
+        return true;
+    }
+    if (key == "camera" && !s.camera.empty()) {
+        out << ",\n  \"camera\": ";
+        writeScalarSection(out, s.camera);
+        return true;
+    }
+    if (key == "lighting" && !s.lighting.empty()) {
+        out << ",\n  \"lighting\": ";
+        writeScalarSection(out, s.lighting);
+        return true;
+    }
+    return false;
+}
+
 void writeCanonicalJson(std::ostringstream &out, const SceneState &s) {
     out << "{\n";
     out << "  \"version\": " << kSceneVersion << ",\n";
@@ -1300,6 +1932,10 @@ void writeCanonicalJson(std::ostringstream &out, const SceneState &s) {
         "camera", "lighting", "collision", "tileProperties", "animations", "autotiles"};
     std::set<std::string> emitted;
     for (const char *key : knownSections) {
+        if (writeTypedSection(out, s, key)) {
+            emitted.insert(key);
+            continue;
+        }
         auto it = s.preservedSections.find(key);
         if (it == s.preservedSections.end())
             continue;
@@ -1437,6 +2073,17 @@ std::vector<AssetDescriptor> collectAssetDescriptors(const SceneState &s) {
         }
         rt_string_unref(text);
     }
+    auto scanScalarSection = [&](const SectionScalarState &section, const char *name) {
+        for (const auto &[key, value] : section.fields) {
+            if (value.kind != ScalarKind::String)
+                continue;
+            std::string kind = assetKindForKey(key, "unknown");
+            if (!kind.empty())
+                addAsset(out, s, value.stringValue, kind, "section", -1, -1, key, name);
+        }
+    };
+    scanScalarSection(s.camera, "camera");
+    scanScalarSection(s.lighting, "lighting");
     return out;
 }
 
@@ -1811,6 +2458,40 @@ void applyAutotilesSection(void *tilemap, void *root) {
             ok = ok && jsonNumberToInt(rt_seq_get(variants, vi), v[vi]);
         if (!ok)
             continue;
+        rt_tilemap_set_autotile_lo(tilemap, base, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+        rt_tilemap_set_autotile_hi(
+            tilemap, base, v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]);
+    }
+}
+
+/// @brief Apply typed tile-behavior state to a Tilemap copy (ADR 0176).
+/// @details Values pass through unchanged; Tilemap validates addressability
+///          exactly as it did for the preserved-JSON path.
+void applyTypedBehavior(const SceneState &s, void *tilemap) {
+    const TileBehaviorState &b = s.behavior;
+    if (b.hasCollisionLayer)
+        rt_tilemap_set_collision_layer(tilemap, b.collisionLayer);
+    for (const auto &[tile, kind] : b.collision)
+        rt_tilemap_set_collision(tilemap, tile, kind);
+    for (const auto &[tile, props] : b.tileProperties) {
+        for (const auto &[key, value] : props.values) {
+            rt_string keyStr = makeString(key);
+            rt_tilemap_set_tile_property(tilemap,
+                                         tile,
+                                         keyStr,
+                                         value.kind == ScalarKind::Bool ? (value.boolValue ? 1 : 0)
+                                                                        : value.intValue);
+            rt_string_unref(keyStr);
+        }
+    }
+    for (const auto &[base, animation] : b.animations)
+        rt_tilemap_set_import_tile_anim(tilemap,
+                                        base,
+                                        static_cast<int64_t>(animation.frames.size()),
+                                        animation.frames.data(),
+                                        animation.durations.data());
+    for (const auto &[base, rule] : b.autotiles) {
+        const auto &v = rule.variants;
         rt_tilemap_set_autotile_lo(tilemap, base, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
         rt_tilemap_set_autotile_hi(
             tilemap, base, v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]);
@@ -2853,10 +3534,563 @@ void *rt_game_scene_build_tilemap(void *scene) {
                 }
             }
         }
+        applyTypedBehavior(s, tilemap);
         applyPreservedTilemapSections(s, tilemap);
         return tilemap;
     }
     SCENE_CATCH(nullptr)
+}
+
+} // extern "C"
+
+namespace {
+
+/// @brief Validate a setter-facing behavior tile ID (ADR 0176).
+bool editableBehaviorTileId(SceneState &s, int64_t tile) {
+    if (tile >= kMinBehaviorTileId && tile <= kMaxBehaviorTileId)
+        return true;
+    addDiagnostic(s, "scene.edit.rejected", "warning", "tile id must be between 1 and 4095");
+    return false;
+}
+
+/// @brief Replace a same-key malformed preserved section when typed authoring begins.
+void claimTypedSection(SceneState &s, const char *key) {
+    auto it = s.preservedSections.find(key);
+    if (it == s.preservedSections.end())
+        return;
+    addDiagnostic(s,
+                  "scene.edit.rejected",
+                  "warning",
+                  std::string(key) + " section had an invalid shape and was replaced");
+    s.preservedSections.erase(it);
+}
+
+void pushIntValue(void *seq, int64_t value) {
+    void *boxed = rt_box_i64(value);
+    rt_seq_push(seq, boxed);
+    releaseObject(boxed);
+}
+
+void *ascendingKeySeq(const std::map<int64_t, int64_t> &map) {
+    void *seq = rt_seq_new_owned();
+    for (const auto &[key, _] : map)
+        pushIntValue(seq, key);
+    return seq;
+}
+
+void *intVectorSeq(const std::vector<int64_t> &values) {
+    void *seq = rt_seq_new_owned();
+    for (int64_t value : values)
+        pushIntValue(seq, value);
+    return seq;
+}
+
+void setTilePropertyScalar(void *scene, int64_t tile, rt_string key, SceneScalar value) {
+    SceneState &s = *requireScene(scene)->state;
+    if (!editableBehaviorTileId(s, tile))
+        return;
+    std::string k = toStd(key);
+    if (!validKey(k)) {
+        addDiagnostic(s, "scene.edit.rejected", "warning", "property key exceeds 128 bytes");
+        return;
+    }
+    TilePropertySet &target = s.behavior.tileProperties[tile];
+    if (target.values.find(k) == target.values.end()) {
+        int64_t totalEntries = 0;
+        for (const auto &[_, props] : s.behavior.tileProperties)
+            totalEntries += static_cast<int64_t>(props.values.size());
+        if (target.values.size() >= static_cast<size_t>(kMaxTilePropertiesPerTile) ||
+            totalEntries >= kMaxTilePropertyEntries) {
+            addDiagnostic(s, "scene.edit.rejected", "warning", "too many tile properties");
+            if (target.empty())
+                s.behavior.tileProperties.erase(tile);
+            return;
+        }
+    }
+    claimTypedSection(s, "tileProperties");
+    target.values[k] = std::move(value);
+}
+
+/// @brief Read one Zia Seq of integers; false on non-seq or non-integer entries.
+bool readIntSeq(void *seq, std::vector<int64_t> &out) {
+    if (!isSeq(seq))
+        return false;
+    int64_t len = rt_seq_len(seq);
+    out.clear();
+    out.reserve(static_cast<size_t>(len));
+    for (int64_t i = 0; i < len; ++i) {
+        int64_t value = 0;
+        if (!jsonNumberToInt(rt_seq_get(seq, i), value))
+            return false;
+        out.push_back(value);
+    }
+    return true;
+}
+
+bool rejectSectionEdit(SceneState &s, const char *message) {
+    addDiagnostic(s, "scene.edit.rejected", "warning", message);
+    return false;
+}
+
+bool intFieldInRange(const SceneScalar &value, int64_t min, int64_t max) {
+    return value.kind == ScalarKind::Int && value.intValue >= min && value.intValue <= max;
+}
+
+/// @brief Validate the known camera-section fields of ADR 0177; unknown keys pass.
+bool validCameraField(SceneState &s, const std::string &key, const SceneScalar &value) {
+    if (key == "mode") {
+        if (value.kind != ScalarKind::String ||
+            (value.stringValue != "follow" && value.stringValue != "fixed"))
+            return rejectSectionEdit(s, "camera mode must be \"follow\" or \"fixed\"");
+        return true;
+    }
+    if (key == "minX" || key == "minY" || key == "maxX" || key == "maxY") {
+        if (value.kind != ScalarKind::Int)
+            return rejectSectionEdit(s, "camera bounds must be integers");
+        return true;
+    }
+    if (key == "deadzoneWidth" || key == "deadzoneHeight") {
+        if (!intFieldInRange(value, 0, std::numeric_limits<int64_t>::max()))
+            return rejectSectionEdit(s, "camera deadzone must be a non-negative integer");
+        return true;
+    }
+    if (key == "followLerpPct") {
+        if (!intFieldInRange(value, 1, 100))
+            return rejectSectionEdit(s, "camera followLerpPct must be between 1 and 100");
+        return true;
+    }
+    if (key == "zoomPct") {
+        if (!intFieldInRange(value, 10, 1000))
+            return rejectSectionEdit(s, "camera zoomPct must be between 10 and 1000");
+        return true;
+    }
+    return true;
+}
+
+/// @brief Validate the known lighting-section fields of ADR 0177; unknown keys pass.
+bool validLightingField(SceneState &s, const std::string &key, const SceneScalar &value) {
+    if (key == "darkness") {
+        if (!intFieldInRange(value, 0, 255))
+            return rejectSectionEdit(s, "lighting darkness must be between 0 and 255");
+        return true;
+    }
+    if (key == "tint" || key == "playerLightColor") {
+        if (!intFieldInRange(value, 0, 4294967295))
+            return rejectSectionEdit(s, "lighting colors must be 32-bit ARGB integers");
+        return true;
+    }
+    if (key == "playerLightRadius") {
+        if (!intFieldInRange(value, 0, 4096))
+            return rejectSectionEdit(s, "lighting playerLightRadius must be between 0 and 4096");
+        return true;
+    }
+    return true;
+}
+
+void setSectionScalar(SceneState &s,
+                      SectionScalarState &section,
+                      rt_string key,
+                      SceneScalar value) {
+    std::string k = toStd(key);
+    if (!validKey(k)) {
+        addDiagnostic(s, "scene.edit.rejected", "warning", "property key exceeds 128 bytes");
+        return;
+    }
+    if (value.kind == ScalarKind::String && !validStringValue(value.stringValue)) {
+        addDiagnostic(s, "scene.edit.rejected", "warning", "string property value exceeds 64 KiB");
+        return;
+    }
+    if (&section == &s.camera && !validCameraField(s, k, value))
+        return;
+    if (&section == &s.lighting && !validLightingField(s, k, value))
+        return;
+    claimTypedSection(s, &section == &s.camera ? "camera" : "lighting");
+    section.fields[k] = std::move(value);
+}
+
+const SceneScalar *findSectionScalar(const SectionScalarState &section, rt_string key) {
+    auto it = section.fields.find(toStd(key));
+    return it == section.fields.end() ? nullptr : &it->second;
+}
+
+void *sectionKeySeq(const SectionScalarState &section) {
+    void *seq = rt_seq_new_owned();
+    for (const auto &[key, _] : section.fields) {
+        rt_string item = makeString(key);
+        rt_seq_push(seq, item);
+        rt_string_unref(item);
+    }
+    return seq;
+}
+
+} // namespace
+
+extern "C" {
+
+int64_t rt_game_scene_tile_collision(void *scene, int64_t tile) {
+    SCENE_TRY {
+        const auto &collision = requireScene(scene)->state->behavior.collision;
+        auto it = collision.find(tile);
+        return it == collision.end() ? RT_TILE_COLLISION_NONE : it->second;
+    }
+    SCENE_CATCH(RT_TILE_COLLISION_NONE)
+}
+
+void rt_game_scene_set_tile_collision(void *scene, int64_t tile, int64_t kind) {
+    SCENE_TRY {
+        SceneState &s = *requireScene(scene)->state;
+        if (!editableBehaviorTileId(s, tile))
+            return;
+        if (kind < RT_TILE_COLLISION_NONE || kind > RT_TILE_COLLISION_ONE_WAY_UP) {
+            addDiagnostic(s, "scene.edit.rejected", "warning", "collision kind must be 0, 1, or 2");
+            return;
+        }
+        claimTypedSection(s, "collision");
+        if (kind == RT_TILE_COLLISION_NONE)
+            s.behavior.collision.erase(tile);
+        else
+            s.behavior.collision[tile] = kind;
+    }
+    SCENE_CATCH_VOID
+}
+
+void *rt_game_scene_collision_tiles(void *scene){
+    SCENE_TRY{return ascendingKeySeq(requireScene(scene) -> state->behavior.collision);
+}
+SCENE_CATCH(rt_seq_new_owned())
+}
+
+int64_t rt_game_scene_collision_layer(void *scene) {
+    SCENE_TRY {
+        return requireScene(scene)->state->behavior.collisionLayer;
+    }
+    SCENE_CATCH(0)
+}
+
+void rt_game_scene_set_collision_layer(void *scene, int64_t layer){
+    SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
+if (layer < 0 || layer >= kMaxLayers) {
+    addDiagnostic(s, "scene.edit.rejected", "warning", "collision layer must be between 0 and 15");
+    return;
+}
+claimTypedSection(s, "collision");
+s.behavior.collisionLayer = layer;
+s.behavior.hasCollisionLayer = true;
+}
+SCENE_CATCH_VOID
+}
+
+rt_string rt_game_scene_tile_property_kind(void *scene, int64_t tile, rt_string key){
+    SCENE_TRY{const auto &tiles = requireScene(scene) -> state->behavior.tileProperties;
+auto it = tiles.find(tile);
+if (it == tiles.end())
+    return makeString("");
+const SceneScalar *scalar = findScalar(it->second.values, key);
+return makeString(scalar ? scalarKindName(scalar->kind) : "");
+}
+SCENE_CATCH(makeString(""))
+}
+
+int64_t rt_game_scene_tile_property_int(void *scene, int64_t tile, rt_string key, int64_t def){
+    SCENE_TRY{const auto &tiles = requireScene(scene) -> state->behavior.tileProperties;
+auto it = tiles.find(tile);
+if (it == tiles.end())
+    return def;
+const SceneScalar *scalar = findScalar(it->second.values, key);
+return scalar && scalar->kind == ScalarKind::Int ? scalar->intValue : def;
+}
+SCENE_CATCH(def)
+}
+
+int8_t rt_game_scene_tile_property_bool(void *scene, int64_t tile, rt_string key, int8_t def) {
+    SCENE_TRY {
+        const auto &tiles = requireScene(scene)->state->behavior.tileProperties;
+        auto it = tiles.find(tile);
+        if (it == tiles.end())
+            return def;
+        const SceneScalar *scalar = findScalar(it->second.values, key);
+        return scalar && scalar->kind == ScalarKind::Bool ? (scalar->boolValue ? 1 : 0) : def;
+    }
+    SCENE_CATCH(def)
+}
+
+void rt_game_scene_set_tile_property_int(void *scene, int64_t tile, rt_string key, int64_t value) {
+    SCENE_TRY {
+        setTilePropertyScalar(scene, tile, key, makeIntScalar(value));
+    }
+    SCENE_CATCH_VOID
+}
+
+void rt_game_scene_set_tile_property_bool(void *scene, int64_t tile, rt_string key, int8_t value) {
+    SCENE_TRY {
+        setTilePropertyScalar(scene, tile, key, makeBoolScalar(value != 0));
+    }
+    SCENE_CATCH_VOID
+}
+
+void rt_game_scene_remove_tile_property(void *scene, int64_t tile, rt_string key) {
+    SCENE_TRY {
+        SceneState &s = *requireScene(scene)->state;
+        auto it = s.behavior.tileProperties.find(tile);
+        if (it == s.behavior.tileProperties.end())
+            return;
+        it->second.values.erase(toStd(key));
+        if (it->second.empty())
+            s.behavior.tileProperties.erase(it);
+    }
+    SCENE_CATCH_VOID
+}
+
+void *rt_game_scene_tile_property_keys(void *scene, int64_t tile) {
+    SCENE_TRY {
+        const auto &tiles = requireScene(scene)->state->behavior.tileProperties;
+        void *seq = rt_seq_new_owned();
+        auto it = tiles.find(tile);
+        if (it != tiles.end()) {
+            for (const auto &[key, _] : it->second.values) {
+                rt_string item = makeString(key);
+                rt_seq_push(seq, item);
+                rt_string_unref(item);
+            }
+        }
+        return seq;
+    }
+    SCENE_CATCH(rt_seq_new_owned())
+}
+
+void *rt_game_scene_tile_property_tiles(void *scene) {
+    SCENE_TRY {
+        const auto &tiles = requireScene(scene)->state->behavior.tileProperties;
+        void *seq = rt_seq_new_owned();
+        for (const auto &[tile, props] : tiles) {
+            if (!props.values.empty())
+                pushIntValue(seq, tile);
+        }
+        return seq;
+    }
+    SCENE_CATCH(rt_seq_new_owned())
+}
+
+void rt_game_scene_set_tile_anim(void *scene, int64_t base_tile, void *frames, void *durations_ms) {
+    SCENE_TRY {
+        SceneState &s = *requireScene(scene)->state;
+        if (!editableBehaviorTileId(s, base_tile))
+            return;
+        std::vector<int64_t> frameValues;
+        std::vector<int64_t> durationValues;
+        if (!readIntSeq(frames, frameValues) || !readIntSeq(durations_ms, durationValues)) {
+            addDiagnostic(s,
+                          "scene.edit.rejected",
+                          "warning",
+                          "tile animation frames and durations must be integer sequences");
+            return;
+        }
+        if (frameValues.empty() ||
+            frameValues.size() > static_cast<size_t>(kMaxAnimFramesPerRule) ||
+            frameValues.size() != durationValues.size()) {
+            addDiagnostic(s,
+                          "scene.edit.rejected",
+                          "warning",
+                          "tile animation needs 1..4096 frames with matching durations");
+            return;
+        }
+        for (int64_t duration : durationValues) {
+            if (duration <= 0) {
+                addDiagnostic(s,
+                              "scene.edit.rejected",
+                              "warning",
+                              "tile animation durations must be positive");
+                return;
+            }
+        }
+        int64_t totalFrames = 0;
+        for (const auto &[base, animation] : s.behavior.animations) {
+            if (base != base_tile)
+                totalFrames += static_cast<int64_t>(animation.frames.size());
+        }
+        if (totalFrames + static_cast<int64_t>(frameValues.size()) > kMaxTotalAnimFrames) {
+            addDiagnostic(s, "scene.edit.rejected", "warning", "too many tile animation frames");
+            return;
+        }
+        claimTypedSection(s, "animations");
+        TileAnimation &animation = s.behavior.animations[base_tile];
+        animation.frames = std::move(frameValues);
+        animation.durations = std::move(durationValues);
+    }
+    SCENE_CATCH_VOID
+}
+
+void *rt_game_scene_tile_anim_frames(void *scene, int64_t base_tile) {
+    SCENE_TRY {
+        const auto &animations = requireScene(scene)->state->behavior.animations;
+        auto it = animations.find(base_tile);
+        return it == animations.end() ? rt_seq_new_owned() : intVectorSeq(it->second.frames);
+    }
+    SCENE_CATCH(rt_seq_new_owned())
+}
+
+void *rt_game_scene_tile_anim_durations(void *scene, int64_t base_tile) {
+    SCENE_TRY {
+        const auto &animations = requireScene(scene)->state->behavior.animations;
+        auto it = animations.find(base_tile);
+        return it == animations.end() ? rt_seq_new_owned() : intVectorSeq(it->second.durations);
+    }
+    SCENE_CATCH(rt_seq_new_owned())
+}
+
+void rt_game_scene_remove_tile_anim(void *scene, int64_t base_tile) {
+    SCENE_TRY {
+        requireScene(scene)->state->behavior.animations.erase(base_tile);
+    }
+    SCENE_CATCH_VOID
+}
+
+void *rt_game_scene_tile_anim_bases(void *scene) {
+    SCENE_TRY {
+        const auto &animations = requireScene(scene)->state->behavior.animations;
+        void *seq = rt_seq_new_owned();
+        for (const auto &[base, _] : animations)
+            pushIntValue(seq, base);
+        return seq;
+    }
+    SCENE_CATCH(rt_seq_new_owned())
+}
+
+void rt_game_scene_set_autotile_rule(void *scene, int64_t base_tile, void *variants) {
+    SCENE_TRY {
+        SceneState &s = *requireScene(scene)->state;
+        if (!editableBehaviorTileId(s, base_tile))
+            return;
+        std::vector<int64_t> values;
+        if (!readIntSeq(variants, values) || values.size() != kAutotileVariantCount) {
+            addDiagnostic(s,
+                          "scene.edit.rejected",
+                          "warning",
+                          "autotile rule needs exactly 16 integer variant tile ids");
+            return;
+        }
+        claimTypedSection(s, "autotiles");
+        AutotileRule &rule = s.behavior.autotiles[base_tile];
+        std::copy(values.begin(), values.end(), rule.variants.begin());
+    }
+    SCENE_CATCH_VOID
+}
+
+void *rt_game_scene_autotile_variants(void *scene, int64_t base_tile) {
+    SCENE_TRY {
+        const auto &autotiles = requireScene(scene)->state->behavior.autotiles;
+        auto it = autotiles.find(base_tile);
+        if (it == autotiles.end())
+            return rt_seq_new_owned();
+        return intVectorSeq({it->second.variants.begin(), it->second.variants.end()});
+    }
+    SCENE_CATCH(rt_seq_new_owned())
+}
+
+void rt_game_scene_remove_autotile_rule(void *scene, int64_t base_tile) {
+    SCENE_TRY {
+        requireScene(scene)->state->behavior.autotiles.erase(base_tile);
+    }
+    SCENE_CATCH_VOID
+}
+
+void *rt_game_scene_autotile_bases(void *scene){
+    SCENE_TRY{const auto &autotiles = requireScene(scene) -> state->behavior.autotiles;
+void *seq = rt_seq_new_owned();
+for (const auto &[base, _] : autotiles)
+    pushIntValue(seq, base);
+return seq;
+}
+SCENE_CATCH(rt_seq_new_owned())
+}
+
+rt_string rt_game_scene_camera_field_kind(void *scene, rt_string key){SCENE_TRY{
+    const SceneScalar *scalar = findSectionScalar(requireScene(scene) -> state->camera, key);
+return makeString(scalar ? scalarKindName(scalar->kind) : "");
+}
+SCENE_CATCH(makeString(""))
+}
+
+int64_t rt_game_scene_camera_get_int(void *scene, rt_string key, int64_t def){SCENE_TRY{
+    const SceneScalar *scalar = findSectionScalar(requireScene(scene) -> state->camera, key);
+return scalar && scalar->kind == ScalarKind::Int ? scalar->intValue : def;
+}
+SCENE_CATCH(def)
+}
+
+rt_string rt_game_scene_camera_get_str(void *scene, rt_string key, rt_string def) {
+    SCENE_TRY {
+        const SceneScalar *scalar = findSectionScalar(requireScene(scene)->state->camera, key);
+        return makeString(scalar && scalar->kind == ScalarKind::String ? scalar->stringValue
+                                                                       : toStd(def));
+    }
+    SCENE_CATCH(makeString(""))
+}
+
+void rt_game_scene_camera_set_int(void *scene, rt_string key, int64_t value) {
+    SCENE_TRY {
+        SceneState &s = *requireScene(scene)->state;
+        setSectionScalar(s, s.camera, key, makeIntScalar(value));
+    }
+    SCENE_CATCH_VOID
+}
+
+void rt_game_scene_camera_set_str(void *scene, rt_string key, rt_string value) {
+    SCENE_TRY {
+        SceneState &s = *requireScene(scene)->state;
+        setSectionScalar(s, s.camera, key, makeStringScalar(toStd(value)));
+    }
+    SCENE_CATCH_VOID
+}
+
+void rt_game_scene_camera_remove(void *scene, rt_string key) {
+    SCENE_TRY {
+        requireScene(scene)->state->camera.fields.erase(toStd(key));
+    }
+    SCENE_CATCH_VOID
+}
+
+void *rt_game_scene_camera_keys(void *scene){
+    SCENE_TRY{return sectionKeySeq(requireScene(scene) -> state->camera);
+}
+SCENE_CATCH(rt_seq_new_owned())
+}
+
+rt_string rt_game_scene_lighting_field_kind(void *scene, rt_string key){SCENE_TRY{
+    const SceneScalar *scalar = findSectionScalar(requireScene(scene) -> state->lighting, key);
+return makeString(scalar ? scalarKindName(scalar->kind) : "");
+}
+SCENE_CATCH(makeString(""))
+}
+
+int64_t rt_game_scene_lighting_get_int(void *scene, rt_string key, int64_t def) {
+    SCENE_TRY {
+        const SceneScalar *scalar = findSectionScalar(requireScene(scene)->state->lighting, key);
+        return scalar && scalar->kind == ScalarKind::Int ? scalar->intValue : def;
+    }
+    SCENE_CATCH(def)
+}
+
+void rt_game_scene_lighting_set_int(void *scene, rt_string key, int64_t value) {
+    SCENE_TRY {
+        SceneState &s = *requireScene(scene)->state;
+        setSectionScalar(s, s.lighting, key, makeIntScalar(value));
+    }
+    SCENE_CATCH_VOID
+}
+
+void rt_game_scene_lighting_remove(void *scene, rt_string key) {
+    SCENE_TRY {
+        requireScene(scene)->state->lighting.fields.erase(toStd(key));
+    }
+    SCENE_CATCH_VOID
+}
+
+void *rt_game_scene_lighting_keys(void *scene) {
+    SCENE_TRY {
+        return sectionKeySeq(requireScene(scene)->state->lighting);
+    }
+    SCENE_CATCH(rt_seq_new_owned())
 }
 
 } // extern "C"

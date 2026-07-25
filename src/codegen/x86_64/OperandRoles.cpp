@@ -5,20 +5,29 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/OperandRoles.cpp
+// File: src/codegen/x86_64/OperandRoles.cpp
 // Purpose: Shared x86-64 Machine IR operand role classification.
 // Key invariants:
 //   - Covers all defined MIR opcodes; unknown future opcodes return conservative roles.
 // Ownership/Lifetime:
 //   - Stateless free functions; no dynamic allocation.
-// Links: codegen/x86_64/OperandRoles.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/OperandRoles.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "codegen/x86_64/OperandRoles.hpp"
 
 #include <variant>
+
+/**
+ * @file
+ * @brief Implements x86-64 MIR operand, EFLAGS, and side-effect classification.
+ *
+ * The opcode switches form a shared semantic contract for liveness, allocation,
+ * scheduling, folding, and dead-code elimination. Unknown future opcodes fall
+ * back conservatively to use-and-def operands and observable side effects.
+ */
 
 namespace zanna::codegen::x64 {
 

@@ -5,18 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/RegAllocLinear.cpp
+// File: src/codegen/x86_64/RegAllocLinear.cpp
 // Purpose: Tie together the linear-scan register allocation pipeline that turns
 //          Machine IR with virtual registers into a form annotated with
 //          physical register assignments and spill slots.
 // Key invariants:
-//   - Phases execute in deterministic order: liveness → coalescer → allocator.
+//   - Phases execute in deterministic order: liveness analysis, then allocation.
 //   - Live interval analysis is computed before allocation so every vreg has a defined lifetime.
 // Ownership/Lifetime:
 //   - Mutates MIR in place; AllocationResult is a lightweight summary for downstream passes.
-// Links: codegen/x86_64/RegAllocLinear.hpp,
-//        codegen/x86_64/ra/LiveIntervals.hpp,
-//        codegen/x86_64/ra/Allocator.hpp
+// Links: src/codegen/x86_64/RegAllocLinear.hpp,
+//        src/codegen/x86_64/ra/LiveIntervals.hpp,
+//        src/codegen/x86_64/ra/Allocator.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,6 +24,11 @@
 
 #include "ra/Allocator.hpp"
 #include "ra/LiveIntervals.hpp"
+
+/**
+ * @file
+ * @brief Implements x86-64 live-interval analysis followed by linear-scan allocation.
+ */
 
 namespace zanna::codegen::x64 {
 

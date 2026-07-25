@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/PeepholePass.cpp
+// File: src/codegen/aarch64/passes/PeepholePass.cpp
 // Purpose: Peephole optimisation pass for the AArch64 modular pipeline.
 //          Runs the optimizer on each post-RA MIR function, optionally
 //          collecting statistics via ZANNA_CODEGEN_STATS, and validates that
@@ -16,8 +16,8 @@
 //   - Statistics output goes to the Diagnostics warning channel, not stdout.
 // Ownership/Lifetime:
 //   - Stateless pass; mutates AArch64Module::mir in place.
-// Links: codegen/aarch64/passes/PeepholePass.hpp,
-//        codegen/aarch64/Peephole.hpp
+// Links: src/codegen/aarch64/passes/PeepholePass.hpp,
+//        src/codegen/aarch64/Peephole.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,16 +32,24 @@
 #include <string>
 #include <unordered_set>
 
+/**
+ * @file
+ * @brief Implements peephole orchestration, cleanup, MIR validation, and statistics.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 namespace {
 
-/// @brief Return true if @p opcode is any branch instruction (conditional or unconditional).
+/// @brief Tests whether an opcode carries an internal block target.
+/// @param opcode Opcode to classify.
+/// @return `true` for supported direct and conditional branch families.
 [[nodiscard]] bool isBranchTargetOpcode(MOpcode opcode) noexcept {
     return opcode == MOpcode::Br || opcode == MOpcode::BCond || opcode == MOpcode::Cbz ||
            opcode == MOpcode::Cbnz || opcode == MOpcode::Tbz || opcode == MOpcode::Tbnz;
 }
 
-/// @brief Return true when ZANNA_CODEGEN_STATS is set to a non-zero value.
+/// @brief Tests the `ZANNA_CODEGEN_STATS` environment switch.
+/// @return `true` for a non-empty value whose first character is not zero.
 [[nodiscard]] bool codegenStatsEnabled() noexcept {
     if (const char *value = std::getenv("ZANNA_CODEGEN_STATS"))
         return value[0] != '\0' && value[0] != '0';
@@ -59,19 +67,25 @@ struct MirStats {
     std::size_t stores = 0;       ///< Store instructions.
 };
 
-/// @brief Return true if @p opcode is Bl or Blr.
+/// @brief Tests for a direct or indirect call opcode.
+/// @param opcode Opcode to classify.
+/// @return `true` for `Bl` or `Blr`.
 [[nodiscard]] bool isCallOpcode(MOpcode opcode) noexcept {
     return opcode == MOpcode::Bl || opcode == MOpcode::Blr;
 }
 
-/// @brief Return true if @p opcode is any branch or return (Br/BCond/Cbz/Cbnz/Ret).
+/// @brief Tests for counted branch/return opcodes.
+/// @param opcode Opcode to classify.
+/// @return `true` for a conditional/unconditional branch or `Ret`.
 [[nodiscard]] bool isBranchOpcode(MOpcode opcode) noexcept {
     return opcode == MOpcode::Br || opcode == MOpcode::BCond || opcode == MOpcode::Cbz ||
            opcode == MOpcode::Cbnz || opcode == MOpcode::Tbz || opcode == MOpcode::Tbnz ||
            opcode == MOpcode::Ret;
 }
 
-/// @brief Return true if @p opcode is any load instruction (LDR/LDP variants).
+/// @brief Tests for scalar or paired load opcodes counted by statistics.
+/// @param opcode Opcode to classify.
+/// @return `true` for an enumerated load form.
 [[nodiscard]] bool isLoadOpcode(MOpcode opcode) noexcept {
     return opcode == MOpcode::LdrRegFpImm || opcode == MOpcode::LdrRegBaseImm ||
            opcode == MOpcode::Ldr8RegFpImm || opcode == MOpcode::Ldr8RegBaseImm ||
@@ -81,7 +95,9 @@ struct MirStats {
            opcode == MOpcode::LdpRegFpImm || opcode == MOpcode::LdpFprFpImm;
 }
 
-/// @brief Return true if @p opcode is any store instruction (STR/STP/Phi-store variants).
+/// @brief Tests for scalar, paired, or phi store opcodes counted by statistics.
+/// @param opcode Opcode to classify.
+/// @return `true` for an enumerated store form.
 [[nodiscard]] bool isStoreOpcode(MOpcode opcode) noexcept {
     return opcode == MOpcode::StrRegFpImm || opcode == MOpcode::StrRegBaseImm ||
            opcode == MOpcode::Str8RegFpImm || opcode == MOpcode::Str8RegBaseImm ||
@@ -93,7 +109,9 @@ struct MirStats {
            opcode == MOpcode::PhiStoreGPR || opcode == MOpcode::PhiStoreFPR;
 }
 
-/// @brief Walk @p fn and accumulate instruction-category counts into @p stats.
+/// @brief Accumulates function, block, instruction, and opcode-category counts.
+/// @param fn Function to inspect.
+/// @param[in,out] stats Aggregate counters to extend.
 void accumulateStats(const MFunction &fn, MirStats &stats) {
     ++stats.functions;
     stats.blocks += fn.blocks.size();
@@ -112,12 +130,16 @@ void accumulateStats(const MFunction &fn, MirStats &stats) {
     }
 }
 
-/// @brief Return true if @p opcode exits the block without a fall-through (Br/Ret).
+/// @brief Tests whether an opcode ends normal block flow.
+/// @param opcode Opcode to classify.
+/// @return `true` for unconditional `Br` or `Ret`.
 [[nodiscard]] bool isHardTerminator(MOpcode opcode) noexcept {
     return opcode == MOpcode::Br || opcode == MOpcode::Ret;
 }
 
-/// @brief Drop unreachable instructions after a known no-return runtime call.
+/// @brief Removes instruction tails after the first known no-return call per block.
+/// @param[in,out] fn Function to prune.
+/// @return Number of erased instructions.
 std::size_t pruneAfterNoReturnCalls(MFunction &fn) {
     std::size_t removed = 0;
     for (auto &block : fn.blocks) {
@@ -134,9 +156,12 @@ std::size_t pruneAfterNoReturnCalls(MFunction &fn) {
     return removed;
 }
 
-/// @brief Validate that @p fn has no virtual regs, no code after terminators,
-///        and that all branch targets exist within the function.
-/// @return True if valid; false and emits diagnostics on the first violation.
+/**
+ * @brief Validates physical registers, terminator placement, and branch targets.
+ * @param fn Optimized function to inspect.
+ * @param[in,out] diags Sink receiving the first violation.
+ * @return `true` when all checked MIR invariants hold.
+ */
 [[nodiscard]] bool validateFunction(const MFunction &fn, Diagnostics &diags) {
     std::unordered_set<std::string> labels;
     for (const auto &block : fn.blocks)
@@ -193,6 +218,12 @@ std::size_t pruneAfterNoReturnCalls(MFunction &fn) {
 
 } // namespace
 
+/**
+ * @brief Runs the selected optimizer, no-return cleanup, metadata pruning, and validation.
+ * @param[in,out] module Module whose functions are processed.
+ * @param[in,out] diags Diagnostic/statistics sink.
+ * @return `false` on missing target metadata or the first validation failure.
+ */
 bool PeepholePass::run(AArch64Module &module, Diagnostics &diags) {
     if (module.ti == nullptr) {
         diags.error("aarch64 peephole: target info is required");

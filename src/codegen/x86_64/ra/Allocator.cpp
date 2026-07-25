@@ -5,18 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/ra/Allocator.cpp
+// File: src/codegen/x86_64/ra/Allocator.cpp
 // Purpose: Implement the linear-scan allocation phase which assigns physical
 //          registers, inserts spill code, and lowers PX_COPY bundles for the
 //          x86-64 backend.
 // Key invariants:
 //   - Register pools are deterministically populated from the target ABI.
-//   - Allocation proceeds in block order, releasing all live values at boundaries.
+//   - Allocation proceeds in block order and carries values only across safe edges.
 // Ownership/Lifetime:
 //   - Mutates MIR blocks in place; returns AllocationResult to the caller.
-// Links: codegen/x86_64/ra/Allocator.hpp,
-//        codegen/x86_64/ra/Coalescer.hpp,
-//        codegen/x86_64/OperandRoles.hpp
+// Links: src/codegen/x86_64/ra/Allocator.hpp,
+//        src/codegen/x86_64/ra/Coalescer.hpp,
+//        src/codegen/x86_64/OperandRoles.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -45,8 +45,11 @@ namespace zanna::codegen::x64::ra {
 
 namespace {
 
+/// @brief Deterministically ordered free-register container.
 using RegPool = std::deque<PhysReg>;
 
+/// @brief Visitor-composition helper for @c std::visit.
+/// @tparam Ts Callable types combined into one overload set.
 template <typename... Ts> struct Overload : Ts... {
     using Ts::operator()...;
 };
@@ -86,6 +89,8 @@ struct PhysClobber {
 ///          implied by an instruction so it can spill conflicting live vregs.
 ///          We use a vector (compact, cache-friendly) and dedupe linearly —
 ///          the typical clobber count per instruction is < 4.
+/// @param clobbers Compact set-like vector extended in place.
+/// @param reg Physical register to add when not already represented.
 void addPhysClobber(std::vector<PhysClobber> &clobbers, PhysReg reg) {
     const RegClass cls = isXMM(reg) ? RegClass::XMM : RegClass::GPR;
     const auto duplicate = std::any_of(clobbers.begin(), clobbers.end(), [&](const auto &item) {
@@ -97,6 +102,8 @@ void addPhysClobber(std::vector<PhysClobber> &clobbers, PhysReg reg) {
 }
 
 /// @brief Return a compact register-class name for allocator diagnostics.
+/// @param cls Register class to render.
+/// @return Process-lifetime literal @c "XMM" or @c "GPR".
 [[nodiscard]] const char *regClassName(RegClass cls) noexcept {
     return cls == RegClass::XMM ? "XMM" : "GPR";
 }
@@ -104,8 +111,10 @@ void addPhysClobber(std::vector<PhysClobber> &clobbers, PhysReg reg) {
 /// @brief Compute the full set of physical registers an instruction overwrites.
 /// @details Combines two sources: explicit def-position physical operands, and
 ///          implicit clobbers for opcodes that touch fixed registers (CQO,
-///          IDIVrm, DIVrm — all of which clobber RAX/RDX). The result drives
-///          the allocator's "spill any live vreg that lands here" logic.
+///          IDIVrm, DIVrm, MULr, and IMULr). The result drives the allocator's
+///          "spill any live vreg that lands here" logic.
+/// @param instr Instruction whose explicit and implicit definitions are inspected.
+/// @return De-duplicated physical-register/class clobber vector.
 std::vector<PhysClobber> collectPhysicalClobbers(const MInstr &instr) {
     std::vector<PhysClobber> clobbers;
     for (std::size_t idx = 0; idx < instr.operands.size(); ++idx) {
@@ -133,6 +142,7 @@ std::vector<PhysClobber> collectPhysicalClobbers(const MInstr &instr) {
 /// @details Used when scanning for a MOVrr/MOVSDrr whose destination is being
 ///          allocated — if the source is a virtual register we can sometimes
 ///          coalesce by giving the destination the same physical register.
+/// @param instr Candidate integer or scalar-double move.
 /// @return Source vreg id, or @c UINT16_MAX when the instruction is not a
 ///         vreg-to-anything copy.
 uint16_t passthroughSourceVReg(const MInstr &instr) {
@@ -151,6 +161,9 @@ uint16_t passthroughSourceVReg(const MInstr &instr) {
 ///          resolve to the same physical register is a no-op and can be
 ///          discarded. The check is conservative — both operands must be
 ///          the same physical register of the same class.
+/// @param instr Candidate integer or scalar-double move.
+/// @param physDest Expected physical destination clobber.
+/// @return @c true when both physical operands are identical to @p physDest.
 bool isIdentityPhysicalMove(const MInstr &instr, PhysReg physDest) {
     if (instr.opcode != MOpcode::MOVrr && instr.opcode != MOpcode::MOVSDrr)
         return false;
@@ -167,7 +180,7 @@ bool isIdentityPhysicalMove(const MInstr &instr, PhysReg physDest) {
 
 /// @brief Create an allocator for a machine function.
 /// @details The constructor caches references to the function being rewritten,
-///          target ABI metadata, and liveness information.  It also precomputes
+///          target ABI metadata, and live intervals. It also precomputes
 ///          the register pools so @ref run can draw from ready-to-use vectors.
 /// @param func Machine function to allocate.
 /// @param target Target-specific register and ABI description.
@@ -189,8 +202,9 @@ LinearScanAllocator::LinearScanAllocator(MFunction &func,
 /// @brief Execute the allocation pipeline over the entire function.
 /// @details Iterates blocks in layout order, rewriting each instruction to use
 ///          physical registers while invoking the coalescer to lower PX_COPY
-///          pseudos.  After each block the allocator releases any registers that
-///          do not remain live into successor blocks.  The final spill-slot
+///          pseudos. CFG liveness identifies safe register-carry edges and
+///          cross-block spill homes; an optional global tier pins hot GPR
+///          chains unless @c ZANNA_NO_GLOBAL_RA is set. The final spill-slot
 ///          counts are copied from the spiller before returning the result map.
 /// @return Summary of virtual→physical mappings and spill requirements.
 AllocationResult LinearScanAllocator::run() {
@@ -271,6 +285,7 @@ AllocationResult LinearScanAllocator::run() {
     return result_;
 }
 
+/// @copydoc LinearScanAllocator::assignPinnedGlobals
 void LinearScanAllocator::assignPinnedGlobals() {
     const std::size_t blockCount = func_.blocks.size();
     if (blockCount == 0) {
@@ -441,6 +456,9 @@ void LinearScanAllocator::assignPinnedGlobals() {
         return;
     }
 
+    /// @brief Installs one whole-function virtual-to-physical pin.
+    /// @param vreg Virtual register to pin.
+    /// @param phys Assigned callee-saved physical register.
     auto pinVreg = [&](uint16_t vreg, PhysReg phys) {
         pinnedGlobals_.emplace(vreg, phys);
         auto &state = stateFor(RegClass::GPR, vreg);
@@ -461,6 +479,7 @@ void LinearScanAllocator::assignPinnedGlobals() {
 
     // Pinned registers belong to their candidates for the whole function;
     // remove them from the local free pool.
+    /// @brief Predicate matching registers consumed by global pin assignments.
     freeGPR_.erase(std::remove_if(freeGPR_.begin(),
                                   freeGPR_.end(),
                                   [&](PhysReg reg) {
@@ -471,6 +490,7 @@ void LinearScanAllocator::assignPinnedGlobals() {
                    freeGPR_.end());
 }
 
+/// @copydoc LinearScanAllocator::canCarryIntoNextBlock
 bool LinearScanAllocator::canCarryIntoNextBlock(std::size_t blockIdx) const {
     if (blockIdx + 1 >= func_.blocks.size()) {
         return false;
@@ -503,15 +523,19 @@ bool LinearScanAllocator::canCarryIntoNextBlock(std::size_t blockIdx) const {
 /// @brief Populate the per-class register pools from target metadata.
 /// @details Caller-saved and callee-saved registers are concatenated so the
 ///          allocator can draw from a single vector per class.  Reserved
-///          registers (stack and frame pointers) are filtered out to avoid
-///          accidental allocation.
+///          GPRs (stack/frame pointers and backend scratch registers) are
+///          filtered out to avoid accidental allocation.
 void LinearScanAllocator::buildPools() {
+    /// @brief Appends target-ordered registers to a free pool.
+    /// @param pool Destination pool.
+    /// @param regs Target metadata vector to append.
     auto appendRegs = [](RegPool &pool, const std::vector<PhysReg> &regs) {
         pool.insert(pool.end(), regs.begin(), regs.end());
     };
 
     appendRegs(freeGPR_, target_.callerSavedGPR);
     appendRegs(freeGPR_, target_.calleeSavedGPR);
+    /// @brief Predicate filtering fixed GPRs from the allocator pool.
     freeGPR_.erase(std::remove_if(freeGPR_.begin(),
                                   freeGPR_.end(),
                                   [](PhysReg reg) { return isReservedGPR(reg); }),
@@ -523,14 +547,14 @@ void LinearScanAllocator::buildPools() {
 
 /// @brief Access the register pool matching a class.
 /// @param cls Register class to query.
-/// @return Mutable vector of available physical registers.
+/// @return Mutable deque of available physical registers.
 std::deque<PhysReg> &LinearScanAllocator::poolFor(RegClass cls) {
     return cls == RegClass::GPR ? freeGPR_ : freeXMM_;
 }
 
 /// @brief Access the active list for a given register class.
 /// @param cls Register class to query.
-/// @return Mutable list of virtual registers currently holding physical regs.
+/// @return Mutable set of virtual registers currently holding physical regs.
 std::unordered_set<uint16_t> &LinearScanAllocator::activeFor(RegClass cls) {
     return cls == RegClass::GPR ? activeGPR_ : activeXMM_;
 }
@@ -562,6 +586,9 @@ VirtualAllocation &LinearScanAllocator::stateFor(RegClass cls, uint16_t id) {
 /// @details LiveIntervals is immutable during allocation, so the result of the
 ///          hash lookup is stable; caching it removes a map probe from the
 ///          per-instruction expiry scan over every active vreg.
+/// @param vreg Virtual-register identifier to look up.
+/// @param state Matching allocation state receiving the cached result.
+/// @return Stable interval pointer, or @c nullptr when none exists.
 const LiveInterval *LinearScanAllocator::cachedInterval(uint16_t vreg, VirtualAllocation &state) {
     if (!state.intervalCached) {
         state.interval = intervals_.lookup(vreg);
@@ -598,6 +625,7 @@ void LinearScanAllocator::removeActive(RegClass cls, uint16_t id) {
 /// @param cls Register class to allocate.
 /// @param prefix Instruction list receiving any required spill code.
 /// @return Physical register assigned to the caller.
+/// @throws std::runtime_error If the pool is empty and no active value can be spilled.
 PhysReg LinearScanAllocator::takeRegister(RegClass cls, std::vector<MInstr> &prefix) {
     auto &pool = poolFor(cls);
     if (pool.empty()) {
@@ -617,6 +645,7 @@ PhysReg LinearScanAllocator::takeRegister(RegClass cls, std::vector<MInstr> &pre
 ///          for future allocations.
 /// @param phys Register being released.
 /// @param cls Class of @p phys.
+/// @throws std::runtime_error If @p phys is already free.
 void LinearScanAllocator::releaseRegister(PhysReg phys, RegClass cls) {
     auto &pool = poolFor(cls);
     if (std::find(pool.begin(), pool.end(), phys) != pool.end()) {
@@ -626,12 +655,10 @@ void LinearScanAllocator::releaseRegister(PhysReg phys, RegClass cls) {
 }
 
 /// @brief Spill one active virtual register to free a physical register.
-/// @details The allocator selects the active value whose live interval ends
-///          furthest from the current point (Belady-style heuristic), requests
-///          that the spiller emit a store, and returns the freed register to the
-///          pool.  Values that already lack a physical register are skipped to
-///          avoid redundant work. Uses lifetime-based slot reuse when interval
-///          info is available to reduce stack frame size.
+/// @details Prefers non-cached, non-pinned values, then falls back to all
+///          non-pinned active values. Within either tier it selects the
+///          interval ending furthest away, breaking ties by virtual id.
+///          Lifetime-based slot reuse is used when interval data is available.
 /// @param cls Register class experiencing pressure.
 /// @param prefix Instruction list capturing generated spill code.
 /// @return True when spilling made a register available.
@@ -702,6 +729,7 @@ bool LinearScanAllocator::spillOne(RegClass cls, std::vector<MInstr> &prefix) {
     return !poolFor(cls).empty();
 }
 
+/// @copydoc LinearScanAllocator::spillActiveValue
 void LinearScanAllocator::spillActiveValue(uint16_t vreg,
                                            VirtualAllocation &state,
                                            std::vector<MInstr> &out) {
@@ -721,6 +749,7 @@ void LinearScanAllocator::spillActiveValue(uint16_t vreg,
     spiller_.spillValue(state.cls, vreg, state, poolFor(state.cls), out, result_);
 }
 
+/// @copydoc LinearScanAllocator::canUseScratchReload
 bool LinearScanAllocator::canUseScratchReload(uint16_t vreg, const OperandRole &role) const {
     if (!role.isUse || role.isDef) {
         return false;
@@ -736,6 +765,7 @@ bool LinearScanAllocator::canUseScratchReload(uint16_t vreg, const OperandRole &
     return true;
 }
 
+/// @copydoc LinearScanAllocator::pinInstructionVRegs
 void LinearScanAllocator::pinInstructionVRegs(const MInstr &instr) {
     pinnedForInstr_.clear();
     for (const auto &operand : instr.operands) {
@@ -808,11 +838,13 @@ void LinearScanAllocator::expireIntervals() {
     }
 }
 
+/// @copydoc LinearScanAllocator::isCallerSaved
 bool LinearScanAllocator::isCallerSaved(PhysReg reg, RegClass cls) const noexcept {
     const auto &bits = cls == RegClass::GPR ? callerSavedGPRBits_ : callerSavedFPRBits_;
     return bits.test(static_cast<std::size_t>(reg));
 }
 
+/// @copydoc LinearScanAllocator::takeFreeCalleeSaved
 std::pair<bool, PhysReg> LinearScanAllocator::takeFreeCalleeSaved(RegClass cls) {
     auto &pool = poolFor(cls);
     const auto &bits = cls == RegClass::GPR ? callerSavedGPRBits_ : callerSavedFPRBits_;
@@ -826,6 +858,7 @@ std::pair<bool, PhysReg> LinearScanAllocator::takeFreeCalleeSaved(RegClass cls) 
     return {false, PhysReg::RAX};
 }
 
+/// @copydoc LinearScanAllocator::collectCallerSavedToSpill
 std::vector<uint16_t> LinearScanAllocator::collectCallerSavedToSpill(RegClass cls) const {
     std::vector<uint16_t> out;
     const auto &active = cls == RegClass::GPR ? activeGPR_ : activeXMM_;
@@ -845,6 +878,7 @@ std::vector<uint16_t> LinearScanAllocator::collectCallerSavedToSpill(RegClass cl
     return out;
 }
 
+/// @copydoc LinearScanAllocator::spillOrRehomeAcrossCall
 void LinearScanAllocator::spillOrRehomeAcrossCall(RegClass cls,
                                                   const std::vector<uint16_t> &candidates,
                                                   std::vector<MInstr> &prefix) {
@@ -984,10 +1018,10 @@ void LinearScanAllocator::processBlock(MBasicBlock &block, Coalescer &coalescer)
 }
 
 /// @brief Release or spill registers at block boundaries using CFG-aware liveOut.
-/// @details Called after rewriting a block. Uses the liveOut set from dataflow
-///          analysis to determine which vregs need spilling. Vregs in liveOut
-///          are spilled to ensure correct reload in successor blocks. Vregs not
-///          in liveOut have their registers simply released.
+/// @details Carries registers across a safe next-block edge. Otherwise,
+///          live-out values are guaranteed spill homes and all local physical
+///          holdings are released. Boundary stores are inserted before the
+///          first terminator.
 /// @param block The block that was just processed.
 /// @param blockIdx Index of the block for liveOut lookup.
 void LinearScanAllocator::releaseActiveForBlock(MBasicBlock &block, std::size_t blockIdx) {
@@ -995,6 +1029,9 @@ void LinearScanAllocator::releaseActiveForBlock(MBasicBlock &block, std::size_t 
     const bool carryToNext = canCarryIntoNextBlock(blockIdx);
 
     // Helper to check if an instruction is a terminator
+    /// @brief Classifies instructions before which boundary spills must be inserted.
+    /// @param opc Machine opcode to inspect.
+    /// @return @c true for jump, conditional jump, return, or trap.
     auto isTerminator = [](MOpcode opc) {
         return opc == MOpcode::JMP || opc == MOpcode::JCC || opc == MOpcode::RET ||
                opc == MOpcode::UD2;
@@ -1086,8 +1123,7 @@ void LinearScanAllocator::releaseActiveForBlock(MBasicBlock &block, std::size_t 
 /// @brief Determine whether operands are read, written, or both.
 /// @details The classification drives register materialisation: uses require
 ///          loads while defs may force spills after the instruction executes.
-///          The switch enumerates the instructions emitted during Phase A of the
-///          backend.
+///          Shared operand-role metadata remains the single source of truth.
 /// @param instr Instruction whose operands are being analysed.
 /// @return Vector describing the role of each operand.
 std::vector<LinearScanAllocator::OperandRole> LinearScanAllocator::classifyOperands(
@@ -1102,8 +1138,8 @@ std::vector<LinearScanAllocator::OperandRole> LinearScanAllocator::classifyOpera
 
 /// @brief Ensure an operand has a valid physical encoding.
 /// @details Delegates to @ref processRegOperand for register operands and
-///          recursively handles memory operands by processing their base
-///          registers.  Immediate-like operands require no work.
+///          handles a memory operand's base and optional index registers.
+///          Immediate-like operands require no work.
 /// @param operand Operand being rewritten in place.
 /// @param role Use/def classification for @p operand.
 /// @param prefix Instruction list receiving pre-instruction loads or spills.
@@ -1114,6 +1150,7 @@ void LinearScanAllocator::handleOperand(Operand &operand,
                                         std::vector<MInstr> &prefix,
                                         std::vector<MInstr> &suffix,
                                         std::vector<ScratchRelease> &scratch) {
+    /// @brief Variant visitor rewriting register and memory-address operands.
     std::visit(Overload{[&](OpReg &reg) { processRegOperand(reg, role, prefix, suffix, scratch); },
                         [&](OpMem &mem) {
                             OperandRole baseRole{true, false};

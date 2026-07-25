@@ -26,6 +26,18 @@
 // - Bytecode instruction emission
 // - Branch offset resolution
 
+/**
+ * @file src/bytecode/BytecodeCompiler.hpp
+ * @brief Declares the stateful IL-to-bytecode lowering pipeline.
+ *
+ * @details
+ * One compiler instance owns a `BytecodeModule` under construction plus
+ * per-function SSA/local, block/fixup, source-file, stack-depth, and allocation
+ * accounting. Input IL and source-manager state is borrowed only while a
+ * compile entry point is active; successful results own all data required by
+ * the bytecode VM.
+ */
+
 #pragma once
 
 #include "bytecode/Bytecode.hpp"
@@ -44,12 +56,19 @@
 namespace zanna {
 namespace bytecode {
 
-/// @brief Compiler that transforms IL modules into bytecode for the Zanna VM.
-/// @details The BytecodeCompiler lowers an IL module's functions into compact
-///          bytecode by performing SSA-to-locals mapping, basic-block
-///          linearization, constant pool construction, instruction emission,
-///          and branch fixup resolution. The resulting BytecodeModule is
-///          self-contained and ready for execution by BytecodeVM.
+/**
+ * @brief Transforms IL modules into self-contained bytecode modules.
+ *
+ * The compiler optionally verifies its input, assigns globals and function
+ * indices, maps function-scoped SSA values to locals, linearizes blocks, builds
+ * constant pools, emits stack bytecode, resolves control-flow fixups, and
+ * derives exception/switch metadata.
+ *
+ * @invariant `currentStackDepth_` mirrors the stack effect of emitted code.
+ * @invariant No function is finalized with unresolved branch placeholders.
+ * @ownership The compiler owns transient and output state while borrowing the
+ *            current IL module and optional source manager.
+ */
 class BytecodeCompiler {
   public:
     /// @brief Compile an entire IL module to a bytecode module.
@@ -57,13 +76,21 @@ class BytecodeCompiler {
     ///          one into a BytecodeFunction, builds the shared constant pools
     ///          (i64, f64, string), and assembles the result into a
     ///          BytecodeModule with resolved branch offsets.
-    /// @param ilModule The IL module to compile.
-    /// @return A fully compiled BytecodeModule ready for execution.
+    /// @param ilModule Borrowed IL module to verify and lower.
+    /// @return An owning `BytecodeModule` ready for execution.
+    /// @throws std::runtime_error When checked compilation returns a diagnostic.
     BytecodeModule compile(const il::core::Module &ilModule);
 
-    /// @brief Compile an IL module, returning a diagnostic instead of throwing.
-    /// @param ilModule The IL module to compile.
-    /// @return A bytecode module on success, or a compile diagnostic on failure.
+    /**
+     * @brief Compile an IL module and report expected failures diagnostically.
+     * @param ilModule Borrowed IL module to lower.
+     * @param sourceManager Optional borrowed resolver for source paths stored in
+     *                      debug metadata; it is not retained after compilation.
+     * @param assumeVerified Skip verifier preflight only when the caller has
+     *                       already verified this exact module snapshot.
+     * @return An owning bytecode module on success or one structured diagnostic
+     *         on verification, lowering, or internal failure.
+     */
     il::support::Expected<BytecodeModule> compileChecked(
         const il::core::Module &ilModule,
         const il::support::SourceManager *sourceManager = nullptr,
@@ -184,11 +211,30 @@ class BytecodeCompiler {
     /// @param instr The IL instruction to compile.
     void compileInstr(const il::core::Instr &instr);
 
+    /**
+     * @brief Terminate lowering with a structured diagnostic.
+     * @param loc Source location attached to the error.
+     * @param code Stable diagnostic code.
+     * @param message Human-readable detail augmented with function context.
+     * @throws BytecodeCompileFailure Always; the private implementation type is
+     *         caught by `compileChecked()`.
+     */
     [[noreturn]] void fail(il::support::SourceLoc loc, std::string code, std::string message) const;
 
+    /**
+     * @brief Terminate lowering at `currentLoc_`.
+     * @param code Stable diagnostic code.
+     * @param message Human-readable detail.
+     * @throws BytecodeCompileFailure Always.
+     */
     [[noreturn]] void failCurrent(std::string code, std::string message) const;
 
-    /// @brief Fail the compile unless @p instr has at least @p minCount operands.
+    /**
+     * @brief Require a minimum operand count on a lowering input.
+     * @param instr Borrowed instruction to inspect.
+     * @param minCount Required lower bound.
+     * @throws BytecodeCompileFailure When the instruction has fewer operands.
+     */
     void requireOperandCount(const il::core::Instr &instr, size_t minCount) const;
 
     /// @brief Emit bytecode to push an IL value onto the operand stack.
@@ -207,6 +253,8 @@ class BytecodeCompiler {
 
     /// @brief Intern @p loc's source file; returns a 1-based table index
     ///        (0 = no file).
+    /// @param loc Source location whose file identifier is interned.
+    /// @return One-based module source-file entry, or zero without a file id.
     uint32_t sourceFileTableEntry(il::support::SourceLoc loc);
 
     /// @brief Emit a zero-argument bytecode instruction.
@@ -235,6 +283,9 @@ class BytecodeCompiler {
 
     /// @brief Emit a constant-pool load (16-bit @p index); fails if the pool
     ///        named @p poolName exceeds 65535 entries.
+    /// @param op Constant-loading opcode.
+    /// @param index Zero-based pool index.
+    /// @param poolName Borrowed pool label used in diagnostics.
     void emitPoolLoad(BCOpcode op, uint32_t index, std::string_view poolName);
 
     /// @brief Emit a bytecode instruction with two unsigned 8-bit arguments.

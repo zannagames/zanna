@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 ///
-/// @file codegen/common/PeepholeUtil.hpp
+/// @file src/codegen/common/PeepholeUtil.hpp
 /// @brief Shared utility helpers used by both the AArch64 and x86-64 peephole
 ///        optimization passes.
 ///
@@ -36,6 +36,8 @@ namespace zanna::codegen::common {
 /// @param toRemove Per-instruction deletion flags; must be the same size as
 ///                 @p instrs.  An entry of @c true at index @p i causes
 ///                 @c instrs[i] to be dropped from the output.
+/// @pre `toRemove.size() == instrs.size()`.
+/// @post `instrs` contains exactly the unmarked input elements in original order.
 template <typename MInstr>
 inline void removeMarkedInstructions(std::vector<MInstr> &instrs,
                                      const std::vector<bool> &toRemove) {

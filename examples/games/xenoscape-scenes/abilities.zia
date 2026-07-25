@@ -1,0 +1,493 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/abilities.zia
+// Purpose: Owns traversal unlock state, runtime ability state, and acquisition UI.
+// Key invariants:
+//   - Wall Jump and Double Jump are baseline modules for every valid profile.
+//   - Ability grants are idempotent and one manager owns acquisition presentation.
+// Ownership/Lifetime:
+//   - Game owns one AbilityManager and synchronizes its mask into Player and saves.
+// Links: player.zia, game.zia, world_graph.zia, save.zia
+//
+//===----------------------------------------------------------------------===//
+// =============================================================================
+// abilities.zia — Metroidvania progression: ability bitmask + gating
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — HOW METROIDVANIAS LOCK THEIR WORLD
+// ---------------------------------------------
+// The whole point of a metroidvania is that the world itself
+// is the puzzle: you can see rooms you can't yet reach, and
+// progression feels like *earning* your freedom of movement.
+//
+// That mechanic has two pieces:
+//
+//   1. **Ability acquisition** — the baseline suit starts with
+//      wall-jump and double-jump; later powers (dash,
+//      ground-pound, ...) come from bosses or shrines.
+//   2. **Gating** — level content tagged with "this passage
+//      requires dash" opens only to players who have it.
+//
+// This file provides the data model for both.  Abilities are
+// stored as a single integer treated as a bitmask:
+//
+//     ABILITY_WALL_JUMP    = 1    (bit 0)
+//     ABILITY_DOUBLE_JUMP  = 2    (bit 1)
+//     ABILITY_DASH         = 4    (bit 2)
+//     ABILITY_CHARGE_SHOT  = 8    (bit 3)
+//     ABILITY_GROUND_POUND = 16   (bit 4)
+//     ABILITY_GRAPPLE      = 32   (bit 5)
+//
+// "Has ability X?"  →  `(mask & X) != 0`
+// "Grant ability X" →  `mask = mask | X`
+//
+// The bitmask fits in one integer, costs one AND on every
+// gating check, and serialises to a single save-slot key
+// (`slotAbilities` in save.zia).  Scales trivially to dozens
+// of abilities.
+//
+// GATING
+// ------
+// Gates use the *same* bitmask values.  A world-map edge
+// tagged `GATE_DASH` opens to any player whose ability
+// mask ANDs non-zero with that flag.  A door in the level
+// can reuse the same constant.  One vocabulary, one check.
+//
+// WHERE THIS FITS
+// ---------------
+//     save.zia     ──►  persists the ability mask per slot.
+//     menu.zia     ──►  title "abilities unlocked" summary.
+//     worldmap.zia ──►  gate edges by ability.
+//     level.zia    ──►  gate doors / breakable walls.
+//     player.zia   ──►  consult before doing dash/double/
+//                       charge/pound.
+//
+// HOW TO READ THIS FILE
+// ---------------------
+//   1. ABILITY_* and GATE_* constants.
+//   2. Name/description helpers for UI.
+//   3. AbilityManager — owns the mask, also owns the
+//      per-ability runtime state (dash timer, charge level,
+//      pound velocity).  Game.zia hands this to Player for
+//      per-frame ability updates.
+//
+// =============================================================================
+
+module abilities;
+
+bind Zanna.Graphics;
+bind Zanna.Input;
+bind "./config";
+bind "./palette";
+bind "./accessibility";
+
+// =============================================================================
+// Ability flags (bitmask)
+// =============================================================================
+final ABILITY_NONE        = 0;
+final ABILITY_WALL_JUMP   = 1;    // Baseline suit module
+final ABILITY_DOUBLE_JUMP = 2;    // Baseline suit module
+final ABILITY_DASH        = 4;    // Acquired from Spore Mother (Level 2 boss)
+final ABILITY_CHARGE_SHOT = 8;    // Crystal Wyrm or Level 5 alternate shrine
+final ABILITY_GROUND_POUND = 16;  // Acquired from Magma Core (Level 6 boss)
+final ABILITY_GRAPPLE     = 32;   // Found in Level 7 secret area
+
+// Total abilities count (for HUD display)
+final ABILITY_COUNT = 6;
+
+// =============================================================================
+// Ability names and descriptions (for UI)
+// =============================================================================
+/// @brief Map a single ability flag to its display name.
+///        Used by the HUD, the acquisition popup, and the
+///        save-slot summary.  Unknown flag returns "Unknown"
+///        rather than empty so a UI bug shows up loudly.
+func abilityName(flag: Integer) -> String {
+    if flag == ABILITY_WALL_JUMP   { return "Wall Jump"; }
+    if flag == ABILITY_DOUBLE_JUMP { return "Double Jump"; }
+    if flag == ABILITY_DASH        { return "Dash"; }
+    if flag == ABILITY_CHARGE_SHOT { return "Charge Shot"; }
+    if flag == ABILITY_GROUND_POUND { return "Ground Pound"; }
+    if flag == ABILITY_GRAPPLE     { return "Grapple Hook"; }
+    return "Unknown";
+}
+
+/// @brief One-line "what this does" text for the acquisition
+///        popup and the pause-menu ability list.  Empty string
+///        for unknown flags — the popup just shows the name.
+func abilityDescription(flag: Integer) -> String {
+    if flag == ABILITY_WALL_JUMP   { return "Jump off walls to reach higher areas."; }
+    if flag == ABILITY_DOUBLE_JUMP { return "Jump again in mid-air."; }
+    if flag == ABILITY_DASH        { return "Quick burst of speed. Invincible during dash."; }
+    if flag == ABILITY_CHARGE_SHOT { return "Hold fire to charge a powerful shot. Breaks walls."; }
+    if flag == ABILITY_GROUND_POUND { return "Slam down from the air. Breaks floors and stuns."; }
+    if flag == ABILITY_GRAPPLE     { return "Hook onto anchor points to swing across gaps."; }
+    return "";
+}
+
+// =============================================================================
+// Gate requirements per level transition
+// =============================================================================
+// Each gate specifies what ability is needed to pass.
+// Gates are placed at level transitions and secret entrances.
+
+final GATE_NONE = 0;           // No ability needed
+final GATE_DOUBLE_JUMP = 2;   // Need double jump (wide gaps)
+final GATE_DASH = 4;           // Need dash (narrow timed passages)
+final GATE_CHARGE_SHOT = 8;   // Need charge shot (destructible walls)
+final GATE_GROUND_POUND = 16; // Need ground pound (breakable floors)
+final GATE_GRAPPLE = 32;      // Need grapple (anchor point swings)
+
+// =============================================================================
+// Ability Manager Entity
+// =============================================================================
+/// @brief Owns the player's ability bitmask plus all
+///        per-ability *runtime* state (dash timers, charge
+///        level, pound speed, grapple target).
+///
+/// One instance lives on `Game`; player.zia consults it
+/// every frame via `has(flag)` to decide whether to enable
+/// the corresponding action.  When a boss/secret grants a
+    /// new ability, `grant(flag)` flips the bit and triggers a
+    /// bounded, dismissible acquisition card.
+class AbilityManager {
+    /// @brief Stub.  `initAbilities(palette)` does the real
+    ///        construction; the two-phase pattern matches
+    ///        every other subsystem.
+    expose func init() {}
+    hide Integer acquired;     // Bitmask of acquired abilities
+    hide Integer justGotAbility; // Flag for acquisition animation
+    hide Integer acquireTimer;   // Milliseconds to show acquisition UI
+    hide Integer lastAcquired;   // Which ability was just acquired
+    hide Palette pal;
+    hide Integer accessibilityUiScale;
+    hide Boolean accessibilityLargeText;
+    hide Boolean accessibilityHighContrast;
+
+    // Dash state
+    hide Boolean isDashing;
+    hide Integer dashTimer;
+    hide Integer dashCooldown;
+    hide Integer dashDirX;     // -1 or +1
+
+    // Charge shot state
+    hide Boolean isCharging;
+    hide Integer chargeTimer;
+    hide Integer chargeLevel;  // 0=none, 1=partial, 2=full
+
+    // Ground pound state
+    hide Boolean isPounding;
+    hide Integer poundSpeed;
+
+    // Grapple state
+    hide Boolean isGrappling;
+    hide Integer grappleTargetX;
+    hide Integer grappleTargetY;
+    hide Integer grappleTimer;
+
+    /// @brief Real construction — wires the palette reference
+    ///        and resets every per-ability runtime field.
+    ///        Starts the player with the two baseline suit movement modules.
+    ///        Double Jump is deliberately baseline: every authored regional
+    ///        layout was authored around its vertical reach, so withholding it
+    ///        can make the campaign impossible before the first boss reward.
+    expose func initAbilities(p: Palette) {
+        pal = p;
+        accessibilityUiScale = 100;
+        accessibilityLargeText = false;
+        accessibilityHighContrast = false;
+        acquired = ABILITY_WALL_JUMP + ABILITY_DOUBLE_JUMP;
+        justGotAbility = 0;
+        acquireTimer = 0;
+        lastAcquired = 0;
+        isDashing = false;
+        dashTimer = 0;
+        dashCooldown = 0;
+        dashDirX = 1;
+        isCharging = false;
+        chargeTimer = 0;
+        chargeLevel = 0;
+        isPounding = false;
+        poundSpeed = 0;
+        isGrappling = false;
+        grappleTargetX = 0;
+        grappleTargetY = 0;
+        grappleTimer = 0;
+    }
+
+    /// @brief Bit-test on the acquired mask.  Quick `(mask /
+    ///        flag) % 2 == 1` instead of `(mask & flag) != 0`
+    ///        because Zia integers don't expose `&` directly
+    ///        in this code path; same result.
+    expose func has(flag: Integer) -> Boolean {
+        return (acquired / flag) % 2 == 1;
+    }
+
+    /// @brief Unlock an ability.  Idempotent — re-granting an
+    ///        already-owned ability is a no-op (no extra
+    ///        card). Triggers the 1.8-second acquisition presentation.
+    expose func grant(flag: Integer) {
+        if has(flag) { return; } // Already have it
+        acquired = acquired + flag;
+        justGotAbility = 1;
+        acquireTimer = 1800;
+        lastAcquired = flag;
+    }
+
+    /// @brief "Can the player pass a gate that requires
+    ///        `gateFlag`?"  GATE_NONE always opens; otherwise
+    ///        delegates to `has`.  Used by `worldmap.zia` and
+    ///        by gated doors in `level.zia`.
+    expose func canPassGate(gateFlag: Integer) -> Boolean {
+        if gateFlag == GATE_NONE { return true; }
+        return has(gateFlag);
+    }
+
+    /// @brief Read the raw mask.  Save system serialises
+    ///        this as one integer per slot.
+    expose func getMask() -> Integer {
+        return acquired;
+    }
+
+    /// @brief Restore mask from save.  Bypasses the popup
+    ///        animation (we don't want a "Wall Jump
+    ///        unlocked!" pop on every game load).
+    expose func setMask(mask: Integer) {
+        acquired = mask;
+    }
+
+    // ─── Dash Ability ──────────────────────────────────────────────
+
+    /// @brief Begin a dash if the ability is unlocked AND no
+    ///        cooldown is active AND not already dashing.
+    ///        ~160 ms duration, ~480 ms cooldown.
+    expose func startDash(facingRight: Boolean) {
+        if not has(ABILITY_DASH) { return; }
+        if isDashing { return; }
+        if dashCooldown > 0 { return; }
+        isDashing = true;
+        dashTimer = 10; // ~160ms dash duration
+        dashCooldown = 30; // ~480ms cooldown
+        if facingRight { dashDirX = 1; } else { dashDirX = -1; }
+    }
+
+    /// @brief Per-frame dash driver.  Returns the velocity
+    ///        boost to apply (×100 units, signed by direction)
+    ///        while dashing, or 0 when idle.  Decrements
+    ///        cooldown every frame regardless.
+    expose func updateDash() -> Integer {
+        if dashCooldown > 0 { dashCooldown = dashCooldown - 1; }
+        if not isDashing { return 0; }
+        dashTimer = dashTimer - 1;
+        if dashTimer <= 0 {
+            isDashing = false;
+            return 0;
+        }
+        // Return horizontal velocity boost (x100 units)
+        return dashDirX * 2000; // Very fast horizontal burst
+    }
+
+    /// @brief "Is the player currently mid-dash?"  Used by
+    ///        renderer to draw the dash trail.
+    expose func getDashing() -> Boolean { return isDashing; }
+
+    // ─── Charge Shot ───────────────────────────────────────────────
+
+    /// @brief Begin charging.  No-op if the player hasn't
+    ///        unlocked the ability.  Resets timer + level so
+    ///        repeated press-cancels don't accumulate state.
+    expose func startCharge() {
+        if not has(ABILITY_CHARGE_SHOT) { return; }
+        isCharging = true;
+        chargeTimer = 0;
+        chargeLevel = 0;
+    }
+
+    /// @brief Per-frame: bump the charge timer; promote
+    ///        chargeLevel through 0 → 1 → 2 at 320 ms / 640 ms.
+    ///        Visual feedback (player aura colour) reads
+    ///        chargeLevel each frame.
+    expose func updateCharge() {
+        if not isCharging { return; }
+        chargeTimer = chargeTimer + 1;
+        if chargeTimer >= 40 { chargeLevel = 2; } // Full charge at ~640ms
+        else { if chargeTimer >= 20 { chargeLevel = 1; } } // Partial at ~320ms
+    }
+
+    /// @brief Stop charging and return the charge level reached
+    ///        (0 / 1 / 2).  The shoot path uses the level to
+    ///        scale damage and bullet visuals.
+    expose func releaseCharge() -> Integer {
+        if not isCharging { return 0; }
+        isCharging = false;
+        var level = chargeLevel;
+        chargeTimer = 0;
+        chargeLevel = 0;
+        return level; // 0=no charge, 1=partial (2x damage), 2=full (3x + break walls)
+    }
+
+    /// @brief Read current charge level.  Player sprite shows
+    ///        a glow keyed off this value.
+    expose func getChargeLevel() -> Integer { return chargeLevel; }
+
+    // ─── Ground Pound ──────────────────────────────────────────────
+
+    /// @brief Begin a ground pound (only mid-air, only with
+    ///        ability).  The actual airborne check happens in
+    ///        player.zia; here we just flip the flag and pin
+    ///        the downward velocity.
+    expose func startPound() {
+        if not has(ABILITY_GROUND_POUND) { return; }
+        isPounding = true;
+        poundSpeed = 2500;
+    }
+
+    /// @brief "Currently slamming downward?"  Player.zia
+    ///        forces vy to `poundSpeed` while this is true.
+    expose func getPounding() -> Boolean { return isPounding; }
+
+    /// @brief Pound velocity (×100 units, downward positive).
+    expose func getPoundSpeed() -> Integer { return poundSpeed; }
+
+    /// @brief Land + end the pound (called from the player's
+    ///        landing branch).  Renderer/particles trigger the
+    ///        shockwave separately.
+    expose func endPound() {
+        isPounding = false;
+        poundSpeed = 0;
+    }
+
+    // ─── Acquisition UI ────────────────────────────────────────────
+
+    /// @brief Per-frame: tick down the acquisition popup
+    ///        timer.  When it hits 0, the popup vanishes and
+    ///        gameplay resumes.
+    expose func updateUI(dt: Integer) {
+        if acquireTimer > 0 {
+            var elapsed = dt;
+            if elapsed < 0 { elapsed = 0; }
+            if elapsed > DT_MAX { elapsed = DT_MAX; }
+            acquireTimer = acquireTimer - elapsed;
+            if acquireTimer <= 0 {
+                acquireTimer = 0;
+                justGotAbility = 0;
+            }
+        }
+    }
+
+    /// @brief Report whether the single acquisition modal owns presentation.
+    /// @return True while its bounded millisecond timer remains positive.
+    expose func isAcquisitionActive() -> Boolean { return acquireTimer > 0; }
+
+    /// @brief Close the acquisition modal early after explicit player input.
+    /// @return Nothing. Ability ownership remains unchanged.
+    expose func dismissAcquisition() {
+        acquireTimer = 0;
+        justGotAbility = 0;
+    }
+
+    /// @brief Apply live acquisition-card accessibility preferences.
+    /// @param uiScale Advertised 100, 125, or 150 percent scale.
+    /// @param largeText True for a bounded heading/name scale increase.
+    /// @param highContrast True for maximum backdrop opacity.
+    /// @return Nothing. Mutates presentation state only.
+    expose func setAccessibility(uiScale: Integer, largeText: Boolean,
+                                 highContrast: Boolean) {
+        accessibilityUiScale = uiScale;
+        accessibilityLargeText = largeText;
+        accessibilityHighContrast = highContrast;
+    }
+
+    /// @brief Render the freeze-frame "NEW ABILITY" popup
+    ///        when `acquireTimer > 0`. Three layers: dim
+    ///        backdrop, centred title + name + description,
+    ///        pulsing glow disc.  No-op outside the window.
+    expose func drawAcquisitionUI(canvas: Canvas) {
+        if acquireTimer <= 0 { return; }
+
+        // Freeze frame effect: dark overlay
+        canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(0, 0, 0),
+                        accessiblePanelAlpha(accessibilityHighContrast));
+
+        // Ability icon and name centered on screen
+        var name = abilityName(lastAcquired);
+        var desc = abilityDescription(lastAcquired);
+
+        // Title: "NEW ABILITY"
+        var titleScale = accessibleTextScale(
+            3, accessibilityUiScale, accessibilityLargeText);
+        if titleScale > 4 { titleScale = 4; }
+        var nameScale = accessibleTextScale(
+            2, accessibilityUiScale, accessibilityLargeText);
+        if nameScale > 3 { nameScale = 3; }
+        canvas.TextCenteredScaled(HALF_H - 60, "NEW ABILITY",
+                                  Color.RGB(255, 221, 34), titleScale);
+
+        // Ability name
+        canvas.TextCenteredScaled(HALF_H - 10, name,
+                                  Color.RGB(255, 255, 255), nameScale);
+
+        // Description
+        canvas.TextCenteredScaled(HALF_H + 30, desc, Color.RGB(180, 180, 200), 1);
+
+        canvas.TextCenteredScaled(
+            HALF_H + 88,
+            Action.BindingsStr(ACT_CONFIRM) + " / " +
+            Action.BindingsStr(ACT_BACK) + " continue",
+            Color.RGB(125, 145, 175), 1);
+
+        // Pulsing glow behind icon
+        var pulse = (acquireTimer / 30) % 30;
+        var glowR = 40 + pulse * 2;
+        canvas.DiscAlpha(HALF_W, HALF_H - 35, glowR,
+                         Color.RGB(255, 200, 50), 60);
+    }
+
+    /// @brief Render the small ability-icon strip that lives
+    ///        in the top-right of the HUD.  Each unlocked
+    ///        ability draws as a small icon; locked ones show
+    ///        as a dim outline.
+    expose func drawHUD(canvas: Canvas) {
+        var startX = SCREEN_W - 174;
+        var y = 54;
+        var iconSize = 20;
+        var spacing = 26;
+
+        // Draw each ability slot
+        var flags = [ABILITY_WALL_JUMP, ABILITY_DOUBLE_JUMP, ABILITY_DASH,
+                     ABILITY_CHARGE_SHOT, ABILITY_GROUND_POUND, ABILITY_GRAPPLE];
+        var icons = ["WJ", "DJ", "DA", "CS", "GP", "GH"];
+        var colors = [
+            Color.RGB(100, 200, 100),  // Wall jump: green
+            Color.RGB(100, 180, 255),  // Double jump: blue
+            Color.RGB(255, 200, 50),   // Dash: gold
+            Color.RGB(255, 100, 100),  // Charge: red
+            Color.RGB(200, 100, 255),  // Ground pound: purple
+            Color.RGB(50, 255, 200)    // Grapple: teal
+        ];
+
+        var i = 0;
+        while i < ABILITY_COUNT {
+            var ix = startX + i * spacing;
+            var flag = flags.get(i);
+            if has(flag) {
+                // Acquired: filled colored box
+                canvas.Box(ix, y, iconSize, iconSize, colors.get(i));
+                canvas.Frame(ix, y, iconSize, iconSize, Color.RGB(255, 255, 255));
+                canvas.Text(ix + 3, y + 4, icons.get(i), Color.RGB(0, 0, 0));
+            } else {
+                // Locked: dark outline
+                canvas.Box(ix, y, iconSize, iconSize, Color.RGB(30, 30, 40));
+                canvas.Frame(ix, y, iconSize, iconSize, Color.RGB(60, 60, 80));
+                canvas.Text(ix + 3, y + 4, "??", Color.RGB(60, 60, 80));
+            }
+            i = i + 1;
+        }
+    }
+}

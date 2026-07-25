@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/MachOWriter.cpp
+// File: src/codegen/common/objfile/MachOWriter.cpp
 // Purpose: Serialize CodeSection data into a valid Mach-O relocatable object
 //          file for macOS (x86_64 and AArch64/arm64).
 // Key invariants:
@@ -21,6 +21,17 @@
 //        plans/05-macho-writer.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file MachOWriter.cpp
+ * @brief Implements x86-64 and arm64 Mach-O relocatable-object serialization.
+ *
+ * The writer produces `MH_OBJECT` files with ordered local/defined/undefined
+ * symbols, Darwin name mangling, descending relocation groups, optional data,
+ * compact-unwind, and debug-line sections, and embedded REL-style addends.
+ * Section-offset targets use synthetic anchors when an arm64 signed addend
+ * cannot directly represent the requested offset.
+ */
 
 #include "codegen/common/objfile/MachOWriter.hpp"
 #include "codegen/common/MachOBuildVersion.hpp"
@@ -102,12 +113,17 @@ static constexpr uint32_t kSAttrDebug = 0x02000000;
 
 // Helpers: appendLE16/32/64, alignUp, padTo are provided by ObjFileWriterUtil.hpp.
 
+/// @brief Recognize assembler-local Mach-O label spellings.
+/// @param name Unmangled encoder symbol name.
+/// @return `true` when the name should remain local and unprefixed.
 static bool isMachOLocalLabelName(const std::string &name) {
     return !name.empty() && (name[0] == '.' || name.rfind("L.", 0) == 0 ||
                              name.rfind("Ltmp", 0) == 0 || name.rfind("LBB", 0) == 0);
 }
 
-/// Mangle a symbol name for Darwin: prepend '_' to non-local nlist names.
+/// @brief Apply Darwin's leading-underscore convention to an nlist symbol.
+/// @param sym Encoder symbol whose binding and name determine mangling.
+/// @return Original local-label spelling or underscore-prefixed external spelling.
 static std::string mangleName(const Symbol &sym) {
     const std::string &name = sym.name;
     if (name.empty())
@@ -119,6 +135,12 @@ static std::string mangleName(const Symbol &sym) {
 
 /// Pack a Mach-O relocation info field (little-endian bit-field layout).
 /// Layout: symbolnum[23:0] | pcrel[24] | length[26:25] | extern[27] | type[31:28]
+/// @param symbolnum External symbol index or local section ordinal.
+/// @param pcrel Whether the relocation is PC relative.
+/// @param length Base-two width exponent of the relocated field.
+/// @param ext Whether @p symbolnum is an external symbol-table index.
+/// @param type Architecture-specific relocation type.
+/// @return Packed 32-bit `relocation_info` bit field.
 static uint32_t packRelocInfo(
     uint32_t symbolnum, uint8_t pcrel, uint8_t length, uint8_t ext, uint8_t type) {
     return (symbolnum & 0x00FFFFFF) | (static_cast<uint32_t>(pcrel & 1) << 24) |
@@ -126,6 +148,12 @@ static uint32_t packRelocInfo(
            (static_cast<uint32_t>(type & 0xF) << 28);
 }
 
+/// @brief Narrow a native size or offset to a 32-bit Mach-O field.
+/// @param value Native-size value to validate.
+/// @param what Human-readable field description.
+/// @param err Stream that receives an overflow diagnostic.
+/// @param out Receives the narrowed value.
+/// @return `true` when @p value fits in `uint32_t`.
 static bool checkedU32(size_t value, const char *what, std::ostream &err, uint32_t &out) {
     if (value > std::numeric_limits<uint32_t>::max()) {
         err << "MachOWriter: " << what << " exceeds 32-bit Mach-O field range\n";
@@ -135,6 +163,11 @@ static bool checkedU32(size_t value, const char *what, std::ostream &err, uint32
     return true;
 }
 
+/// @brief Validate Mach-O's 24-bit relocation symbol-number field.
+/// @param value Symbol table index or packed addend value.
+/// @param what Human-readable field description.
+/// @param err Stream that receives a range diagnostic.
+/// @return `true` when @p value is at most `0x00ffffff`.
 static bool checkedRelocSymbolNum(uint32_t value, const char *what, std::ostream &err) {
     if (value > 0x00FFFFFFu) {
         err << "MachOWriter: " << what << " exceeds Mach-O relocation symbol-number range\n";
@@ -146,6 +179,12 @@ static bool checkedRelocSymbolNum(uint32_t value, const char *what, std::ostream
 /// Adapter to the shared @ref zanna::codegen::objfile::physicalSymbolValue helper
 /// that pins the writerName to "MachOWriter:" so existing call sites compile
 /// unchanged.
+/// @param section Section supplying logical bias and payload bounds.
+/// @param sym Defined symbol to convert.
+/// @param sectionName Name used to qualify diagnostics.
+/// @param err Stream that receives validation diagnostics.
+/// @param out Receives the physical section-relative value.
+/// @return `true` when @p sym lies within @p section.
 static bool physicalSymbolValue(const CodeSection &section,
                                 const Symbol &sym,
                                 const char *sectionName,
@@ -159,7 +198,13 @@ static bool physicalSymbolValue(const CodeSection &section,
 // Mach-O Struct Writers
 // =============================================================================
 
-/// Write mach_header_64 (32 bytes).
+/// @brief Append one 32-byte `mach_header_64`.
+/// @param out Destination object buffer.
+/// @param cputype Mach-O CPU type.
+/// @param cpusubtype Mach-O CPU subtype.
+/// @param ncmds Number of following load commands.
+/// @param sizeofcmds Combined load-command byte count.
+/// @param flags Mach-O header flags.
 static void writeMachOHeader(std::vector<uint8_t> &out,
                              uint32_t cputype,
                              uint32_t cpusubtype,
@@ -176,7 +221,13 @@ static void writeMachOHeader(std::vector<uint8_t> &out,
     appendLE32(out, 0); // reserved
 }
 
-/// Write LC_SEGMENT_64 command header (72 bytes, excluding section headers).
+/// @brief Append the 72-byte `LC_SEGMENT_64` command prefix.
+/// @param out Destination load-command buffer.
+/// @param cmdsize Total command size including section records.
+/// @param vmsize Combined in-memory section extent.
+/// @param fileoff File offset of the first section payload.
+/// @param filesize Combined file-backed section span.
+/// @param nsects Number of following `section_64` records.
 static void writeSegmentCmd(std::vector<uint8_t> &out,
                             uint32_t cmdsize,
                             uint64_t vmsize,
@@ -213,7 +264,17 @@ static void appendFixedNameField(std::vector<uint8_t> &out, std::string_view nam
     }
 }
 
-/// Write a section_64 header (80 bytes).
+/// @brief Append one 80-byte Mach-O `section_64` record.
+/// @param out Destination segment command.
+/// @param sectname Sixteen-byte section name field.
+/// @param segname Sixteen-byte segment name field.
+/// @param addr Segment-relative section address.
+/// @param size Section byte count.
+/// @param offset File offset of section bytes.
+/// @param align Base-two alignment exponent.
+/// @param reloff File offset of relocation records.
+/// @param nreloc Number of relocation records.
+/// @param flags Section type and attributes.
 static void writeSectionHdr(std::vector<uint8_t> &out,
                             std::string_view sectname,
                             std::string_view segname,
@@ -240,7 +301,8 @@ static void writeSectionHdr(std::vector<uint8_t> &out,
     appendLE32(out, 0); // reserved3
 }
 
-/// Write LC_BUILD_VERSION (24 bytes).
+/// @brief Append the fixed 24-byte macOS `LC_BUILD_VERSION` command.
+/// @param out Destination load-command buffer.
 static void writeBuildVersionCmd(std::vector<uint8_t> &out) {
     appendLE32(out, kLcBuildVersion);
     appendLE32(out, kBuildVerCmdSize);
@@ -250,7 +312,12 @@ static void writeBuildVersionCmd(std::vector<uint8_t> &out) {
     appendLE32(out, 0); // ntools
 }
 
-/// Write LC_SYMTAB (24 bytes).
+/// @brief Append one 24-byte `LC_SYMTAB` command.
+/// @param out Destination load-command buffer.
+/// @param symoff File offset of `nlist_64` records.
+/// @param nsyms Number of symbol records.
+/// @param stroff File offset of the string table.
+/// @param strsize String-table byte count.
 static void writeSymtabCmd(
     std::vector<uint8_t> &out, uint32_t symoff, uint32_t nsyms, uint32_t stroff, uint32_t strsize) {
     appendLE32(out, kLcSymtab);
@@ -261,7 +328,14 @@ static void writeSymtabCmd(
     appendLE32(out, strsize);
 }
 
-/// Write LC_DYSYMTAB (80 bytes).
+/// @brief Append one 80-byte `LC_DYSYMTAB` command.
+/// @param out Destination load-command buffer.
+/// @param ilocal First local-symbol index.
+/// @param nlocal Number of local symbols.
+/// @param iextdef First externally defined symbol index.
+/// @param nextdef Number of externally defined symbols.
+/// @param iundef First undefined symbol index.
+/// @param nundef Number of undefined symbols.
 static void writeDysymtabCmd(std::vector<uint8_t> &out,
                              uint32_t ilocal,
                              uint32_t nlocal,
@@ -282,7 +356,13 @@ static void writeDysymtabCmd(std::vector<uint8_t> &out,
         appendLE32(out, 0);
 }
 
-/// Write one nlist_64 entry (16 bytes).
+/// @brief Append one 16-byte `nlist_64` symbol record.
+/// @param out Destination symbol table.
+/// @param strx String-table offset of the name.
+/// @param type Packed nlist type and external bits.
+/// @param sect One-based defining section ordinal.
+/// @param desc Symbol descriptor bits.
+/// @param value Segment-relative symbol value.
 static void writeNlist(std::vector<uint8_t> &out,
                        uint32_t strx,
                        uint8_t type,
@@ -296,7 +376,10 @@ static void writeNlist(std::vector<uint8_t> &out,
     appendLE64(out, value);
 }
 
-/// Write one relocation_info entry (8 bytes).
+/// @brief Append one eight-byte Mach-O relocation record.
+/// @param out Destination relocation table.
+/// @param address Section-relative fixup address.
+/// @param packed Packed relocation attributes from @ref packRelocInfo.
 static void writeMachoReloc(std::vector<uint8_t> &out, uint32_t address, uint32_t packed) {
     appendLE32(out, address);
     appendLE32(out, packed);
@@ -306,23 +389,39 @@ static void writeMachoReloc(std::vector<uint8_t> &out, uint32_t address, uint32_
 // Relocation Mapping
 // =============================================================================
 
+/// @brief Mach-O encoding attributes selected for one relocation kind.
 struct MachoRelocAttrs {
+    ///< Architecture-specific relocation type.
     uint8_t type;
+    ///< Whether the relocation is PC relative.
     uint8_t pcrel;
+    ///< Base-two relocated-field width exponent.
     uint8_t length;
+    ///< Whether no Mach-O representation exists.
     bool skip; // true if this reloc kind has no Mach-O equivalent
 };
 
+/// @brief One serialized relocation record before final ordering.
 struct MachoReloc {
+    ///< Section-relative relocation address.
     uint32_t address = 0;
+    ///< Packed symbol and relocation attributes.
     uint32_t packed = 0;
 };
 
+/// @brief Adjacent relocation records that must remain together at one address.
+/// @details arm64 nonzero addends require an `ARM64_RELOC_ADDEND` record
+///          immediately preceding the primary relocation.
 struct MachoRelocGroup {
+    ///< Shared address used to order the group.
     uint32_t address = 0;
+    ///< Records in required emission order.
     std::vector<MachoReloc> entries;
 };
 
+/// @brief Select Mach-O relocation attributes for an encoder relocation kind.
+/// @param kind Architecture-neutral relocation semantics.
+/// @return Encoding attributes, with `skip` set when Mach-O has no equivalent.
 static MachoRelocAttrs machoRelocAttrs(RelocKind kind) {
     switch (kind) {
         // x86_64
@@ -355,6 +454,8 @@ static MachoRelocAttrs machoRelocAttrs(RelocKind kind) {
 // MachOWriter::write
 // =============================================================================
 
+/// @copydoc MachOWriter::write(const std::string&, const CodeSection&,
+///                             const CodeSection&, std::ostream&)
 bool MachOWriter::write(const std::string &path,
                         const CodeSection &text,
                         const CodeSection &rodata,
@@ -390,14 +491,23 @@ bool MachOWriter::write(const std::string &path,
         strtab.add(" "); // Mach-O convention: space at offset 1
 
         // --- 2. Collect and categorize symbols ---
+        /// @brief Deferred nlist symbol awaiting Mach-O category ordering.
         struct PendingSym {
+            ///< Original CodeSection symbol index.
             uint32_t encoderIdx = 0;
+            ///< Whether the source is the text rather than const/data section.
             bool fromText = false;
+            ///< Whether this is a generated exact-offset anchor.
             bool syntheticOffsetAnchor = false;
+            ///< String-table offset of the mangled name.
             uint32_t strx = 0;
+            ///< Packed nlist type and external bits.
             uint8_t type = 0;
+            ///< Defining section ordinal.
             uint8_t sect = 0;
+            ///< Section-relative value before final segment rebasing.
             uint64_t value = 0;
+            ///< Darwin-mangled name used for global coalescing.
             std::string mangledName;
         };
 
@@ -416,16 +526,19 @@ bool MachOWriter::write(const std::string &path,
         std::unordered_map<size_t, uint32_t> textOffsetAnchorMap;
         std::unordered_map<size_t, uint32_t> constOffsetAnchorMap;
 
+        /// Test whether an addend fits signed 24-bit `ARM64_RELOC_ADDEND`.
         auto fitsArm64RelocAddend = [](int64_t value) {
             return value >= -0x800000LL && value <= 0x7FFFFFLL;
         };
 
+        /// Combine a relocation's signed addend with its concrete target offset.
         auto sectionOffsetAddend =
             [&](const Relocation &rel, const char *sectionName, int64_t &out) -> bool {
             return checkedSectionOffsetAddend(
                 rel.addend, rel.targetOffset, "MachOWriter", sectionName, rel.offset, err, out);
         };
 
+        /// Determine whether exact offsets into a target class require a base anchor.
         auto relocationNeedsAnchor = [](const CodeSection &sec, SymbolSection targetSection) {
             for (const auto &rel : sec.relocations())
                 if (rel.targetOffsetValid && rel.targetSection == targetSection)
@@ -433,6 +546,8 @@ bool MachOWriter::write(const std::string &path,
             return false;
         };
 
+        /// Determine whether an external encoder symbol has any ordinary
+        /// undefined relocation and therefore needs an undefined nlist entry.
         auto externalNeedsUndefinedSymbol = [](const CodeSection &sec, uint32_t symbolIndex) {
             bool sawRelocation = false;
             for (const auto &rel : sec.relocations()) {
@@ -445,7 +560,11 @@ bool MachOWriter::write(const std::string &path,
             return !sawRelocation;
         };
 
+        /// Logical input role used to assign Mach-O section ordinals and names.
         enum class SecRole { Text, Const, Data };
+
+        /// Categorize one section's symbols as local, externally defined, or
+        /// undefined while computing physical values and Darwin spellings.
         auto processSymbols = [&](const CodeSection &sec, SecRole role) -> bool {
             const bool isText = role == SecRole::Text;
             const uint8_t definedSect = role == SecRole::Text    ? kSectText
@@ -498,6 +617,8 @@ bool MachOWriter::write(const std::string &path,
 
         std::unordered_set<size_t> textOffsetAnchors;
         std::unordered_set<size_t> constOffsetAnchors;
+        /// Generate local symbols at exact target offsets whose arm64 addends
+        /// exceed the signed 24-bit relocation-addend range.
         auto collectLargeOffsetAnchors = [&](const CodeSection &source,
                                              const char *sectionName) -> bool {
             if (arch_ != ObjArch::AArch64)
@@ -555,6 +676,7 @@ bool MachOWriter::write(const std::string &path,
         // Order: locals → external defined → undefined.
         uint32_t machoIdx = 0;
 
+        /// Assign the next nlist index and update the source section's remap.
         auto assignFreshIndex = [&](const PendingSym &ps) {
             if (ps.syntheticOffsetAnchor) {
                 if (ps.fromText)
@@ -571,11 +693,13 @@ bool MachOWriter::write(const std::string &path,
             ++machoIdx;
         };
 
+        /// Assign indices to all local symbols without name coalescing.
         auto assignLocals = [&](std::vector<PendingSym> &syms) {
             for (auto &ps : syms)
                 assignFreshIndex(ps);
         };
 
+        /// Assign externally defined symbols and reject duplicate global names.
         auto assignDefinedGlobals = [&](std::vector<PendingSym> &syms) {
             for (auto &ps : syms) {
                 if (definedGlobalNameToMachoIdx.count(ps.mangledName)) {
@@ -588,6 +712,7 @@ bool MachOWriter::write(const std::string &path,
             return true;
         };
 
+        /// Coalesce undefined names with earlier definitions or undefined entries.
         auto assignUndefineds = [&](std::vector<PendingSym> &syms) {
             for (auto &ps : syms) {
                 auto defIt = definedGlobalNameToMachoIdx.find(ps.mangledName);
@@ -639,6 +764,8 @@ bool MachOWriter::write(const std::string &path,
         };
 
         std::vector<FinalSym> allSyms(nsyms);
+        /// Append nlist records in their assigned category order, optionally
+        /// omitting undefined names satisfied by emitted global definitions.
         auto emitSyms = [&](const std::vector<PendingSym> &syms, bool skipIfDefined) {
             for (const auto &ps : syms) {
                 uint32_t idx = 0;
@@ -693,6 +820,8 @@ bool MachOWriter::write(const std::string &path,
             }
         }
 
+        /// Resolve one encoder relocation to a final nlist index and effective
+        /// addend, selecting exact-offset anchors when arm64 range requires one.
         auto resolveRelocSym = [&](const Relocation &rel,
                                    const CodeSection &source,
                                    const std::unordered_map<uint32_t, uint32_t> &sourceMap,
@@ -777,6 +906,8 @@ bool MachOWriter::write(const std::string &path,
             return true;
         };
 
+        /// Validate and translate one source section's relocations into
+        /// descending-address Mach-O relocation groups.
         auto appendRelocs = [&](const CodeSection &source,
                                 const std::unordered_map<uint32_t, uint32_t> &sourceMap,
                                 const char *sectionName,
@@ -824,6 +955,8 @@ bool MachOWriter::write(const std::string &path,
                 group.entries.push_back({relocAddress, packed});
                 groups.push_back(std::move(group));
             }
+            /// Mach-O relocation tables are ordered by decreasing address;
+            /// stability retains construction order for groups at equal sites.
             std::stable_sort(groups.begin(),
                              groups.end(),
                              [](const MachoRelocGroup &a, const MachoRelocGroup &b) {
@@ -890,6 +1023,7 @@ bool MachOWriter::write(const std::string &path,
             }
 
             // Sort unwind relocations by address descending (Mach-O convention).
+            /// Apply Mach-O's descending-address convention to unwind fixups.
             std::sort(
                 unwindRelocs.begin(),
                 unwindRelocs.end(),
@@ -1215,6 +1349,7 @@ bool MachOWriter::write(const std::string &path,
 
         // --- Patch addends into instruction bytes (Mach-O REL convention) ---
         if (arch_ == ObjArch::X86_64) {
+            /// Combine an x86-64 REL addend with any concrete target offset.
             auto computeEffectiveAddend = [&](const Relocation &rel,
                                               const char *sectionName,
                                               int64_t &effectiveAddend) -> bool {
@@ -1240,6 +1375,8 @@ bool MachOWriter::write(const std::string &path,
                                                   effectiveAddend);
             };
 
+            /// Embed x86-64 PC-relative or absolute addends directly into the
+            /// serialized section bytes as required by Mach-O REL records.
             auto patchX64Addends = [&](const CodeSection &section,
                                        size_t sectionFileOff,
                                        const char *sectionName) -> bool {
@@ -1344,6 +1481,8 @@ bool MachOWriter::write(const std::string &path,
     }
 }
 
+/// @copydoc MachOWriter::write(const std::string&, const std::vector<CodeSection>&,
+///                             const CodeSection&, std::ostream&)
 bool MachOWriter::write(const std::string &path,
                         const std::vector<CodeSection> &textSections,
                         const CodeSection &rodata,

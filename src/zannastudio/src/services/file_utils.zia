@@ -73,6 +73,12 @@ func DetectLanguage(path: String) -> String {
     return "text";
 }
 
+/// @brief Return whether one path is a 2D or 3D scene document (ADR 0181).
+expose func IsSceneDocumentPath(path: String) -> Boolean {
+    var kind = DetectKind(path);
+    return kind == DOC_KIND_SCENE_2D or kind == DOC_KIND_SCENE_3D;
+}
+
 /// @brief Map a file path to an IDE document kind.
 func DetectKind(path: String) -> Integer {
     var ext = Str.ToLower(Path.Extension(path));

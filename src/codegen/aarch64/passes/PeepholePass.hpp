@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/PeepholePass.hpp
+// File: src/codegen/aarch64/passes/PeepholePass.hpp
 // Purpose: Declare the peephole optimisation pass for the AArch64 codegen pipeline.
 // Key invariants: Must run after RegAllocPass (operates on physical-register MIR).
 // Ownership/Lifetime: Stateless pass; mutates AArch64Module::mir in place.
@@ -17,9 +17,16 @@
 
 #include "codegen/aarch64/passes/PassManager.hpp"
 
+/**
+ * @file
+ * @brief Declares validated post-allocation AArch64 peephole pipeline modes.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
-/// @brief Apply peephole optimisations to all MIR functions after register allocation.
+/**
+ * @brief Applies full or post-scheduling cleanup and validates resulting MIR.
+ */
 class PeepholePass final : public Pass {
   public:
     /// @brief Controls which subset of peephole patterns to apply.
@@ -28,13 +35,19 @@ class PeepholePass final : public Pass {
         PostScheduleCleanup ///< Apply only lightweight cleanup after scheduling.
     };
 
-    /// @param mode Which pattern set to use; defaults to Mode::Full.
+    /**
+     * @brief Selects the optimizer subset for subsequent runs.
+     * @param mode Pattern set to use; defaults to `Mode::Full`.
+     */
     explicit PeepholePass(Mode mode = Mode::Full) noexcept : mode_(mode) {}
 
-    /// @brief Run peephole optimisations on all functions in AArch64Module::mir.
-    /// @param module Module state; mir must have physical registers assigned.
-    /// @param diags  Diagnostic sink (peephole is non-failing; always returns true).
-    /// @return Always true; peephole failures are ignored silently.
+    /**
+     * @brief Optimizes and validates every allocated MIR function.
+     * @param[in,out] module Module whose MIR and callee-saved metadata are rewritten.
+     * @param[in,out] diags Sink receiving missing-target, validation, or optional
+     *        statistics messages.
+     * @return `false` if target metadata is missing or post-pass MIR validation fails.
+     */
     bool run(AArch64Module &module, Diagnostics &diags) override;
 
   private:

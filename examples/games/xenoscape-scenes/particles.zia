@@ -1,0 +1,604 @@
+// =============================================================================
+// particles.zia — Burst-based particle effects
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — PARTICLES ARE PLATFORM JUICE
+// ---------------------------------------
+// Particles are "juice" — the tiny visual feedback flourishes
+// that make a platformer feel alive.  A jump throws dust; a
+// landing throws more dust; a bullet impact sparks; a coin
+// pickup pops stars; an enemy death explodes colour.  None of
+// this is gameplay-essential; all of it makes the game feel
+// good.
+//
+// Making particles generic is the trick.  A naive approach
+// has one function per effect; each allocates its own memory
+// and has slightly different draw code.  Instead, we lean on
+// a single configurable emitter and encode each effect as a
+// *preset*: specific velocity, lifetime, colour, gravity,
+// fade-out settings for that effect.
+//
+// Zanna's `Zanna.Game.ParticleEmitter` is exactly that —
+// one emitter, configured by setter methods, fires a `Burst`
+// of N particles on demand.  We cache one emitter for the
+// entire game's lifetime and reconfigure it before each
+// burst.  That's cheap: setters just update integer fields.
+//
+// PRESETS (the menu of effects)
+// -----------------------------
+//   * dust          — brownish, short, upward  (running)
+//   * spark         — yellow, short, omnidirectional  (impact)
+//   * coinCollect   — gold stars, tiny pop
+//   * death         — multicoloured, large  (enemy killed)
+//   * jump          — subtle dust under feet  (leaving ground)
+//   * doubleJump    — cyan-white ring  (mid-air jump)
+//   * wallSlide     — dust trailing wall  (wall slide state)
+//   * jetpackFlame  — orange, downward  (boss enemy engine)
+//   * bossIntro     — red shockwave  (phase start)
+//   * checkpoint    — green arc  (checkpoint activated)
+//   * runningDust   — light dust  (per-step while running)
+//   * hazardHit     — red spray  (spike / lava damage)
+//   * wallBullet    — cyan shards  (bullet hits solid)
+//   * confetti      — multicoloured, slow-fall  (level complete)
+//
+// WHERE THIS FITS
+// ---------------
+//     game.zia          ──►  owns ParticleSystem.
+//     player.zia        ──►  burstJump / burstDoubleJump /
+//                            burstWallSlide / burstHazardHit.
+//     enemy.zia         ──►  burstDeath, burstBossIntro.
+//     projectile.zia    ──►  burstSpark / burstWallBullet.
+//     pickups.zia       ──►  burstCoinCollect.
+//     level.zia         ──►  burstCheckpoint.
+//
+// HOW TO READ THIS FILE
+// ---------------------
+//   1. `ParticleSystem.init` constructs the single emitter
+//      with baseline Fade/Shrink settings.
+//   2. One `burst*` method per preset — each sets the emitter
+//      parameters and calls `emitter.Burst(count)`.
+//   3. `update(dt)` and `draw(canvas, camX, camY)` are the
+//      per-frame hooks called from `game.tick`.
+//
+// =============================================================================
+
+module particles;
+
+bind Zanna.Graphics;
+bind Zanna.Game.ParticleEmitter as PE;
+bind "./config";
+bind "./palette";
+
+/// @brief One ParticleEmitter shared across the whole game,
+///        wrapped in named-preset `burst*` methods.
+///
+/// Every effect is a recipe: configure the shared emitter
+/// (lifetime, gravity, size, colour, velocity range), then
+/// call `Burst(count)`.  Cheap reconfiguration; one
+/// allocation per game lifetime.
+class ParticleSystem {
+    hide Palette pal;
+    hide PE emitter;
+
+    /// @brief Allocate the underlying emitter (capacity 256)
+    ///        and turn on FadeOut + Shrink so every particle
+    ///        gracefully tapers as it ages.
+    expose func init(p: Palette) {
+        pal = p;
+        emitter = PE.New(256);
+        emitter.set_FadeOut(true);
+        emitter.set_Shrink(true);
+    }
+
+    /// @brief Despawn every active particle.  Called on level
+    ///        transition so stale particles don't bleed into
+    ///        the new room.
+    expose func reset() {
+        emitter.Clear();
+    }
+
+    /// @brief Per-frame: advance all particle ages, despawn
+    ///        any whose lifetime expired.
+    expose func updateAll() {
+        emitter.Update();
+    }
+
+    /// @brief Render every active particle camera-relative.
+    ///        Runtime handles culling internally.
+    expose func drawAll(canvas: Canvas, camX: Integer, camY: Integer) {
+        emitter.DrawAt(canvas, 0 - camX, 0 - camY);
+    }
+
+    /// @brief Live particle count.  Used by the debug
+    ///        overlay to track effect density.
+    expose func activeCount() -> Integer {
+        return emitter.get_Count();
+    }
+
+    // =========================================================================
+    // Effect presets — reconfigure emitter before each burst
+    // =========================================================================
+
+    // Dust puff (landing, running)
+    //=========================================================
+    // BURST PRESETS
+    //=========================================================
+    // Each `burst*` is a recipe: it sets the shared emitter's
+    // position / velocity / lifetime / size / colour fields,
+    // then calls `Burst(N)`.  The emitter handles the rest.
+    //
+    // To add a new preset:
+    //   1. Pick a recipe (count, lifetime range, velocity
+    //      range, colour, gravity).
+    //   2. Add a `burst*` method here.
+    //   3. Call it from the gameplay event site.
+
+    /// @brief Brown ground dust.  Used for landing impacts +
+    ///        running.  Low gravity, short life.
+    expose func burstDust(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.dust);
+        emitter.SetLifetime(15, 25);
+        emitter.SetVelocity(5.0, 18.0, 45.0, 135.0);
+        emitter.SetGravity(0.0, 0.3);
+        emitter.SetSize(1.0, 3.0);
+        emitter.Burst(6);
+    }
+
+    // Spark burst (bullet hit, enemy hurt)
+    /// @brief Tiny coloured spark fan.  Generic impact effect.
+    expose func burstSpark(x: Integer, y: Integer, col: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(col);
+        emitter.SetLifetime(8, 12);
+        emitter.SetVelocity(10.0, 20.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.0);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(8);
+    }
+
+    // Coin collect sparkle
+    /// @brief Gold-star pop on coin pickup.
+    expose func burstCoinCollect(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(15, 20);
+        emitter.SetVelocity(10.0, 35.0, 60.0, 120.0);
+        emitter.SetGravity(0.0, 0.5);
+        emitter.SetSize(1.0, 3.0);
+        // Gold particles
+        emitter.set_Color(pal.coinGold);
+        emitter.Burst(5);
+        // Yellow spark particles
+        emitter.set_Color(pal.sparkYellow);
+        emitter.Burst(5);
+    }
+
+    // Death explosion
+    /// @brief Multicoloured player-death blast.
+    expose func burstDeath(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(20, 35);
+        emitter.SetVelocity(15.0, 40.0, 30.0, 150.0);
+        emitter.SetGravity(0.0, 0.5);
+        emitter.SetSize(2.0, 4.0);
+        // Red particles
+        emitter.set_Color(pal.deathRed);
+        emitter.Burst(8);
+        // White sparks
+        emitter.set_Color(pal.sparkWhite);
+        emitter.Burst(4);
+        // Yellow sparks
+        emitter.set_Color(pal.sparkYellow);
+        emitter.Burst(4);
+    }
+
+    // Jump burst (small downward puff at feet)
+    /// @brief Subtle dust on jump take-off.
+    expose func burstJump(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.dust);
+        emitter.SetLifetime(8, 12);
+        emitter.SetVelocity(5.0, 12.0, 230.0, 310.0);
+        emitter.SetGravity(0.0, -0.2);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(4);
+    }
+
+    // Double jump burst (ring effect, all directions)
+    /// @brief Cyan ring on double-jump activation.
+    expose func burstDoubleJump(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.playerVisor);
+        emitter.SetLifetime(10, 15);
+        emitter.SetVelocity(10.0, 15.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.0);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(8);
+    }
+
+    // Projectile trail (small, single particle per call)
+    /// @brief Single trailing puff.  Used by bullets in
+    ///        flight (one per N frames per bullet).
+    expose func burstTrail(x: Integer, y: Integer, col: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(col);
+        emitter.SetLifetime(5, 10);
+        emitter.SetVelocity(1.0, 4.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.0);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(1);
+    }
+
+    // Enemy death
+    /// @brief Enemy explosion — colour passed in so each
+    ///        enemy type can match its own palette.
+    expose func burstEnemyDeath(x: Integer, y: Integer, col: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        // Main colored burst — large and visible
+        emitter.set_Color(col);
+        emitter.SetLifetime(25, 40);
+        emitter.SetVelocity(15.0, 40.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.5);
+        emitter.SetSize(4.0, 8.0);
+        emitter.Burst(20);
+        // White flash particles — bright core burst
+        emitter.set_Color(Color.RGB(255, 255, 255));
+        emitter.SetLifetime(5, 10);
+        emitter.SetVelocity(20.0, 50.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.0);
+        emitter.SetSize(3.0, 6.0);
+        emitter.Burst(10);
+        // Smaller debris
+        emitter.set_Color(col);
+        emitter.SetLifetime(15, 25);
+        emitter.SetVelocity(5.0, 15.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.6);
+        emitter.SetSize(2.0, 4.0);
+        emitter.Burst(8);
+    }
+
+    // Hard landing — wider dust cloud
+    /// @brief Larger-than-`burstDust` landing puff.  Triggered
+    ///        on hard landings (long fall).
+    expose func burstLandDust(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.dust);
+        emitter.SetLifetime(18, 30);
+        emitter.SetVelocity(8.0, 25.0, 20.0, 160.0);
+        emitter.SetGravity(0.0, 0.2);
+        emitter.SetSize(2.0, 4.0);
+        emitter.Burst(10);
+    }
+
+    // Wall slide sparks — directional
+    /// @brief Wall-slide friction sparks (direction depends
+    ///        on which side the wall is).
+    expose func burstWallSlideSpark(x: Integer, y: Integer, dir: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.sparkYellow);
+        emitter.SetLifetime(6, 10);
+        // Sparks fly away from wall: dir=-1 means wall on left, sparks go right (315-45)
+        // dir=1 means wall on right, sparks go left (135-225)
+        if dir < 0 {
+            emitter.SetVelocity(8.0, 16.0, 300.0, 60.0);
+        } else {
+            emitter.SetVelocity(8.0, 16.0, 120.0, 240.0);
+        }
+        emitter.SetGravity(0.0, 0.3);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(2);
+    }
+
+    // Jetpack flame — small downward particles
+    /// @brief Downward orange flame (boss/jetpack effect).
+    expose func burstJetpackFlame(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        // Orange flame core
+        emitter.set_Color(pal.titleOrange);
+        emitter.SetLifetime(5, 8);
+        emitter.SetVelocity(4.0, 10.0, 240.0, 300.0);
+        emitter.SetGravity(0.0, -0.2);
+        emitter.SetSize(1.0, 3.0);
+        emitter.Burst(1);
+        // Yellow tip
+        emitter.set_Color(pal.sparkYellow);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(1);
+    }
+
+    // Boss intro — dramatic entrance burst
+    /// @brief Wide red shockwave for boss-room entry.
+    expose func burstBossIntro(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.bossEye);
+        emitter.SetLifetime(20, 35);
+        emitter.SetVelocity(15.0, 35.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.0);
+        emitter.SetSize(2.0, 4.0);
+        emitter.Burst(16);
+        emitter.set_Color(pal.sparkYellow);
+        emitter.Burst(8);
+    }
+
+    // Checkpoint collected — golden sparkle rising upward
+    /// @brief Green halo arc on checkpoint activation.
+    expose func burstCheckpoint(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.checkpoint);
+        emitter.SetLifetime(25, 40);
+        emitter.SetVelocity(8.0, 20.0, 60.0, 120.0);
+        emitter.SetGravity(0.0, -0.3);
+        emitter.SetSize(1.0, 3.0);
+        emitter.Burst(12);
+        // Gold sparks
+        emitter.set_Color(pal.sparkYellow);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(6);
+    }
+
+    // Running dust — continuous trail at player's feet
+    /// @brief Tiny per-step dust while running on ground.
+    expose func burstRunDust(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.dust);
+        emitter.SetLifetime(6, 12);
+        emitter.SetVelocity(3.0, 8.0, 200.0, 340.0);
+        emitter.SetGravity(0.0, 0.1);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(1);
+    }
+
+    // Spike/hazard impact — blood-red splatter
+    /// @brief Red spray on spike/lava contact.
+    expose func burstHazardHit(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.deathRed);
+        emitter.SetLifetime(15, 25);
+        emitter.SetVelocity(12.0, 30.0, 30.0, 150.0);
+        emitter.SetGravity(0.0, 0.5);
+        emitter.SetSize(2.0, 4.0);
+        emitter.Burst(10);
+        // White shock sparks
+        emitter.set_Color(pal.sparkWhite);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(4);
+    }
+
+    // Wall bullet impact — directional sparks
+    /// @brief Cyan shards when a bullet hits solid wall.
+    expose func burstWallImpact(x: Integer, y: Integer, dir: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.sparkYellow);
+        emitter.SetLifetime(6, 10);
+        // Sparks bounce back from the wall
+        if dir > 0 {
+            emitter.SetVelocity(8.0, 18.0, 120.0, 240.0);
+        } else {
+            emitter.SetVelocity(8.0, 18.0, 300.0, 60.0);
+        }
+        emitter.SetGravity(0.0, 0.4);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(5);
+    }
+
+    // Level complete — confetti celebration
+    /// @brief Slow-fall multicoloured confetti on level
+    ///        complete.
+    expose func burstConfetti(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        // Multi-color confetti in sequence
+        emitter.SetLifetime(40, 60);
+        emitter.SetVelocity(10.0, 30.0, 30.0, 150.0);
+        emitter.SetGravity(0.0, 0.2);
+        emitter.SetSize(2.0, 3.0);
+        emitter.set_Color(pal.coinGold);
+        emitter.Burst(4);
+        emitter.set_Color(pal.speed);
+        emitter.Burst(4);
+        emitter.set_Color(pal.health);
+        emitter.Burst(4);
+        emitter.set_Color(pal.sparkWhite);
+        emitter.Burst(4);
+    }
+
+    // =========================================================================
+    // Level 2: Station Particle Presets
+    // =========================================================================
+
+    // Electric spark — blue/white for electric hazards
+    /// @brief Sharp white/cyan zigzag for electric hazards.
+    expose func burstElectricSpark(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.electricSpark);
+        emitter.SetLifetime(6, 12);
+        emitter.SetVelocity(10.0, 25.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.0);
+        emitter.SetSize(1.0, 2.0);
+        emitter.Burst(8);
+        emitter.set_Color(pal.sparkWhite);
+        emitter.Burst(4);
+    }
+
+    // Coolant splash — green toxic splash
+    /// @brief Pale-blue droplet splash for coolant pipes.
+    expose func burstCoolantSplash(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.coolant);
+        emitter.SetLifetime(12, 20);
+        emitter.SetVelocity(8.0, 20.0, 30.0, 150.0);
+        emitter.SetGravity(0.0, 0.5);
+        emitter.SetSize(2.0, 3.0);
+        emitter.Burst(8);
+        emitter.set_Color(pal.coolantBright);
+        emitter.Burst(4);
+    }
+
+    // Drone explode — mechanical sparks + smoke
+    /// @brief Mechanical-shrapnel explosion for drone enemies.
+    expose func burstDroneExplode(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.set_Color(pal.sparkYellow);
+        emitter.SetLifetime(10, 18);
+        emitter.SetVelocity(12.0, 28.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.3);
+        emitter.SetSize(1.0, 3.0);
+        emitter.Burst(10);
+        // Smoke
+        emitter.set_Color(pal.hullPlateDk);
+        emitter.SetLifetime(20, 35);
+        emitter.SetVelocity(4.0, 10.0, 60.0, 120.0);
+        emitter.SetGravity(0.0, -0.2);
+        emitter.SetSize(2.0, 4.0);
+        emitter.Burst(4);
+    }
+
+    // =========================================================================
+    // New enemy death effects
+    // =========================================================================
+
+    /// @brief Slow drifting green cloud (poison hazard).
+    expose func burstPoisonCloud(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(25, 40);
+        emitter.SetVelocity(3.0, 12.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, -0.1);
+        emitter.set_Color(Color.RGB(80, 200, 50));
+        emitter.SetSize(3.0, 6.0);
+        emitter.Burst(14);
+        emitter.set_Color(Color.RGB(120, 255, 80));
+        emitter.SetSize(2.0, 4.0);
+        emitter.Burst(8);
+    }
+
+    /// @brief Glassy radial shards on crystal break.
+    expose func burstCrystalShatter(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(15, 25);
+        emitter.SetVelocity(10.0, 30.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.5);
+        emitter.set_Color(Color.RGB(100, 150, 240));
+        emitter.SetSize(2.0, 5.0);
+        emitter.Burst(16);
+        emitter.set_Color(Color.RGB(200, 220, 255));
+        emitter.SetSize(1.0, 3.0);
+        emitter.Burst(10);
+    }
+
+    /// @brief Bright orange lava droplets.
+    expose func burstLavaSplash(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(15, 30);
+        emitter.SetVelocity(8.0, 25.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.6);
+        emitter.set_Color(Color.RGB(255, 150, 30));
+        emitter.SetSize(3.0, 6.0);
+        emitter.Burst(12);
+        emitter.set_Color(Color.RGB(255, 80, 20));
+        emitter.Burst(8);
+    }
+
+    /// @brief Pale-blue ice fragments.
+    expose func burstFrostShatter(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(20, 35);
+        emitter.SetVelocity(6.0, 20.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.3);
+        emitter.set_Color(Color.RGB(180, 220, 255));
+        emitter.SetSize(2.0, 5.0);
+        emitter.Burst(14);
+        emitter.set_Color(Color.RGB(255, 255, 255));
+        emitter.SetSize(1.0, 3.0);
+        emitter.Burst(8);
+    }
+
+    /// @brief Sickly purple-green burst for corrupted enemies.
+    expose func burstCorruptionDeath(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(20, 35);
+        emitter.SetVelocity(5.0, 18.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, -0.15);
+        emitter.set_Color(Color.RGB(100, 30, 150));
+        emitter.SetSize(3.0, 6.0);
+        emitter.Burst(12);
+        emitter.set_Color(Color.RGB(200, 50, 255));
+        emitter.SetSize(1.0, 3.0);
+        emitter.Burst(6);
+    }
+
+    /// @brief Big yellow-orange explosion (boss attacks,
+    ///        breakable wall destruction).
+    expose func burstExplosion(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(15, 30);
+        emitter.SetVelocity(12.0, 40.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.4);
+        emitter.set_Color(Color.RGB(255, 200, 50));
+        emitter.SetSize(4.0, 8.0);
+        emitter.Burst(16);
+        emitter.set_Color(Color.RGB(80, 80, 80));
+        emitter.SetLifetime(25, 45);
+        emitter.SetVelocity(3.0, 10.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, -0.2);
+        emitter.SetSize(3.0, 7.0);
+        emitter.Burst(10);
+    }
+
+    /// @brief Phase-change shockwave; colour matches the
+    ///        boss's new phase tint.
+    expose func burstBossPhaseTransition(x: Integer, y: Integer, phaseColor: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(25, 45);
+        emitter.SetVelocity(15.0, 50.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, 0.0);
+        emitter.set_Color(phaseColor);
+        emitter.SetSize(4.0, 10.0);
+        emitter.Burst(24);
+        emitter.set_Color(Color.RGB(255, 255, 255));
+        emitter.SetSize(2.0, 5.0);
+        emitter.Burst(12);
+    }
+
+    /// @brief Gold sparkles around the player on
+    ///        ability-acquire freeze frame.
+    expose func burstAbilityAcquired(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(30, 50);
+        emitter.SetVelocity(8.0, 30.0, 0.0, 360.0);
+        emitter.SetGravity(0.0, -0.1);
+        emitter.set_Color(Color.RGB(255, 221, 34));
+        emitter.SetSize(3.0, 7.0);
+        emitter.Burst(20);
+        emitter.set_Color(Color.RGB(255, 255, 200));
+        emitter.SetSize(2.0, 4.0);
+        emitter.Burst(12);
+    }
+
+    /// @brief Streak behind a dashing player; trails opposite
+    ///        the facing direction.
+    expose func burstDashTrail(x: Integer, y: Integer, facing: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(5, 10);
+        if facing > 0 {
+            emitter.SetVelocity(8.0, 15.0, 150.0, 210.0);
+        } else {
+            emitter.SetVelocity(8.0, 15.0, 330.0, 390.0);
+        }
+        emitter.SetGravity(0.0, 0.0);
+        emitter.set_Color(Color.RGB(100, 200, 255));
+        emitter.SetSize(2.0, 3.0);
+        emitter.Burst(3);
+    }
+
+    /// @brief Big horizontal shockwave when ground-pound
+    ///        lands.
+    expose func burstPoundImpact(x: Integer, y: Integer) {
+        emitter.SetPosition(x + 0.0, y + 0.0);
+        emitter.SetLifetime(10, 20);
+        emitter.SetVelocity(10.0, 30.0, 160.0, 200.0);
+        emitter.SetGravity(0.0, 0.3);
+        emitter.set_Color(Color.RGB(200, 180, 100));
+        emitter.SetSize(3.0, 6.0);
+        emitter.Burst(12);
+    }
+}

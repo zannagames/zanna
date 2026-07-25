@@ -1,0 +1,361 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/settings.zia
+// Purpose: Persists and clamps Xenoscape audio, display, and accessibility state.
+// Key invariants:
+//   - Every loaded or user-supplied value is normalized to an advertised choice.
+//   - One SaveData batch contains the complete application-wide settings profile.
+// Ownership/Lifetime:
+//   - Game owns one GameSettings for the application lifetime.
+// Links: game.zia, menu.zia, sound.zia, settings_probe.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module settings;
+
+bind Zanna.IO;
+bind Zanna.Text.Fmt;
+
+final SETTING_MASTER_VOLUME = 0;
+final SETTING_MUSIC_VOLUME = 1;
+final SETTING_SFX_VOLUME = 2;
+final SETTING_AMBIENCE_VOLUME = 3;
+final SETTING_FULLSCREEN = 4;
+final SETTING_UI_SCALE = 5;
+final SETTING_HIGH_CONTRAST = 6;
+final SETTING_LARGE_TEXT = 7;
+final SETTING_REDUCED_MOTION = 8;
+final SETTING_REDUCED_FLASHES = 9;
+final SETTING_SCREEN_SHAKE = 10;
+final SETTING_RUMBLE = 11;
+final SETTING_HOLD_TO_CHARGE = 12;
+final SETTING_NAVIGATION_HINTS = 13;
+final SETTING_DAMAGE_ASSIST = 14;
+final SETTING_GAME_SPEED = 15;
+final SETTING_VOICE_VOLUME = 16;
+final SETTING_SUBTITLES = 17;
+final SETTING_HUD_DETAIL = 18;
+final SETTING_AIM_ASSIST = 19;
+final SETTING_COUNT = 20;
+
+final NAV_HINTS_OFF = 0;
+final NAV_HINTS_CONTEXTUAL = 1;
+final NAV_HINTS_ALWAYS = 2;
+
+/// @brief Return the player-facing label for one settings row.
+///
+/// @param setting One `SETTING_*` id.
+/// @return Stable UI label, or `Unknown Setting` for invalid ids.
+func settingName(setting: Integer) -> String {
+    if setting == SETTING_MASTER_VOLUME { return "Master Volume"; }
+    if setting == SETTING_MUSIC_VOLUME { return "Music Volume"; }
+    if setting == SETTING_SFX_VOLUME { return "SFX Volume"; }
+    if setting == SETTING_AMBIENCE_VOLUME { return "Ambience Volume"; }
+    if setting == SETTING_FULLSCREEN { return "Fullscreen"; }
+    if setting == SETTING_UI_SCALE { return "UI Scale"; }
+    if setting == SETTING_HIGH_CONTRAST { return "High Contrast"; }
+    if setting == SETTING_LARGE_TEXT { return "Large Text"; }
+    if setting == SETTING_REDUCED_MOTION { return "Reduced Motion"; }
+    if setting == SETTING_REDUCED_FLASHES { return "Reduced Flashes"; }
+    if setting == SETTING_SCREEN_SHAKE { return "Screen Shake"; }
+    if setting == SETTING_RUMBLE { return "Rumble"; }
+    if setting == SETTING_HOLD_TO_CHARGE { return "Charge Input"; }
+    if setting == SETTING_NAVIGATION_HINTS { return "Navigation Hints"; }
+    if setting == SETTING_DAMAGE_ASSIST { return "Damage Assist"; }
+    if setting == SETTING_GAME_SPEED { return "Game Speed"; }
+    if setting == SETTING_VOICE_VOLUME { return "ARIA / Voice"; }
+    if setting == SETTING_SUBTITLES { return "Subtitles"; }
+    if setting == SETTING_HUD_DETAIL { return "HUD Detail"; }
+    if setting == SETTING_AIM_ASSIST { return "Aim Assist"; }
+    return "Unknown Setting";
+}
+
+/// @brief Persistent application-wide settings with exact supported defaults.
+class GameSettings {
+    hide SaveData store;
+    hide List[Integer] values;
+
+    /// @brief Open the production settings store and load normalized values.
+    ///
+    /// @return Nothing. Missing keys use the supported defaults.
+    expose func init() { initWithName("xenoscape_settings"); }
+
+    /// @brief Open a named settings store for production or isolated probes.
+    ///
+    /// @param name SaveData namespace; probes should provide a unique name.
+    /// @return Nothing. Allocates fixed storage, loads, and clamps every field.
+    expose func initWithName(name: String) {
+        store = SaveData.New(name);
+        values = [];
+        var i = 0;
+        while i < SETTING_COUNT {
+            values.add(settingDefault(i));
+            i = i + 1;
+        }
+        load();
+    }
+
+    /// @brief Restore every in-memory setting to its supported default.
+    ///
+    /// @return Nothing. Persistence is unchanged until `save()` is called.
+    expose func restoreDefaults() {
+        var i = 0;
+        while i < SETTING_COUNT {
+            values.set(i, settingDefault(i));
+            i = i + 1;
+        }
+    }
+
+    /// @brief Read and normalize the complete settings batch from SaveData.
+    ///
+    /// Unknown future keys are ignored. Missing or out-of-range values become a
+    /// valid advertised choice, making old/corrupt individual fields harmless.
+    ///
+    /// @return Nothing. Replaces all in-memory values.
+    expose func load() {
+        store.Load();
+        var i = 0;
+        while i < SETTING_COUNT {
+            var loaded = store.GetInt(settingKey(i), settingDefault(i));
+            values.set(i, normalizeSetting(i, loaded));
+            i = i + 1;
+        }
+    }
+
+    /// @brief Persist the complete normalized settings profile in one flush.
+    ///
+    /// @return True on successful storage flush; false on storage failure.
+    expose func save() -> Boolean {
+        var i = 0;
+        while i < SETTING_COUNT {
+            store.SetInt(settingKey(i), values.get(i));
+            i = i + 1;
+        }
+        return store.Save();
+    }
+
+    /// @brief Read one normalized setting value.
+    ///
+    /// @param setting One `SETTING_*` id.
+    /// @return Stored value, or zero for invalid ids.
+    expose func getValue(setting: Integer) -> Integer {
+        if setting < 0 or setting >= SETTING_COUNT { return 0; }
+        return values.get(setting);
+    }
+
+    /// @brief Set one field after normalizing it to an advertised choice.
+    ///
+    /// @param setting One `SETTING_*` id.
+    /// @param value Candidate integer value.
+    /// @return True for valid ids; false without mutation for invalid ids.
+    expose func setValue(setting: Integer, value: Integer) -> Boolean {
+        if setting < 0 or setting >= SETTING_COUNT { return false; }
+        values.set(setting, normalizeSetting(setting, value));
+        return true;
+    }
+
+    /// @brief Move one setting by a single UI step.
+    ///
+    /// Continuous percentages use five-point steps. Discrete settings cycle their
+    /// exact choices, and Boolean settings toggle for either direction.
+    ///
+    /// @param setting One `SETTING_*` id.
+    /// @param direction Negative for previous/decrease, nonnegative for next.
+    /// @return True for valid ids; false without mutation for invalid ids.
+    expose func adjust(setting: Integer, direction: Integer) -> Boolean {
+        if setting < 0 or setting >= SETTING_COUNT { return false; }
+        var oldValue = values.get(setting);
+        var nextValue = oldValue;
+        if isBooleanSetting(setting) {
+            nextValue = 1 - oldValue;
+        } else if setting == SETTING_UI_SCALE {
+            if direction < 0 {
+                if oldValue == 150 { nextValue = 125; }
+                else if oldValue == 125 { nextValue = 100; }
+                else { nextValue = 150; }
+            } else {
+                if oldValue == 100 { nextValue = 125; }
+                else if oldValue == 125 { nextValue = 150; }
+                else { nextValue = 100; }
+            }
+        } else if setting == SETTING_NAVIGATION_HINTS {
+            if direction < 0 { nextValue = oldValue - 1; }
+            else { nextValue = oldValue + 1; }
+            if nextValue < NAV_HINTS_OFF { nextValue = NAV_HINTS_ALWAYS; }
+            if nextValue > NAV_HINTS_ALWAYS { nextValue = NAV_HINTS_OFF; }
+        } else if setting == SETTING_DAMAGE_ASSIST {
+            if direction < 0 { nextValue = oldValue - 25; }
+            else { nextValue = oldValue + 25; }
+            if nextValue < 25 { nextValue = 100; }
+            if nextValue > 100 { nextValue = 25; }
+        } else if setting == SETTING_GAME_SPEED {
+            if direction < 0 {
+                if oldValue == 100 { nextValue = 90; }
+                else if oldValue == 90 { nextValue = 75; }
+                else { nextValue = 100; }
+            } else {
+                if oldValue == 75 { nextValue = 90; }
+                else if oldValue == 90 { nextValue = 100; }
+                else { nextValue = 75; }
+            }
+        } else if setting == SETTING_HUD_DETAIL or
+                  setting == SETTING_AIM_ASSIST {
+            if direction < 0 { nextValue = oldValue - 1; }
+            else { nextValue = oldValue + 1; }
+            if nextValue < 0 { nextValue = 2; }
+            if nextValue > 2 { nextValue = 0; }
+        } else {
+            if direction < 0 { nextValue = oldValue - 5; }
+            else { nextValue = oldValue + 5; }
+        }
+        values.set(setting, normalizeSetting(setting, nextValue));
+        return true;
+    }
+
+    /// @brief Format one setting's current value for the options menu.
+    ///
+    /// @param setting One `SETTING_*` id.
+    /// @return Human-readable choice, or `--` for invalid ids.
+    expose func getValueLabel(setting: Integer) -> String {
+        if setting < 0 or setting >= SETTING_COUNT { return "--"; }
+        var value = values.get(setting);
+        if setting == SETTING_HOLD_TO_CHARGE {
+            if value == 1 { return "HOLD"; }
+            return "TOGGLE";
+        }
+        if isBooleanSetting(setting) {
+            if value == 1 { return "ON"; }
+            return "OFF";
+        }
+        if setting == SETTING_NAVIGATION_HINTS {
+            if value == NAV_HINTS_OFF { return "OFF"; }
+            if value == NAV_HINTS_ALWAYS { return "ALWAYS"; }
+            return "CONTEXTUAL";
+        }
+        if setting == SETTING_HUD_DETAIL {
+            if value == 0 { return "MINIMAL"; }
+            if value == 2 { return "FULL"; }
+            return "STANDARD";
+        }
+        if setting == SETTING_AIM_ASSIST {
+            if value == 0 { return "OFF"; }
+            if value == 2 { return "STRONG"; }
+            return "STANDARD";
+        }
+        return Int(value) + "%";
+    }
+
+    /// @brief Return one setting's exact supported default.
+    ///
+    /// @param setting One `SETTING_*` id.
+    /// @return Default integer value, or zero for invalid ids.
+    hide func settingDefault(setting: Integer) -> Integer {
+        if setting == SETTING_MASTER_VOLUME { return 80; }
+        if setting == SETTING_MUSIC_VOLUME { return 55; }
+        if setting == SETTING_SFX_VOLUME { return 85; }
+        if setting == SETTING_AMBIENCE_VOLUME { return 70; }
+        if setting == SETTING_UI_SCALE { return 100; }
+        if setting == SETTING_SCREEN_SHAKE { return 100; }
+        if setting == SETTING_RUMBLE { return 1; }
+        if setting == SETTING_HOLD_TO_CHARGE { return 1; }
+        if setting == SETTING_NAVIGATION_HINTS { return NAV_HINTS_CONTEXTUAL; }
+        if setting == SETTING_DAMAGE_ASSIST { return 100; }
+        if setting == SETTING_GAME_SPEED { return 100; }
+        if setting == SETTING_VOICE_VOLUME { return 85; }
+        if setting == SETTING_SUBTITLES { return 1; }
+        if setting == SETTING_HUD_DETAIL { return 1; }
+        if setting == SETTING_AIM_ASSIST { return 1; }
+        return 0;
+    }
+
+    /// @brief Map one setting id to its stable SaveData key.
+    ///
+    /// @param setting One valid `SETTING_*` id.
+    /// @return Stable snake-case persistence key.
+    hide func settingKey(setting: Integer) -> String {
+        if setting == SETTING_MASTER_VOLUME { return "master_volume"; }
+        if setting == SETTING_MUSIC_VOLUME { return "music_volume"; }
+        if setting == SETTING_SFX_VOLUME { return "sfx_volume"; }
+        if setting == SETTING_AMBIENCE_VOLUME { return "ambience_volume"; }
+        if setting == SETTING_FULLSCREEN { return "fullscreen"; }
+        if setting == SETTING_UI_SCALE { return "ui_scale"; }
+        if setting == SETTING_HIGH_CONTRAST { return "high_contrast"; }
+        if setting == SETTING_LARGE_TEXT { return "large_text"; }
+        if setting == SETTING_REDUCED_MOTION { return "reduced_motion"; }
+        if setting == SETTING_REDUCED_FLASHES { return "reduced_flashes"; }
+        if setting == SETTING_SCREEN_SHAKE { return "screen_shake"; }
+        if setting == SETTING_RUMBLE { return "rumble"; }
+        if setting == SETTING_HOLD_TO_CHARGE { return "hold_to_charge"; }
+        if setting == SETTING_NAVIGATION_HINTS { return "navigation_hints"; }
+        if setting == SETTING_DAMAGE_ASSIST { return "damage_assist"; }
+        if setting == SETTING_GAME_SPEED { return "game_speed"; }
+        if setting == SETTING_VOICE_VOLUME { return "voice_volume"; }
+        if setting == SETTING_HUD_DETAIL { return "hud_detail"; }
+        if setting == SETTING_AIM_ASSIST { return "aim_assist"; }
+        return "subtitles";
+    }
+
+    /// @brief Normalize arbitrary input to one advertised setting value.
+    ///
+    /// @param setting One valid `SETTING_*` id.
+    /// @param value Candidate persisted or user value.
+    /// @return Clamped/quantized setting value.
+    hide func normalizeSetting(setting: Integer, value: Integer) -> Integer {
+        if isBooleanSetting(setting) {
+            if value == 0 { return 0; }
+            return 1;
+        }
+        if setting == SETTING_UI_SCALE {
+            if value < 113 { return 100; }
+            if value < 138 { return 125; }
+            return 150;
+        }
+        if setting == SETTING_NAVIGATION_HINTS {
+            if value < NAV_HINTS_OFF { return NAV_HINTS_OFF; }
+            if value > NAV_HINTS_ALWAYS { return NAV_HINTS_ALWAYS; }
+            return value;
+        }
+        if setting == SETTING_DAMAGE_ASSIST {
+            if value < 38 { return 25; }
+            if value < 63 { return 50; }
+            if value < 88 { return 75; }
+            return 100;
+        }
+        if setting == SETTING_GAME_SPEED {
+            if value < 83 { return 75; }
+            if value < 96 { return 90; }
+            return 100;
+        }
+        if setting == SETTING_HUD_DETAIL or setting == SETTING_AIM_ASSIST {
+            if value < 0 { return 0; }
+            if value > 2 { return 2; }
+            return value;
+        }
+        if value < 0 { return 0; }
+        if value > 100 { return 100; }
+        return value;
+    }
+
+    /// @brief Identify settings represented as binary choices.
+    ///
+    /// Charge Input is intentionally included: one means Hold and zero Toggle.
+    ///
+    /// @param setting One `SETTING_*` id.
+    /// @return True for Boolean/binary choice rows.
+    hide func isBooleanSetting(setting: Integer) -> Boolean {
+        return setting == SETTING_FULLSCREEN or
+               setting == SETTING_HIGH_CONTRAST or
+               setting == SETTING_LARGE_TEXT or
+               setting == SETTING_REDUCED_MOTION or
+               setting == SETTING_REDUCED_FLASHES or
+               setting == SETTING_RUMBLE or
+               setting == SETTING_HOLD_TO_CHARGE or
+               setting == SETTING_SUBTITLES;
+    }
+}

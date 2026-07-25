@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/PassManager.hpp
+// File: src/codegen/aarch64/passes/PassManager.hpp
 // Purpose: AArch64 pass manager types — delegates to common PassManager template.
 // Key invariants: Passes run sequentially, short-circuiting on failure while preserving
 //                 prior pass results. Each pass receives the shared AArch64Module state.
@@ -29,15 +29,26 @@
 #include <string>
 #include <vector>
 
+/**
+ * @file
+ * @brief Defines shared AArch64 pipeline state and common pass-manager aliases.
+ *
+ * Pass implementations progressively replace fields in `AArch64Module`.
+ * Input module and target pointers are non-owning; all MIR, textual, section,
+ * and debug products are owned by the state object.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
-/// @brief Mutable state threaded through the AArch64 code-generation passes.
-///
-/// Each pass transforms a portion of this struct:
-///   - LoweringPass  : populates mir and rodataPool from ilMod
-///   - RegAllocPass  : assigns physical registers in mir
-///   - PeepholePass  : applies peephole optimisations to mir
-///   - EmitPass      : produces assembly text in assembly
+/**
+ * @brief Owns mutable artifacts threaded through the AArch64 pass sequence.
+ *
+ * Lowering produces MIR/global pools, legalization and optimization mutate MIR,
+ * and one or both emitters populate assembly or object-section products.
+ *
+ * @invariant Non-null `ilMod` and `ti` pointers outlive every pass that reads them.
+ * @invariant `binaryTextSections` remains in MIR function order.
+ */
 struct AArch64Module {
     const il::core::Module *ilMod = nullptr; ///< Non-owning pointer to the IL module.
     const TargetInfo *ti = nullptr;          ///< Non-owning pointer to the target info.

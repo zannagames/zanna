@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/LowerILToMIR.cpp
+// File: src/codegen/x86_64/LowerILToMIR.cpp
 // Purpose: Bridge IL produced by the compiler front-end into Machine IR consumed
 //          by the x86-64 backend using declarative lowering rules.
 // Key invariants:
@@ -16,9 +16,9 @@
 // Ownership/Lifetime:
 //   - The adapter owns transient per-function lowering state and writes into
 //     caller-owned Machine IR structures.
-// Links: codegen/x86_64/LowerILToMIR.hpp,
-//        codegen/x86_64/LoweringRules.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/LowerILToMIR.hpp,
+//        src/codegen/x86_64/LoweringRules.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,6 +39,16 @@
 #include <string_view>
 #include <unordered_set>
 #include <utility>
+
+/**
+ * @file
+ * @brief Implements IL-to-MIR adaptation for the x86-64 lowering-rule registry.
+ *
+ * This layer pre-allocates MIR blocks, maps SSA values to deterministic virtual
+ * registers, materializes constants and literals, records delayed ABI call
+ * plans, inserts entry-parameter and edge parallel copies, and stamps emitted
+ * instructions with source locations.
+ */
 
 namespace zanna::codegen::x64 {
 
@@ -319,20 +329,34 @@ void LowerILToMIR::resetFunctionState() {
     strCallRetainElidable_.clear();
 }
 
+/**
+ * @brief Analyze string-producing instructions for redundant defensive retains.
+ *
+ * Load retains are elided only for a single explicit release, a managed
+ * move-out pattern, an immediately dominating explicit retain, or a safe
+ * same-block borrow window. Transferring call results may omit their retain
+ * when at most one consuming use spends the transferred reference. Successor
+ * arguments are treated conservatively because downstream ownership is unknown.
+ *
+ * @param func Function whose string definitions and all uses are inspected.
+ */
 void LowerILToMIR::computeStrLoadRetainElidable(const ILFunction &func) {
     if (!zanna::codegen::shouldElideLoadRetainForRelease())
         return;
 
+    /// Recognize calls whose first operand directly names the callee.
     const auto isDirectCall = [](const ILInstr &ins) {
         return ins.opcode == "call" && !ins.ops.empty() &&
                ins.ops.front().kind == ILValue::Kind::LABEL;
     };
+    /// Recognize a direct call to a known string-release routine.
     const auto isReleaseCall = [&](const ILInstr &ins) {
         return isDirectCall(ins) && zanna::codegen::isStringReleaseCallee(ins.ops.front().label);
     };
     // Direct IL calls borrow parameters by default. Registered runtime helpers
     // spend only arguments explicitly classified as consumed; retaining an
     // argument does not consume the caller's reference.
+    /// Determine whether a direct call borrows the indexed non-callee operand.
     const auto isBorrowedCallArg = [&](const ILInstr &ins, std::size_t opIdx) {
         if (!isDirectCall(ins) || opIdx == 0)
             return false;
@@ -890,9 +914,13 @@ MFunction LowerILToMIR::lower(const ILFunction &func) {
 
     // Build a map from entry block parameter IDs to their ABI physical registers
     // or stack offsets for stack-passed parameters
+    /// @brief Entry parameter that must be loaded from the caller's stack area.
     struct StackParam {
+        /// IL SSA identifier receiving the parameter.
         int paramId;
+        /// Positive RBP-relative incoming argument displacement.
         int32_t offset;
+        /// IL kind controlling load class and boolean normalization.
         ILValue::Kind kind;
     };
 
@@ -1017,6 +1045,12 @@ MFunction LowerILToMIR::lower(const ILFunction &func) {
 
             if (loweredInstr.opcode == "br" || loweredInstr.opcode == "cbr" ||
                 loweredInstr.opcode == "switch_i32") {
+                /**
+                 * @brief Redirect one terminator label through its edge-copy block.
+                 *
+                 * @param labelValue Mutable label operand in the cloned terminator.
+                 * @param edgeIndex Matching successor metadata index.
+                 */
                 auto rewriteLabelOperand = [&](ILValue &labelValue, std::size_t edgeIndex) {
                     if (edgeIndex >= ilBlock.terminatorEdges.size() ||
                         labelValue.kind != ILValue::Kind::LABEL) {

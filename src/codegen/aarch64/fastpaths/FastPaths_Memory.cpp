@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/fastpaths/FastPaths_Memory.cpp
+// File: src/codegen/aarch64/fastpaths/FastPaths_Memory.cpp
 // Purpose: Fast-path pattern matching for memory operations.
 //          Handles alloca/store/load/ret, load-from-pointer-param/ret, and
 //          gep+load/ret patterns — common accessor shapes that map to 1-3 MIR
@@ -17,11 +17,21 @@
 //   - Return value must come from the load result.
 // Ownership/Lifetime:
 //   - Stateless free functions; FastPathContext is borrowed for the call duration.
-// Links: codegen/aarch64/fastpaths/FastPathsInternal.hpp
+// Links: src/codegen/aarch64/fastpaths/FastPathsInternal.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "FastPathsInternal.hpp"
+
+/**
+ * @file
+ * @brief Implements simple AArch64 memory-access-and-return fast paths.
+ *
+ * Width-aware helpers select narrow GPR forms. Recognizers cover a local
+ * store/load round trip, dereference of a pointer parameter, and a constant
+ * offset GEP followed by a load. String and boolean return semantics remain on
+ * the generic path.
+ */
 
 namespace zanna::codegen::aarch64::fastpaths {
 
@@ -69,6 +79,17 @@ MOpcode gprStoreOpcodeForType(il::core::Type::Kind kind, bool frameRelative) {
 
 } // namespace
 
+/**
+ * @brief Attempts one of the supported single-block memory return patterns.
+ *
+ * Local round trips require an assigned nonzero frame offset and identical
+ * store/load allocation IDs. Pointer loads and GEP loads require an entry
+ * parameter in the integer argument bank. Loads are emitted at the IL width,
+ * with FP results returned through `v0` and other scalars through `x0`.
+ *
+ * @param[in,out] ctx Fast-path state and output MIR.
+ * @return Completed MIR function on a match, otherwise `std::nullopt`.
+ */
 std::optional<MFunction> tryMemoryFastPaths(FastPathContext &ctx) {
     if (ctx.fn.blocks.empty())
         return std::nullopt;

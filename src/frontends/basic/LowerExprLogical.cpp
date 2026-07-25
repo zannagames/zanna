@@ -12,6 +12,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file LowerExprLogical.cpp
+ * @brief Implements eager and short-circuit BASIC logical operators.
+ *
+ * Short-circuit forms build a boolean diamond and canonicalize its result to
+ * BASIC's `i64` -1/0 convention; eager AND and OR perform bitwise operations on
+ * fully evaluated logical words.
+ */
+
 #include "frontends/basic/LowerExprLogical.hpp"
 
 #include "frontends/basic/DiagnosticEmitter.hpp"
@@ -47,12 +56,13 @@ std::string_view logicalOperatorDisplayName(BinaryExpr::Op op) noexcept {
     return "<logical>";
 }
 
+/// Diagnostic code used when this helper receives a non-logical operator.
 constexpr std::string_view kDiagUnsupportedLogicalOperator = "B4002";
 } // namespace
 
 /// @brief Construct the logical lowering helper around a @ref Lowerer.
 ///
-/// @param lowerer Active lowering context used to emit IL instructions.
+/// @param lowerer Borrowed lowering context; it must outlive this helper.
 LogicalExprLowering::LogicalExprLowering(Lowerer &lowerer) noexcept : lowerer_(&lowerer) {}
 
 /// @brief Lower a BASIC logical binary expression into IL.
@@ -71,6 +81,7 @@ Lowerer::RVal LogicalExprLowering::lower(const BinaryExpr &expr) {
     Lowerer::RVal lhs = lowerer.lowerExpr(*expr.lhs);
     lowerer.curLoc = expr.loc;
 
+    /// Coerce one lowered operand to the `i1` condition type at this expression.
     auto toBool = [&](Lowerer::RVal val) {
         return lowerer.coerceToBool(std::move(val), expr.loc).value;
     };
@@ -181,7 +192,7 @@ Lowerer::RVal Lowerer::lowerLogicalBinary(const BinaryExpr &expr) {
     return ::il::frontends::basic::lowerLogicalBinary(*this, expr);
 }
 
-/// @brief Free-function entry point used by tests and other lowering helpers.
+/// @brief Free-function entry point for callers with an explicit lowerer.
 ///
 /// @param lowerer Active lowering context receiving the emitted IL.
 /// @param expr Logical binary expression under translation.

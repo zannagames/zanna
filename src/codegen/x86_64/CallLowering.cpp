@@ -5,9 +5,9 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/CallLowering.cpp
+// File: src/codegen/x86_64/CallLowering.cpp
 // Purpose: Implements the call-lowering phase for the x86-64 backend, mapping
-//          abstract call plans into concrete MIR that abides by SysV AMD64 ABI.
+//          abstract call plans into concrete SysV or Win64 argument-setup MIR.
 // Key invariants:
 //   - Argument registers are populated in ABI order before the CALL instruction.
 //   - Outgoing argument stack areas are 8-byte aligned.
@@ -15,9 +15,9 @@
 // Ownership/Lifetime:
 //   - Mutates the caller-provided MBasicBlock and FrameInfo in-place; does not
 //     retain references after lowerCall() returns.
-// Links: codegen/x86_64/CallLowering.hpp,
-//        codegen/x86_64/FrameLowering.hpp,
-//        codegen/x86_64/TargetX64.hpp
+// Links: src/codegen/x86_64/CallLowering.hpp,
+//        src/codegen/x86_64/FrameLowering.hpp,
+//        src/codegen/x86_64/TargetX64.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,11 +34,23 @@
 #include <stdexcept>
 #include <string>
 
+/**
+ * @file
+ * @brief Implements ABI-specific x86-64 call-argument materialization.
+ *
+ * The implementation delegates placement decisions to the common call layout
+ * planner, then translates those decisions into MIR moves and stack stores.
+ * It also handles aggregate chunks, boolean extension, SysV's variadic XMM
+ * count, Win64's variadic floating-point duplication, and checked frame sizing.
+ */
+
 namespace zanna::codegen::x64 {
 
 namespace {
 
+/// Volatile integer register used to stage arguments without consuming a vreg.
 constexpr PhysReg kScratchGPR = PhysReg::R11;
+/// Volatile vector register used to stage floating-point stack arguments.
 constexpr PhysReg kScratchXMM = PhysReg::XMM15;
 
 /// @brief Compute outgoing-call stack bytes with overflow checking.
@@ -48,6 +60,7 @@ constexpr PhysReg kScratchXMM = PhysReg::XMM15;
 /// @param shadowSpace ABI-mandated prefix bytes before stack arguments.
 /// @param stackSlots Number of 8-byte outgoing stack slots.
 /// @return Total outgoing-call byte count before frame-size rounding.
+/// @throws std::length_error If the multiplication or addition would overflow.
 static std::size_t checkedOutgoingStackBytes(std::size_t shadowSpace, std::size_t stackSlots) {
     constexpr std::size_t kMax = std::numeric_limits<std::size_t>::max();
     if (stackSlots > (kMax - shadowSpace) / kSlotSizeBytes)
@@ -70,6 +83,9 @@ static int32_t checkedStackSlotOffset(std::size_t shadowSpace, std::size_t stack
 }
 
 /// @brief Narrow an aggregate byte offset to the memory-operand displacement type.
+/// @param byteOffset Offset of an eight-byte aggregate chunk from its source base.
+/// @return @p byteOffset represented as a signed 32-bit displacement.
+/// @throws std::length_error If the offset exceeds the displacement range.
 static int32_t checkedAggregateChunkOffset(std::size_t byteOffset) {
     if (byteOffset > static_cast<std::size_t>(std::numeric_limits<int32_t>::max()))
         throw std::length_error("x86-64 call lowering: aggregate chunk offset exceeds int32_t");
@@ -81,6 +97,7 @@ static int32_t checkedAggregateChunkOffset(std::size_t byteOffset) {
 ///          valid size_t layouts that would not survive the existing field type.
 /// @param stackBytes Raw outgoing-call byte count.
 /// @return Rounded byte count representable as int.
+/// @throws std::length_error If rounding overflows or the result exceeds @c int.
 static int checkedOutgoingAreaForFrame(std::size_t stackBytes) {
     const std::size_t rounded = roundUpSize(stackBytes, kSlotSizeBytes);
     if (rounded > static_cast<std::size_t>(std::numeric_limits<int>::max()))
@@ -181,22 +198,7 @@ static int checkedOutgoingAreaForFrame(std::size_t stackBytes) {
 
 } // namespace
 
-/// @brief Lower a high-level call plan into concrete Machine IR instructions.
-///
-/// @details Inserts argument setup and call instructions into @p block using the
-///          placement index requested by the caller.  Register arguments are
-///          copied into their ABI-assigned registers, stack arguments are
-///          written into aligned outgoing slots, and scratch registers are used
-///          when operands need shuffling.  The helper also updates @p frame with
-///          the amount of outgoing stack space consumed so frame construction
-///          can reserve sufficient storage later in the pipeline.
-///
-/// @param block Machine basic block receiving the lowered call sequence.
-/// @param insertIdx Instruction index at which new instructions should be
-///        inserted.
-/// @param plan Description of argument locations and scratch requirements.
-/// @param target Target-specific information such as register assignments.
-/// @param frame Frame summary updated with outgoing stack usage.
+/// @copydoc lowerCall
 void lowerCall(MBasicBlock &block,
                std::size_t insertIdx,
                const CallLoweringPlan &plan,
@@ -208,6 +210,7 @@ void lowerCall(MBasicBlock &block,
     auto insertIt = block.instructions.begin();
     std::advance(insertIt, static_cast<std::ptrdiff_t>(insertIdx));
 
+    /// Insert one instruction at the moving cursor and advance past it.
     auto insertInstr = [&](MInstr instr) {
         insertIt = block.instructions.insert(insertIt, std::move(instr));
         ++insertIt;
@@ -222,6 +225,12 @@ void lowerCall(MBasicBlock &block,
                                                  : CallSlotModel::IndependentRegisterBanks,
                             .variadicTailOnStack = false,
                             .numNamedArgs = plan.numNamedArgs});
+    /**
+     * @brief Mirror a Win64 variadic FP argument into its positional GPR.
+     *
+     * @param loc Planned floating-point argument location.
+     * @param xmmReg XMM register already containing the argument bits.
+     */
     auto maybeDuplicateWin64VarArgFpr = [&](const CallArgLocation &loc, PhysReg xmmReg) {
         if (!isWin64 || !plan.isVarArg || !loc.inRegister || loc.cls != CallArgClass::FPR)
             return;

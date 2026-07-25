@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/ScalarGlobalLayout.hpp
+// File: src/codegen/common/ScalarGlobalLayout.hpp
 // Purpose: Shared layout rules for writable scalar IL globals emitted into the
 //          native `.data`/`__data` section. One source of truth for the
 //          IL-type -> {size, float-ness} mapping and initializer bit parsing so
@@ -20,6 +20,15 @@
 //        codegen/x86_64/passes/EmitPass.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ScalarGlobalLayout.hpp
+ * @brief Defines shared native layout and initializer parsing for writable
+ *        scalar IL globals.
+ *
+ * Keeping these rules backend-independent ensures AArch64 and x86-64 binary
+ * and assembly emitters agree on storage widths and raw initializer bits.
+ */
 
 #pragma once
 
@@ -38,10 +47,11 @@ struct ScalarGlobalLayout {
     bool isFloat = false; ///< True for f64 (affects the asm directive / parse).
 };
 
-/// @brief Map an IL scalar type kind to its `.data` storage layout.
-/// @param kind The IL global's type kind.
-/// @return The byte size and float-ness; `sizeBytes == 0` for non-scalar globals
-///         (strings live in rodata; void/error/resumetok emit nothing).
+/// @brief Maps an IL scalar type kind to its writable-data layout.
+/// @param kind IL type kind of the global.
+/// @return One byte for `i1`, two for `i16`, four for `i32`, eight for
+///         `i64`, pointers, and `f64`; unsupported kinds return a zero-sized
+///         non-floating layout.
 inline ScalarGlobalLayout scalarGlobalLayout(il::core::Type::Kind kind) noexcept {
     using Kind = il::core::Type::Kind;
     switch (kind) {
@@ -64,10 +74,15 @@ inline ScalarGlobalLayout scalarGlobalLayout(il::core::Type::Kind kind) noexcept
 /// @brief Parse an IL global initializer string into its raw little-endian bits.
 /// @details Trims surrounding whitespace, then interprets the literal as a double
 ///          (when @p isFloat) or a base-0 signed integer. An empty initializer
-///          yields zero. The returned value holds the low @c sizeBytes bytes.
-/// @param init   The IL global's initializer text (e.g. "41", "2.5"); may be empty.
+///          yields zero. Parsing intentionally follows the permissive C
+///          conversion routines: conversion stops at the first unrecognized
+///          character and no diagnostic is produced here.  Integer consumers
+///          truncate the returned 64-bit representation to their layout width.
+/// @param init The IL global's initializer text (e.g. `"41"` or `"2.5"`);
+///             may be empty or surrounded by ASCII whitespace.
 /// @param isFloat Whether to parse as IEEE-754 double bits versus an integer.
-/// @return The raw bit pattern, little-endian in the low bytes.
+/// @return Full 64-bit integer representation or the bit pattern of the
+///         parsed IEEE-754 double.
 inline std::uint64_t scalarGlobalRawBits(const std::string &init, bool isFloat) {
     std::string trimmed = init;
     const auto b = trimmed.find_first_not_of(" \t\r\n");

@@ -1,0 +1,122 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/settings_probe.zia
+// Purpose: Verifies Xenoscape settings defaults, clamps, choices, and persistence.
+// Key invariants:
+//   - Probe restores its isolated namespace before and after assertions.
+//   - `RESULT: ok` is emitted only after a second-instance persistence load.
+// Ownership/Lifetime:
+//   - All GameSettings instances and SaveData state are probe-local.
+// Links: settings.zia, src/tests/CMakeLists.txt,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module settings_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "./settings";
+bind "./accessibility";
+
+/// @brief Emit a deterministic settings-probe failure message.
+///
+/// @param message Stable assertion label for CTest diagnostics.
+/// @return Nothing. Omits the success regex marker.
+func fail(message: String) { Terminal.Say("RESULT: fail " + message); }
+
+/// @brief Exercise defaults, normalization, cycling, and SaveData reload.
+///
+/// @return Nothing. Prints `RESULT: ok` only when every contract passes.
+func main() {
+    if accessibleTextScale(2, 100, false) != 2 or
+       accessibleTextScale(2, 125, false) != 3 or
+       accessibleTextScale(2, 150, true) != 4 or
+       accessiblePanelAlpha(false) != 180 or
+       accessiblePanelAlpha(true) != 235 or
+       accessibleRumbleStrength(70, false) != 0 or
+       accessibleRumbleStrength(140, true) != 100 {
+        fail("accessibility live mapping"); return;
+    }
+    var settings = new GameSettings();
+    settings.initWithName("xenoscape_settings_probe");
+    settings.restoreDefaults();
+    if settings.save() == false {
+        fail("reset write"); return;
+    }
+
+    if settings.getValue(SETTING_MASTER_VOLUME) != 80 or
+       settings.getValue(SETTING_MUSIC_VOLUME) != 55 or
+       settings.getValue(SETTING_SFX_VOLUME) != 85 or
+       settings.getValue(SETTING_AMBIENCE_VOLUME) != 70 or
+       settings.getValue(SETTING_UI_SCALE) != 100 or
+       settings.getValue(SETTING_RUMBLE) != 1 or
+       settings.getValue(SETTING_NAVIGATION_HINTS) != NAV_HINTS_CONTEXTUAL or
+       settings.getValue(SETTING_DAMAGE_ASSIST) != 100 or
+       settings.getValue(SETTING_GAME_SPEED) != 100 or
+       settings.getValue(SETTING_SUBTITLES) != 1 or
+       settings.getValue(SETTING_HUD_DETAIL) != 1 or
+       settings.getValue(SETTING_AIM_ASSIST) != 1 {
+        fail("supported defaults"); return;
+    }
+
+    settings.setValue(SETTING_MASTER_VOLUME, -50);
+    settings.setValue(SETTING_SFX_VOLUME, 900);
+    settings.setValue(SETTING_UI_SCALE, 132);
+    settings.setValue(SETTING_DAMAGE_ASSIST, 61);
+    settings.setValue(SETTING_GAME_SPEED, 88);
+    settings.setValue(SETTING_NAVIGATION_HINTS, 99);
+    settings.setValue(SETTING_HUD_DETAIL, 99);
+    settings.setValue(SETTING_AIM_ASSIST, -3);
+    if settings.getValue(SETTING_MASTER_VOLUME) != 0 or
+       settings.getValue(SETTING_SFX_VOLUME) != 100 or
+       settings.getValue(SETTING_UI_SCALE) != 125 or
+       settings.getValue(SETTING_DAMAGE_ASSIST) != 50 or
+       settings.getValue(SETTING_GAME_SPEED) != 90 or
+       settings.getValue(SETTING_NAVIGATION_HINTS) != NAV_HINTS_ALWAYS or
+       settings.getValue(SETTING_HUD_DETAIL) != 2 or
+       settings.getValue(SETTING_AIM_ASSIST) != 0 {
+        fail("normalization"); return;
+    }
+
+    settings.adjust(SETTING_FULLSCREEN, 1);
+    settings.adjust(SETTING_UI_SCALE, 1);
+    settings.adjust(SETTING_DAMAGE_ASSIST, -1);
+    settings.adjust(SETTING_GAME_SPEED, -1);
+    settings.adjust(SETTING_HOLD_TO_CHARGE, 1);
+    settings.adjust(SETTING_HUD_DETAIL, 1);
+    settings.adjust(SETTING_AIM_ASSIST, -1);
+    if settings.getValueLabel(SETTING_FULLSCREEN) != "ON" or
+       settings.getValueLabel(SETTING_UI_SCALE) != "150%" or
+       settings.getValueLabel(SETTING_DAMAGE_ASSIST) != "25%" or
+       settings.getValueLabel(SETTING_GAME_SPEED) != "75%" or
+       settings.getValueLabel(SETTING_HOLD_TO_CHARGE) != "TOGGLE" or
+       settings.getValueLabel(SETTING_HUD_DETAIL) != "MINIMAL" or
+       settings.getValueLabel(SETTING_AIM_ASSIST) != "STRONG" {
+        fail("choice cycling"); return;
+    }
+    if settings.setValue(-1, 5) or settings.adjust(SETTING_COUNT, 1) {
+        fail("invalid id mutation"); return;
+    }
+    if settings.save() == false {
+        fail("mutated write"); return;
+    }
+
+    var loaded = new GameSettings();
+    loaded.initWithName("xenoscape_settings_probe");
+    if loaded.getValue(SETTING_FULLSCREEN) != 1 or
+       loaded.getValue(SETTING_UI_SCALE) != 150 or
+       loaded.getValue(SETTING_DAMAGE_ASSIST) != 25 or
+       loaded.getValue(SETTING_GAME_SPEED) != 75 or
+       loaded.getValue(SETTING_HOLD_TO_CHARGE) != 0 {
+        fail("persistence reload"); return;
+    }
+
+    loaded.restoreDefaults();
+    loaded.save();
+    Terminal.Say("RESULT: ok");
+}

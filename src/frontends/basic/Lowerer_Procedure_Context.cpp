@@ -19,6 +19,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file Lowerer_Procedure_Context.cpp
+ * @brief Implements procedure context construction and symbol-scope adapters.
+ *
+ * The functions here mutate the Lowerer's shared SymbolTable and field-scope
+ * stack. LoweringContext owns only its procedure name; all pipeline services,
+ * parameter/body vectors, and configuration callbacks are borrowed.
+ */
+
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/LoweringPipeline.hpp"
 #include "frontends/basic/lower/Emitter.hpp"
@@ -39,9 +48,17 @@ namespace il::frontends::basic {
 /// @details The context bundles references to the shared @ref Lowerer state,
 ///          symbol table, and emitter while capturing procedure-specific
 ///          parameters such as the body statements, configuration hooks, and the
-///          IR builder used to materialise code.  Copies of lightweight data
-///          (such as the procedure name) are taken so subsequent passes can
-///          reference them even if the caller's buffers are reclaimed.
+///          IR builder used to materialise code. The name is copied, while the
+///          parameters, body, configuration, and service objects are borrowed
+///          and must remain alive through all procedure phases.
+/// @param lowerer Parent lowering coordinator.
+/// @param symbols Mutable symbol-map alias owned by @p lowerer.
+/// @param builder Active IR builder.
+/// @param emitter Shared low-level emitter.
+/// @param name Procedure emission name, moved into the context.
+/// @param params Borrowed formal-parameter vector.
+/// @param body Borrowed procedure-body vector.
+/// @param config Borrowed return and callback configuration.
 ProcedureLowering::LoweringContext::LoweringContext(Lowerer &lowerer,
                                                     SymbolTable::SymbolMap &symbols,
                                                     il::build::IRBuilder &builder,
@@ -86,11 +103,12 @@ const Lowerer::SymbolInfo *Lowerer::findSymbol(std::string_view name) const {
     return symbolTable_.lookup(name);
 }
 
-/// @brief Record the declared type for a symbol and mark it as referenced.
+/// @brief Record the declared primitive type for a symbol.
 /// @details Updates the symbol information with the explicit AST type and, when
 ///          applicable, notes that the identifier represents a boolean scalar.
 ///          Symbols that are later used as arrays have their boolean flag
-///          cleared when @ref markArray executes.
+///          cleared when @ref markArray executes. Object flags and class text
+///          are cleared, but the referenced flag is left unchanged.
 /// @param name Identifier whose type is being fixed.
 /// @param type AST-declared type for the symbol.
 void Lowerer::setSymbolType(std::string_view name, AstType type) {
@@ -108,7 +126,7 @@ void Lowerer::setSymbolType(std::string_view name, AstType type) {
 ///          allocation emits pointer storage, and captures the class name for
 ///          runtime dispatch.
 /// @param name Identifier being classified as an object.
-/// @param className Fully qualified BASIC class identifier.
+/// @param className BASIC class identifier stored without additional qualification.
 void Lowerer::setSymbolObjectType(std::string_view name, std::string className) {
     if (name.empty())
         return;

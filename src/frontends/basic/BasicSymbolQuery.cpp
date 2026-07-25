@@ -5,6 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/BasicSymbolQuery.cpp
+// Purpose: Implement read-only BASIC lowering symbol and type queries.
+// Ownership/Lifetime: Each facade borrows a Lowerer for its full lifetime.
+// Links: src/frontends/basic/BasicSymbolQuery.hpp,
+//        src/frontends/basic/Lowerer.hpp,
+//        src/frontends/basic/SemanticAnalyzer.hpp
+//
+//===----------------------------------------------------------------------===//
+//
 /// @file
 /// @brief Implements the BASIC symbol query facade.
 /// @details Provides the out-of-line definitions for @ref BasicSymbolQuery, a
@@ -25,6 +34,7 @@ namespace il::frontends::basic {
 /// @details Stores a reference to the lowerer, which is used for all subsequent
 ///          symbol and type queries.
 /// @param lowerer Lowerer providing access to symbol tables and semantics.
+/// @warning @p lowerer must outlive the constructed facade.
 BasicSymbolQuery::BasicSymbolQuery(const Lowerer &lowerer) noexcept : lowerer_(lowerer) {}
 
 // =============================================================================
@@ -113,7 +123,7 @@ std::optional<Type> BasicSymbolQuery::getArrayElementType(std::string_view name)
 
 /// @brief Resolve the class name associated with an object symbol.
 /// @details Checks the symbol table first, then consults the module-level object
-///          array element cache as a fallback.
+///          class cache as a fallback, even when no direct symbol entry exists.
 /// @param name Symbol name to query.
 /// @return Class name or empty string if none is known.
 std::string BasicSymbolQuery::getObjectClassForSymbol(std::string_view name) const {

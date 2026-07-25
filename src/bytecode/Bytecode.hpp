@@ -30,6 +30,22 @@
 // - Parameters mapped to first N locals
 // - Operand stack grows upward from locals
 
+/**
+ * @file src/bytecode/Bytecode.hpp
+ * @brief Defines bytecode opcodes, instruction packing, decoding, and stack
+ *        slots.
+ *
+ * @details
+ * Zanna bytecode uses one 32-bit word per primary instruction, with the opcode
+ * in the low eight bits and up to 24 argument bits above it. This header
+ * centralizes constexpr encoders and decoders so the compiler and interpreter
+ * share identical bit layouts.
+ *
+ * `BCSlot` is an untagged eight-byte union. The active representation is
+ * determined solely by verified bytecode and the consuming opcode; the slot
+ * itself does not track or own pointer targets.
+ */
+
 #pragma once
 
 #include <cstdint>
@@ -247,6 +263,8 @@ inline constexpr BCOpcode decodeOpcode(uint32_t instr) {
 ///          BCOpcode enum. Lets dispatchers validate a raw instruction byte and
 ///          trap unknown opcodes *before* a (default-less, -Wswitch-exhaustive)
 ///          dispatch switch — keeping invalid-byte safety without a `default:`.
+/// @param byte Raw low-order opcode byte extracted from an instruction word.
+/// @return `true` when `byte` appears in `Bytecode.def`; otherwise `false`.
 inline constexpr bool isKnownOpcode(uint8_t byte) {
     switch (byte) {
 #define BC_OPCODE(name, value) case (value):

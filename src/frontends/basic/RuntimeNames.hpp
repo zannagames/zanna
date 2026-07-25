@@ -7,9 +7,9 @@
 ///
 /// @file RuntimeNames.hpp
 /// @brief BASIC frontend runtime name constants.
-///
-/// This header imports the canonical runtime names from the generated
-/// RuntimeNames.hpp for use in BASIC lowering code.
+/// @details Imports generated canonical runtime names and defines compatibility
+///          aliases used by BASIC lowering. Each pointer refers to
+///          process-lifetime string-literal storage.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -19,22 +19,28 @@
 
 namespace il::frontends::basic::runtime {
 
-// Import all generated names into this namespace
+/// Make generated canonical runtime constants directly visible to BASIC lowering.
 using namespace il::runtime::names;
 
-// Aliases for removed String.From* functions (use Core.Convert canonical names)
+/// Compatibility name for integer-to-string conversion.
 inline constexpr const char *kStringFromInt = kCoreConvertToStringInt;
+/// Compatibility name for floating-point-to-string conversion.
 inline constexpr const char *kStringFromDouble = kCoreConvertToStringDouble;
 
-// Core.Convert short aliases
+/// Short alias for the canonical conversion-to-double helper name.
 inline constexpr const char *kConvertToDouble = kCoreConvertToDouble;
+/// Short alias for the canonical conversion-to-I64 helper name.
 inline constexpr const char *kConvertToInt = kCoreConvertToInt64;
 
-// Core.Parse short aliases
+/// Short alias for the canonical fallible double parser name.
 inline constexpr const char *kParseDouble = kCoreParseTryDouble;
+/// Short alias for the canonical fallible I64 parser name.
 inline constexpr const char *kParseInt64 = kCoreParseTryInt;
+/// Legacy C-string double parser symbol.
 inline constexpr const char *kParseDoubleCStr = "rt_parse_double";
+/// Legacy C-string I64 parser symbol.
 inline constexpr const char *kParseInt64CStr = "rt_parse_int64";
+/// Raw string-field splitting runtime symbol.
 inline constexpr const char *kStringSplitFieldsRaw = "rt_str_split_fields";
 
 } // namespace il::frontends::basic::runtime

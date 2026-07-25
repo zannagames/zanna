@@ -18,6 +18,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file PlatformCapabilities.hpp
+ * @brief Exposes the generated platform-capability vocabulary to common C++ code.
+ *
+ * This forwarding header is the policy boundary for host and build capability
+ * checks outside the C runtime adapter layer. Consumers should include it
+ * instead of repeating compiler- or operating-system-specific probes.
+ */
+
 #pragma once
 
+/// Generated host, compiler, architecture, and configured-feature definitions.
 #include "zanna/platform/Capabilities.hpp"

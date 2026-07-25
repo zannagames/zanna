@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/LoweringContext.hpp
+// File: src/codegen/aarch64/LoweringContext.hpp
 // Purpose: Shared state and helpers for IL->MIR lowering on AArch64.
 // Key invariants:
 //   - Context references are valid for the duration of a single lowerFunction().
@@ -13,9 +13,9 @@
 //   - Cross-block temps are spilled to frame slots before successor blocks.
 // Ownership/Lifetime:
 //   - LoweringContext holds non-owning references; caller owns all state.
-// Links: codegen/aarch64/LowerILToMIR.hpp,
-//        codegen/aarch64/InstrLowering.hpp,
-//        codegen/aarch64/FrameBuilder.hpp
+// Links: src/codegen/aarch64/LowerILToMIR.hpp,
+//        src/codegen/aarch64/InstrLowering.hpp,
+//        src/codegen/aarch64/FrameBuilder.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -35,16 +35,38 @@
 #include <unordered_map>
 #include <unordered_set>
 
+/**
+ * @file
+ * @brief Defines the borrowed state bundle and common helpers used by AArch64 IL-to-MIR lowering.
+ *
+ * This header centralizes the virtual-register namespaces, cross-block spill
+ * keys, deferred trap requests, and lookup utilities shared by instruction
+ * and terminator lowering. `LoweringContext` does not own any referenced
+ * object; it is valid only while the surrounding `lowerFunction()` invocation
+ * and all of its state remain alive.
+ */
+
 namespace zanna::codegen::aarch64 {
 
-/// ID range: [1, kPhiVRegStart) for normal vregs.
+/// @brief First ID available for ordinary lowering-created virtual registers.
+/// @details Ordinary IDs occupy `[kFirstVirtualRegId, kPhiVRegStart)`.
 inline constexpr uint16_t kFirstVirtualRegId = 1;
-/// ID range: [kPhiVRegStart, kCrossBlockSpillKeyStart) for phi-parameter vregs.
+/// @brief First ID reserved for phi-parameter virtual registers.
+/// @details Phi IDs occupy `[kPhiVRegStart, kCrossBlockSpillKeyStart)`.
 inline constexpr uint16_t kPhiVRegStart = 40000;
-/// Spill key base: [kCrossBlockSpillKeyStart, ...) encodes cross-block temp IDs.
+/// @brief First `FrameBuilder` key reserved for cross-block temporary spills.
+/// @details Adding an IL temp ID to this base keeps those keys disjoint from
+///          ordinary and phi virtual-register IDs.
 inline constexpr uint32_t kCrossBlockSpillKeyStart = 50000;
 
-/// @brief Allocate the next normal virtual register ID; throws if the phi range is reached.
+/**
+ * @brief Allocates the next ordinary virtual-register ID.
+ *
+ * @param[in,out] nextVRegId Next candidate ID; advanced by one on success.
+ * @return The ID held in @p nextVRegId on entry.
+ * @throws std::runtime_error If the candidate has reached the phi-reserved range.
+ * @post On success, @p nextVRegId is one greater than the returned ID.
+ */
 inline uint16_t allocateNextVReg(uint16_t &nextVRegId) {
     if (nextVRegId >= kPhiVRegStart)
         throw std::runtime_error(
@@ -52,7 +74,14 @@ inline uint16_t allocateNextVReg(uint16_t &nextVRegId) {
     return nextVRegId++;
 }
 
-/// @brief Allocate the next phi-parameter virtual register ID; throws on overflow.
+/**
+ * @brief Allocates the next phi-parameter virtual-register ID.
+ *
+ * @param[in,out] phiNextId Next candidate in the phi-reserved ID range.
+ * @return The candidate ID supplied on entry.
+ * @throws std::runtime_error If allocation would enter the cross-block spill-key range.
+ * @post On success, @p phiNextId is one greater than the returned ID.
+ */
 inline uint16_t allocatePhiVReg(uint16_t &phiNextId) {
     if (phiNextId >= kCrossBlockSpillKeyStart)
         throw std::runtime_error(
@@ -60,25 +89,49 @@ inline uint16_t allocatePhiVReg(uint16_t &phiNextId) {
     return phiNextId++;
 }
 
-/// @brief Map a cross-block temp ID to a unique FrameBuilder spill key.
-/// @details The spill key range [kCrossBlockSpillKeyStart, ...) is reserved for
-///          cross-block temps; it does not overlap with normal vreg IDs.
+/**
+ * @brief Maps a cross-block IL temporary to its reserved `FrameBuilder` spill key.
+ *
+ * @param tempId Function-local IL temporary ID.
+ * @return `kCrossBlockSpillKeyStart + tempId`.
+ * @throws std::runtime_error If the sum is not representable as `uint32_t`.
+ */
 inline uint32_t spillKeyForCrossBlockTemp(unsigned tempId) {
     if (tempId > (std::numeric_limits<uint32_t>::max)() - kCrossBlockSpillKeyStart)
         throw std::runtime_error("AArch64 lowering: cross-block spill key overflow");
     return kCrossBlockSpillKeyStart + tempId;
 }
 
-/// @brief Allocate or retrieve the frame spill slot for a cross-block IL temp.
-/// @details All entry saves, liveness allocation, and cross-block reloads share
-///          this helper so every IL temp maps to one stable spill slot.
+/**
+ * @brief Allocates or retrieves the frame spill slot for a cross-block IL temporary.
+ *
+ * All entry saves, liveness allocation, and cross-block reloads use this
+ * mapping so a given IL temporary has one stable slot within the function.
+ *
+ * @param[in,out] fb Frame allocator that owns the key-to-slot mapping.
+ * @param tempId Function-local IL temporary ID.
+ * @return Frame-pointer-relative offset of the temporary's spill slot.
+ * @throws std::runtime_error If conversion to the reserved spill key overflows.
+ */
 inline int ensureCrossBlockSpill(FrameBuilder &fb, unsigned tempId) {
     return fb.ensureSpill(spillKeyForCrossBlockTemp(tempId));
 }
 
-/// @brief Ensure a materialized scalar operand is available in an FPR.
-/// @details Integer operands feeding FP operations are converted with SCvtF;
-///          existing FPR operands pass through unchanged.
+/**
+ * @brief Ensures that a materialized scalar operand is available in an FPR.
+ *
+ * An operand already classified as `FPR` is returned unchanged. A `GPR`
+ * operand causes an `SCvtF` instruction to be appended and the caller's class
+ * and virtual-register ID to be updated to the converted value.
+ *
+ * @param vreg Existing scalar virtual-register ID.
+ * @param[in,out] cls Existing register class; set to `FPR` after conversion.
+ * @param[in,out] nextVRegId Ordinary virtual-register allocator state.
+ * @param[in,out] out Block that receives a conversion instruction when needed.
+ * @return @p vreg for an existing FPR, or the newly allocated FPR ID.
+ * @throws std::runtime_error If a conversion is needed but the ordinary
+ *         virtual-register range is exhausted.
+ */
 inline uint16_t coerceScalarOperandToFpr(uint16_t vreg,
                                          RegClass &cls,
                                          uint16_t &nextVRegId,
@@ -94,14 +147,15 @@ inline uint16_t coerceScalarOperandToFpr(uint16_t vreg,
     return converted;
 }
 
-/// @brief Deferred request for a per-function shared trap block.
-/// @details Trap-guard lowering registers the trap kinds it branches to;
-///          the blocks themselves are materialised once per function after
-///          all instruction and terminator lowering has finished. Deferring
-///          creation means opcode handlers never append to MFunction::blocks
-///          while holding MBasicBlock references (vector growth would
-///          invalidate them), and each trap kind costs one block per function
-///          instead of one per guarded instruction.
+/**
+ * @brief Describes a deferred request for a per-function shared trap block.
+ *
+ * Trap-guard lowering registers the trap kinds it branches to; blocks are
+ * materialized only after instruction and terminator lowering has finished.
+ * Deferral prevents opcode handlers from growing `MFunction::blocks` while
+ * references into that vector are live, and it limits each trap kind to one
+ * block per function.
+ */
 struct TrapBlockRequest {
     std::string label{};  ///< Block label the guard branches to.
     std::string callee{}; ///< Non-empty: body is `bl <callee>` (no-return).
@@ -109,11 +163,19 @@ struct TrapBlockRequest {
                           ///< rt_trap_raise_error with this error code.
 };
 
-/// @brief Encapsulates all mutable state needed during IL->MIR lowering.
-///
-/// This context is passed to opcode handlers to avoid long parameter lists.
-/// It contains references to the target info, frame builder, and various
-/// maps tracking temp-to-vreg mappings, phi spill slots, and cross-block temps.
+/**
+ * @brief Bundles the mutable and read-only state used during IL-to-MIR lowering.
+ *
+ * The context is passed to opcode handlers to keep their interfaces uniform.
+ * Every reference aliases state owned by the surrounding lowering operation;
+ * copying a context copies those aliases rather than the referenced state.
+ *
+ * @invariant `mf`, `fb`, all maps, and both register-ID counters describe the
+ *            same function as `fn`.
+ * @invariant All referenced objects outlive the context.
+ * @warning The context is not thread-safe and must remain confined to one
+ *          function-lowering operation.
+ */
 struct LoweringContext {
     /// @brief IL function currently being lowered.
     const il::core::Function &fn;
@@ -208,26 +270,35 @@ struct LoweringContext {
           crossBlockTemps(crossBlockLiveTemps), stringLiteralByteLengths(stringLiteralLengths),
           knownVarArgNamedArgCounts(varArgNamedArgCounts), sharedTrapBlocks(trapBlockRequests) {}
 
-    /// @brief Retrieve the MIR basic block at the given index.
-    /// @param idx Zero-based index into the function's block list.
-    /// @return Reference to the corresponding MBasicBlock.
+    /**
+     * @brief Retrieves a mutable output block by index.
+     *
+     * @param idx Zero-based index into `mf.blocks`.
+     * @return Reference to the corresponding MIR block.
+     * @pre `idx < mf.blocks.size()`.
+     * @warning The reference may be invalidated if `mf.blocks` subsequently grows.
+     */
     MBasicBlock &bbOut(std::size_t idx) {
         return mf.blocks[idx];
     }
 };
 
-/// @brief Register (or look up) the per-function shared trap block for @p kind.
-/// @details Returns the label a trap guard should branch to. The block itself
-///          is materialised once after lowering finishes, so calling this never
-///          touches MFunction::blocks and is safe while MBasicBlock references
-///          are live. Kinds with identical bodies share one block per function.
-/// @param ctx       Active lowering context.
-/// @param kind      Stable trap kind key (e.g. "div0", "ovf", "bounds").
-/// @param callee    No-return runtime entry point for `bl`-style bodies, or
-///                  nullptr to emit a rt_trap_raise_error body instead.
-/// @param raiseCode Error code for rt_trap_raise_error bodies (ignored when
-///                  @p callee is non-null).
-/// @return Label of the shared trap block for @p kind.
+/**
+ * @brief Registers or looks up the per-function shared trap block for a kind.
+ *
+ * The function returns the label that a guard should target but does not
+ * mutate `MFunction::blocks`. The first request for a kind fixes that kind's
+ * callee and raise code; later requests with the same key reuse it.
+ *
+ * @param[in,out] ctx Active lowering context and request registry.
+ * @param kind Non-null, stable trap-kind key such as `"div0"` or `"bounds"`.
+ * @param callee Non-returning runtime entry point for a `bl` body, or `nullptr`
+ *        to request an `rt_trap_raise_error` body.
+ * @param raiseCode Error code used only when @p callee is `nullptr`.
+ * @return Reference to the stored label for @p kind.
+ * @pre @p kind points to a null-terminated string.
+ * @warning Erasing the corresponding request invalidates the returned reference.
+ */
 inline const std::string &requestSharedTrapBlock(LoweringContext &ctx,
                                                  const char *kind,
                                                  const char *callee,
@@ -243,10 +314,13 @@ inline const std::string &requestSharedTrapBlock(LoweringContext &ctx,
     return it->second.label;
 }
 
-/// @brief Find the index of a parameter in a basic block by temp ID.
-/// @param bb     The basic block whose parameter list is searched.
-/// @param tempId The IL temp ID to locate.
-/// @return Parameter index (0-based) or -1 if not found.
+/**
+ * @brief Finds a block parameter by IL temporary ID.
+ *
+ * @param bb Basic block whose parameter list is searched in declaration order.
+ * @param tempId IL temporary ID to locate.
+ * @return Zero-based parameter index, or `-1` if no parameter has @p tempId.
+ */
 inline int indexOfParam(const il::core::BasicBlock &bb, unsigned tempId) {
     for (size_t i = 0; i < bb.params.size(); ++i)
         if (bb.params[i].id == tempId)
@@ -254,10 +328,19 @@ inline int indexOfParam(const il::core::BasicBlock &bb, unsigned tempId) {
     return -1;
 }
 
-/// @brief Find the producing instruction for a temp ID in a function.
-/// @param fn     The IL function to search across all basic blocks.
-/// @param tempId The IL temp ID whose defining instruction is sought.
-/// @return Pointer to the instruction, or nullptr if not found.
+/**
+ * @brief Finds the instruction that defines an IL temporary.
+ *
+ * Blocks and instructions are searched in storage order, and the first
+ * matching result is returned.
+ *
+ * @param fn IL function to search without modification.
+ * @param tempId Result temporary whose producer is requested.
+ * @return Pointer into @p fn, or `nullptr` when no instruction defines
+ *         @p tempId.
+ * @warning The returned pointer is invalidated by mutations that relocate the
+ *          containing block's instruction vector.
+ */
 inline const il::core::Instr *findProducerInFunction(const il::core::Function &fn,
                                                      unsigned tempId) {
     for (const auto &bb : fn.blocks) {
@@ -269,9 +352,17 @@ inline const il::core::Instr *findProducerInFunction(const il::core::Function &f
     return nullptr;
 }
 
-/// @brief Check if a basic block contains side-effecting instructions.
-/// @param bb The basic block to inspect for stores, calls, or traps.
-/// @return True if any instruction in the block has observable side effects.
+/**
+ * @brief Tests whether a basic block contains an observably side-effecting instruction.
+ *
+ * Control-flow terminators are deliberately ignored. Other opcodes count as
+ * side-effecting when their opcode metadata says so or when they report any
+ * memory effect.
+ *
+ * @param bb Basic block to inspect without modification.
+ * @return `true` on the first non-terminator with side or memory effects;
+ *         otherwise `false`.
+ */
 inline bool hasSideEffects(const il::core::BasicBlock &bb) {
     for (const auto &ins : bb.instructions) {
         switch (ins.op) {
@@ -290,11 +381,13 @@ inline bool hasSideEffects(const il::core::BasicBlock &bb) {
     return false;
 }
 
-/// @brief Helper describing a lowered call sequence.
-/// @details Splits the MIR for a call into three phases: prefix instructions
-///          that materialise and marshal arguments into ABI registers/stack
-///          slots, the actual BL instruction, and postfix instructions that
-///          perform any required clean-up (e.g. restoring the stack pointer).
+/**
+ * @brief Holds the three ordered phases of one lowered call sequence.
+ *
+ * Prefix instructions materialize and marshal arguments, `call` performs the
+ * branch-with-link, and postfix instructions restore transient call state.
+ * Consumers must emit the three members in that order.
+ */
 struct LoweredCall {
     std::vector<MInstr> prefix;  ///< Argument materialisation and marshalling instructions.
     MInstr call;                 ///< The BL (branch-with-link) callee instruction.

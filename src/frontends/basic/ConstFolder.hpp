@@ -28,7 +28,7 @@
 // - Unary arithmetic: -, NOT
 // - Comparison: =, <, >, <=, >=, <>
 // - Logical: AND, OR, NOT
-// - String concatenation: &
+// - String operations supported by the constfold dispatch tables
 //
 // Expressions involving:
 // - Variables
@@ -49,8 +49,9 @@
 //
 // Integration:
 // - Called by: BasicCompiler after parsing and before semantic analysis
-// - Operates on: Complete Program AST
-// - Preserves: AST structure and semantics
+// - Operates on: Program procedure entries and main statements, with traversal
+//   determined by the concrete visitor handlers
+// - Preserves: Source locations on materialized replacement literals
 //
 // Design Notes:
 // - Only folds pure expressions to preserve program semantics
@@ -59,6 +60,15 @@
 // - Safe for use before semantic analysis
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ConstFolder.hpp
+ * @brief Declares in-place literal-expression folding for BASIC AST programs.
+ *
+ * The pass runs before semantic analysis and rewrites only patterns recognized
+ * by its expression, statement, and pure-builtin dispatch handlers.
+ */
+
 #pragma once
 
 #include "frontends/basic/Token.hpp"
@@ -67,7 +77,12 @@
 namespace il::frontends::basic {
 
 /// \brief Fold constant expressions within a BASIC program AST.
+/// \details Visits entries in `prog.procs` followed by `prog.main`. Concrete
+///          statement visitors decide which nested expression slots and bodies
+///          are traversed; unsupported or nonliteral expressions remain intact.
 /// \param prog Program to transform in place.
+/// \post Successfully folded subtrees are replaced by owning literal nodes
+///       carrying the original outer expression's source location.
 void foldConstants(Program &prog);
 
 } // namespace il::frontends::basic

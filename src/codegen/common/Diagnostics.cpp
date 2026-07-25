@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/Diagnostics.cpp
+// File: src/codegen/common/Diagnostics.cpp
 // Purpose: Implementation of the target-independent diagnostic sink.
 //
 //===----------------------------------------------------------------------===//
@@ -17,12 +17,17 @@
 #include <ostream>
 #include <utility>
 
+/// @file
+/// @brief Implements accumulation and formatted emission of codegen diagnostics.
+
 namespace zanna::codegen::common {
 
+/// @copydoc Diagnostics::error(std::string)
 void Diagnostics::error(std::string message) {
     error("V-CG-ERROR", std::move(message));
 }
 
+/// @copydoc Diagnostics::error(std::string, std::string, il::support::SourceLoc)
 void Diagnostics::error(std::string code, std::string message, il::support::SourceLoc loc) {
     errors_.push_back(message);
     il::support::Diagnostic diag{
@@ -31,10 +36,12 @@ void Diagnostics::error(std::string code, std::string message, il::support::Sour
     diagnostics_.push_back(std::move(diag));
 }
 
+/// @copydoc Diagnostics::warning(std::string)
 void Diagnostics::warning(std::string message) {
     warning("V-CG-WARN", std::move(message));
 }
 
+/// @copydoc Diagnostics::warning(std::string, std::string, il::support::SourceLoc)
 void Diagnostics::warning(std::string code, std::string message, il::support::SourceLoc loc) {
     warnings_.push_back(message);
     il::support::Diagnostic diag{
@@ -43,29 +50,35 @@ void Diagnostics::warning(std::string code, std::string message, il::support::So
     diagnostics_.push_back(std::move(diag));
 }
 
+/// @copydoc Diagnostics::hasErrors
 bool Diagnostics::hasErrors() const noexcept {
     return !errors_.empty();
 }
 
+/// @copydoc Diagnostics::hasWarnings
 [[maybe_unused]] bool Diagnostics::hasWarnings() const noexcept {
     return !warnings_.empty();
 }
 
 // cppcheck-suppress unusedFunction
+/// @copydoc Diagnostics::errors
 [[maybe_unused]] const std::vector<std::string> &Diagnostics::errors() const noexcept {
     return errors_;
 }
 
 // cppcheck-suppress unusedFunction
+/// @copydoc Diagnostics::warnings
 [[maybe_unused]] const std::vector<std::string> &Diagnostics::warnings() const noexcept {
     return warnings_;
 }
 
+/// @copydoc Diagnostics::diagnostics
 [[maybe_unused]] const std::vector<il::support::Diagnostic> &
 Diagnostics::diagnostics() const noexcept {
     return diagnostics_;
 }
 
+/// @copydoc Diagnostics::flush
 void Diagnostics::flush(std::ostream &err, std::ostream *warn) const {
     for (const auto &diag : diagnostics_) {
         if (diag.severity == il::support::Severity::Warning) {

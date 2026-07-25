@@ -1,7 +1,14 @@
 # XENOSCAPE: The Descent
 
 XENOSCAPE is an active-development ten-region science-fiction action
-Metroidvania and a substantial Zanna/Zia game example. The current project
+Metroidvania and a substantial Zanna/Zia game example.
+
+> **Scene-driven recreation:** every campaign region also exists as an
+> authored `.scene` file in
+> [`examples/games/xenoscape-scenes`](../xenoscape-scenes/README.md), editable
+> in Zanna Studio's 2D scene editor. `tools/export_scenes.zia` regenerates
+> those scenes from this game's builders and
+> `tools/scene_parity_probe.zia` proves the two stay exactly identical. The current project
 version is **0.3.0 development preview**. It is not 1.0 and this repository does
 not claim final platform certification or commercial-release status.
 

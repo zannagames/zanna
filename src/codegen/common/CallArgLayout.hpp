@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/CallArgLayout.hpp
+// File: src/codegen/common/CallArgLayout.hpp
 // Purpose: Shared ABI slot planning helpers for native backends.
 //
 //===----------------------------------------------------------------------===//
@@ -19,6 +19,9 @@
 #include <span>
 #include <vector>
 
+/// @file
+/// @brief Declares target-configurable ABI argument-slot planning.
+
 namespace zanna::codegen::common {
 
 /// @brief How an ABI consumes register argument slots.
@@ -27,7 +30,11 @@ enum class CallSlotModel : uint8_t {
     UnifiedRegisterPositions, ///< One positional register window shared by both classes.
 };
 
-/// @brief Shared configuration for argument-slot assignment.
+/// @brief Configures register windows and aggregate policy for one target ABI.
+///
+/// Register capacities are counts, not physical register identifiers. Under a
+/// unified model, the usable positional window is the smaller of the GPR and
+/// FPR capacities. Direct aggregates are divided into eight-byte GPR chunks.
 struct CallArgLayoutConfig {
     std::size_t maxGPRArgs{0}; ///< Maximum GPR arguments passed in registers.
     std::size_t maxFPRArgs{0}; ///< Maximum FP arguments passed in registers.
@@ -38,7 +45,11 @@ struct CallArgLayoutConfig {
         16}; ///< Direct aggregate byte limit eligible for register chunks.
 };
 
-/// @brief Placement for one source-order argument after ABI assignment.
+/// @brief Describes one scalar argument or direct-aggregate chunk after assignment.
+///
+/// A register location uses `regIndex`; a stack location uses
+/// `stackSlotIndex`. Aggregate arguments may produce multiple entries sharing
+/// `argIndex`, ordered by `partIndex`.
 struct CallArgLocation {
     std::size_t argIndex{0}; ///< Source-order argument index.
     CallArgClass cls{CallArgClass::GPR};
@@ -52,7 +63,7 @@ struct CallArgLocation {
     std::size_t byteSize{8};       ///< Number of bytes represented by this ABI location.
 };
 
-/// @brief Aggregate ABI placement summary for a call or function entry.
+/// @brief Owns all assigned locations and aggregate resource counts.
 struct CallArgLayout {
     std::vector<CallArgLocation> locations{};
     std::size_t gprRegsUsed{0};
@@ -61,10 +72,23 @@ struct CallArgLayout {
     std::size_t stackSlotsUsed{0};
 };
 
-/// @brief Plan outgoing call-argument locations for the given abstract call.
+/// @brief Assign outgoing abstract call arguments to ABI register or stack slots.
+///
+/// Scalar and indirect-aggregate arguments consume one slot. Direct aggregates
+/// are chunked into at most eight-byte pieces and placed wholly in registers
+/// only when the complete non-variadic group fits; otherwise all chunks use
+/// consecutive stack slots.
+///
+/// @param args Source-order call arguments.
+/// @param config Target ABI slot capacities and policy.
+/// @return Ordered locations plus register and stack consumption totals.
+/// @throws std::length_error if rounding an aggregate size to slots overflows.
 CallArgLayout planCallArgs(std::span<const CallArg> args, const CallArgLayoutConfig &config);
 
-/// @brief Plan incoming parameter locations for the given parameter classes.
+/// @brief Assign incoming scalar parameter classes to ABI register or stack slots.
+/// @param classes Source-order GPR/FPR parameter classifications.
+/// @param config Target ABI slot capacities and variadic-tail policy.
+/// @return One location per class plus register and stack consumption totals.
 CallArgLayout planParamClasses(std::span<const CallArgClass> classes,
                                const CallArgLayoutConfig &config);
 

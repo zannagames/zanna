@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file SemanticAnalyzer_Builtins.cpp
+/// @brief Implements signature-driven semantic checks for BASIC builtins.
+/// @details Argument expressions are analyzed before builtin-specific
+///          dispatch. Arity comes from the central builtin registry, while
+///          semantic signature views provide per-position type masks and result
+///          types. A legacy static table remains as a bounded fallback.
+
 #include "frontends/basic/SemanticAnalyzer_Internal.hpp"
 
 #include <array>
@@ -27,16 +34,14 @@ namespace il::frontends::basic {
 
 using semantic_analyzer_detail::builtinName;
 
-/// @brief Analyse a builtin call expression and return its resulting type.
-///
-/// @details Gathers argument types, looks up the builtin signature, and
-///          dispatches to any specialised analyser registered in the builtin
-///          table.  When no override exists the generic signature-based analysis
-///          path is used, ensuring every builtin honours the declarative
-///          metadata.
-///
-/// @param c Builtin call AST node to analyse.
-/// @return Resulting semantic type inferred for the call.
+/// @brief Analyzes a builtin call and infers its semantic result type.
+/// @details Visits every argument in source order, using @ref Type::Unknown for
+///          null argument nodes. It obtains translated signature metadata, then
+///          invokes the registry's specialized member-function hook when one
+///          exists; otherwise it follows the generic signature path.
+/// @param c Builtin call AST borrowed for analysis.
+/// @return Specialized or declarative result type. Argument diagnostics do not
+///         prevent a recovery type from being returned.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeBuiltinCall(const BuiltinCallExpr &c) {
     std::vector<Type> argTys;
     for (auto &a : c.args)
@@ -49,17 +54,15 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeBuiltinCall(const BuiltinCallExp
     return analyzeBuiltinWithSignature(c, argTys, signature);
 }
 
-/// @brief Validate the argument count for a builtin invocation.
-///
-/// @details Ensures the number of provided arguments falls within the inclusive
-///          range [@p min, @p max].  On failure a diagnostic describing the
-///          expected range is emitted.
-///
-/// @param c Builtin call under inspection.
-/// @param args Types observed for each argument expression.
-/// @param min Minimum accepted argument count.
-/// @param max Maximum accepted argument count.
-/// @return @c true when the argument count is valid; otherwise @c false.
+/// @brief Validates builtin arity against an inclusive interval.
+/// @details On failure emits `B2001` at the call location. Equal bounds produce
+///          singular/plural exact-count text; differing bounds produce a
+///          `min-max` range, and both forms report the actual count.
+/// @param c Call supplying builtin name and source location.
+/// @param args Analyzed arguments; only the vector size is inspected.
+/// @param min Minimum accepted count.
+/// @param max Maximum accepted count.
+/// @return @c true exactly when `min <= args.size() <= max`.
 bool SemanticAnalyzer::checkArgCount(const BuiltinCallExpr &c,
                                      const std::vector<Type> &args,
                                      size_t min,
@@ -78,18 +81,19 @@ bool SemanticAnalyzer::checkArgCount(const BuiltinCallExpr &c,
     return true;
 }
 
-/// @brief Ensure an argument's type matches one of the permitted categories.
-///
-/// @details Accepts the computed argument type and compares it against the
-///          allowed set supplied by the builtin signature.  When the type is not
-///          permitted, a diagnostic explains the mismatch and the function
-///          returns @c false.
-///
-/// @param c Builtin call being analysed.
-/// @param idx Zero-based argument index.
-/// @param argTy Observed type of the argument.
-/// @param allowed Span describing the acceptable types.
-/// @return @c true when the argument type is acceptable; otherwise @c false.
+/// @brief Checks one builtin argument against its accepted type categories.
+/// @details Unknown types pass to avoid cascading diagnostics, and `STR$`
+///          explicitly accepts boolean in addition to signature metadata.
+///          Otherwise exact enum membership is required. Failure emits `B2001`
+///          at the argument location when present, falling back to the call.
+///          Diagnostic expectations collapse the allowed set to string,
+///          number, or general value wording.
+/// @param c Call supplying builtin identity and argument locations.
+/// @param idx Zero-based source argument index.
+/// @param argTy Inferred actual type.
+/// @param allowed Exact accepted semantic types.
+/// @return @c true for unknown, the `STR$` boolean exception, or exact
+///         membership; @c false after a mismatch diagnostic.
 bool SemanticAnalyzer::checkArgType(const BuiltinCallExpr &c,
                                     size_t idx,
                                     Type argTy,
@@ -125,55 +129,78 @@ bool SemanticAnalyzer::checkArgType(const BuiltinCallExpr &c,
 }
 
 namespace {
+/// @brief Local shorthand for semantic value categories.
 using SemanticType = SemanticAnalyzer::Type;
+
+/// @brief Local shorthand for one argument-position specification.
 using BuiltinArgSpec = SemanticAnalyzer::BuiltinArgSpec;
+
+/// @brief Local shorthand for a complete builtin signature.
 using BuiltinSignature = SemanticAnalyzer::BuiltinSignature;
 
+/// @brief Allowed-type storage for a string-only position.
 static constexpr std::array<SemanticType, 1> kStringType{{SemanticType::String}};
+
+/// @brief Allowed-type storage for an integer-or-float position.
 static constexpr std::array<SemanticType, 2> kNumericTypes{
     {SemanticType::Int, SemanticType::Float}};
 
+/// @brief Allowed-type storage for an integer-only position.
 static constexpr std::array<SemanticType, 1> kIntType{{SemanticType::Int}};
 
+/// @brief Signature arguments for one required string.
 static constexpr std::array<BuiltinArgSpec, 1> kSingleStringArg{{
     BuiltinArgSpec{false, kStringType.data(), kStringType.size()},
 }};
 
+/// @brief Signature arguments for one required numeric value.
 static constexpr std::array<BuiltinArgSpec, 1> kSingleNumericArg{{
     BuiltinArgSpec{false, kNumericTypes.data(), kNumericTypes.size()},
 }};
 
+/// @brief Signature arguments for one required integer.
 static constexpr std::array<BuiltinArgSpec, 1> kSingleIntArg{{
     BuiltinArgSpec{false, kIntType.data(), kIntType.size()},
 }};
 
+/// @brief Signature arguments for required string then numeric values.
 static constexpr std::array<BuiltinArgSpec, 2> kStringNumericArgs{{
     BuiltinArgSpec{false, kStringType.data(), kStringType.size()},
     BuiltinArgSpec{false, kNumericTypes.data(), kNumericTypes.size()},
 }};
 
+/// @brief Signature arguments for two required numeric values.
 static constexpr std::array<BuiltinArgSpec, 2> kNumericNumericArgs{{
     BuiltinArgSpec{false, kNumericTypes.data(), kNumericTypes.size()},
     BuiltinArgSpec{false, kNumericTypes.data(), kNumericTypes.size()},
 }};
 
+/// @brief Signature arguments for `MID$`: string, start, optional length.
 static constexpr std::array<BuiltinArgSpec, 3> kMidArgs{{
     BuiltinArgSpec{false, kStringType.data(), kStringType.size()},
     BuiltinArgSpec{false, kNumericTypes.data(), kNumericTypes.size()},
     BuiltinArgSpec{true, kNumericTypes.data(), kNumericTypes.size()},
 }};
 
+/// @brief Signature arguments for `ROUND`: value and optional precision.
 static constexpr std::array<BuiltinArgSpec, 2> kRoundArgs{{
     BuiltinArgSpec{false, kNumericTypes.data(), kNumericTypes.size()},
     BuiltinArgSpec{true, kNumericTypes.data(), kNumericTypes.size()},
 }};
 
+/// @brief Positional specification for INSTR's optional-start form.
+/// @details The optional leading numeric slot is aligned against supplied
+///          arguments by @ref SemanticAnalyzer::validateBuiltinArgs.
 static constexpr std::array<BuiltinArgSpec, 3> kInstrArgs{{
     BuiltinArgSpec{true, kNumericTypes.data(), kNumericTypes.size()},
     BuiltinArgSpec{false, kStringType.data(), kStringType.size()},
     BuiltinArgSpec{false, kStringType.data(), kStringType.size()},
 }};
 
+/// @brief Legacy ordinal-indexed signature fallback.
+/// @details Entries mirror the builtin enumeration available when this table
+///          was authored. Registry semantic views take precedence, and the
+///          lookup bounds-checks the enum before accessing this array.
 static constexpr std::array<BuiltinSignature, 41> kBuiltinSignatures{{
     BuiltinSignature{1, 0, kSingleStringArg.data(), kSingleStringArg.size(), SemanticType::Int},
     BuiltinSignature{2, 1, kMidArgs.data(), kMidArgs.size(), SemanticType::String},
@@ -242,10 +269,17 @@ static constexpr std::array<BuiltinSignature, 41> kBuiltinSignatures{{
 
 } // namespace
 
-/// @brief Retrieve the declarative signature for a builtin enumerator.
-///
-/// @param builtin Builtin enumerator to inspect.
-/// @return Reference to the static signature describing arity and result type.
+/// @brief Produces semantic signature metadata for one builtin.
+/// @details Four command-line/error builtins use explicit static signatures.
+///          Other builtins first request a registry semantic view, translating
+///          its type masks into thread-local storage capped at 32 argument
+///          positions. Without a registry view, a bounds-checked legacy entry
+///          is copied to thread-local scratch and its fixed result type is
+///          refreshed from the registry. An out-of-range enum falls back to a
+///          zero-argument unknown-result signature.
+/// @param builtin Builtin identifier to translate.
+/// @return Reference to explicit static storage or thread-local translated
+///         storage. A later call on the same thread may overwrite the latter.
 const SemanticAnalyzer::BuiltinSignature &SemanticAnalyzer::builtinSignature(
     BuiltinCallExpr::Builtin builtin) {
     using B = BuiltinCallExpr::Builtin;
@@ -301,6 +335,7 @@ const SemanticAnalyzer::BuiltinSignature &SemanticAnalyzer::builtinSignature(
         static const SemanticAnalyzer::Type allowedAny[] = {
             Type::Int, Type::Float, Type::String, Type::Bool};
 
+        /// Maps one registry bit-mask category to static semantic-type storage.
         auto maskToAllowed =
             [&](BuiltinArgTypeMask m) -> std::pair<const SemanticAnalyzer::Type *, std::size_t> {
             using M = BuiltinArgTypeMask;
@@ -377,16 +412,20 @@ const SemanticAnalyzer::BuiltinSignature &SemanticAnalyzer::builtinSignature(
     return scratch;
 }
 
-/// @brief Validate builtin arguments against a signature definition.
-///
-/// @details Verifies argument counts, honours optional parameters, and enforces
-///          type rules using @ref checkArgType.  Missing optional arguments are
-///          handled gracefully so callers can omit trailing parameters.
-///
-/// @param c Builtin call under validation.
-/// @param args Observed argument types.
-/// @param signature Declarative specification defining expectations.
-/// @return @c true when the invocation satisfies the signature.
+/// @brief Validates builtin arguments using registry arity and type metadata.
+/// @details Arity is deliberately obtained from @ref getBuiltinArity rather
+///          than the supplied signature to avoid legacy-table drift. With no
+///          argument specifications, valid arity is sufficient. Otherwise the
+///          routine aligns optional specification slots with actual arguments,
+///          skipping an optional slot when needed to preserve enough remaining
+///          slots, and accumulates all type-check results rather than stopping
+///          at the first mismatch.
+/// @param c Call supplying registry identity and diagnostic context.
+/// @param args Actual types in source order.
+/// @param signature Per-position type metadata; its arity fields are not used
+///                  for the initial count check.
+/// @return @c false on arity failure or any position mismatch; @c true
+///         otherwise.
 bool SemanticAnalyzer::validateBuiltinArgs(const BuiltinCallExpr &c,
                                            const std::vector<Type> &args,
                                            const BuiltinSignature &signature) {
@@ -427,33 +466,28 @@ bool SemanticAnalyzer::validateBuiltinArgs(const BuiltinCallExpr &c,
     return ok;
 }
 
-/// @brief Analyse a builtin using only its declarative signature.
-///
-/// @details Invokes @ref validateBuiltinArgs to emit diagnostics and returns
-///          the signature's result type regardless of validation outcome so
-///          downstream analysis can continue.
-///
-/// @param c Builtin call being analysed.
-/// @param args Observed argument types.
-/// @param signature Signature describing arity and return type.
-/// @return Semantic type produced by the builtin.
+/// @brief Applies generic validation and returns the declared result type.
+/// @details Validation diagnostics do not alter the result, allowing downstream
+///          analysis to continue with the builtin's known type.
+/// @param c Call to validate.
+/// @param args Actual argument types.
+/// @param signature Type constraints and recovery/result type.
+/// @return @p signature.result regardless of validation success.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeBuiltinWithSignature(
     const BuiltinCallExpr &c, const std::vector<Type> &args, const BuiltinSignature &signature) {
     validateBuiltinArgs(c, args, signature);
     return signature.result;
 }
 
-/// @brief Special-case analysis for the ABS builtin.
-///
-/// @details Validates arguments using the generic path and then selects the
-///          return type based on the argument: floating-point inputs return
-///          floats while integers (or unknown types) yield integers.  This
-///          mirrors runtime behaviour and prevents unnecessary coercions.
-///
-/// @param c Builtin call node.
-/// @param args Observed argument types.
-/// @param signature Declarative signature for ABS.
-/// @return Resulting semantic type for the call.
+/// @brief Applies operand-dependent result typing for `ABS`.
+/// @details Runs normal validation first. A valid float operand produces float;
+///          an integer or unknown operand produces integer. Invalid arity, an
+///          empty argument list, or an already-diagnosed type mismatch also
+///          recovers as integer to preserve legacy behavior.
+/// @param c ABS call supplying diagnostics.
+/// @param args Actual argument types.
+/// @param signature ABS argument metadata.
+/// @return Float only for a valid first float argument; integer otherwise.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeAbs(const BuiltinCallExpr &c,
                                                     const std::vector<Type> &args,
                                                     const BuiltinSignature &signature) {
@@ -470,17 +504,14 @@ SemanticAnalyzer::Type SemanticAnalyzer::analyzeAbs(const BuiltinCallExpr &c,
     return Type::Int;
 }
 
-/// @brief Analyse the INSTR builtin.
-///
-/// @details Currently defers entirely to the signature validation so the result
-///          type always matches the declarative metadata.  Hooked separately so
-///          more sophisticated diagnostics can be added without altering the
-///          registry format.
-///
-/// @param c Builtin call node.
-/// @param args Observed argument types.
-/// @param signature Declarative signature for INSTR.
-/// @return Resulting semantic type for the call.
+/// @brief Applies INSTR's specialized-handler hook.
+/// @details Currently performs the same validation as the generic path,
+///          including optional-leading-argument alignment, then returns the
+///          signature result regardless of errors.
+/// @param c INSTR call supplying diagnostics.
+/// @param args Actual argument types.
+/// @param signature INSTR signature metadata.
+/// @return @p signature.result.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeInstr(const BuiltinCallExpr &c,
                                                       const std::vector<Type> &args,
                                                       const BuiltinSignature &signature) {

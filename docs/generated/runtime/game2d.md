@@ -107,6 +107,40 @@ Constructor: `Zanna.Game2D.SceneDocument.New`
 | <a id="zanna-game2d-scenedocument-assetpaths"></a>`AssetPaths` | `obj<Zanna.Collections.Seq>()` | `Zanna.Game2D.SceneDocument.AssetPaths` |
 | <a id="zanna-game2d-scenedocument-assetdescriptors"></a>`AssetDescriptors` | `obj<Zanna.Collections.Seq>()` | `Zanna.Game2D.SceneDocument.AssetDescriptors` |
 | <a id="zanna-game2d-scenedocument-buildtilemap"></a>`BuildTilemap` | `obj<Zanna.Graphics2D.Tilemap>()` | `Zanna.Game2D.SceneDocument.BuildTilemap` |
+| <a id="zanna-game2d-scenedocument-tilecollision"></a>`TileCollision` | `i64(i64)` | `Zanna.Game2D.SceneDocument.TileCollision` |
+| <a id="zanna-game2d-scenedocument-settilecollision"></a>`SetTileCollision` | `void(i64,i64)` | `Zanna.Game2D.SceneDocument.SetTileCollision` |
+| <a id="zanna-game2d-scenedocument-collisiontiles"></a>`CollisionTiles` | `obj<Zanna.Collections.Seq>()` | `Zanna.Game2D.SceneDocument.CollisionTiles` |
+| <a id="zanna-game2d-scenedocument-collisionlayer"></a>`CollisionLayer` | `i64()` | `Zanna.Game2D.SceneDocument.CollisionLayer` |
+| <a id="zanna-game2d-scenedocument-setcollisionlayer"></a>`SetCollisionLayer` | `void(i64)` | `Zanna.Game2D.SceneDocument.SetCollisionLayer` |
+| <a id="zanna-game2d-scenedocument-tilepropertykind"></a>`TilePropertyKind` | `str(i64,str)` | `Zanna.Game2D.SceneDocument.TilePropertyKind` |
+| <a id="zanna-game2d-scenedocument-tilepropertyint"></a>`TilePropertyInt` | `i64(i64,str,i64)` | `Zanna.Game2D.SceneDocument.TilePropertyInt` |
+| <a id="zanna-game2d-scenedocument-tilepropertybool"></a>`TilePropertyBool` | `i1(i64,str,i1)` | `Zanna.Game2D.SceneDocument.TilePropertyBool` |
+| <a id="zanna-game2d-scenedocument-settilepropertyint"></a>`SetTilePropertyInt` | `void(i64,str,i64)` | `Zanna.Game2D.SceneDocument.SetTilePropertyInt` |
+| <a id="zanna-game2d-scenedocument-settilepropertybool"></a>`SetTilePropertyBool` | `void(i64,str,i1)` | `Zanna.Game2D.SceneDocument.SetTilePropertyBool` |
+| <a id="zanna-game2d-scenedocument-removetileproperty"></a>`RemoveTileProperty` | `void(i64,str)` | `Zanna.Game2D.SceneDocument.RemoveTileProperty` |
+| <a id="zanna-game2d-scenedocument-tilepropertykeys"></a>`TilePropertyKeys` | `obj<Zanna.Collections.Seq>(i64)` | `Zanna.Game2D.SceneDocument.TilePropertyKeys` |
+| <a id="zanna-game2d-scenedocument-tilepropertytiles"></a>`TilePropertyTiles` | `obj<Zanna.Collections.Seq>()` | `Zanna.Game2D.SceneDocument.TilePropertyTiles` |
+| <a id="zanna-game2d-scenedocument-settileanim"></a>`SetTileAnim` | `void(i64,obj,obj)` | `Zanna.Game2D.SceneDocument.SetTileAnim` |
+| <a id="zanna-game2d-scenedocument-tileanimframes"></a>`TileAnimFrames` | `obj<Zanna.Collections.Seq>(i64)` | `Zanna.Game2D.SceneDocument.TileAnimFrames` |
+| <a id="zanna-game2d-scenedocument-tileanimdurations"></a>`TileAnimDurations` | `obj<Zanna.Collections.Seq>(i64)` | `Zanna.Game2D.SceneDocument.TileAnimDurations` |
+| <a id="zanna-game2d-scenedocument-removetileanim"></a>`RemoveTileAnim` | `void(i64)` | `Zanna.Game2D.SceneDocument.RemoveTileAnim` |
+| <a id="zanna-game2d-scenedocument-tileanimbases"></a>`TileAnimBases` | `obj<Zanna.Collections.Seq>()` | `Zanna.Game2D.SceneDocument.TileAnimBases` |
+| <a id="zanna-game2d-scenedocument-setautotilerule"></a>`SetAutotileRule` | `void(i64,obj)` | `Zanna.Game2D.SceneDocument.SetAutotileRule` |
+| <a id="zanna-game2d-scenedocument-autotilevariants"></a>`AutotileVariants` | `obj<Zanna.Collections.Seq>(i64)` | `Zanna.Game2D.SceneDocument.AutotileVariants` |
+| <a id="zanna-game2d-scenedocument-removeautotilerule"></a>`RemoveAutotileRule` | `void(i64)` | `Zanna.Game2D.SceneDocument.RemoveAutotileRule` |
+| <a id="zanna-game2d-scenedocument-autotilebases"></a>`AutotileBases` | `obj<Zanna.Collections.Seq>()` | `Zanna.Game2D.SceneDocument.AutotileBases` |
+| <a id="zanna-game2d-scenedocument-camerafieldkind"></a>`CameraFieldKind` | `str(str)` | `Zanna.Game2D.SceneDocument.CameraFieldKind` |
+| <a id="zanna-game2d-scenedocument-cameragetint"></a>`CameraGetInt` | `i64(str,i64)` | `Zanna.Game2D.SceneDocument.CameraGetInt` |
+| <a id="zanna-game2d-scenedocument-cameragetstr"></a>`CameraGetStr` | `str(str,str)` | `Zanna.Game2D.SceneDocument.CameraGetStr` |
+| <a id="zanna-game2d-scenedocument-camerasetint"></a>`CameraSetInt` | `void(str,i64)` | `Zanna.Game2D.SceneDocument.CameraSetInt` |
+| <a id="zanna-game2d-scenedocument-camerasetstr"></a>`CameraSetStr` | `void(str,str)` | `Zanna.Game2D.SceneDocument.CameraSetStr` |
+| <a id="zanna-game2d-scenedocument-cameraremove"></a>`CameraRemove` | `void(str)` | `Zanna.Game2D.SceneDocument.CameraRemove` |
+| <a id="zanna-game2d-scenedocument-camerakeys"></a>`CameraKeys` | `obj<Zanna.Collections.Seq>()` | `Zanna.Game2D.SceneDocument.CameraKeys` |
+| <a id="zanna-game2d-scenedocument-lightingfieldkind"></a>`LightingFieldKind` | `str(str)` | `Zanna.Game2D.SceneDocument.LightingFieldKind` |
+| <a id="zanna-game2d-scenedocument-lightinggetint"></a>`LightingGetInt` | `i64(str,i64)` | `Zanna.Game2D.SceneDocument.LightingGetInt` |
+| <a id="zanna-game2d-scenedocument-lightingsetint"></a>`LightingSetInt` | `void(str,i64)` | `Zanna.Game2D.SceneDocument.LightingSetInt` |
+| <a id="zanna-game2d-scenedocument-lightingremove"></a>`LightingRemove` | `void(str)` | `Zanna.Game2D.SceneDocument.LightingRemove` |
+| <a id="zanna-game2d-scenedocument-lightingkeys"></a>`LightingKeys` | `obj<Zanna.Collections.Seq>()` | `Zanna.Game2D.SceneDocument.LightingKeys` |
 | <a id="zanna-game2d-scenedocument-new"></a>`New` | `obj<Zanna.Game2D.SceneDocument>(i64,i64,i64,i64)` | `Zanna.Game2D.SceneDocument.New` |
 | <a id="zanna-game2d-scenedocument-propertykind"></a>`PropertyKind` | `str(obj,str)` | `Zanna.Game2D.SceneDocument.PropertyKind` |
 | <a id="zanna-game2d-scenedocument-keys"></a>`Keys` | `obj<Zanna.Collections.Seq>(obj)` | `Zanna.Game2D.SceneDocument.Keys` |
@@ -210,4 +244,38 @@ Constructor: `Zanna.Game2D.SceneDocument.New`
 | `Zanna.Game2D.SceneDocument.AssetPaths` | `obj<Zanna.Collections.Seq>(obj)` | `rt_game_scene_asset_paths` |
 | `Zanna.Game2D.SceneDocument.AssetDescriptors` | `obj<Zanna.Collections.Seq>(obj)` | `rt_game_scene_asset_descriptors` |
 | `Zanna.Game2D.SceneDocument.BuildTilemap` | `obj<Zanna.Graphics2D.Tilemap>(obj)` | `rt_game_scene_build_tilemap` |
+| `Zanna.Game2D.SceneDocument.TileCollision` | `i64(obj,i64)` | `rt_game_scene_tile_collision` |
+| `Zanna.Game2D.SceneDocument.SetTileCollision` | `void(obj,i64,i64)` | `rt_game_scene_set_tile_collision` |
+| `Zanna.Game2D.SceneDocument.CollisionTiles` | `obj<Zanna.Collections.Seq>(obj)` | `rt_game_scene_collision_tiles` |
+| `Zanna.Game2D.SceneDocument.CollisionLayer` | `i64(obj)` | `rt_game_scene_collision_layer` |
+| `Zanna.Game2D.SceneDocument.SetCollisionLayer` | `void(obj,i64)` | `rt_game_scene_set_collision_layer` |
+| `Zanna.Game2D.SceneDocument.TilePropertyKind` | `str(obj,i64,str)` | `rt_game_scene_tile_property_kind` |
+| `Zanna.Game2D.SceneDocument.TilePropertyInt` | `i64(obj,i64,str,i64)` | `rt_game_scene_tile_property_int` |
+| `Zanna.Game2D.SceneDocument.TilePropertyBool` | `i1(obj,i64,str,i1)` | `rt_game_scene_tile_property_bool` |
+| `Zanna.Game2D.SceneDocument.SetTilePropertyInt` | `void(obj,i64,str,i64)` | `rt_game_scene_set_tile_property_int` |
+| `Zanna.Game2D.SceneDocument.SetTilePropertyBool` | `void(obj,i64,str,i1)` | `rt_game_scene_set_tile_property_bool` |
+| `Zanna.Game2D.SceneDocument.RemoveTileProperty` | `void(obj,i64,str)` | `rt_game_scene_remove_tile_property` |
+| `Zanna.Game2D.SceneDocument.TilePropertyKeys` | `obj<Zanna.Collections.Seq>(obj,i64)` | `rt_game_scene_tile_property_keys` |
+| `Zanna.Game2D.SceneDocument.TilePropertyTiles` | `obj<Zanna.Collections.Seq>(obj)` | `rt_game_scene_tile_property_tiles` |
+| `Zanna.Game2D.SceneDocument.SetTileAnim` | `void(obj,i64,obj,obj)` | `rt_game_scene_set_tile_anim` |
+| `Zanna.Game2D.SceneDocument.TileAnimFrames` | `obj<Zanna.Collections.Seq>(obj,i64)` | `rt_game_scene_tile_anim_frames` |
+| `Zanna.Game2D.SceneDocument.TileAnimDurations` | `obj<Zanna.Collections.Seq>(obj,i64)` | `rt_game_scene_tile_anim_durations` |
+| `Zanna.Game2D.SceneDocument.RemoveTileAnim` | `void(obj,i64)` | `rt_game_scene_remove_tile_anim` |
+| `Zanna.Game2D.SceneDocument.TileAnimBases` | `obj<Zanna.Collections.Seq>(obj)` | `rt_game_scene_tile_anim_bases` |
+| `Zanna.Game2D.SceneDocument.SetAutotileRule` | `void(obj,i64,obj)` | `rt_game_scene_set_autotile_rule` |
+| `Zanna.Game2D.SceneDocument.AutotileVariants` | `obj<Zanna.Collections.Seq>(obj,i64)` | `rt_game_scene_autotile_variants` |
+| `Zanna.Game2D.SceneDocument.RemoveAutotileRule` | `void(obj,i64)` | `rt_game_scene_remove_autotile_rule` |
+| `Zanna.Game2D.SceneDocument.AutotileBases` | `obj<Zanna.Collections.Seq>(obj)` | `rt_game_scene_autotile_bases` |
+| `Zanna.Game2D.SceneDocument.CameraFieldKind` | `str(obj,str)` | `rt_game_scene_camera_field_kind` |
+| `Zanna.Game2D.SceneDocument.CameraGetInt` | `i64(obj,str,i64)` | `rt_game_scene_camera_get_int` |
+| `Zanna.Game2D.SceneDocument.CameraGetStr` | `str(obj,str,str)` | `rt_game_scene_camera_get_str` |
+| `Zanna.Game2D.SceneDocument.CameraSetInt` | `void(obj,str,i64)` | `rt_game_scene_camera_set_int` |
+| `Zanna.Game2D.SceneDocument.CameraSetStr` | `void(obj,str,str)` | `rt_game_scene_camera_set_str` |
+| `Zanna.Game2D.SceneDocument.CameraRemove` | `void(obj,str)` | `rt_game_scene_camera_remove` |
+| `Zanna.Game2D.SceneDocument.CameraKeys` | `obj<Zanna.Collections.Seq>(obj)` | `rt_game_scene_camera_keys` |
+| `Zanna.Game2D.SceneDocument.LightingFieldKind` | `str(obj,str)` | `rt_game_scene_lighting_field_kind` |
+| `Zanna.Game2D.SceneDocument.LightingGetInt` | `i64(obj,str,i64)` | `rt_game_scene_lighting_get_int` |
+| `Zanna.Game2D.SceneDocument.LightingSetInt` | `void(obj,str,i64)` | `rt_game_scene_lighting_set_int` |
+| `Zanna.Game2D.SceneDocument.LightingRemove` | `void(obj,str)` | `rt_game_scene_lighting_remove` |
+| `Zanna.Game2D.SceneDocument.LightingKeys` | `obj<Zanna.Collections.Seq>(obj)` | `rt_game_scene_lighting_keys` |
 

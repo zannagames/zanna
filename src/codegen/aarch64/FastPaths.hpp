@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/FastPaths.hpp
+// File: src/codegen/aarch64/FastPaths.hpp
 // Purpose: Fast-path pattern matching for common IL patterns.
 // Key invariants:
 //   - Each fast-path returns a fully-lowered MFunction or nullopt.
@@ -13,10 +13,19 @@
 // Ownership/Lifetime:
 //   - Stateless free function; borrows references for the duration of the call
 //     and does not retain them.
-// Links: codegen/aarch64/FastPaths.cpp,
-//        codegen/aarch64/fastpaths/FastPathsInternal.hpp
+// Links: src/codegen/aarch64/FastPaths.cpp,
+//        src/codegen/aarch64/fastpaths/FastPathsInternal.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares side-effect-free probes for specialized AArch64 IL lowering.
+ *
+ * Each category is attempted against a scratch copy of the seed machine
+ * function. A failed probe therefore leaves caller state untouched; the first
+ * successful category returns a complete machine function by value.
+ */
 
 #pragma once
 
@@ -40,13 +49,15 @@ namespace zanna::codegen::aarch64 {
 ///          leaving the caller to fall back to the generic lowering pipeline.
 /// @param fn  Source IL function under consideration.
 /// @param ti  Target description (used for ABI, scratch-register choices).
-/// @param fb  Frame builder; supplies stack-slot allocation and frame-size accounting.
+/// @param fb  Caller frame builder retained for API symmetry; probes use a
+///            scratch builder bound to their scratch machine function.
 /// @param mf  Pre-allocated MIR function that the fast-path writes into.
 /// @param stringLiteralByteLengths Optional map from string-literal label to byte length;
 ///        used by patterns that lower constant-string passthrough.
 /// @param knownVarArgNamedArgCounts Optional map of vararg function names to their
 ///        non-variadic prefix arity; allows fast-path matching of calls into varargs.
-/// @returns The lowered MFunction if a fast-path matched, @c nullopt otherwise.
+/// @return The lowered MFunction if a fast-path matched, @c nullopt otherwise.
+/// @post @p mf and @p fb are unchanged when no fast path matches.
 std::optional<MFunction> tryFastPaths(
     const il::core::Function &fn,
     const TargetInfo &ti,

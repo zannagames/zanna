@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/StringDedup.hpp
+// File: src/codegen/common/linker/StringDedup.hpp
 // Purpose: Cross-module string deduplication pass for the native linker.
 //          Identifies identical NUL-terminated rodata strings across object
 //          files and promotes them to shared global symbols so all relocations
@@ -20,6 +20,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file StringDedup.hpp
+ * @brief Declares the native linker's cross-object C-string deduplication pass.
+ *
+ * Deduplication runs after dead stripping and before section merging. It
+ * rewrites duplicate local string symbols to a shared synthetic global and,
+ * when a C-string section is proven to contain no untracked bytes or incoming
+ * cross-section references, removes redundant copies from that section.
+ */
+
 #pragma once
 
 #include <cstddef>
@@ -32,13 +42,17 @@ namespace zanna::codegen::linker {
 struct ObjFile;
 struct GlobalSymEntry;
 
-/// Deduplicate identical string literals across object files.
-/// Scans LOCAL symbols in rodata sections, groups by NUL-terminated content,
-/// and promotes all duplicates to share a single synthetic global symbol name.
-///
-/// @param allObjects  All object files (modified in place: symbol names/bindings updated).
-/// @param globalSyms  Global symbol table (new entries added for canonical strings).
-/// @return Number of duplicate strings eliminated.
+/// @brief Deduplicate identical, explicitly identified C-string literals.
+/// @details Scans local symbols at exact string boundaries, groups candidates
+///          by bytes including the terminating NUL, and promotes each duplicate
+///          group to one collision-free global symbol. Safe, fully covered
+///          sections are compacted; ambiguous sections retain their bytes while
+///          still sharing the canonical symbol.
+/// @param allObjects Object files modified in place, including symbol names,
+///                   bindings, section indices, offsets, and compacted data.
+/// @param globalSyms Global table updated with canonical synthetic definitions
+///                   and any offsets changed by compaction.
+/// @return Number of non-canonical string occurrences redirected to canonical copies.
 size_t deduplicateStrings(std::vector<ObjFile> &allObjects,
                           std::unordered_map<std::string, GlobalSymEntry> &globalSyms);
 

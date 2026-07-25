@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/BranchOpt.cpp
+// File: src/codegen/aarch64/peephole/BranchOpt.cpp
 // Purpose: Branch optimizations for the AArch64 peephole optimizer: CBZ/CBNZ
 //          fusion, cset branch fusion, block reordering, and condition
 //          inversion.
@@ -29,6 +29,9 @@
 #include <algorithm>
 #include <cstring>
 #include <string_view>
+
+/// @file
+/// @brief Implements AArch64 conditional-branch fusion and cold-block layout.
 
 namespace zanna::codegen::aarch64::peephole {
 namespace {
@@ -56,7 +59,10 @@ namespace {
     return false;
 }
 
-/// @brief Check if a block is a cold block (trap handler, error block).
+/// @brief Determine whether a block is likely to be a cold trap or error path.
+/// @param block Basic block whose name and sole instruction are inspected.
+/// @return `true` when a bounded cold marker appears in the block label or in
+///         the target of its sole direct call.
 [[nodiscard]] bool isColdBlock(const MBasicBlock &block) noexcept {
     if (hasColdMarkerToken(block.name, "trap"))
         return true;
@@ -82,6 +88,8 @@ namespace {
 /// @details CSET-to-branch fusion cannot cross instructions that may leave the
 ///          block, call into unknown code, or otherwise make condition flags
 ///          unavailable to the fused branch.
+/// @param opc Opcode to classify.
+/// @return `true` for branches, calls, returns, and jump tables.
 [[nodiscard]] bool isControlBarrier(MOpcode opc) noexcept {
     return opc == MOpcode::Br || opc == MOpcode::BCond || opc == MOpcode::Cbz ||
            opc == MOpcode::Cbnz || opc == MOpcode::Tbz || opc == MOpcode::Tbnz ||
@@ -99,6 +107,10 @@ namespace {
 ///          branch or plain computation would re-target its implicit
 ///          fallthrough edge. Cold-block matching is name-token based, so a
 ///          user block merely named "error" can carry any terminator shape.
+/// @param fn Function containing the candidate block and its layout predecessor.
+/// @param idx Index of the cold block candidate.
+/// @return `true` when moving the candidate cannot change either surrounding
+///         fallthrough edge.
 [[nodiscard]] bool canMoveColdBlock(const MFunction &fn, std::size_t idx) noexcept {
     if (idx == 0 || idx >= fn.blocks.size())
         return false;
@@ -119,6 +131,7 @@ namespace {
 
 } // namespace
 
+/// @copydoc invertCondition
 const char *invertCondition(const char *cond) noexcept {
     if (!cond)
         return nullptr;
@@ -280,6 +293,8 @@ bool tryTbzTbnzFusion(std::vector<MInstr> &instrs,
     // instrs[brIdx] into the bit-test branch and erase the now-dead inputs
     // (highest index first so earlier indices stay valid).
     constexpr std::size_t kNoTst = static_cast<std::size_t>(-1);
+    /// Complete a proven bit-test fusion, provided the masked result has no
+    /// observable use after the branch.
     const auto finishFusion = [&](std::size_t brIdx,
                                   std::size_t after,
                                   MOpcode fusedOpc,
@@ -303,6 +318,8 @@ bool tryTbzTbnzFusion(std::vector<MInstr> &instrs,
         return true;
     };
 
+    /// Classify intervening instructions that invalidate the NZCV value used
+    /// by the `TstRR` plus conditional-branch fusion shape.
     const auto writesFlags = [](MOpcode opc) {
         switch (opc) {
             case MOpcode::CmpRR:
@@ -379,6 +396,8 @@ bool tryTbzTbnzFusion(std::vector<MInstr> &instrs,
 /// @param instrs Instruction list being scanned (mutated in place).
 /// @param idx    Index of the `CSET` to consider.
 /// @param stats  Peephole statistics counter (incremented on success).
+/// @param carriedExitRegs Optional sorted live-through register identifiers;
+///        fusion is rejected when it contains the `Cset` destination.
 /// @return True if the fusion was applied at @p idx.
 bool tryCsetBranchFusion(std::vector<MInstr> &instrs,
                          std::size_t idx,
@@ -475,6 +494,7 @@ bool tryCsetBranchFusion(std::vector<MInstr> &instrs,
     return false;
 }
 
+/// @copydoc reorderBlocks
 std::size_t reorderBlocks(MFunction &fn) {
     if (fn.blocks.size() <= 2)
         return 0;

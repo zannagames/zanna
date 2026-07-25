@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/DebugLineTable.cpp
+// File: src/codegen/common/objfile/DebugLineTable.cpp
 // Purpose: Implements DWARF v5 .debug_line encoding.
 // Key invariants:
 //   - Produces a complete, self-contained .debug_line section.
@@ -15,6 +15,16 @@
 // Links: codegen/common/objfile/DebugLineTable.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file DebugLineTable.cpp
+ * @brief Implements collection and DWARF v5 encoding of address/line mappings.
+ *
+ * The encoder produces one self-contained DWARF32 line-table unit with a v5
+ * file table and a compact line-number program. File indices and addresses are
+ * validated during collection, while unit/header lengths and target address
+ * widths are checked during serialization.
+ */
 
 #include "codegen/common/objfile/DebugLineTable.hpp"
 
@@ -32,6 +42,7 @@ using linker::encoding::writeLE32;
 using linker::encoding::writeSLEB128;
 using linker::encoding::writeULEB128;
 
+/// @copydoc DebugLineTable::addFile
 uint32_t DebugLineTable::addFile(const std::string &path) {
     // Check if already registered.
     for (size_t i = 0; i < files_.size(); ++i) {
@@ -44,6 +55,7 @@ uint32_t DebugLineTable::addFile(const std::string &path) {
     return static_cast<uint32_t>(files_.size()); // 1-based
 }
 
+/// @copydoc DebugLineTable::addFileSlot
 uint32_t DebugLineTable::addFileSlot(const std::string &path) {
     if (files_.size() >= std::numeric_limits<uint32_t>::max())
         throw std::length_error("debug_line: file table exceeds 32-bit index range");
@@ -51,6 +63,7 @@ uint32_t DebugLineTable::addFileSlot(const std::string &path) {
     return static_cast<uint32_t>(files_.size()); // 1-based
 }
 
+/// @copydoc DebugLineTable::addEntry
 void DebugLineTable::addEntry(uint64_t address,
                               uint32_t fileIndex,
                               uint32_t line,
@@ -67,6 +80,7 @@ void DebugLineTable::addEntry(uint64_t address,
     entries_.push_back({address, fileIndex, line, column});
 }
 
+/// @copydoc DebugLineTable::append
 void DebugLineTable::append(const DebugLineTable &other, uint64_t addressBias) {
     std::vector<uint32_t> fileRemap(other.files_.size() + 1, 0);
     for (size_t i = 0; i < other.files_.size(); ++i)
@@ -117,6 +131,10 @@ static constexpr uint8_t DW_LNCT_path = 1;
 static constexpr uint8_t DW_FORM_string = 8; // Inline NUL-terminated string.
 
 // Helpers.
+/// @brief Append one DWARF line-program extended opcode.
+/// @param buf Destination line-table byte vector.
+/// @param opcode Extended opcode following the zero escape and length.
+/// @param data Opcode payload bytes, excluding the opcode itself.
 static void writeExtendedOpcode(std::vector<uint8_t> &buf,
                                 uint8_t opcode,
                                 const std::vector<uint8_t> &data) {
@@ -126,11 +144,15 @@ static void writeExtendedOpcode(std::vector<uint8_t> &buf,
     buf.insert(buf.end(), data.begin(), data.end());
 }
 
+/// @brief Append a DWARF inline NUL-terminated string.
+/// @param buf Destination byte vector.
+/// @param s String bytes to append before the terminator.
 static void writeNullTermString(std::vector<uint8_t> &buf, const std::string &s) {
     buf.insert(buf.end(), s.begin(), s.end());
     buf.push_back(0);
 }
 
+/// @copydoc DebugLineTable::encodeDwarf5
 std::vector<uint8_t> DebugLineTable::encodeDwarf5(uint8_t addressSize) const {
     if (addressSize != 4 && addressSize != 8)
         throw std::invalid_argument("debug_line: address size must be 4 or 8 bytes");

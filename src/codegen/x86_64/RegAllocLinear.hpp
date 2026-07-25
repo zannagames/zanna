@@ -5,19 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/RegAllocLinear.hpp
-// Purpose: Declare the Phase A linear-scan register allocator for x86-64.
+// File: src/codegen/x86_64/RegAllocLinear.hpp
+// Purpose: Declare the linear-scan register allocator facade for x86-64.
 // Key invariants:
 //   - Live intervals are computed before allocation.
 //   - Spill slots are assigned monotonically per register class.
-//   - The vregToPhys map covers all virtual registers after allocation completes.
+//   - Assigned virtual registers are rewritten; spills use class-specific slots.
 // Ownership/Lifetime:
 //   - Functions operate directly on the supplied MFunction; return results by value.
 //   - No persistent allocator state between calls.
-// Links: codegen/x86_64/RegAllocLinear.cpp,
-//        codegen/x86_64/MachineIR.hpp,
-//        codegen/x86_64/TargetX64.hpp,
-//        codegen/x86_64/ra/Allocator.hpp
+// Links: src/codegen/x86_64/RegAllocLinear.cpp,
+//        src/codegen/x86_64/MachineIR.hpp,
+//        src/codegen/x86_64/TargetX64.hpp,
+//        src/codegen/x86_64/ra/Allocator.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,16 +28,26 @@
 
 #include <unordered_map>
 
+/**
+ * @file
+ * @brief Declares the x86-64 facade over live intervals and linear-scan allocation.
+ */
+
 namespace zanna::codegen::x64 {
 
-/// \brief Result of a linear-scan allocation.
+/**
+ * @brief Summary of physical assignments and spill storage from allocation.
+ *
+ * The slot counts are expressed in backend eight-byte spill units and are
+ * consumed by frame layout.
+ */
 struct AllocationResult {
     std::unordered_map<uint16_t, PhysReg> vregToPhys; ///< Final vreg → phys mapping.
     int spillSlotsGPR{0};                             ///< Number of 8-byte GPR spill slots.
     int spillSlotsXMM{0};                             ///< Number of 8-byte XMM spill slots.
 };
 
-/// \brief Allocate registers for \p func using a basic linear-scan strategy.
+/// @brief Allocate registers for @p func using the x86-64 linear-scan pipeline.
 ///
 /// @details Computes live intervals for every virtual register, then walks
 ///          them in start-point order assigning physical registers from the
@@ -52,6 +62,7 @@ struct AllocationResult {
 ///               callee-saved information.
 /// @return An AllocationResult containing the vreg-to-phys mapping and the
 ///         number of spill slots consumed per register class.
+/// @throws std::exception Propagates liveness, allocation, or rewrite failures.
 [[nodiscard]] AllocationResult allocate(MFunction &func, const TargetInfo &target);
 
 } // namespace zanna::codegen::x64

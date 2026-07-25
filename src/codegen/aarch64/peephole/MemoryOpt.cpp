@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/MemoryOpt.cpp
+// File: src/codegen/aarch64/peephole/MemoryOpt.cpp
 // Purpose: Memory optimizations for the AArch64 peephole optimizer: LDP/STP
 //          merging, store-load forwarding, and MADD fusion.
 //
@@ -26,6 +26,9 @@
 #include "PeepholeCommon.hpp"
 
 #include <limits>
+
+/// @file
+/// @brief Implements local AArch64 memory forwarding, pairing, and MADD fusion.
 
 namespace zanna::codegen::aarch64::peephole {
 
@@ -48,6 +51,8 @@ namespace {
 /// @details Store-load forwarding for FP-relative slots cannot prove these
 ///          accesses do not alias an address-taken stack object, so they act as
 ///          conservative scan barriers.
+/// @param opcode Opcode to classify.
+/// @return `true` for recognized scalar loads and stores through an arbitrary GPR.
 [[nodiscard]] bool isBaseRelativeMemory(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::LdrRegBaseImm:
@@ -71,10 +76,10 @@ namespace {
 /// @brief Merge two adjacent `LDR`/`STR` instructions into a single `LDP`/`STP`.
 /// @details Recognises four candidate pairs: GPR FP-relative load, GPR FP-relative store,
 ///          FPR FP-relative load, FPR FP-relative store. To be mergeable, the two accesses
-///          must use the same base register and an 8-byte-adjacent offset; the second
-///          access's transfer register must not alias the first's base; and (for loads)
-///          the two transfer registers must differ. Successful merges replace the pair
-///          with a single `LDP`/`STP` and advance @p stats.
+///          must have 8-byte-adjacent FP offsets whose lower address is pair-aligned and
+///          encodable. Load destinations must differ. Successful merges normalize
+///          register order by ascending address, replace the pair with one instruction,
+///          and advance @p stats.
 /// @param instrs Instruction list being scanned (mutated in place).
 /// @param idx    Index of the first instruction in the candidate pair.
 /// @param stats  Peephole statistics counter (incremented on success).
@@ -181,10 +186,16 @@ static bool fpStoreRange(const MInstr &ins, int64_t &start, int64_t &end) {
 
 /// @brief Half-open interval overlap test: true iff [lhsStart,lhsEnd) and
 ///        [rhsStart,rhsEnd) intersect. Used to decide store/load aliasing.
+/// @param lhsStart Inclusive beginning of the first interval.
+/// @param lhsEnd Exclusive end of the first interval.
+/// @param rhsStart Inclusive beginning of the second interval.
+/// @param rhsEnd Exclusive end of the second interval.
+/// @return `true` when the intervals share at least one byte.
 static bool rangesOverlap(int64_t lhsStart, int64_t lhsEnd, int64_t rhsStart, int64_t rhsEnd) {
     return lhsStart < rhsEnd && rhsStart < lhsEnd;
 }
 
+/// @copydoc forwardStoreLoads
 std::size_t forwardStoreLoads(std::vector<MInstr> &instrs, PeepholeStats &stats) {
     std::size_t forwarded = 0;
     for (std::size_t i = 0; i < instrs.size(); ++i) {

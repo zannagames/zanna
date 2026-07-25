@@ -15,6 +15,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file SectionMerger.cpp
+ * @brief Implements input-section coalescing and output virtual-address layout.
+ *
+ * The merger groups live input sections by semantic class, preserves the
+ * platform-defined ordering of initialization, TLS, metadata, unwind, and
+ * debug subsections, and records every input chunk's output placement for
+ * subsequent symbol and relocation resolution. It then orders output sections
+ * by memory permissions and assigns page- and section-aligned addresses.
+ */
+
 #include "codegen/common/linker/SectionMerger.hpp"
 
 #include "codegen/common/linker/AlignUtil.hpp"
@@ -32,11 +43,15 @@ namespace {
 /// @brief Detect Windows CRT initialiser subsections like ".CRT$XCU".
 /// @details The MSVC CRT relies on lexicographic sort of these subsections
 ///          producing the correct C++ static-init / TLS-callback order.
+/// @param name COFF section name to inspect.
+/// @return `true` when @p name begins with `.CRT$`.
 bool isWindowsCrtSubsection(const std::string &name) {
     return name.rfind(".CRT$", 0) == 0;
 }
 
 /// @brief Detect any Windows TLS subsection (".tls", ".tls$T", etc.).
+/// @param name COFF section name to inspect.
+/// @return `true` when @p name begins with `.tls`.
 bool isWindowsTlsSubsection(const std::string &name) {
     return name.rfind(".tls", 0) == 0;
 }
@@ -45,8 +60,11 @@ bool isWindowsTlsSubsection(const std::string &name) {
 /// @details ELF allows priorities like ".init_array.123"; the loader runs lower
 ///          numbers first. @c family separates preinit/init/fini groups.
 struct InitArraySortKey {
+    ///< Array family order: pre-initializers, initializers, then finalizers.
     int family = 0;
+    ///< Parsed numeric priority, or the maximum value for an invalid name.
     uint32_t priority = std::numeric_limits<uint32_t>::max();
+    ///< Whether the section name and optional priority parsed successfully.
     bool isInitArray = false;
 };
 
@@ -55,7 +73,11 @@ struct InitArraySortKey {
 ///          Returns a key with @c family=N and @c priority=N where appropriate;
 ///          @c isInitArray remains false if the name does not parse so the caller
 ///          can fall back to default ordering.
+/// @param name ELF section name to parse.
+/// @return Family, priority, and validity fields used by the stable chunk sort.
 InitArraySortKey elfInitArraySortKey(const std::string &name) {
+    /// Parse the optional decimal suffix following a recognized array prefix.
+    /// An unsuffixed standard name receives the ABI default priority 65535.
     auto parsePriority = [&](const char *prefix) -> uint32_t {
         const size_t prefixLen = std::char_traits<char>::length(prefix);
         if (name.size() == prefixLen)
@@ -97,6 +119,8 @@ InitArraySortKey elfInitArraySortKey(const std::string &name) {
 /// @details Some synthetic inputs carry Mach-O section names but not all reader
 ///          metadata flags. The preserved name is still enough to keep them in
 ///          the data segment when writing Mach-O executables.
+/// @param name Preserved Mach-O `segment,section` name.
+/// @return `true` when the original segment is one of the data-like segments.
 bool isMachODataSegmentSection(const std::string &name) {
     return name.rfind("__DATA,", 0) == 0 || name.rfind("__DATA_CONST,", 0) == 0 ||
            name.rfind("__DATA_DIRTY,", 0) == 0 || name.rfind("__AUTH,", 0) == 0 ||
@@ -107,6 +131,8 @@ bool isMachODataSegmentSection(const std::string &name) {
 /// @details Order: text (RX) → rodata (R) → data (RW) → tls_data → tls_bss → bss
 ///          → debug. This both produces sensible W^X segment groupings and
 ///          mirrors the order that ELF/Mach-O/PE writers expect.
+/// @param s Output section whose runtime permissions are classified.
+/// @return Integer sort bucket, where lower values receive lower addresses.
 int permClass(const OutputSection &s) {
     if (!s.alloc)
         return 6; // Non-alloc sections (debug) sort last.
@@ -128,6 +154,8 @@ int permClass(const OutputSection &s) {
 /// @brief Tie-breaker among sections that share the same @c permClass.
 /// @details Used after permClass to keep e.g. all Text-class sections together
 ///          before falling back to alphabetical order.
+/// @param cls Semantic section class to order.
+/// @return Stable integer ordering key for @p cls.
 int sectionClassOrder(SectionClass cls) {
     switch (cls) {
         case SectionClass::Text:
@@ -155,6 +183,8 @@ int sectionClassOrder(SectionClass cls) {
 /// @details Output sections no longer carry their original PendingChunk class,
 ///          so the final sort derives the same class key from the merged
 ///          section's name and attributes before using sectionClassOrder().
+/// @param section Merged section to reclassify.
+/// @return The semantic class inferred from its name and storage attributes.
 SectionClass outputSectionClass(const OutputSection &section) {
     return classifySection(
         section.name, section.executable, section.writable, section.tls, section.zeroFill);
@@ -162,6 +192,7 @@ SectionClass outputSectionClass(const OutputSection &section) {
 
 } // namespace
 
+/// @copydoc zanna::codegen::linker::assignSectionVirtualAddresses
 bool assignSectionVirtualAddresses(LinkLayout &layout, LinkPlatform platform, std::ostream &err) {
     if (layout.imageBase == 0)
         layout.imageBase = defaultImageBaseForPlatform(platform);
@@ -201,6 +232,7 @@ bool assignSectionVirtualAddresses(LinkLayout &layout, LinkPlatform platform, st
     return true;
 }
 
+/// @copydoc zanna::codegen::linker::mergeSections
 bool mergeSections(const std::vector<ObjFile> &objects,
                    LinkPlatform platform,
                    LinkArch arch,
@@ -215,17 +247,26 @@ bool mergeSections(const std::vector<ObjFile> &objects,
         layout.pageSize = 0x1000; // 4KB
 
     // Collect input sections by class.
+    /// Description of one live input section awaiting output coalescing.
     struct PendingChunk {
+        ///< Index of the source object in @p objects.
         size_t objIdx = 0;
+        ///< One-based section index within the source object.
         size_t secIdx = 0;
+        ///< Semantic merge and ordering class.
         SectionClass cls = SectionClass::Other;
+        ///< Original section name used for platform-specific ordering.
         std::string name;
+        ///< Required chunk alignment in the merged output.
         uint32_t alignment = 1;
+        ///< Discovery order used as the final stable-sort tie breaker.
         size_t inputOrder = 0;
     };
 
     std::vector<PendingChunk> pending;
 
+    /// Determine whether a nominally empty input section still defines a symbol
+    /// and therefore must remain present in the merged layout.
     auto sectionHasLiveSymbol = [](const ObjFile &obj, size_t secIdx) {
         for (size_t symIdx = 1; symIdx < obj.symbols.size(); ++symIdx) {
             const auto &sym = obj.symbols[symIdx];
@@ -257,6 +298,8 @@ bool mergeSections(const std::vector<ObjFile> &objects,
     // Windows exception: COFF subsection families such as .CRT$X* and .tls$*
     // must preserve lexicographic subsection order so the CRT startup ranges
     // and TLS template remain valid after merging.
+    /// Order pending chunks by semantic class and each platform's required
+    /// subsection rules, using alignment and discovery order as fallbacks.
     std::stable_sort(
         pending.begin(), pending.end(), [platform](const PendingChunk &a, const PendingChunk &b) {
             if (a.cls != b.cls)
@@ -314,6 +357,9 @@ bool mergeSections(const std::vector<ObjFile> &objects,
         });
 
     // Create output sections in order.
+    /// Append and initialize a standard merged output section.
+    /// The semantic @p cls argument identifies the caller's merge group; the
+    /// explicit flags determine the stored section attributes.
     auto addOutputSection =
         [&](SectionClass cls, const char *name, bool exec, bool write, bool tls, bool zeroFill)
         -> OutputSection & {
@@ -328,6 +374,8 @@ bool mergeSections(const std::vector<ObjFile> &objects,
         return out;
     };
 
+    /// Append one input section to a merged output section with checked
+    /// alignment, size growth, zero-fill handling, and placement recording.
     auto appendChunk = [&](OutputSection &out,
                            size_t objIdx,
                            size_t secIdx,
@@ -395,6 +443,7 @@ bool mergeSections(const std::vector<ObjFile> &objects,
     };
 
     // Merge chunks into output sections.
+    /// Append every pending chunk in one semantic class to @p out.
     auto mergeClass = [&](SectionClass cls, OutputSection &out) -> bool {
         for (const auto &pc : pending) {
             if (pc.cls != cls)
@@ -653,6 +702,8 @@ bool mergeSections(const std::vector<ObjFile> &objects,
     // Without this, non-writable ObjC sections (e.g., __objc_classname) get
     // VAs after writable sections, causing __TEXT/__DATA segment overlap in
     // the Mach-O executable (SIGKILL on macOS ARM64).
+    /// Order merged sections by permission and semantic class while preserving
+    /// construction order for exact ties.
     std::stable_sort(layout.sections.begin(),
                      layout.sections.end(),
                      [](const OutputSection &a, const OutputSection &b) {

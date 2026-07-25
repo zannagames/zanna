@@ -17,7 +17,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
+/// @file Parser_Stmt_Jump.cpp
 /// @brief Implements jump-oriented BASIC statement parsers.
 /// @details Provides the parsing routines for GOTO, GOSUB, and RETURN statements
 ///          and returns heap-allocated AST nodes describing the parsed constructs.
@@ -32,9 +32,10 @@ namespace il::frontends::basic {
 ///          `GOTO` keyword.  It consumes the keyword, parses the trailing line
 ///          label (numeric or named), and materialises a @c GotoStmt containing
 ///          the resolved destination together with the originating source
-///          location.  Errors emit diagnostics that describe the missing label or
-///          number before recovering to the next statement boundary.
-/// @return Owned AST node describing the goto statement.
+///          location. Named targets receive stable synthetic numbers and record
+///          a forward reference. An out-of-range numeric target is diagnosed and
+///          retained as zero; a missing target synchronizes and returns null.
+/// @return Owned AST node describing the jump, or null when no target token exists.
 StmtPtr Parser::parseGotoStatement() {
     auto loc = peek().loc;
     consume(); // GOTO
@@ -67,10 +68,11 @@ StmtPtr Parser::parseGotoStatement() {
 /// @details After consuming the `GOSUB` keyword the parser requires either a
 ///          numeric literal or a named label that identifies the subroutine
 ///          entry line.  The resulting @c GosubStmt records both the call-site
-///          location and the numeric return address so later passes can emit the
-///          appropriate frame setup. Input validation mirrors
-///          @ref parseGotoStatement to guarantee consistent diagnostics.
-/// @return Owned AST node describing the gosub statement.
+///          location and the resolved target line. Named targets receive stable
+///          synthetic numbers and record a forward reference. An out-of-range
+///          number is diagnosed and retained as zero; a missing target
+///          synchronizes and returns null.
+/// @return Owned AST node describing the call target, or null when no target token exists.
 StmtPtr Parser::parseGosubStatement() {
     auto loc = peek().loc;
     consume(); // GOSUB

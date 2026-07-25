@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
+/// @file Parser_Stmt_IO.cpp
 /// @brief Parsing utilities for BASIC IO statements (PRINT, INPUT, OPEN, etc.).
 /// @details The functions consume tokens from @ref Parser, build the appropriate
 ///          AST nodes, and report diagnostics through the active diagnostic
@@ -137,10 +137,10 @@ StmtPtr Parser::parseWriteStatement() {
 }
 
 /// @brief Parse the OPEN statement configuring file channels.
-/// @details Consumes the mode keyword, validates it against supported options,
-///          expects the `AS #` channel syntax, and captures optional path and
-///          channel expressions. Diagnostic hooks fire when unexpected tokens
-///          are encountered.
+/// @details Parses a required path expression, `FOR` mode, and `AS #` channel
+///          expression. Supported modes are INPUT, OUTPUT, APPEND, BINARY, and
+///          RANDOM; an unrecognized mode token is consumed and diagnosed
+///          through the configured emitter when present.
 /// @return AST node describing the OPEN statement.
 StmtPtr Parser::parseOpenStatement() {
     auto loc = peek().loc;
@@ -208,10 +208,10 @@ StmtPtr Parser::parseSeekStatement() {
 }
 
 /// @brief Parse the INPUT statement, supporting prompt and variable lists.
-/// @details Handles optional prompt strings, comma-separated variable lists, and
-///          the channel-prefixed `INPUT #` variant. The parser emits diagnostics
-///          when unsupported multi-target channel input is encountered and
-///          consumes trailing tokens to recover.
+/// @details Console INPUT accepts an optional literal-string prompt followed by
+///          one or more soft-identifier destinations. Channel INPUT requires a
+///          numeric channel literal after `#` and accepts one or more NameRef
+///          targets separated by commas; an invalid channel recovers as zero.
 /// @return AST node for the parsed INPUT statement.
 StmtPtr Parser::parseInputStatement() {
     auto loc = peek().loc;
@@ -266,10 +266,11 @@ StmtPtr Parser::parseInputStatement() {
 }
 
 /// @brief Parse the `LINE INPUT` statement that reads an entire line.
-/// @details Supports the channel-prefixed form (`LINE INPUT #`) and validates
-///          that the destination is a simple variable or array element. When an
-///          invalid target is provided, diagnostics are emitted and a fallback
-///          placeholder variable is inserted so compilation can proceed.
+/// @details Console LINE INPUT accepts an optional literal prompt and one soft
+///          identifier. The channel-prefixed form parses a channel expression
+///          and requires its destination to be a scalar variable or array
+///          element. An invalid channel target is diagnosed and replaced by an
+///          unnamed VarExpr recovery node.
 /// @return AST node describing the LINE INPUT statement.
 StmtPtr Parser::parseLineInputStatement() {
     auto loc = peek().loc;

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/MachineIR.hpp
+// File: src/codegen/aarch64/MachineIR.hpp
 // Purpose: AArch64 Machine IR (MIR) data structures for code generation.
 //
 // This file defines the machine-level intermediate representation used between
@@ -22,8 +22,8 @@
 //   - MFunction owns all blocks; blocks own instructions.
 //   - Frame layout is computed during lowering and finalized after allocation.
 //
-// Links: codegen/aarch64/MachineIR.cpp,
-//        codegen/aarch64/TargetAArch64.hpp
+// Links: src/codegen/aarch64/MachineIR.cpp,
+//        src/codegen/aarch64/TargetAArch64.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,6 +39,17 @@
 #include "codegen/aarch64/TargetAArch64.hpp"
 #include "support/source_location.hpp"
 
+/**
+ * @file
+ * @brief Defines the AArch64 machine intermediate representation.
+ *
+ * MIR is the mutable, target-specific layer between IL lowering and assembly
+ * emission. Instructions initially refer to typed virtual registers; register
+ * allocation replaces those references with physical AArch64 registers before
+ * emission. Functions own blocks, blocks own instructions, and instructions
+ * own their operand sequences.
+ */
+
 namespace zanna::codegen::aarch64 {
 
 /// @brief Machine IR opcodes for AArch64 code generation.
@@ -52,21 +63,27 @@ enum class MOpcode {
 #include "codegen/aarch64/MOpcodeDef.inc"
 };
 
-/// @brief Represents a machine register (physical or virtual).
-///
-/// Before register allocation, isPhys=false and idOrPhys contains a virtual
-/// register ID. After allocation, isPhys=true and idOrPhys contains the
-/// PhysReg enum value cast to uint16_t.
+/**
+ * @brief Identifies a physical or virtual machine register.
+ *
+ * Before register allocation, `isPhys` is false and `idOrPhys` contains a
+ * virtual-register ID. After allocation, physical operands have `isPhys` set
+ * and store the underlying `PhysReg` value in `idOrPhys`.
+ *
+ * @invariant `cls` agrees with the register bank selected by `idOrPhys`.
+ */
 struct MReg {
     bool isPhys{false};          ///< True if this is a physical register.
     RegClass cls{RegClass::GPR}; ///< Register class (GPR or FPR).
     uint16_t idOrPhys{0U};       ///< Virtual reg ID or PhysReg enum value.
 };
 
-/// @brief Operand for a machine IR instruction.
-///
-/// Operands can be registers, immediates, condition codes, or labels.
-/// The interpretation depends on the MOpcode of the containing MInstr.
+/**
+ * @brief Tagged operand for a machine IR instruction.
+ *
+ * Exactly one payload is semantically active according to `kind`. The
+ * condition payload is non-owning; labels own their string storage.
+ */
 struct MOperand {
     enum class Kind {
         Reg,  ///< Physical or virtual register.
@@ -80,7 +97,12 @@ struct MOperand {
     const char *cond{nullptr}; ///< Condition code string (when kind==Cond).
     std::string label;         ///< Label name (when kind==Label).
 
-    /// @brief Create a physical register operand.
+    /**
+     * @brief Creates an operand naming a physical register.
+     *
+     * @param r AArch64 physical register.
+     * @return Register operand with its class inferred from @p r.
+     */
     static MOperand regOp(PhysReg r) {
         MOperand o{};
         o.kind = Kind::Reg;
@@ -90,9 +112,13 @@ struct MOperand {
         return o;
     }
 
-    /// @brief Create a virtual register operand.
-    /// @param cls Register class (GPR or FPR).
-    /// @param id Virtual register identifier.
+    /**
+     * @brief Creates an operand naming a virtual register.
+     *
+     * @param cls Register bank required by the value.
+     * @param id Function-local virtual-register identifier.
+     * @return Register operand retaining @p cls and @p id.
+     */
     static MOperand vregOp(RegClass cls, uint16_t id) {
         MOperand o{};
         o.kind = Kind::Reg;
@@ -102,7 +128,12 @@ struct MOperand {
         return o;
     }
 
-    /// @brief Create an immediate operand.
+    /**
+     * @brief Creates a signed immediate operand.
+     *
+     * @param v Immediate value before any opcode-specific range checking.
+     * @return Immediate operand containing @p v.
+     */
     static MOperand immOp(long long v) {
         MOperand o{};
         o.kind = Kind::Imm;
@@ -110,7 +141,14 @@ struct MOperand {
         return o;
     }
 
-    /// @brief Create a condition code operand (e.g., "eq", "ne", "lt").
+    /**
+     * @brief Creates a non-owning condition-code operand.
+     *
+     * @param c Null-terminated condition spelling such as `"eq"` or `"lt"`;
+     *        may be `nullptr` to represent an unavailable condition.
+     * @return Condition operand that stores @p c without copying it.
+     * @warning A non-null @p c must outlive every use of the returned operand.
+     */
     static MOperand condOp(const char *c) {
         MOperand o{};
         o.kind = Kind::Cond;
@@ -118,7 +156,12 @@ struct MOperand {
         return o;
     }
 
-    /// @brief Create a label operand (function name or block label).
+    /**
+     * @brief Creates an owning symbol or basic-block label operand.
+     *
+     * @param name Label text, moved into the returned operand.
+     * @return Label operand owning the supplied string.
+     */
     static MOperand labelOp(std::string name) {
         MOperand o{};
         o.kind = Kind::Label;
@@ -127,21 +170,26 @@ struct MOperand {
     }
 };
 
-/// @brief A single machine IR instruction.
-///
-/// Contains an opcode and a vector of operands. Operand interpretation
-/// depends on the opcode - typically destination register first, then
-/// source registers/immediates.
+/**
+ * @brief Represents one target-specific machine IR instruction.
+ *
+ * Operand arity and interpretation are determined by `opc`; defining
+ * operands conventionally precede uses. `loc` carries optional source
+ * provenance for diagnostics and debug information.
+ */
 struct MInstr {
     MOpcode opc{};                ///< The operation to perform.
     std::vector<MOperand> ops{};  ///< Instruction operands.
     il::support::SourceLoc loc{}; ///< Source location (for debug info).
 };
 
-/// @brief A basic block containing machine IR instructions.
-///
-/// Basic blocks are named units of sequential code with a single entry
-/// and (typically) ending in a branch or return instruction.
+/**
+ * @brief Owns the ordered MIR instructions for a single-entry basic block.
+ *
+ * The block's name is the branch target emitted for it. Register allocation
+ * may additionally annotate physical registers whose values flow directly
+ * into a single-predecessor successor.
+ */
 struct MBasicBlock {
     std::string name;           ///< Block label (used for branches).
     std::vector<MInstr> instrs; ///< Instructions in program order.
@@ -155,10 +203,13 @@ struct MBasicBlock {
     std::vector<uint16_t> carriedExitRegs;
 };
 
-/// @brief A function in machine IR form.
-///
-/// Contains all basic blocks, callee-saved register information, and
-/// stack frame layout computed during lowering and register allocation.
+/**
+ * @brief Owns an AArch64 MIR function and its finalized frame metadata.
+ *
+ * Blocks remain in layout order. Lowering populates stack objects, while
+ * register allocation records preserved physical registers and may update
+ * leaf status.
+ */
 struct MFunction {
     std::string name;                ///< Function symbol name.
     std::vector<MBasicBlock> blocks; ///< Basic blocks in layout order.
@@ -178,7 +229,7 @@ struct MFunction {
     /// Total size of the local stack frame in bytes (16-byte aligned).
     int localFrameSize{0};
 
-    /// @brief Describes a stack-allocated local variable.
+    /// @brief Describes one addressable IL local in the stack frame.
     struct StackLocal {
         unsigned tempId{0}; ///< IL temporary ID this slot is for.
         int size{0};        ///< Size in bytes.
@@ -186,7 +237,7 @@ struct MFunction {
         int offset{0};      ///< FP-relative offset (negative).
     };
 
-    /// @brief Describes a spill slot for a virtual register.
+    /// @brief Describes one allocator or lowering spill slot in the stack frame.
     struct SpillSlot {
         uint32_t vreg{0}; ///< Virtual register or spill-key identifier.
         int size{8};      ///< Size in bytes.
@@ -194,18 +245,25 @@ struct MFunction {
         int offset{0};    ///< FP-relative offset (negative).
     };
 
-    /// @brief Stack frame layout information.
+    /**
+     * @brief Owns local/spill placements and aggregate frame-size metadata.
+     *
+     * Valid local and spill offsets are negative relative to the frame pointer;
+     * zero is therefore available as a lookup sentinel.
+     */
     struct FrameLayout {
         std::vector<StackLocal> locals; ///< Local variable slots.
         std::vector<SpillSlot> spills;  ///< Spill slots for virtual registers.
         int totalBytes{0};              ///< Total frame size (aligned to 16 bytes).
         int maxOutgoingBytes{0};        ///< Space reserved for outgoing call arguments.
 
-        /// @brief Look up the FP-relative offset for a local variable.
-        /// @param tempId The IL temporary identifier.
-        /// @return Negative FP-relative offset, or 0 if @p tempId is not a local.
-        /// @note 0 is safe as a sentinel because valid locals always have
-        ///       negative offsets (below the frame pointer).
+        /**
+         * @brief Looks up an IL local's frame-pointer-relative offset.
+         *
+         * @param tempId IL temporary identifier associated with the local.
+         * @return The first matching negative offset, or `0` when no local has
+         *         @p tempId.
+         */
         int getLocalOffset(unsigned tempId) const {
             for (const auto &L : locals)
                 if (L.tempId == tempId)
@@ -219,25 +277,62 @@ struct MFunction {
 // Pretty printing helpers (for debugging only)
 // -----------------------------------------------------------------------------
 
-/// @brief Map an opcode to its human-readable name.
+/**
+ * @brief Maps a MIR opcode to its generated enumerator spelling.
+ *
+ * @param opc Opcode to identify.
+ * @return Pointer to static storage containing the opcode name, or
+ *         `"<unknown>"` for a value outside the generated cases.
+ */
 [[nodiscard]] const char *opcodeName(MOpcode opc) noexcept;
 
-/// @brief Map a register class to a short suffix for debug output.
+/**
+ * @brief Maps a register class to its debug-output suffix.
+ *
+ * @param cls Register class to identify.
+ * @return `"gpr"`, `"fpr"`, or `"unknown"`; the returned pointer has static
+ *         storage duration.
+ */
 [[nodiscard]] const char *regClassSuffix(RegClass cls) noexcept;
 
-/// @brief Render a register operand to string form.
+/**
+ * @brief Renders a machine register in diagnostic MIR notation.
+ *
+ * @param reg Register to render.
+ * @return Owned text such as `%v12:gpr` or `@x0:gpr`.
+ */
 [[nodiscard]] std::string toString(const MReg &reg);
 
-/// @brief Render any operand to string form.
+/**
+ * @brief Renders an arbitrary MIR operand in diagnostic notation.
+ *
+ * @param op Operand to render according to its active kind.
+ * @return Owned register, immediate, condition, or label text.
+ */
 [[nodiscard]] std::string toString(const MOperand &op);
 
-/// @brief Render an instruction to string form.
+/**
+ * @brief Renders a MIR instruction without a trailing newline.
+ *
+ * @param instr Instruction whose operands are emitted in storage order.
+ * @return Opcode name followed by comma-separated operands.
+ */
 [[nodiscard]] std::string toString(const MInstr &instr);
 
-/// @brief Render a basic block to string form.
+/**
+ * @brief Renders a labeled MIR basic block.
+ *
+ * @param block Block to render.
+ * @return Label and indented instructions, with a newline after every line.
+ */
 [[nodiscard]] std::string toString(const MBasicBlock &block);
 
-/// @brief Render a function to string form.
+/**
+ * @brief Renders a complete MIR function for diagnostics.
+ *
+ * @param func Function whose blocks are rendered in layout order.
+ * @return Owned multi-line textual representation.
+ */
 [[nodiscard]] std::string toString(const MFunction &func);
 
 } // namespace zanna::codegen::aarch64

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/PeepholeCopyProp.hpp
+// File: src/codegen/common/PeepholeCopyProp.hpp
 // Purpose: Template-based copy propagation shared between AArch64 and x86-64
 //          peephole passes.
 //
@@ -29,6 +29,9 @@
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
+
+/// @file
+/// @brief Implements traits-based block-local physical copy propagation.
 
 namespace zanna::codegen::common {
 
@@ -96,7 +99,7 @@ std::size_t propagateCopies(std::vector<typename Traits::MInstr> &instrs) {
     std::unordered_map<RegKey, Operand> copyOrigin;
     std::size_t propagated = 0;
 
-    // Helper: invalidate all copies whose origin matches the given key.
+    /// Invalidate all tracked copies whose recorded origin matches @p originKey.
     auto invalidateDependents = [&copyOrigin](RegKey originKey) {
         std::vector<RegKey> toErase;
         for (const auto &[key, origin] : copyOrigin) {
@@ -107,8 +110,9 @@ std::size_t propagateCopies(std::vector<typename Traits::MInstr> &instrs) {
             copyOrigin.erase(key);
     };
 
-    // Helper: process a register-to-register move (GPR or FPR).
-    // Returns true if the instruction was handled as a move.
+    /// Process a well-formed register copy, collapse its origin chain, and
+    /// record the destination mapping.
+    /// @return `true` when @p instr has two physical-register operands.
     auto handleMove = [&](MInstr &instr) -> bool {
         auto &ops = Traits::getOps(instr);
         if (ops.size() != 2)

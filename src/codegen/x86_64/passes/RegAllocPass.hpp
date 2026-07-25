@@ -5,15 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/passes/RegAllocPass.hpp
-// Purpose: Declare the register allocation stage placeholder for the x86-64 pipeline.
+// File: src/codegen/x86_64/passes/RegAllocPass.hpp
+// Purpose: Declare the register allocation stage for the x86-64 pipeline.
 // Key invariants:
 //   - Register allocation requires legalisation to have succeeded first.
 // Ownership/Lifetime:
 //   - Stateless pass; marks Module::registersAllocated on success.
-// Links: codegen/x86_64/passes/RegAllocPass.cpp,
-//        codegen/x86_64/passes/PassManager.hpp,
-//        codegen/x86_64/RegAllocLinear.hpp
+// Links: src/codegen/x86_64/passes/RegAllocPass.cpp,
+//        src/codegen/x86_64/passes/PassManager.hpp,
+//        src/codegen/x86_64/RegAllocLinear.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,15 +21,22 @@
 
 #include "codegen/x86_64/passes/PassManager.hpp"
 
+/// @file
+/// @brief Declares module-wide x86-64 register allocation.
+
 namespace zanna::codegen::x64::passes {
 
-/// \brief Placeholder pass used to gate later emission on prior legalisation.
+/// @brief Allocates physical registers and finalizes frames for legalized MIR.
+/// @details Validates the target and parallel MIR/frame state, delegates the
+///          per-function pipeline to @ref allocateModuleMIR, and exposes a
+///          completion flag consumed by post-allocation and emission passes.
 class RegAllocPass final : public Pass {
   public:
     /// @brief Run the register allocation pass: assign physical registers to virtual registers.
-    /// @param module The codegen module containing MIR functions with virtual registers.
-    /// @param diags Diagnostic sink for reporting allocation errors (e.g., spill failures).
-    /// @return True if register allocation succeeded, false on error.
+    /// @param module Shared state containing legalized MIR, frames, and target.
+    /// @param diags Sink receiving ordering, consistency, and allocation failures.
+    /// @return @c true after every function is allocated and the completion
+    ///         flag is set; otherwise @c false.
     bool run(Module &module, Diagnostics &diags) override;
 };
 

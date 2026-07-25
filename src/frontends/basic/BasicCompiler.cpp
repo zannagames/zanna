@@ -14,7 +14,10 @@
 //                 lower) and abort early on fatal diagnostics.
 // Ownership/Lifetime: Diagnostic emitters and modules are owned by
 //                     BasicCompilerResult; all other helpers are stack scoped.
-// Links: docs/internals/codemap.md
+// Links: src/frontends/basic/BasicCompiler.hpp,
+//        src/frontends/basic/Parser.hpp,
+//        src/frontends/basic/SemanticAnalyzer.hpp,
+//        src/frontends/basic/Lowerer.hpp
 //
 //===----------------------------------------------------------------------===//
 //
@@ -44,6 +47,10 @@ namespace il::frontends::basic {
 
 namespace {
 /// @brief Print every token from the BASIC source to stderr.
+/// @details Lexes through the end-of-file token and emits source coordinates,
+///          token names, and non-empty lexemes between stable banner lines.
+/// @param source BASIC source bytes to lex.
+/// @param fileId File identifier embedded in token locations.
 void dumpTokenStream(std::string_view source, uint32_t fileId) {
     Lexer lexer(source, fileId);
     std::cerr << "=== BASIC Token Stream ===\n";
@@ -60,6 +67,10 @@ void dumpTokenStream(std::string_view source, uint32_t fileId) {
 }
 
 /// @brief Forward an IL verifier diagnostic through the BASIC diagnostic emitter.
+/// @details Uses B9001 when the verifier supplies no code and prefixes the
+///          verifier message with BASIC-lowering context.
+/// @param result Compilation result whose emitter receives the diagnostic.
+/// @param diag Verifier diagnostic to translate.
 void emitVerifierDiagnostic(BasicCompilerResult &result, const il::support::Diag &diag) {
     const std::string code = diag.code.empty() ? "B9001" : diag.code;
     result.emitter->emit(
@@ -67,6 +78,10 @@ void emitVerifierDiagnostic(BasicCompilerResult &result, const il::support::Diag
 }
 
 /// @brief Forward all IL verifier diagnostics through the BASIC diagnostic emitter.
+/// @details Verifies the current module with a 50-diagnostic limit and forwards
+///          every returned diagnostic, including non-error severities.
+/// @param result Compilation result containing the module and destination emitter.
+/// @return True when the verifier returned no error-severity diagnostic.
 bool reportVerifierDiagnostics(BasicCompilerResult &result) {
     bool hasError = false;
     for (const auto &diag : il::verify::Verifier::verifyAll(result.module, 50)) {
@@ -93,34 +108,13 @@ bool reportVerifierDiagnostics(BasicCompilerResult &result) {
     return emitter && emitter->errorCount() == 0;
 }
 
-/// @brief Compile BASIC source text into an IL module.
-///
-/// @details The pipeline performs the following steps:
-///          1. Initialise a @ref DiagnosticEmitter that owns the diagnostic list
-///             used by callers to inspect errors.
-///          2. Ensure the input has an associated file identifier so diagnostics
-///             can reference the correct source location.
-///          3. Parse the BASIC program, aborting early if syntax errors are
-///             detected.
-///          4. Run constant folding to simplify obvious literal expressions
-///             before semantic analysis.
-///          5. Perform semantic analysis, recording any type or symbol issues.
-///          6. When all checks succeed, lower the AST to IL using the Lowerer
-///             helper and store the resulting module in the returned structure.
-///
-///          After each phase the intermediate result is validated so the caller
-///          receives as much diagnostic information as possible without
-///          attempting to emit IR from invalid input.
-///
-/// @param input   Compilation inputs including source buffer metadata.
-/// @param options Pipeline configuration flags controlling lowering behaviour.
-/// @param sm      Source manager used to register synthetic or disk-backed files.
-/// @return Aggregated compilation result containing diagnostics and the module.
+/// @copydoc compileBasic()
 BasicCompilerResult compileBasic(const BasicCompilerInput &input,
                                  const BasicCompilerOptions &options,
                                  il::support::SourceManager &sm) {
     BasicCompilerResult result{};
     auto phaseStart = std::chrono::steady_clock::now();
+    /// Optionally report elapsed time since the preceding phase marker.
     auto printPhaseTime = [&](const char *phase) {
         if (!options.timeCompile)
             return;

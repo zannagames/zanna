@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/fastpaths/FastPaths_Arithmetic.cpp
+// File: src/codegen/aarch64/fastpaths/FastPaths_Arithmetic.cpp
 // Purpose: Fast-path pattern matching for arithmetic operations.
 //          Handles integer RR ops, integer RI ops, comparisons, division/modulo,
 //          negation, and two-op chains where operands are entry parameters or
@@ -16,32 +16,55 @@
 //   - Parameters must fit within the ABI register argument limit.
 // Ownership/Lifetime:
 //   - Stateless free functions; FastPathContext is borrowed for the call duration.
-// Links: codegen/aarch64/fastpaths/FastPathsInternal.hpp
+// Links: src/codegen/aarch64/fastpaths/FastPathsInternal.hpp,
+//        src/codegen/aarch64/A64ImmediateUtils.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "FastPathsInternal.hpp"
 #include "codegen/aarch64/A64ImmediateUtils.hpp"
 
+/**
+ * @file
+ * @brief Implements narrow AArch64 fast paths for arithmetic-and-return IL shapes.
+ *
+ * Matching is intentionally conservative: operands must resolve directly to
+ * entry ABI registers or accepted constants, and the computed value must feed
+ * the return. Checked sub-width arithmetic is rejected for generic lowering.
+ */
+
 namespace zanna::codegen::aarch64::fastpaths {
 
 using il::core::Opcode;
 
-/// @brief Return true if @p op is a checked-overflow arithmetic opcode (IAddOvf/ISubOvf/IMulOvf).
+/**
+ * @brief Tests whether an IL opcode requests checked integer overflow.
+ * @param op Opcode to classify.
+ * @return `true` for `IAddOvf`, `ISubOvf`, or `IMulOvf`.
+ */
 static bool isCheckedOverflowOp(Opcode op) {
     return op == Opcode::IAddOvf || op == Opcode::ISubOvf || op == Opcode::IMulOvf;
 }
 
-/// @brief Return true if @p instr is a checked-overflow op on a sub-64-bit type.
-/// @details Sub-width overflow ops (e.g. I32 IAddOvf) require extra sign/zero-extension
-///          sequences that the arithmetic fast-path does not handle; they are rejected here
-///          so the generic lowering path handles them correctly.
+/**
+ * @brief Tests whether checked arithmetic requires sub-64-bit overflow semantics.
+ * @param instr Candidate arithmetic instruction.
+ * @return `true` for a checked operation whose result type is not `I64`.
+ */
 static bool isSubWidthCheckedOverflow(const il::core::Instr &instr) {
     return isCheckedOverflowOp(instr.op) && instr.type.kind != il::core::Type::Kind::I64;
 }
 
-// Fast-path: `binop %p0, %p1 -> %r; ret %r` on two entry params (add/sub/mul/
-// bitwise/comparison). Returns the lowered MFunction on a match, else nullopt.
+/**
+ * @brief Attempts a binary register/register operation returned immediately.
+ *
+ * Accepted integer arithmetic, bitwise, and comparison operands must be entry
+ * parameters in the GPR argument bank. Inputs are normalized through `x0/x1`
+ * before the result is produced in `x0`.
+ *
+ * @param[in,out] ctx Fast-path state and output MIR.
+ * @return Completed MIR function on a match, otherwise `std::nullopt`.
+ */
 static std::optional<MFunction> tryRegRegRetFastPath(FastPathContext &ctx) {
     const auto &bb = ctx.fn.blocks.front();
     auto &bbMir = ctx.bbOut(0);
@@ -163,6 +186,13 @@ static std::optional<MFunction> tryRegRegRetFastPath(FastPathContext &ctx) {
     return std::nullopt;
 }
 
+/**
+ * @brief Attempts supported integer arithmetic, comparison, division, negation, and chain shapes.
+ *
+ * @param[in,out] ctx Fast-path state and output MIR.
+ * @return Completed MIR function on the first matching shape, otherwise
+ *         `std::nullopt`.
+ */
 std::optional<MFunction> tryIntArithmeticFastPaths(FastPathContext &ctx) {
     if (ctx.fn.blocks.empty())
         return std::nullopt;
@@ -197,6 +227,11 @@ std::optional<MFunction> tryIntArithmeticFastPaths(FastPathContext &ctx) {
             if (retV.kind == il::core::Value::Kind::Temp && retV.id == *binI.result) {
                 const auto &o0 = binI.operands[0];
                 const auto &o1 = binI.operands[1];
+                /**
+                 * @brief Emits the selected parameter/immediate arithmetic and return sequence.
+                 * @param paramIndex Integer argument-bank index.
+                 * @param imm Signed immediate operand.
+                 */
                 auto emitImm = [&](unsigned paramIndex, long long imm) {
                     const PhysReg src = ctx.argOrder[paramIndex];
                     bbMir.instrs.push_back(MInstr{
@@ -212,6 +247,7 @@ std::optional<MFunction> tryIntArithmeticFastPaths(FastPathContext &ctx) {
                             (isAddOvf || isSubOvf) ? MOpcode::SubOvfRI : MOpcode::SubRI,
                             (isAddOvf || isSubOvf) ? MOpcode::AddOvfRRR : MOpcode::AddRRR,
                             (isAddOvf || isSubOvf) ? MOpcode::SubOvfRRR : MOpcode::SubRRR,
+                            /// @brief Materializes a non-encodable arithmetic immediate in `x16`.
                             [&](long long materializedImm) {
                                 const MOperand scratch = MOperand::regOp(PhysReg::X16);
                                 bbMir.instrs.push_back(MInstr{
@@ -265,6 +301,11 @@ std::optional<MFunction> tryIntArithmeticFastPaths(FastPathContext &ctx) {
             if (retV.kind == il::core::Value::Kind::Temp && retV.id == *binI.result) {
                 const auto &o0 = binI.operands[0];
                 const auto &o1 = binI.operands[1];
+                /**
+                 * @brief Emits an immediate comparison whose boolean result is returned.
+                 * @param paramIndex Integer argument-bank index.
+                 * @param imm Comparison immediate.
+                 */
                 auto emitCmpImm = [&](unsigned paramIndex, long long imm) {
                     const PhysReg src = ctx.argOrder[paramIndex];
                     if (src != PhysReg::X0)
@@ -403,6 +444,11 @@ std::optional<MFunction> tryIntArithmeticFastPaths(FastPathContext &ctx) {
                         static_cast<std::size_t>(p1) < kMaxGPRArgs &&
                         static_cast<std::size_t>(p2) < kMaxGPRArgs) {
                         // Only handle simple ops for the chain
+                        /**
+                         * @brief Maps an unchecked chain operation to register/register MIR.
+                         * @param op IL opcode to map.
+                         * @return MIR opcode, or `std::nullopt` when unsupported.
+                         */
                         auto mapOp = [](Opcode op) -> std::optional<MOpcode> {
                             switch (op) {
                                 case Opcode::Add:
@@ -461,6 +507,15 @@ std::optional<MFunction> tryIntArithmeticFastPaths(FastPathContext &ctx) {
 // Pattern: fop %p0, %p1 -> %r; ret %r
 // Handles: fadd, fsub, fmul, fdiv
 
+/**
+ * @brief Attempts a binary FP operation on two entry parameters returned immediately.
+ *
+ * Inputs must fit the FP argument bank. They are normalized through `v0/v1`,
+ * and the result remains in the ABI FP return register `v0`.
+ *
+ * @param[in,out] ctx Fast-path state and output MIR.
+ * @return Completed MIR function on a match, otherwise `std::nullopt`.
+ */
 std::optional<MFunction> tryFPArithmeticFastPaths(FastPathContext &ctx) {
     if (ctx.fn.blocks.empty())
         return std::nullopt;

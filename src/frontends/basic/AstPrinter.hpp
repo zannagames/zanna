@@ -51,6 +51,15 @@
 // - Output is deterministic for reproducible test results
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file AstPrinter.hpp
+ * @brief Declares deterministic, human-readable serialization of BASIC ASTs.
+ *
+ * AstPrinter owns no AST state. A dump call builds temporary stream, indentation,
+ * style, and visitor objects, then returns the complete serialized program.
+ */
+
 #pragma once
 
 #include "frontends/basic/AST.hpp"
@@ -67,11 +76,16 @@ struct Context;
 ///
 /// AstPrinter walks the Program, Stmt, and Expr nodes to produce a
 /// human-readable dump using an internal Printer helper to manage
-/// indentation.
+/// indentation. Each dump call is independent and borrows the AST only for the
+/// duration of traversal.
 class AstPrinter {
   public:
+    /// Allow statement-formatting helpers to reuse private printer facilities.
     friend struct print_stmt::Context;
     /// @brief Produce a formatted dump of the given program.
+    /// @details Procedures are emitted first in stored order, followed by main
+    ///          statements. Each top-level statement is prefixed with its BASIC
+    ///          line number and terminated by Printer::line().
     /// @param prog Program AST to print.
     /// @return String containing the formatted dump.
     std::string dump(const Program &prog);
@@ -81,47 +95,60 @@ class AstPrinter {
     struct Printer {
         /// @brief Bind the printer to an output stream.
         /// @param out Stream that receives formatted AST lines.
+        /// @warning @p out must outlive this helper and every Indent guard.
         explicit Printer(std::ostream &out) : os(out) {}
 
-        /// Output stream where text is emitted.
+        /// Borrowed output stream where text is emitted.
         std::ostream &os;
 
-        /// Current indentation level.
+        /// Current two-space indentation depth.
         int indent = 0;
 
         /// @brief Write @p text followed by a newline, honoring indentation.
+        /// @details Emits two spaces for each current indentation level before
+        ///          writing the supplied bytes and a newline.
         /// @param text Line content to write.
         void line(std::string_view text);
 
         /// @brief RAII guard that decreases indentation on destruction.
+        /// @details Created only by Printer::push() after it increments the
+        ///          printer's indentation.
         struct Indent {
-            /// Printer whose indentation is managed.
+            /// Borrowed printer whose indentation is managed.
             Printer &p;
 
             /// @brief Restore previous indentation level when destroyed.
+            /// @post Decrements `p.indent` exactly once.
             ~Indent();
         };
 
         /// @brief Increase indentation for the next scope.
         /// @return Guard that restores previous indentation when destroyed.
+        /// @post indent is one greater until the returned guard is destroyed.
         Indent push();
     };
 
     /// @brief Holds formatting preferences for AST emission.
     struct PrintStyle {
         /// @brief Create a style bound to @p printer.
+        /// @details Stores a non-owning pointer used by every formatting method.
         explicit PrintStyle(Printer &printer);
 
         /// @brief Emit the opening delimiter for a statement body.
+        /// @details Writes a leading space followed by `{`.
         void openBody() const;
 
         /// @brief Emit the closing delimiter for a statement body.
+        /// @details Writes `})`, matching the enclosing statement/body format.
         void closeBody() const;
 
         /// @brief Ensure elements printed with @p first are separated.
+        /// @param first In/out flag that is cleared; a space is emitted only
+        ///              when the incoming value is false.
         void separate(bool &first) const;
 
         /// @brief Write a numbered label prefix for a statement.
+        /// @param line Numeric line value written before a colon.
         void writeLineNumber(int line) const;
 
         /// @brief Emit the placeholder used for null optional nodes.
@@ -140,6 +167,7 @@ class AstPrinter {
         void writeNoNewlineTag() const;
 
       private:
+        ///< Borrowed destination; valid for the style's entire lifetime.
         Printer *printer;
     };
 
@@ -150,9 +178,15 @@ class AstPrinter {
     struct StmtPrinter;
 
     /// @brief Helper invoked by visitors to serialize expressions.
+    /// @param expr Expression dispatched through ExprPrinter.
+    /// @param p Destination printer.
+    /// @param style Formatting state shared with the surrounding traversal.
     static void printExpr(const Expr &expr, Printer &p, PrintStyle &style);
 
     /// @brief Helper invoked by the dispatcher to serialize statements.
+    /// @param stmt Statement dispatched through StmtPrinter.
+    /// @param p Destination printer.
+    /// @param style Formatting state shared with nested helpers.
     static void printStmt(const Stmt &stmt, Printer &p, PrintStyle &style);
 
     /// @brief Dump a statement node to the printer.

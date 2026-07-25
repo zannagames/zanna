@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/TargetAArch64.hpp
+// File: src/codegen/aarch64/TargetAArch64.hpp
 // Purpose: Define physical registers, register classes, and target metadata for AArch64.
 // Key invariants:
 //   - Register enums map 1:1 to hardware registers (no offset encoding).
@@ -14,8 +14,8 @@
 // Ownership/Lifetime:
 //   - No heap ownership; darwinTarget()/linuxTarget()/windowsTarget() return
 //     references to static singletons that live for the duration of the program.
-// Links: codegen/aarch64/TargetAArch64.cpp,
-//        codegen/common/TargetInfoBase.hpp
+// Links: src/codegen/aarch64/TargetAArch64.cpp,
+//        src/codegen/common/TargetInfoBase.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,6 +30,16 @@
 #ifdef _MSC_VER
 #include <intrin.h>
 #endif
+
+/**
+ * @file
+ * @brief Defines AArch64 registers, ABI metadata, calling-convention queries, and immediate tests.
+ *
+ * Target singletons describe the three assembly/object formats supported by
+ * the backend while sharing the register convention modeled by Zanna. The
+ * header also exposes register classification/name helpers and constexpr
+ * predicates used before selecting immediate instruction forms.
+ */
 
 namespace zanna::codegen::aarch64 {
 
@@ -186,23 +196,6 @@ inline constexpr PhysReg kScratchFPR2 = PhysReg::V17;
 // Target Information
 // =============================================================================
 
-/// @brief Describes the target platform's ABI and register conventions.
-///
-/// TargetInfo encapsulates all platform-specific details needed for code generation:
-/// - Which registers are caller-saved vs. callee-saved
-/// - The order of registers used for argument passing
-/// - The registers used for return values
-/// - Stack alignment requirements
-///
-/// ## Usage
-///
-/// Use darwinTarget() to get the singleton instance for macOS/Darwin. The TargetInfo
-/// is typically accessed through CallingConvention for a cleaner API.
-///
-/// @see CallingConvention for a higher-level interface to calling convention rules
-/// @see darwinTarget() for the macOS/Darwin target instance
-/// @see linuxTarget()  for the Linux ELF target instance
-
 /// @brief Identifies the target OS ABI for assembly emission.
 /// Controls symbol mangling (underscore prefix) and format-specific directives.
 ///
@@ -216,41 +209,63 @@ enum class ABIFormat {
     Windows, ///< Windows ARM64; no symbol prefix, PE/COFF format (no .type/.size).
 };
 
+/**
+ * @brief Describes AArch64 register conventions and format-specific codegen features.
+ *
+ * The inherited base stores caller/callee-saved sets, argument order, return
+ * registers, and stack alignment. This derived type selects object-format
+ * syntax, hardening instructions, and the variadic-tail rule.
+ *
+ * @invariant Register lists and return registers belong to the appropriate
+ *            GPR/FPR class.
+ * @invariant Published singleton instances are immutable after initialization.
+ */
 struct TargetInfo : zanna::codegen::common::TargetInfoBase<PhysReg, kMaxGPRArgs, kMaxFPRArgs> {
-    ABIFormat abiFormat = ABIFormat::Darwin;
-    bool emitBranchTargetIdentification{true};
-    bool emitReturnAddressSigning{true};
+    ABIFormat abiFormat = ABIFormat::Darwin;       ///< Assembly/object ABI format.
+    bool emitBranchTargetIdentification{true};    ///< Emit `bti c` at eligible entries.
+    bool emitReturnAddressSigning{true};          ///< Emit PAC/AUT return-address protection.
     /// True when anonymous variadic arguments are passed on the stack instead of
     /// continuing through the normal AAPCS64 register banks. This is the Darwin
     /// AArch64 C ABI rule; Linux and Windows keep using their regular argument
     /// locations for variadic calls.
     bool variadicTailOnStack{true};
 
-    /// @brief Returns true when emitting Linux ELF assembly.
+    /**
+     * @brief Tests whether this target uses Linux ELF syntax.
+     * @return `true` exactly when `abiFormat` is `ABIFormat::Linux`.
+     */
     [[nodiscard]] bool isLinux() const noexcept {
         return abiFormat == ABIFormat::Linux;
     }
 
-    /// @brief Returns true when emitting Windows ARM64 PE/COFF assembly.
+    /**
+     * @brief Tests whether this target uses Windows ARM64 PE/COFF syntax.
+     * @return `true` exactly when `abiFormat` is `ABIFormat::Windows`.
+     */
     [[nodiscard]] bool isWindows() const noexcept {
         return abiFormat == ABIFormat::Windows;
     }
 
-    /// @brief Returns true when anonymous variadic arguments are passed on the
-    ///        stack rather than continuing through the AAPCS64 register banks
-    ///        (the Darwin AArch64 C ABI rule; false on Linux/Windows).
+    /**
+     * @brief Reports whether anonymous variadic arguments begin on the stack.
+     * @return The target's `variadicTailOnStack` policy.
+     */
     [[nodiscard]] bool usesStackVariadicTail() const noexcept {
         return variadicTailOnStack;
     }
 
-    /// @brief Returns true when BTI (Branch Target Identification) instructions
-    ///        should be emitted at function entry for pointer-authentication hardening.
+    /**
+     * @brief Reports whether branch-target identification is enabled.
+     * @return The target's `emitBranchTargetIdentification` flag.
+     */
     [[nodiscard]] bool hasBranchTargetIdentification() const noexcept {
         return emitBranchTargetIdentification;
     }
 
-    /// @brief Returns true when PAC (Pointer Authentication Code) return-address
-    ///        signing should be emitted in prologues and epilogues.
+    /**
+     * @brief Reports whether return-address signing is enabled.
+     * @return The target's `emitReturnAddressSigning` flag.
+     */
     [[nodiscard]] bool hasReturnAddressSigning() const noexcept {
         return emitReturnAddressSigning;
     }
@@ -260,54 +275,78 @@ struct TargetInfo : zanna::codegen::common::TargetInfoBase<PhysReg, kMaxGPRArgs,
 // Calling Convention Abstraction
 // =============================================================================
 
-/// @brief Provides a clean interface to the AAPCS64 calling convention.
-///
-/// This class encapsulates the rules for passing arguments and returning values
-/// according to the ARM Architecture Procedure Call Standard for 64-bit (AAPCS64).
-///
-/// @invariant The TargetInfo reference must remain valid for the lifetime of this object.
+/**
+ * @brief Provides read-only queries over a target's modeled AArch64 calling convention.
+ *
+ * The object retains a non-owning reference and translates argument-bank
+ * indices into registers or stack placement.
+ *
+ * @invariant The referenced `TargetInfo` outlives this object.
+ */
 class CallingConvention {
   public:
+    /**
+     * @brief Binds calling-convention queries to target metadata.
+     * @param ti Target description retained by reference.
+     */
     explicit CallingConvention(const TargetInfo &ti) noexcept : ti_(ti) {}
 
     // =========================================================================
     // Argument Passing
     // =========================================================================
 
-    /// @brief Get the register for an integer argument at the given index.
-    /// @param index Zero-based argument index.
-    /// @return The physical register, or std::nullopt if passed on stack.
+    /**
+     * @brief Gets the register assigned to an integer-bank argument.
+     * @param index Zero-based index within the integer argument bank.
+     * @return Physical register, or `std::nullopt` when the argument is stack-passed.
+     */
     [[nodiscard]] std::optional<PhysReg> getIntArgReg(std::size_t index) const noexcept {
         if (index < ti_.intArgOrder.size())
             return ti_.intArgOrder[index];
         return std::nullopt;
     }
 
-    /// @brief Get the register for a floating-point argument at the given index.
-    /// @param index Zero-based argument index.
-    /// @return The physical register, or std::nullopt if passed on stack.
+    /**
+     * @brief Gets the register assigned to a floating-point-bank argument.
+     * @param index Zero-based index within the FP argument bank.
+     * @return Physical register, or `std::nullopt` when the argument is stack-passed.
+     */
     [[nodiscard]] std::optional<PhysReg> getFPArgReg(std::size_t index) const noexcept {
         if (index < ti_.f64ArgOrder.size())
             return ti_.f64ArgOrder[index];
         return std::nullopt;
     }
 
-    /// @brief Check if an integer argument at the given index is passed in a register.
+    /**
+     * @brief Tests whether an integer-bank argument has a register location.
+     * @param index Zero-based integer-bank argument index.
+     * @return `true` when @p index is present in `intArgOrder`.
+     */
     [[nodiscard]] bool isIntArgInReg(std::size_t index) const noexcept {
         return index < ti_.intArgOrder.size();
     }
 
-    /// @brief Check if a floating-point argument at the given index is passed in a register.
+    /**
+     * @brief Tests whether an FP-bank argument has a register location.
+     * @param index Zero-based FP-bank argument index.
+     * @return `true` when @p index is present in `f64ArgOrder`.
+     */
     [[nodiscard]] bool isFPArgInReg(std::size_t index) const noexcept {
         return index < ti_.f64ArgOrder.size();
     }
 
-    /// @brief Get the maximum number of integer arguments passed in registers.
+    /**
+     * @brief Returns the configured integer argument-register capacity.
+     * @return Number of entries in `intArgOrder`.
+     */
     [[nodiscard]] std::size_t maxIntArgsInRegs() const noexcept {
         return ti_.intArgOrder.size();
     }
 
-    /// @brief Get the maximum number of FP arguments passed in registers.
+    /**
+     * @brief Returns the configured FP argument-register capacity.
+     * @return Number of entries in `f64ArgOrder`.
+     */
     [[nodiscard]] std::size_t maxFPArgsInRegs() const noexcept {
         return ti_.f64ArgOrder.size();
     }
@@ -316,12 +355,18 @@ class CallingConvention {
     // Return Values
     // =========================================================================
 
-    /// @brief Get the register used for returning integer values.
+    /**
+     * @brief Returns the integer/pointer result register.
+     * @return Target's configured `intReturnReg`.
+     */
     [[nodiscard]] PhysReg getIntReturnReg() const noexcept {
         return ti_.intReturnReg;
     }
 
-    /// @brief Get the register used for returning floating-point values.
+    /**
+     * @brief Returns the scalar floating-point result register.
+     * @return Target's configured `f64ReturnReg`.
+     */
     [[nodiscard]] PhysReg getFPReturnReg() const noexcept {
         return ti_.f64ReturnReg;
     }
@@ -330,12 +375,18 @@ class CallingConvention {
     // Stack Layout
     // =========================================================================
 
-    /// @brief Get the required stack alignment in bytes.
+    /**
+     * @brief Returns the target's required stack alignment.
+     * @return Alignment in bytes.
+     */
     [[nodiscard]] unsigned getStackAlignment() const noexcept {
         return ti_.stackAlignment;
     }
 
-    /// @brief Get the size of a stack slot in bytes.
+    /**
+     * @brief Returns the backend's fixed scalar stack-slot size.
+     * @return `kSlotSizeBytes`.
+     */
     [[nodiscard]] static constexpr int getSlotSize() noexcept {
         return kSlotSizeBytes;
     }
@@ -344,84 +395,104 @@ class CallingConvention {
     const TargetInfo &ti_;
 };
 
-/// @brief Returns the singleton TargetInfo for macOS/Darwin on AArch64.
-///
-/// Provides the platform-specific register conventions and ABI details for
-/// macOS running on Apple Silicon. The returned reference is to a static
-/// object that persists for the lifetime of the program.
-///
-/// @return Reference to the Darwin target information singleton.
+/**
+ * @brief Returns the immutable Darwin AArch64 target singleton.
+ * @return Reference with static storage duration.
+ */
 [[nodiscard]] const TargetInfo &darwinTarget() noexcept;
 
-/// @brief Return the singleton TargetInfo for Linux AArch64 (ELF / AAPCS64).
-/// Same register convention as Darwin; differs only in assembly syntax
-/// (no underscore prefix, emits .type/.size ELF directives).
+/**
+ * @brief Returns the immutable Linux AArch64 ELF target singleton.
+ * @return Reference with static storage duration.
+ */
 [[nodiscard]] const TargetInfo &linuxTarget() noexcept;
 
-/// @brief Return the singleton TargetInfo for Windows ARM64 (PE/COFF / AAPCS64).
-/// Identical register convention to Linux; differs in assembly syntax:
-/// no underscore prefix, no ELF .type/.size directives (PE/COFF format).
+/**
+ * @brief Returns the immutable Windows ARM64 PE/COFF target singleton.
+ * @return Reference with static storage duration.
+ */
 [[nodiscard]] const TargetInfo &windowsTarget() noexcept;
 
-/// @brief Tests whether a physical register is a general-purpose register.
-/// @param reg The register to test.
-/// @return True if reg is X0-X30 or SP, false if it's a FPR.
+/**
+ * @brief Tests whether an enumerator belongs to the GPR register bank.
+ * @param reg Physical-register value to classify.
+ * @return `true` for `X0` through `X30` and `SP`; otherwise `false`.
+ */
 [[nodiscard]] bool isGPR(PhysReg reg) noexcept;
 
-/// @brief Tests whether a physical register is a floating-point register.
-/// @param reg The register to test.
-/// @return True if reg is V0-V31, false if it's a GPR.
+/**
+ * @brief Tests whether an enumerator belongs to the FP/SIMD register bank.
+ * @param reg Physical-register value to classify.
+ * @return `true` for `V0` through `V31`; otherwise `false`.
+ */
 [[nodiscard]] bool isFPR(PhysReg reg) noexcept;
 
-/// @brief Returns the assembly syntax name for a physical register.
-///
-/// Returns strings like "x0", "x29", "sp", "d0", etc. for use in
-/// assembly output. For FPRs, returns the D-register name since Zanna
-/// uses 64-bit scalar floating-point.
-///
-/// @param reg The register to name.
-/// @return The register's assembly name (static storage, do not free).
+/**
+ * @brief Returns the lowercase assembly spelling of a physical register.
+ *
+ * GPRs use `xN`/`sp`; FP/SIMD registers use `vN`. Operand-size-specific
+ * emitters may derive `dN` where scalar binary64 syntax requires it.
+ *
+ * @param reg Physical-register value to name.
+ * @return Pointer to static spelling, or `"unknown"` for an invalid value.
+ */
 [[nodiscard]] const char *regName(PhysReg reg) noexcept;
 
 // =============================================================================
 // Immediate Value Validation
 // =============================================================================
 
-/// @brief Check if an immediate fits in an unsigned 12-bit field (0-4095).
-///
-/// Used for add/sub immediate instructions without shift.
+/**
+ * @brief Tests an unshifted unsigned 12-bit immediate.
+ * @param imm Candidate integer value.
+ * @return `true` for the inclusive range `[0, 4095]`.
+ */
 [[nodiscard]] constexpr bool isUImm12(long long imm) noexcept {
     return imm >= 0 && imm <= 4095;
 }
 
-/// @brief Check if an immediate fits in a signed 9-bit field (-256 to 255).
-///
-/// Used for unscaled load/store addressing modes.
+/**
+ * @brief Tests a signed 9-bit unscaled load/store offset.
+ * @param imm Candidate byte offset.
+ * @return `true` for the inclusive range `[-256, 255]`.
+ */
 [[nodiscard]] constexpr bool isSImm9(long long imm) noexcept {
     return imm >= -256 && imm <= 255;
 }
 
-/// @brief Check if an immediate fits in an unsigned 12-bit scaled field.
-///
-/// For 64-bit loads/stores, immediate must be a multiple of 8 in range [0, 32760].
-/// @param imm The immediate offset.
-/// @param scale Scale factor (8 for 64-bit, 4 for 32-bit, etc.).
+/**
+ * @brief Tests an unsigned 12-bit scaled load/store byte offset.
+ *
+ * @param imm Candidate non-negative byte offset.
+ * @param scale Positive access-size scale in bytes.
+ * @return `true` when @p imm is divisible by @p scale and the quotient is at
+ *         most 4095.
+ * @pre `scale > 0`.
+ */
 [[nodiscard]] constexpr bool isScaledUImm12(long long imm, int scale) noexcept {
     if (imm < 0 || imm % scale != 0)
         return false;
     return (imm / scale) <= 4095;
 }
 
-/// @brief Check if an immediate is valid for shift instructions (0-63 for 64-bit).
+/**
+ * @brief Tests a 64-bit scalar shift amount.
+ * @param imm Candidate shift count.
+ * @return `true` for the inclusive range `[0, 63]`.
+ */
 [[nodiscard]] constexpr bool isValidShiftAmount(long long imm) noexcept {
     return imm >= 0 && imm <= 63;
 }
 
-/// @brief Check if an immediate can be represented as a mov immediate.
-///
-/// AArch64 mov immediate can encode values where at most one 16-bit chunk
-/// is non-zero, or the value can be represented as an inverted bitmask.
-/// For simplicity, this checks if the value fits in 16 bits or can use movz/movn.
+/**
+ * @brief Tests the simple, unshifted single-instruction move cases used by this backend.
+ *
+ * @param imm Candidate signed value.
+ * @return `true` for `[0, 65535]` (`MOVZ`) or `[-65536, -1]` (`MOVN`);
+ *         otherwise `false`.
+ * @note This conservative predicate does not recognize shifted 16-bit chunks
+ *       or logical-immediate aliases.
+ */
 [[nodiscard]] constexpr bool isSimpleMovImm(long long imm) noexcept {
     // Positive values that fit in an unsigned 16-bit immediate (MOVZ Xd, #imm16).
     if (imm >= 0 && imm <= 0xFFFF)
@@ -432,28 +503,25 @@ class CallingConvention {
     return false;
 }
 
-/// @brief Check if an immediate requires a multi-instruction sequence.
-///
-/// Returns true if the immediate cannot be encoded in a single mov instruction.
+/**
+ * @brief Tests whether the backend's simple move path rejects an immediate.
+ * @param imm Candidate signed value.
+ * @return Logical negation of `isSimpleMovImm(imm)`.
+ */
 [[nodiscard]] constexpr bool needsWideImmSequence(long long imm) noexcept {
     return !isSimpleMovImm(imm);
 }
 
-/// @brief Check if a 64-bit immediate is encodable as an AArch64 logical immediate.
-///
-/// AArch64 logical immediates (AND/ORR/EOR) encode values that consist of a
-/// replicated bit-pattern across a 64-bit word.  A valid pattern is a run of
-/// 1-bits (possibly rotated) repeated to fill an element of size 2, 4, 8, 16,
-/// 32, or 64 bits.  Values of 0 and ~0 are excluded (not representable).
-///
-/// Algorithm (see ARM DDI 0487 §C5.1.3 DecodeBitMasks):
-///   1. For each element size (64, 32, 16, 8, 4, 2 bits) check whether the
-///      value is a consistent replication of an element-sized chunk.
-///   2. Within the element, check that the set bits form a contiguous run
-///      (possibly rotated — i.e. the bits wrap from MSB to LSB).
-///
-/// @param imm The immediate value to test (interpreted as unsigned 64-bit).
-/// @return true if @p imm can be used directly as a logical immediate operand.
+/**
+ * @brief Tests whether a 64-bit value is encodable as an AArch64 logical immediate.
+ *
+ * Each legal element width is tried. The value must replicate one element and
+ * that element's circular bit sequence must contain exactly one run of ones.
+ * Architectural all-zero and all-one exclusions are enforced.
+ *
+ * @param imm Unsigned 64-bit value to test.
+ * @return `true` when @p imm can be used directly by `AND`/`ORR`/`EOR`.
+ */
 [[nodiscard]] inline bool isLogicalImmediate(uint64_t imm) noexcept {
     // 0 and ~0 are never valid logical immediates.
     if (imm == 0 || imm == ~uint64_t(0))

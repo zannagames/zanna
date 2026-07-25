@@ -5,13 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/SemanticAnalyzer_Internal.hpp
+// File: src/frontends/basic/SemanticAnalyzer_Internal.hpp
 // Purpose: Declares shared helper utilities for SemanticAnalyzer implementation
-// Key invariants: Helpers remain internal to the BASIC front end and avoid
+// Key invariants: Helpers remain internal to the BASIC front end.
 // Ownership/Lifetime: Stateless free functions used by SemanticAnalyzer
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file SemanticAnalyzer_Internal.hpp
+/// @brief Declares shared semantic-expression helpers and rule metadata.
+/// @details This internal aggregation header connects the main analyzer to
+///          split statement/checking modules and declares the free functions
+///          used across those implementations. It is not a stable frontend API.
 
 #pragma once
 
@@ -30,88 +36,76 @@
 #include "frontends/basic/SemanticAnalyzer_Stmts_Shared.hpp"
 
 namespace il::frontends::basic::sem {
+/// @brief Restricted analyzer facade used by expression-check helpers.
 class ExprCheckContext;
 
-/// @brief Analyzes a unary expression and determines its result type.
-///
-/// Handles unary operators such as negation (-), logical NOT, and any other
-/// prefix operators defined in BASIC. Validates that the operand type is
-/// compatible with the operator and emits diagnostics for type mismatches.
-///
-/// @param analyzer The semantic analyzer instance containing symbol tables and diagnostics.
-/// @param expr The unary expression AST node to analyze.
-/// @return The computed result type of the unary expression, or Error on failure.
+/// @brief Validates a unary expression and computes its result category.
+/// @details Evaluates an optional operand. `NOT` accepts boolean or integer and
+///          preserves that category; unary plus/minus accept integer, float, or
+///          unknown recovery values. Invalid known operands emit diagnostics.
+/// @param analyzer Analyzer supplying evaluation and diagnostics.
+/// @param expr Unary expression borrowed without mutation.
+/// @return Operand-derived result type, or @ref SemanticAnalyzer::Type::Unknown
+///         after failure.
 SemanticAnalyzer::Type analyzeUnaryExpr(SemanticAnalyzer &analyzer, const UnaryExpr &expr);
 
-/// @brief Analyzes a binary expression and determines its result type.
-///
-/// Handles all binary operators including arithmetic (+, -, *, /, MOD, ^),
-/// comparison (<, >, <=, >=, =, <>), logical (AND, OR, XOR), and string
-/// concatenation (&). Uses the ExprRule table to validate operand types
-/// and compute the result type. Emits diagnostics for incompatible operands.
-///
-/// @param analyzer The semantic analyzer instance containing symbol tables and diagnostics.
-/// @param expr The binary expression AST node to analyze.
-/// @return The computed result type, or Error if operands are incompatible.
+/// @brief Applies table-driven validation and typing to a binary expression.
+/// @details Evaluates both optional operands, records integer-to-float
+///          promotions for mixed addition/subtraction/multiplication, records
+///          implicit string conversion for mixed string addition, invokes the
+///          operator's validator, and then invokes its result callback.
+/// @param analyzer Analyzer supplying evaluation, conversion metadata, and
+///                 diagnostics.
+/// @param expr Binary expression borrowed during checking.
+/// @return Rule-computed result, or @ref SemanticAnalyzer::Type::Unknown when
+///         no result callback exists.
 SemanticAnalyzer::Type analyzeBinaryExpr(SemanticAnalyzer &analyzer, const BinaryExpr &expr);
 
-/// @brief Analyzes a function or subroutine call expression.
-///
-/// Resolves the callee (function/subroutine name) in the symbol table, validates
-/// argument count and types against the declaration, and determines the return
-/// type. Handles both user-defined procedures and built-in functions. For
-/// subroutine calls used in expression context, emits an error since SUBs
-/// have no return value.
-///
-/// @param analyzer The semantic analyzer instance for symbol resolution.
-/// @param expr The call expression AST node containing callee and arguments.
-/// @return The return type of the called function, or Error on resolution failure.
+/// @brief Resolves and validates a function-call expression.
+/// @details An unshadowed active-instance array field is treated as indexed
+///          field access and its index types are checked. Otherwise the callee
+///          is resolved specifically as a FUNCTION, all arguments are checked,
+///          and the signature's result type is inferred.
+/// @param analyzer Analyzer supplying scopes, OOP fields, procedures, and
+///                 diagnostics.
+/// @param expr Call expression to inspect.
+/// @return Array element or function result type, or unknown after failure.
 SemanticAnalyzer::Type analyzeCallExpr(SemanticAnalyzer &analyzer, const CallExpr &expr);
 
-/// @brief Analyzes a variable reference expression.
-///
-/// Looks up the variable in the current scope chain (local variables, parameters,
-/// module-level variables). Validates that the variable has been declared and
-/// determines its type. May modify the expression to attach resolved symbol info.
-///
-/// @param analyzer The semantic analyzer for scope and symbol lookup.
-/// @param expr The variable expression (modified to store resolution result).
-/// @return The declared type of the variable, or Error if undefined.
+/// @brief Resolves and classifies a variable reference.
+/// @details Recognizes `NOTHING`, instance `BASE`, implicit-instance fields,
+///          enum names, tracked variables, and suffix defaults. Unknown names
+///          emit a diagnostic with a Levenshtein suggestion when a symbol lies
+///          within distance three.
+/// @param analyzer Analyzer supplying resolution state and diagnostics.
+/// @param expr Mutable variable whose name may be replaced by a scoped mapping.
+/// @return Tracked/default type, integer for enum names, or unknown for null and
+///         unresolved values.
 SemanticAnalyzer::Type analyzeVarExpr(SemanticAnalyzer &analyzer, VarExpr &expr);
 
-/// @brief Analyzes an array element access expression.
-///
-/// Validates that the base expression refers to an array, checks that the
-/// index expressions are numeric (integer or coercible), and verifies the
-/// correct number of dimensions. Returns the element type of the array.
-///
-/// @param analyzer The semantic analyzer for type checking.
-/// @param expr The array access expression (base + indices).
-/// @return The element type of the array, or Error on dimension/type mismatch.
+/// @brief Validates an array access and returns its element type.
+/// @details Resolves the symbol, visits indices even on unknown/not-array error
+///          paths, validates index types and dimension count, warns for constant
+///          out-of-range indices when extents are known, and copies known
+///          extents into the AST for lowering after scope rollback.
+/// @param analyzer Analyzer supplying array/type metadata and diagnostics.
+/// @param expr Mutable access receiving resolved name/extents/conversions.
+/// @return String or object for those array categories, integer by default, or
+///         unknown on early symbol/category failure.
 SemanticAnalyzer::Type analyzeArrayExpr(SemanticAnalyzer &analyzer, ArrayExpr &expr);
 
-/// @brief Analyzes an LBOUND expression that returns an array's lower bound.
-///
-/// LBOUND(array [, dimension]) returns the lower bound index of an array
-/// dimension. In BASIC, arrays typically have a lower bound of 0 or 1
-/// depending on OPTION BASE. Validates the array argument and optional
-/// dimension specifier.
-///
-/// @param analyzer The semantic analyzer for type checking.
-/// @param expr The LBOUND expression with array and optional dimension.
-/// @return Integer type (the bound is always an integer), or Error on failure.
+/// @brief Validates `LBOUND` and resolves its requested dimension.
+/// @param analyzer Analyzer supplying array metadata and diagnostics.
+/// @param expr Mutable query receiving a zero-based resolved dimension when
+///             compile-time resolution succeeds.
+/// @return Integer after a known-array/category check, otherwise unknown.
 SemanticAnalyzer::Type analyzeLBoundExpr(SemanticAnalyzer &analyzer, LBoundExpr &expr);
 
-/// @brief Analyzes a UBOUND expression that returns an array's upper bound.
-///
-/// UBOUND(array [, dimension]) returns the upper bound index of an array
-/// dimension. Combined with LBOUND, this allows iterating over array elements
-/// without hardcoding sizes. Validates the array argument and optional
-/// dimension specifier.
-///
-/// @param analyzer The semantic analyzer for type checking.
-/// @param expr The UBOUND expression with array and optional dimension.
-/// @return Integer type (the bound is always an integer), or Error on failure.
+/// @brief Validates `UBOUND` and resolves dimension/known upper bound.
+/// @param analyzer Analyzer supplying array metadata and diagnostics.
+/// @param expr Mutable query receiving a zero-based resolved dimension and,
+///             when extents are known, its resolved upper bound.
+/// @return Integer after a known-array/category check, otherwise unknown.
 SemanticAnalyzer::Type analyzeUBoundExpr(SemanticAnalyzer &analyzer, UBoundExpr &expr);
 
 } // namespace il::frontends::basic::sem
@@ -124,17 +118,27 @@ SemanticAnalyzer::Type analyzeUBoundExpr(SemanticAnalyzer &analyzer, UBoundExpr 
 /// SemanticAnalyzer class directly.
 namespace il::frontends::basic::semantic_analyzer_detail {
 
-/// @brief Recover a concrete object class name for an expression when possible.
+/// @brief Recovers a concrete object class name for an expression when possible.
 /// @details Handles variables with tracked runtime classes, constructor calls,
 ///          runtime functions, and method calls that surface typed runtime
 ///          returns. Returns std::nullopt when the expression is not known to
 ///          produce a concrete object class.
+/// @param analyzer Analyzer supplying active instance, imports, tracked object
+///                 types, and class indexes.
+/// @param expr Expression to inspect without mutation.
+/// @return Qualified class name, or @c std::nullopt when not inferable.
 std::optional<std::string> inferObjectClassQName(SemanticAnalyzer &analyzer, const Expr &expr);
 
-/// @brief Convert class field metadata to the semantic analyzer's scalar type.
+/// @brief Converts indexed field metadata to a semantic category.
+/// @param field Field metadata to classify.
+/// @return Object for class-typed fields, otherwise the corresponding scalar
+///         type or unknown.
 SemanticAnalyzer::Type semanticTypeFromOopField(const ClassInfo::FieldInfo &field);
 
-/// @brief Find an implicit instance field visible in the active class member.
+/// @brief Finds an implicit-instance field visible in the active member.
+/// @param analyzer Analyzer supplying the active class and OOP index.
+/// @param name Field spelling to search through the class hierarchy.
+/// @return Pointer to index-owned field metadata, or @c nullptr.
 const ClassInfo::FieldInfo *findActiveInstanceField(const SemanticAnalyzer &analyzer,
                                                     std::string_view name);
 
@@ -157,7 +161,7 @@ struct ExprRule {
     /// @param expr The binary expression being validated.
     /// @param lhs The type of the left operand.
     /// @param rhs The type of the right operand.
-    /// @param diagMsg Diagnostic message template for type mismatches.
+    /// @param diagMsg Diagnostic identifier forwarded to mismatch reporting.
     using OperandValidator = void (*)(sem::ExprCheckContext &,
                                       const BinaryExpr &,
                                       SemanticAnalyzer::Type,
@@ -174,9 +178,13 @@ struct ExprRule {
     /// @return The computed result type of the binary operation.
     using ResultTypeFn = SemanticAnalyzer::Type (*)(SemanticAnalyzer::Type, SemanticAnalyzer::Type);
 
+    /// @brief Binary operator represented by this entry.
     BinaryExpr::Op op{BinaryExpr::Op::Add}; ///< The binary operator this rule applies to.
+    /// @brief Optional operand validator invoked before result calculation.
     OperandValidator validator{nullptr};    ///< Function to validate operand type compatibility.
+    /// @brief Optional result-type callback.
     ResultTypeFn result{nullptr};           ///< Function to compute the result type.
+    /// @brief Diagnostic identifier supplied to @ref validator.
     std::string_view mismatchDiag; ///< Diagnostic message template for type errors.
 };
 
@@ -188,128 +196,78 @@ struct ExprRule {
 ///
 /// @param op The binary operator to look up.
 /// @return Reference to the ExprRule for this operator.
-/// @pre op must be a valid BinaryExpr::Op value.
+/// @pre @p op must have an ordinal within the static rule array; lookup uses
+///      bounds-checked access.
 const ExprRule &exprRule(BinaryExpr::Op op);
 
-/// @brief Formats a human-readable error message for logical operator type mismatches.
-///
-/// Creates a diagnostic message explaining why a logical operation (AND, OR, XOR)
-/// failed type checking, including the actual types of both operands.
-///
-/// @param op The logical operator that failed (AND, OR, or XOR).
-/// @param lhs The type of the left operand.
-/// @param rhs The type of the right operand.
-/// @return A formatted error message string.
+/// @brief Formats the boolean-only logical-operand mismatch text.
+/// @param op Operator rendered by @ref logicalOpName.
+/// @param lhs Actual left type.
+/// @param rhs Actual right type.
+/// @return Message naming the operator and both actual types.
 std::string formatLogicalOperandMessage(BinaryExpr::Op op,
                                         SemanticAnalyzer::Type lhs,
                                         SemanticAnalyzer::Type rhs);
 
-/// @brief Determines the common numeric type for binary arithmetic operations.
-///
-/// Implements numeric type promotion rules for BASIC. When two numeric values
-/// are combined in an arithmetic operation, they are promoted to a common type:
-/// - Integer op Integer -> Integer
-/// - Integer op Single -> Single
-/// - Integer op Double -> Double
-/// - Single op Double -> Double
-/// - etc.
-///
-/// @param lhs The type of the left operand.
-/// @param rhs The type of the right operand.
-/// @return The common type after numeric promotion, or Error if not numeric.
+/// @brief Delegates common numeric promotion to the shared numeric rules.
+/// @param lhs Left semantic type.
+/// @param rhs Right semantic type.
+/// @return Result of `nr::promoteNumeric(lhs, rhs)`.
 SemanticAnalyzer::Type commonNumericType(SemanticAnalyzer::Type lhs,
                                          SemanticAnalyzer::Type rhs) noexcept;
 
-/// @brief Computes the Levenshtein (edit) distance between two strings.
-///
-/// Used for "did you mean?" suggestions when a variable or function name
-/// is not found. The edit distance measures how many single-character edits
-/// (insertions, deletions, substitutions) are needed to transform one string
-/// into another.
-///
-/// @param a The first string.
-/// @param b The second string.
-/// @return The minimum number of edits to transform a into b.
+/// @brief Computes case-sensitive bytewise Levenshtein distance.
+/// @param a Source string.
+/// @param b Destination string.
+/// @return Minimum unit-cost insertions, deletions, and substitutions.
 size_t levenshtein(const std::string &a, const std::string &b);
 
-/// @brief Converts an AST type node to a semantic analyzer type enum.
-///
-/// Maps the Type representation used in the AST (which may include user-defined
-/// types) to the SemanticAnalyzer::Type enum used during type checking.
-///
-/// @param ty The AST type to convert.
-/// @return The corresponding semantic type.
+/// @brief Converts a compact AST scalar type to semantic type space.
+/// @param ty Integer, float, string, or boolean AST type.
+/// @return Corresponding semantic category; defensive fall-through is integer.
 SemanticAnalyzer::Type astToSemanticType(::il::frontends::basic::Type ty);
 
-/// @brief Returns the canonical name of a built-in function.
-///
-/// Maps a BuiltinCallExpr::Builtin enum value to its string representation
-/// as it would appear in BASIC source code (e.g., "LEN", "MID$", "VAL").
-///
-/// @param b The built-in function enum value.
-/// @return The function name as a C string.
+/// @brief Returns a builtin registry entry's name.
+/// @param b Builtin identifier.
+/// @return Non-owning null-terminated name pointer.
 const char *builtinName(BuiltinCallExpr::Builtin b);
 
-/// @brief Returns a human-readable name for a semantic type.
-///
-/// Used in diagnostic messages to describe types to the user.
-/// Returns strings like "Integer", "String", "Double", etc.
-///
-/// @param type The semantic type to name.
-/// @return The type name as a C string.
+/// @brief Returns uppercase diagnostic text for a semantic type.
+/// @param type Type category to render.
+/// @return Static null-terminated text, including array element categories.
 const char *semanticTypeName(SemanticAnalyzer::Type type);
 
-/// @brief Returns the BASIC keyword for a logical operator.
-///
-/// Maps BinaryExpr::Op values for logical operators to their BASIC keywords.
-///
-/// @param op The logical operator (AND, OR, XOR, NOT).
-/// @return The operator keyword as a C string (e.g., "AND", "OR").
+/// @brief Returns the BASIC keyword for eager/short-circuit AND or OR.
+/// @param op Binary operator to inspect.
+/// @return `"ANDALSO"`, `"ORELSE"`, `"AND"`, or `"OR"` for recognized
+///         operators; `"<logical>"` otherwise.
 const char *logicalOpName(BinaryExpr::Op op);
 
-/// @brief Extracts a textual representation of a condition expression.
-///
-/// Used in diagnostic messages to show the user what condition expression
-/// was being evaluated when an error occurred.
-///
-/// @param expr The expression to convert to text.
-/// @return A string representation of the expression.
+/// @brief Renders a simple condition operand for diagnostics.
+/// @param expr Variable or scalar literal to inspect.
+/// @return Source-like variable/literal text, or an empty string for other
+///         expression kinds.
 std::string conditionExprText(const Expr &expr);
 
-/// @brief Determines the BASIC type from a variable name suffix.
-///
-/// In BASIC, variable names can have type suffixes: $ for String, % for Integer,
-/// ! for Single, # for Double. This function extracts the type from such suffixes.
-///
-/// @param name The variable name potentially ending with a type suffix.
-/// @return The BasicType if a suffix is present, or nullopt if no suffix.
+/// @brief Decodes the subset of BASIC type suffixes used for return inference.
+/// @param name Name whose final byte is inspected.
+/// @return String for `$`, float for `#`, integer for `%`, or
+///         @c std::nullopt for every other suffix (including `!` and `&`).
 std::optional<BasicType> suffixBasicType(std::string_view name);
 
-/// @brief Converts a BasicType to a SemanticAnalyzer::Type.
-///
-/// Maps the BasicType enum (String, Integer, Single, Double, etc.) to the
-/// corresponding SemanticAnalyzer::Type used during type checking.
-///
-/// @param type The BasicType to convert.
-/// @return The corresponding semantic type, or nullopt if not mappable.
+/// @brief Converts supported BASIC scalar types to semantic categories.
+/// @param type BASIC type to translate.
+/// @return Integer, float, or string; @c std::nullopt for all other values.
 std::optional<SemanticAnalyzer::Type> semanticTypeFromBasic(BasicType type);
 
-/// @brief Returns the uppercase BASIC keyword for a type.
-///
-/// Returns strings like "INTEGER", "STRING", "DOUBLE" for use in
-/// diagnostic messages and AS clauses.
-///
-/// @param type The BasicType to name.
-/// @return The uppercase type name as a string.
+/// @brief Uppercases the canonical text for a BASIC type.
+/// @param type Type passed through @ref toString.
+/// @return Uppercase copy suitable for diagnostics.
 std::string uppercaseBasicTypeName(BasicType type);
 
-/// @brief Checks if a semantic type is numeric (can participate in arithmetic).
-///
-/// Returns true for Integer, Single, Double, and other numeric types.
-/// Returns false for String, Object, and error types.
-///
-/// @param type The type to check.
-/// @return True if the type is numeric, false otherwise.
+/// @brief Tests the broad numeric category used by shared diagnostics.
+/// @param type Type to classify.
+/// @return @c true for integer, float, or boolean; @c false otherwise.
 bool isNumericSemanticType(SemanticAnalyzer::Type type) noexcept;
 
 } // namespace il::frontends::basic::semantic_analyzer_detail

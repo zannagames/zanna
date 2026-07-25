@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/BranchTrampoline.hpp
+// File: src/codegen/common/linker/BranchTrampoline.hpp
 // Purpose: AArch64 branch trampoline insertion for the native linker.
 //          Detects out-of-range B/BL (Branch26) relocations after section
 //          merging and inserts ADRP+ADD+BR x16 trampolines at reachable
@@ -24,6 +24,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file BranchTrampoline.hpp
+ * @brief Declares AArch64 branch-island insertion for out-of-range `B` and
+ *        `BL` relocations.
+ */
+
 #pragma once
 
 #include "codegen/common/linker/LinkTypes.hpp"
@@ -34,15 +40,25 @@
 
 namespace zanna::codegen::linker {
 
-/// Insert branch trampolines for out-of-range AArch64 B/BL instructions.
-/// Runs between mergeSections() and applyRelocations() in the link pipeline.
-///
-/// @param objects    All object files (relocs may be rewritten).
-/// @param layout     Merged link layout (text section data extended, VAs re-assigned).
-/// @param arch       Target architecture (no-op if not AArch64).
-/// @param platform   Target platform (for base address / page size).
-/// @param err        Error output stream.
-/// @return true on success, false on unrecoverable error.
+/// @brief Inserts branch islands for out-of-range AArch64 `B`/`BL` instructions.
+/// @details Runs after section merging and before general relocation
+///          application. Reachable branches remain untouched. For each
+///          out-of-range target/addend pair, the pass inserts or reuses a
+///          reachable `ADRP`/`ADD`/`BR x16` trampoline, reassigns section
+///          addresses, patches the instruction, and retargets its relocation
+///          to a synthetic symbol so later relocation processing preserves it.
+/// @param objects Object files whose branch relocations and symbol tables may
+///                be rewritten.
+/// @param layout Merged layout whose executable section, chunks, addresses,
+///               and global symbol table may be updated.
+/// @param arch Target architecture; architectures other than AArch64 are a
+///             successful no-op.
+/// @param platform Target platform used when reassigning virtual addresses and
+///                 applying symbol-name fallback rules.
+/// @param err Stream that receives diagnostics for invalid input or an
+///            unrepresentable trampoline layout.
+/// @return `true` on success, including when no trampoline is needed;
+///         otherwise `false`.
 bool insertBranchTrampolines(std::vector<ObjFile> &objects,
                              LinkLayout &layout,
                              LinkArch arch,

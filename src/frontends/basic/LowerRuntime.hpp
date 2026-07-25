@@ -27,17 +27,16 @@
 // - Calls to runtime functions use correct calling conventions
 //
 // Runtime Function Categories:
-// - zanna_string_*: String manipulation (concat, compare, substring, etc.)
-// - zanna_io_*: I/O operations (print, input, file operations)
-// - zanna_array_*: Array operations (alloc, get, set, bounds check)
-// - zanna_math_*: Mathematical functions (sin, cos, tan, sqrt, etc.)
-// - zanna_convert_*: Type conversion (int to string, string to int, etc.)
+// - String manipulation (concat, compare, substring, etc.)
+// - Terminal and file-channel I/O
+// - Array allocation, access, resizing, and bounds handling
+// - Mathematical functions and type conversions
 //
 // Declaration Tracking:
 // To ensure each runtime function is declared exactly once:
-// - First use of a runtime function triggers declaration
-// - Subsequent uses reference the existing declaration
-// - Bitset tracks which runtime functions have been declared
+// - Scanning and emission record requested features and exact call spellings
+// - A final declaration pass resolves registry signatures and aliases
+// - Bitsets track feature requirements, while declaration names are deduplicated
 //
 // Integration:
 // - Used by: Lowering helpers (LowerExprBuiltin, LowerStmt_IO, etc.)
@@ -50,6 +49,17 @@
 // - Signature validation ensures ABI compatibility
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file LowerRuntime.hpp
+ * @brief Declares per-lowering-run runtime helper requirement tracking.
+ *
+ * RuntimeHelperTracker records feature bits, first-use order for descriptors
+ * that request it, and exact call-site spellings used for alias-aware extern
+ * selection. It owns bookkeeping only; the IR builder and runtime registry
+ * remain external.
+ */
+
 #pragma once
 
 #include "il/runtime/RuntimeSignatures.hpp"
@@ -64,48 +74,73 @@ class IRBuilder;
 namespace il::frontends::basic {
 
 /// @brief Tracks runtime helper usage across scanning and lowering.
-/// @invariant Helpers are declared at most once and maintain first-use order.
-/// @ownership Owned by Lowerer; stores transient state per lowering run.
+/// @details Owned by Lowerer and reset between programs. Ordered descriptors
+///          retain first-use order, while request bits and callee spellings are
+///          deduplicated.
 class RuntimeHelperTracker {
   public:
+    /// Runtime feature enumeration shared with the canonical descriptor registry.
     using RuntimeFeature = il::runtime::RuntimeFeature;
 
     /// @brief Reset helper tracking to an empty state.
+    /// @post No feature, ordered entry, tracked feature, or callee name remains.
     void reset();
 
     /// @brief Mark a runtime helper as required.
+    /// @param feature Feature whose request bit should be set.
+    /// @pre @p feature is below RuntimeFeature::Count.
     void requestHelper(RuntimeFeature feature);
 
     /// @brief Query whether a runtime helper has been requested.
+    /// @param feature Feature whose request bit should be inspected.
+    /// @return True exactly when @ref requestHelper has marked @p feature since
+    ///         the most recent reset.
     [[nodiscard]] bool isHelperNeeded(RuntimeFeature feature) const;
 
     /// @brief Record an ordered runtime helper requirement.
+    /// @details Marks the feature requested and records its first-use position
+    ///          only when the registry descriptor opts into ordered lowering.
+    /// @param feature Feature observed during lowering.
     void trackRuntime(RuntimeFeature feature);
 
     /// @brief Declare all helpers requested during the current lowering run.
+    /// @details Applies registry lowering modes, exact call-site alias choices,
+    ///          and ordered replay while deduplicating emitted symbol names.
+    /// @param b Builder receiving extern declarations.
+    /// @param boundsChecks Whether BoundsChecked registry entries are eligible.
     void declareRequiredRuntime(build::IRBuilder &b, bool boundsChecks) const;
 
   private:
+    /// Hashes RuntimeFeature by its underlying ordinal.
     struct RuntimeFeatureHash {
+        /// @param f Feature value to hash.
+        /// @return Ordinal converted to `std::size_t`.
         std::size_t operator()(RuntimeFeature f) const;
     };
 
+    /// Number of requestable runtime features, excluding the Count sentinel.
     static constexpr std::size_t kRuntimeFeatureCount =
         static_cast<std::size_t>(RuntimeFeature::Count);
 
+    /// Feature requirement bits.
     std::bitset<kRuntimeFeatureCount> requested_;
+    /// Ordered features retained in first-use order.
     std::vector<RuntimeFeature> ordered_;
+    /// Features already encountered by trackRuntime().
     std::unordered_set<RuntimeFeature, RuntimeFeatureHash> tracked_;
-    // Names of runtime callees referenced directly in IL (alias-aware).
+    /// Exact callee spellings emitted into IL.
     std::unordered_set<std::string> usedNames_;
 
   public:
     /// @brief Record a runtime callee name observed during lowering.
     /// @details When a call targets a known runtime helper, remember the exact
     ///          symbol spelling so extern declarations can match call sites.
+    ///          The name is copied and need not be registry-known.
+    /// @param name Exact callee spelling to record.
     void trackCalleeName(std::string_view name);
 
     /// @brief Enumerate callee names recorded so far.
+    /// @return Const reference valid until this tracker is modified or destroyed.
     const std::unordered_set<std::string> &usedNames() const {
         return usedNames_;
     }

@@ -16,6 +16,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file zanna_text_buffer.cpp
+ * @brief Implements the C ABI wrapper around the C++ piece-table text buffer.
+ *
+ * Exported entry points translate invalid handles and caught C++ exceptions
+ * into C-compatible false, zero, or null results. Returned strings use malloc
+ * and are paired with zanna_text_buffer_free_string().
+ */
+
 #include "zanna_text_buffer.h"
 
 #include "tui/text/text_buffer.hpp"
@@ -72,6 +81,7 @@ static char *duplicate_string_for_c(const std::string &value, size_t *out_len) {
     return copy;
 }
 
+/** @copydoc zanna_text_buffer_new */
 zanna_text_buffer_t *zanna_text_buffer_new(void) {
     try {
         return new zanna_text_buffer();
@@ -80,10 +90,12 @@ zanna_text_buffer_t *zanna_text_buffer_new(void) {
     }
 }
 
+/** @copydoc zanna_text_buffer_free */
 void zanna_text_buffer_free(zanna_text_buffer_t *buffer) {
     delete buffer;
 }
 
+/** @copydoc zanna_text_buffer_load_bytes */
 bool zanna_text_buffer_load_bytes(zanna_text_buffer_t *buffer, const char *bytes, size_t len) {
     if (!buffer || (!bytes && len != 0)) {
         return false;
@@ -100,6 +112,7 @@ bool zanna_text_buffer_load_bytes(zanna_text_buffer_t *buffer, const char *bytes
     }
 }
 
+/** @copydoc zanna_text_buffer_insert_bytes */
 bool zanna_text_buffer_insert_bytes(zanna_text_buffer_t *buffer,
                                     size_t pos,
                                     const char *bytes,
@@ -116,6 +129,7 @@ bool zanna_text_buffer_insert_bytes(zanna_text_buffer_t *buffer,
     }
 }
 
+/** @copydoc zanna_text_buffer_erase */
 bool zanna_text_buffer_erase(zanna_text_buffer_t *buffer, size_t pos, size_t len) {
     if (!buffer) {
         return false;
@@ -128,6 +142,7 @@ bool zanna_text_buffer_erase(zanna_text_buffer_t *buffer, size_t pos, size_t len
     }
 }
 
+/** @copydoc zanna_text_buffer_begin_transaction */
 void zanna_text_buffer_begin_transaction(zanna_text_buffer_t *buffer) {
     if (!buffer) {
         return;
@@ -138,6 +153,7 @@ void zanna_text_buffer_begin_transaction(zanna_text_buffer_t *buffer) {
     }
 }
 
+/** @copydoc zanna_text_buffer_end_transaction */
 void zanna_text_buffer_end_transaction(zanna_text_buffer_t *buffer) {
     if (!buffer) {
         return;
@@ -148,6 +164,7 @@ void zanna_text_buffer_end_transaction(zanna_text_buffer_t *buffer) {
     }
 }
 
+/** @copydoc zanna_text_buffer_undo */
 bool zanna_text_buffer_undo(zanna_text_buffer_t *buffer) {
     if (!buffer) {
         return false;
@@ -159,6 +176,7 @@ bool zanna_text_buffer_undo(zanna_text_buffer_t *buffer) {
     }
 }
 
+/** @copydoc zanna_text_buffer_redo */
 bool zanna_text_buffer_redo(zanna_text_buffer_t *buffer) {
     if (!buffer) {
         return false;
@@ -170,26 +188,32 @@ bool zanna_text_buffer_redo(zanna_text_buffer_t *buffer) {
     }
 }
 
+/** @copydoc zanna_text_buffer_size */
 size_t zanna_text_buffer_size(const zanna_text_buffer_t *buffer) {
     return buffer ? buffer->buffer.size() : 0;
 }
 
+/** @copydoc zanna_text_buffer_line_count */
 size_t zanna_text_buffer_line_count(const zanna_text_buffer_t *buffer) {
     return buffer ? buffer->buffer.lineCount() : 0;
 }
 
+/** @copydoc zanna_text_buffer_line_start */
 size_t zanna_text_buffer_line_start(const zanna_text_buffer_t *buffer, size_t line_no) {
     return buffer ? buffer->buffer.lineStart(line_no) : 0;
 }
 
+/** @copydoc zanna_text_buffer_line_end */
 size_t zanna_text_buffer_line_end(const zanna_text_buffer_t *buffer, size_t line_no) {
     return buffer ? buffer->buffer.lineEnd(line_no) : 0;
 }
 
+/** @copydoc zanna_text_buffer_line_length */
 size_t zanna_text_buffer_line_length(const zanna_text_buffer_t *buffer, size_t line_no) {
     return buffer ? buffer->buffer.lineLength(line_no) : 0;
 }
 
+/** @copydoc zanna_text_buffer_text_dup */
 char *zanna_text_buffer_text_dup(const zanna_text_buffer_t *buffer, size_t *out_len) {
     if (out_len) {
         *out_len = 0;
@@ -204,6 +228,7 @@ char *zanna_text_buffer_text_dup(const zanna_text_buffer_t *buffer, size_t *out_
     }
 }
 
+/** @copydoc zanna_text_buffer_line_dup */
 char *zanna_text_buffer_line_dup(const zanna_text_buffer_t *buffer,
                                  size_t line_no,
                                  size_t *out_len) {
@@ -220,6 +245,7 @@ char *zanna_text_buffer_line_dup(const zanna_text_buffer_t *buffer,
     }
 }
 
+/** @copydoc zanna_text_buffer_free_string */
 void zanna_text_buffer_free_string(char *text) {
     std::free(text);
 }

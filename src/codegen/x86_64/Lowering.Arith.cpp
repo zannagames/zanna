@@ -5,18 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Lowering.Arith.cpp
+// File: src/codegen/x86_64/Lowering.Arith.cpp
 // Purpose: Implement arithmetic opcode lowering rules for the x86-64 backend.
 //          Arithmetic emitters delegate common mechanics to EmitCommon, keeping
 //          each rule focused on opcode selection.
 // Key invariants:
 //   - All emitters honour the register classes reported by the MIRBuilder.
-//   - No instructions are emitted when operands are malformed.
+//   - Malformed or unsupported instruction shapes produce a backend diagnostic.
 // Ownership/Lifetime:
 //   - Operates on borrowed IL instructions and MIR builders; no persistent state.
-// Links: codegen/x86_64/LoweringRules.hpp,
-//        codegen/x86_64/Lowering.EmitCommon.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/LoweringRules.hpp,
+//        src/codegen/x86_64/Lowering.EmitCommon.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,24 +31,30 @@
 #include <limits>
 #include <string>
 
+/**
+ * @file
+ * @brief Implements x86-64 arithmetic, comparison, and numeric-cast lowering rules.
+ *
+ * Besides basic scalar arithmetic, this unit emits checked narrow arithmetic,
+ * div/rem pseudos, NaN-aware comparisons, integer width normalization, and
+ * signed/unsigned conversions with explicit range, rounding, and runtime trap
+ * paths where required by IL semantics.
+ */
+
 namespace zanna::codegen::x64::lowering {
 namespace {
 
+/// Runtime error code for a NaN or otherwise invalid numeric cast.
 constexpr int64_t kErrInvalidCast = 5;
+/// Runtime error code for a numeric range overflow.
 constexpr int64_t kErrOverflow = 4;
 
-/// @brief Return the IEEE-754 bit pattern of the most-negative signed value
-///        representable in @p widthBits, encoded as a double.
-/// @details Used by checked floating-point-to-signed-integer conversion to
-///          compare the input against the closed lower bound. The bit
-///          patterns are precomputed for 16/32/64-bit targets; any other
-///          width is unsupported and traps via @ref phaseAUnsupported.
-/// @param widthBits Target signed-integer width (16, 32, or 64).
-/// @return 64-bit IEEE-754 bit pattern.
 /// @brief Encode 2^@p exponent as the 64-bit pattern of a positive IEEE-754 double.
 /// @details Computes the biased exponent (1023 + @p exponent) and packs it into
 ///          bits 52–62; mantissa is zero. Branch-free, constexpr-evaluable, and
 ///          covers all the bounds we need without per-width switch tables.
+/// @param exponent Unbiased power-of-two exponent.
+/// @return IEEE-754 binary64 bit pattern for the exact power of two.
 [[nodiscard]] constexpr uint64_t f64BitsForPowerOfTwo(int exponent) noexcept {
     return static_cast<uint64_t>(1023 + exponent) << 52;
 }
@@ -56,6 +62,9 @@ constexpr int64_t kErrOverflow = 4;
 /// @brief Return the IEEE-754 bit pattern of @c -2^(widthBits-1) as a double.
 /// @details Lower (inclusive) bound for checked fp-to-signed-int. The sign bit
 ///          is or-ed in to negate the positive power-of-two encoding.
+/// @param widthBits Target signed-integer width: 16, 32, or 64.
+/// @return Exact binary64 lower-bound bit pattern.
+/// @throws std::runtime_error Through @c phaseAUnsupported for another width.
 uint64_t signedMinF64Bits(std::uint8_t widthBits) {
     if (widthBits != 16 && widthBits != 32 && widthBits != 64)
         phaseAUnsupported("checked fp-to-si cast: unsupported result width");
@@ -67,6 +76,9 @@ uint64_t signedMinF64Bits(std::uint8_t widthBits) {
 /// @details The "upper exclusive" bound for checked fp-to-signed-int. The
 ///          input must be strictly less than this value to fit in the
 ///          signed range.
+/// @param widthBits Target signed-integer width: 16, 32, or 64.
+/// @return Exact binary64 exclusive upper-bound bit pattern.
+/// @throws std::runtime_error Through @c phaseAUnsupported for another width.
 uint64_t signedUpperExclusiveF64Bits(std::uint8_t widthBits) {
     if (widthBits != 16 && widthBits != 32 && widthBits != 64)
         phaseAUnsupported("checked fp-to-si cast: unsupported result width");
@@ -77,6 +89,9 @@ uint64_t signedUpperExclusiveF64Bits(std::uint8_t widthBits) {
 /// @details Upper exclusive bound for checked fp-to-unsigned-int. For 64-bit
 ///          unsigned conversion this is 2^64, handled in @ref emitFpToUi via
 ///          the subtract-and-set-bit-63 trick because CVTTSD2SI is signed-only.
+/// @param widthBits Target unsigned-integer width: 16, 32, or 64.
+/// @return Exact binary64 exclusive upper-bound bit pattern.
+/// @throws std::runtime_error Through @c phaseAUnsupported for another width.
 uint64_t unsignedUpperExclusiveF64Bits(std::uint8_t widthBits) {
     if (widthBits != 16 && widthBits != 32 && widthBits != 64)
         phaseAUnsupported("checked fp-to-ui cast: unsupported result width");
@@ -84,11 +99,15 @@ uint64_t unsignedUpperExclusiveF64Bits(std::uint8_t widthBits) {
 }
 
 /// @brief True if @p kind is integer-like (I64/I1/PTR) — GPR-eligible.
+/// @param kind IL kind to classify.
+/// @return @c true for an integer, boolean, or pointer.
 [[nodiscard]] bool isIntegerLikeKind(ILValue::Kind kind) noexcept {
     return kind == ILValue::Kind::I64 || kind == ILValue::Kind::I1 || kind == ILValue::Kind::PTR;
 }
 
 /// @brief True if @p kind is a scalar integer (I64/I1) — excludes PTR.
+/// @param kind IL kind to classify.
+/// @return @c true for an integer or boolean scalar.
 [[nodiscard]] bool isIntegerScalarKind(ILValue::Kind kind) noexcept {
     return kind == ILValue::Kind::I64 || kind == ILValue::Kind::I1;
 }
@@ -96,6 +115,9 @@ uint64_t unsignedUpperExclusiveF64Bits(std::uint8_t widthBits) {
 /// @brief Assert @p instr is a well-formed integer→F64 conversion.
 /// @details Requires a result, at least one operand, an F64 result kind, and an
 ///          integer-scalar source; otherwise raises phaseAUnsupported(@p context).
+/// @param instr Conversion instruction to validate.
+/// @param context Diagnostic text used on failure.
+/// @throws std::runtime_error Through @c phaseAUnsupported on a shape mismatch.
 void requireIntToFpShape(const ILInstr &instr, const char *context) {
     if (instr.resultId < 0 || instr.ops.empty()) {
         phaseAUnsupported(context);
@@ -111,6 +133,9 @@ void requireIntToFpShape(const ILInstr &instr, const char *context) {
 /// @brief Assert @p instr is a well-formed F64→integer conversion.
 /// @details Mirror of requireIntToFpShape(): requires an F64 source operand and
 ///          an integer-scalar result; otherwise raises phaseAUnsupported(@p context).
+/// @param instr Conversion instruction to validate.
+/// @param context Diagnostic text used on failure.
+/// @throws std::runtime_error Through @c phaseAUnsupported on a shape mismatch.
 void requireFpToIntShape(const ILInstr &instr, const char *context) {
     if (instr.resultId < 0 || instr.ops.empty()) {
         phaseAUnsupported(context);
@@ -126,6 +151,9 @@ void requireFpToIntShape(const ILInstr &instr, const char *context) {
 /// @brief Assert @p instr is a well-formed integer→integer narrowing cast.
 /// @details Requires a result, at least one operand, and integer-scalar kinds on
 ///          both source and result; otherwise raises phaseAUnsupported(@p context).
+/// @param instr Narrowing instruction to validate.
+/// @param context Diagnostic text used on failure.
+/// @throws std::runtime_error Through @c phaseAUnsupported on a shape mismatch.
 void requireNarrowCastShape(const ILInstr &instr, const char *context) {
     if (instr.resultId < 0 || instr.ops.empty()) {
         phaseAUnsupported(context);
@@ -138,6 +166,9 @@ void requireNarrowCastShape(const ILInstr &instr, const char *context) {
 /// @brief Clamp a declared integer width to a supported value.
 /// @details I1 collapses to 1 bit; 0 or >64 normalizes to 64. Used so mask
 ///          width math has a well-defined bit count for every IL integer.
+/// @param bits Declared width.
+/// @param kind Value kind that can force boolean width.
+/// @return Normalized width in the inclusive range one through 64.
 [[nodiscard]] std::uint8_t normalizedIntegerBits(std::uint8_t bits, ILValue::Kind kind) noexcept {
     if (kind == ILValue::Kind::I1) {
         return 1;
@@ -149,6 +180,8 @@ void requireNarrowCastShape(const ILInstr &instr, const char *context) {
 }
 
 /// @brief Bitmask with the low @p bits set (all-ones for @p bits >= 64).
+/// @param bits Number of low-order one bits.
+/// @return Requested mask without shifting by the machine word size.
 [[nodiscard]] uint64_t lowBitsMask(std::uint8_t bits) noexcept {
     if (bits >= 64) {
         return ~uint64_t{0};
@@ -524,6 +557,8 @@ void emitCmpExplicit(const ILInstr &instr, MIRBuilder &builder) {
 /// @brief Lower an overflow-checked integer add.
 /// @details Emits the ADDOvfrr pseudo-op which the post-lowering pass will
 ///          expand into ADD + JO (trap on overflow).
+/// @param instr Checked-add IL instruction.
+/// @param builder MIR destination and lowering context.
 void emitAddOvf(const ILInstr &instr, MIRBuilder &builder) {
     EmitCommon emit(builder);
     if (instr.resultBits < 64) {
@@ -576,6 +611,8 @@ void emitAddOvf(const ILInstr &instr, MIRBuilder &builder) {
 
 /// @brief Lower an overflow-checked integer subtract.
 /// @details Emits the SUBOvfrr pseudo-op.
+/// @param instr Checked-subtract IL instruction.
+/// @param builder MIR destination and lowering context.
 void emitSubOvf(const ILInstr &instr, MIRBuilder &builder) {
     EmitCommon emit(builder);
     if (instr.resultBits < 64) {
@@ -628,6 +665,8 @@ void emitSubOvf(const ILInstr &instr, MIRBuilder &builder) {
 
 /// @brief Lower an overflow-checked integer multiply.
 /// @details Emits the IMULOvfrr pseudo-op.
+/// @param instr Checked-multiply IL instruction.
+/// @param builder MIR destination and lowering context.
 void emitMulOvf(const ILInstr &instr, MIRBuilder &builder) {
     EmitCommon emit(builder);
     if (instr.resultBits < 64) {
@@ -986,6 +1025,8 @@ void emitNarrowCastChecked(const ILInstr &instr, MIRBuilder &builder, bool isSig
 /// @brief Lower signed-integer narrowing with overflow trap.
 /// @details Thin wrapper around @ref emitNarrowCastChecked with
 ///          @c isSigned == true.
+/// @param instr Checked signed-narrowing instruction.
+/// @param builder MIR destination and lowering context.
 void emitSiNarrowChecked(const ILInstr &instr, MIRBuilder &builder) {
     emitNarrowCastChecked(instr, builder, true);
 }
@@ -993,6 +1034,8 @@ void emitSiNarrowChecked(const ILInstr &instr, MIRBuilder &builder) {
 /// @brief Lower unsigned-integer narrowing with overflow trap.
 /// @details Thin wrapper around @ref emitNarrowCastChecked with
 ///          @c isSigned == false.
+/// @param instr Checked unsigned-narrowing instruction.
+/// @param builder MIR destination and lowering context.
 void emitUiNarrowChecked(const ILInstr &instr, MIRBuilder &builder) {
     emitNarrowCastChecked(instr, builder, false);
 }
@@ -1018,6 +1061,8 @@ void emitUiNarrowChecked(const ILInstr &instr, MIRBuilder &builder) {
 ///            cvtsi2sd %tmp, %dst
 ///            addsd  %dst, %dst      ; double back
 ///          .Ldone:
+/// @param instr IL unsigned-integer-to-f64 conversion.
+/// @param builder MIR destination and lowering context.
 void emitUiToFp(const ILInstr &instr, MIRBuilder &builder) {
     requireIntToFpShape(instr, "uitofp: expected integer source and f64 result");
 

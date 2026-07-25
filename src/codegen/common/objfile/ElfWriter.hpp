@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/ElfWriter.hpp
+// File: src/codegen/common/objfile/ElfWriter.hpp
 // Purpose: ELF relocatable object file writer for x86_64 and AArch64.
 //          Produces valid .o files that the system linker can consume.
 // Key invariants:
@@ -21,30 +21,52 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file ElfWriter.hpp
+ * @brief Declares the little-endian ELF64 relocatable-object writer.
+ *
+ * The writer supports AMD64 and AArch64, explicit-addend RELA relocations,
+ * optional writable/debug sections, and both combined and per-function text
+ * layouts.
+ */
+
 #pragma once
 
 #include "codegen/common/objfile/ObjectFileWriter.hpp"
 
 namespace zanna::codegen::objfile {
 
-/// ELF object file writer for Linux (x86_64 and AArch64).
+/// @brief Serializes Linux x86-64 or AArch64 ELF64 relocatable objects.
 class ElfWriter : public ObjectFileWriter {
   public:
+    /// @brief Construct an ELF writer for one target architecture.
+    /// @param arch Architecture selecting `e_machine` and relocation numbers.
     explicit ElfWriter(ObjArch arch) : arch_(arch) {}
 
-    /// @brief Write a single-section .o file (one .text section + .rodata).
+    /// @brief Write an object containing one combined `.text` section.
+    /// @param path Destination filesystem path.
+    /// @param text Code, symbols, and relocations to serialize.
+    /// @param rodata Read-only data and its symbolic metadata.
+    /// @param err Stream that receives validation or output diagnostics.
+    /// @return `true` after atomically committing a valid ELF object.
     bool write(const std::string &path,
                const CodeSection &text,
                const CodeSection &rodata,
                std::ostream &err) override;
 
-    /// @brief Write a multi-section .o file (multiple .text sections for per-function code).
+    /// @brief Write an object with independently discardable per-function text sections.
+    /// @param path Destination filesystem path.
+    /// @param textSections Ordered function-level code sections.
+    /// @param rodata Shared read-only data and symbolic metadata.
+    /// @param err Stream that receives validation or output diagnostics.
+    /// @return `true` after atomically committing a valid ELF object.
     bool write(const std::string &path,
                const std::vector<CodeSection> &textSections,
                const CodeSection &rodata,
                std::ostream &err) override;
 
   private:
+    ///< Architecture used for ELF machine and relocation encoding.
     ObjArch arch_;
 };
 

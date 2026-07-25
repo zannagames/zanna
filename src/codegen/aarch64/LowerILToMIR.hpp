@@ -5,18 +5,27 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/LowerILToMIR.hpp
+// File: src/codegen/aarch64/LowerILToMIR.hpp
 // Purpose: Minimal IL→MIR lowering adapter for AArch64 (Phase A).
 // Key invariants:
 //   - Stateless between lowerFunction() calls; per-function state is reset.
 //   - TargetInfo must outlive this object.
 // Ownership/Lifetime:
 //   - Non-owning; holds a non-owning pointer to an externally-owned TargetInfo.
-// Links: codegen/aarch64/LowerILToMIR.cpp,
-//        codegen/aarch64/InstrLowering.hpp,
-//        codegen/aarch64/LoweringContext.hpp
+// Links: src/codegen/aarch64/LowerILToMIR.cpp,
+//        src/codegen/aarch64/InstrLowering.hpp,
+//        src/codegen/aarch64/LoweringContext.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Declares per-function IL-to-AArch64-MIR orchestration.
+ *
+ * The lowerer borrows immutable target and optional literal metadata while
+ * owning variadic-callee metadata. Each function call builds fresh frame,
+ * liveness, phi, virtual-register, and block-lowering state.
+ */
 
 #pragma once
 
@@ -63,6 +72,7 @@ class LowerILToMIR {
     }
 
     /// @brief Look up the known named-argument count for @p callee, if registered.
+    /// @param callee Direct callee name.
     /// @return The named-arg count, or nullopt if @p callee is not a known vararg callee.
     [[maybe_unused]] [[nodiscard]] std::optional<std::size_t>
     knownVarArgNamedArgs(std::string_view callee) const;

@@ -40,26 +40,43 @@
 // - Header-only implementation for efficiency
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file BasicTypes.hpp
+ * @brief Defines compact BASIC semantic-type and declaration-access enums.
+ *
+ * BasicType bridges source-level annotations and lowering decisions. Access
+ * records the visibility metadata attached to supported declarations.
+ */
+
 #pragma once
 
 #include <cstdint>
 
 namespace il::frontends::basic {
 
-/// @brief Enumerates the BASIC-level types that can annotate function returns.
+/// @brief Enumerates BASIC scalar, object, void, and unresolved types.
 enum class BasicType {
+    /// Type is absent, not yet inferred, or invalid during recovery.
     Unknown,
+    /// Integer category lowered to signed i64.
     Int,
+    /// Floating-point category lowered to f64.
     Float,
+    /// Variable-length BASIC string value.
     String,
+    /// Boolean category lowered to i1.
     Bool,
+    /// No value, used for SUB and other non-returning signatures.
     Void,
+    /// Runtime-managed object-reference category.
     Object ///< Runtime object reference (lowered to ptr in IL)
 };
 
 /// @brief Converts a BasicType to its lowercase BASIC surface spelling.
 /// @param t The BASIC type to convert.
-/// @return Null-terminated string literal naming the type.
+/// @return Null-terminated static string naming the type, or `"?"` when @p t
+///         does not equal a defined enumerator.
 inline const char *toString(BasicType t) {
     switch (t) {
         case BasicType::Unknown:
@@ -85,9 +102,11 @@ inline const char *toString(BasicType t) {
 namespace il::frontends::basic {
 
 /// @brief Access control for declarations (default Public).
-/// @notes Applies to CLASS/TYPE fields and class members.
+/// @note Applies to CLASS/TYPE fields and class members.
 enum class Access : std::uint8_t {
+    /// Visible outside the declaring type or module.
     Public = 0,
+    /// Visible only within its declaration scope.
     Private = 1,
 };
 

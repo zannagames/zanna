@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/BasicAnalysis.hpp
+// File: src/frontends/basic/BasicAnalysis.hpp
 // Purpose: Partial-compilation API for BASIC IDE tooling (completion, hover, etc.).
 // Key invariants:
 //   - Runs parse → CollectProcedures → foldConstants → SemanticAnalyzer
@@ -14,9 +14,19 @@
 // Ownership/Lifetime:
 //   - AnalysisResult owns diagnostics, emitter, AST, and sema
 //   - Destruction order: sema → ast → emitter → diagnostics (reverse declaration)
-// Links: frontends/basic/BasicCompiler.hpp, frontends/basic/SemanticAnalyzer.hpp
+//   - The SourceManager passed to parseAndAnalyzeBasic must outlive the result
+// Links: src/frontends/basic/BasicCompiler.hpp,
+//        src/frontends/basic/SemanticAnalyzer.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file BasicAnalysis.hpp
+ * @brief Declares the parse-and-semantics BASIC pipeline used by IDE tooling.
+ *
+ * The partial pipeline retains diagnostics, the parsed program, and a live
+ * semantic analyzer but deliberately performs no lowering or IL generation.
+ */
 
 #pragma once
 
@@ -27,7 +37,7 @@
 
 namespace il::frontends::basic {
 
-// Forward declarations
+/// Parsed BASIC program root.
 struct Program;
 
 /// @brief Result of a partial BASIC compilation run (parse + sema only).
@@ -37,7 +47,8 @@ struct Program;
 /// inspect `diagnostics` for error details.
 ///
 /// Heap-allocated to ensure stable DiagnosticEngine address (SemanticAnalyzer
-/// holds a reference to the emitter which references diagnostics).
+/// holds a reference to the emitter which references diagnostics). The emitter
+/// also borrows the SourceManager supplied to parseAndAnalyzeBasic().
 struct BasicAnalysisResult {
     /// @brief Diagnostics accumulated during parsing and semantic analysis.
     /// @note Declared first so it is destroyed last.
@@ -58,6 +69,7 @@ struct BasicAnalysisResult {
     uint32_t fileId{0};
 
     /// @brief True if any errors were reported.
+    /// @return Whether the owned diagnostic engine's error count is nonzero.
     [[nodiscard]] bool hasErrors() const {
         return diagnostics.errorCount() > 0;
     }
@@ -73,6 +85,10 @@ struct BasicAnalysisResult {
 /// @param input  Source information (code text + path + optional file id).
 /// @param sm     Source manager for file registration and diagnostics.
 /// @return       Heap-allocated result with AST, sema, and diagnostics.
+/// @warning @p sm must outlive the returned result because its DiagnosticEmitter
+///          retains a reference to the source manager.
+/// @post When parsing produces a program, both `result->ast` and
+///       `result->sema` are non-null even if diagnostics contain errors.
 std::unique_ptr<BasicAnalysisResult> parseAndAnalyzeBasic(const BasicCompilerInput &input,
                                                           il::support::SourceManager &sm);
 

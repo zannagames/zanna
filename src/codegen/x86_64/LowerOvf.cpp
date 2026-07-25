@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/LowerOvf.cpp
+// File: src/codegen/x86_64/LowerOvf.cpp
 // Purpose: Expand overflow-checked arithmetic pseudos (ADDOvfrr, SUBOvfrr,
 //          IMULOvfrr) into real instructions with a conditional trap branch.
 // Key invariants:
@@ -14,8 +14,8 @@
 //   - The pass executes between IL→MIR lowering and register allocation.
 // Ownership/Lifetime:
 //   - Mutates the MFunction in-place; no persistent auxiliary structures.
-// Links: codegen/x86_64/LowerILToMIR.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/LowerILToMIR.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,11 +28,23 @@
 #include <utility>
 #include <vector>
 
+/**
+ * @file
+ * @brief Implements expansion of checked integer arithmetic MIR pseudos.
+ *
+ * Checked add, subtract, and multiply operations become their flag-setting
+ * x86-64 two-operand forms followed by an overflow-condition branch. Every
+ * function reuses one canonical, non-returning runtime overflow trap block.
+ */
+
 namespace zanna::codegen::x64 {
 
 namespace {
 
 /// @brief Locate a basic block index using its label, if present.
+/// @param fn Function whose blocks are searched in layout order.
+/// @param label Exact block label to match.
+/// @return Matching block index, or @c std::nullopt.
 [[nodiscard]] std::optional<std::size_t> findBlock(const MFunction &fn, const std::string &label) {
     for (std::size_t idx = 0; idx < fn.blocks.size(); ++idx) {
         if (fn.blocks[idx].label == label) {
@@ -43,6 +55,8 @@ namespace {
 }
 
 /// @brief Produce a shallow copy of a Machine IR operand.
+/// @param operand Value-semantic operand to duplicate.
+/// @return Independent copy suitable for a replacement instruction.
 [[nodiscard]] Operand cloneOp(const Operand &operand) {
     return operand;
 }
@@ -62,6 +76,10 @@ void lowerOverflowOps(MFunction &fn) {
     const std::string trapLabel = ".Ltrap_ovf_" + fn.name;
     std::optional<std::size_t> trapIndex{};
 
+    /**
+     * @brief Find, repair, or create the function's canonical overflow trap.
+     * @return Stable block index cached for subsequent calls.
+     */
     auto ensureTrapBlock = [&]() -> std::size_t {
         if (trapIndex) {
             return *trapIndex;
@@ -70,6 +88,7 @@ void lowerOverflowOps(MFunction &fn) {
         if (auto existing = findBlock(fn, trapLabel)) {
             trapIndex = *existing;
             auto &trapBlock = fn.blocks[*trapIndex];
+            /// Recognize an existing direct call to the overflow runtime trap.
             const bool hasRuntimeCall =
                 std::any_of(trapBlock.instructions.begin(),
                             trapBlock.instructions.end(),
@@ -80,6 +99,7 @@ void lowerOverflowOps(MFunction &fn) {
                                 const auto *label = std::get_if<OpLabel>(&instr.operands.front());
                                 return label && label->name == "rt_trap_ovf";
                             });
+            /// Locate the non-returning terminator so a missing call precedes it.
             auto ud2It =
                 std::find_if(trapBlock.instructions.begin(),
                              trapBlock.instructions.end(),

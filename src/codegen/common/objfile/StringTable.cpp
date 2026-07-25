@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/StringTable.cpp
+// File: src/codegen/common/objfile/StringTable.cpp
 // Purpose: Implementation of interned string table for object files.
 // Key invariants:
 //   - Offset 0 is always the empty string (single NUL byte)
@@ -16,6 +16,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file StringTable.cpp
+ * @brief Implements bounded interning for object-file string tables.
+ */
+
 #include "codegen/common/objfile/StringTable.hpp"
 
 #include <limits>
@@ -23,12 +28,14 @@
 
 namespace zanna::codegen::objfile {
 
+/// @copydoc StringTable::StringTable
 StringTable::StringTable() {
     // ELF convention: offset 0 = empty string (single NUL byte).
     data_.push_back('\0');
     offsets_[""] = 0;
 }
 
+/// @copydoc StringTable::add
 uint32_t StringTable::add(std::string_view str) {
     std::string key(str);
     auto it = offsets_.find(key);
@@ -49,6 +56,7 @@ uint32_t StringTable::add(std::string_view str) {
     return offset;
 }
 
+/// @copydoc StringTable::find
 uint32_t StringTable::find(std::string_view str) const {
     auto it = offsets_.find(std::string(str));
     if (it != offsets_.end())

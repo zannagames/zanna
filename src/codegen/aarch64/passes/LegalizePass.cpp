@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/LegalizePass.cpp
+// File: src/codegen/aarch64/passes/LegalizePass.cpp
 // Purpose: Pre-RA AArch64 MIR legalization. Expands overflow pseudos, inserts
 //          runtime context init for @main, and refreshes the isLeaf flag.
 // Key invariants:
@@ -15,8 +15,8 @@
 //     and unwind decisions match the emitted instruction stream.
 // Ownership/Lifetime:
 //   - Stateless pass; mutates AArch64Module::mir in place.
-// Links: codegen/aarch64/passes/LegalizePass.hpp,
-//        codegen/aarch64/LowerOvf.hpp
+// Links: src/codegen/aarch64/passes/LegalizePass.hpp,
+//        src/codegen/aarch64/LowerOvf.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,22 +27,39 @@
 #include <exception>
 #include <string>
 
+/**
+ * @file
+ * @brief Implements checked-arithmetic expansion and runtime-entry legalization.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 namespace {
 
-/// @brief Return true if @p instr is a direct (Bl) or indirect (Blr) call.
+/**
+ * @brief Tests whether an instruction is a direct or indirect call.
+ * @param instr MIR instruction to classify.
+ * @return `true` for `Bl` or `Blr`.
+ */
 [[nodiscard]] bool isCall(const MInstr &instr) noexcept {
     return instr.opc == MOpcode::Bl || instr.opc == MOpcode::Blr;
 }
 
-/// @brief Return true if @p instr is a Bl to the named symbol @p name.
+/**
+ * @brief Tests whether an instruction directly calls an exact label.
+ * @param instr MIR instruction to inspect.
+ * @param name Non-null target spelling.
+ * @return `true` for a labeled `Bl` whose target equals @p name.
+ */
 [[nodiscard]] bool isCallTo(const MInstr &instr, const char *name) noexcept {
     return instr.opc == MOpcode::Bl && !instr.ops.empty() &&
            instr.ops[0].kind == MOperand::Kind::Label && instr.ops[0].label == name;
 }
 
-/// @brief Insert rt_legacy_context + rt_set_current_context at the start of @main.
-/// @details Idempotent: does nothing if the calls are already present.
+/**
+ * @brief Prepends legacy runtime-context setup to a recognized main entry point.
+ * @param[in,out] fn Function to modify when named `main` or `@main`.
+ * @post Existing canonical leading setup calls are not duplicated.
+ */
 void insertMainRuntimeContextInit(MFunction &fn) {
     if ((fn.name != "main" && fn.name != "@main") || fn.blocks.empty())
         return;
@@ -58,7 +75,11 @@ void insertMainRuntimeContextInit(MFunction &fn) {
                         MInstr{MOpcode::Bl, {MOperand::labelOp("rt_set_current_context")}}});
 }
 
-/// @brief Recompute MFunction::isLeaf from the emitted instruction stream.
+/**
+ * @brief Recomputes leaf status from all direct and indirect calls.
+ * @param[in,out] fn Function whose `isLeaf` flag is replaced.
+ * @post `fn.isLeaf` is true exactly when no block contains `Bl` or `Blr`.
+ */
 void refreshLeafFlag(MFunction &fn) noexcept {
     fn.isLeaf = true;
     for (const auto &bb : fn.blocks) {
@@ -73,6 +94,12 @@ void refreshLeafFlag(MFunction &fn) noexcept {
 
 } // namespace
 
+/**
+ * @brief Legalizes overflow operations, main setup, and leaf metadata.
+ * @param[in,out] module Module whose MIR is rewritten.
+ * @param[in,out] diags Sink receiving validation or expansion failures.
+ * @return `true` on complete legalization.
+ */
 bool LegalizePass::run(AArch64Module &module, Diagnostics &diags) {
     if (!module.ti) {
         diags.error("LegalizePass: ti must be non-null");

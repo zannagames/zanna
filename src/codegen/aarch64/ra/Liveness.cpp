@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/ra/Liveness.cpp
+// File: src/codegen/aarch64/ra/Liveness.cpp
 // Purpose: Implementation of CFG-aware liveness analysis for AArch64 regalloc.
 //          Computes per-block liveIn/liveOut sets using the shared backward
 //          dataflow solver, with gen/kill split by register class (GPR/FPR).
@@ -14,7 +14,8 @@
 //   - gen[B] = vregs used in B before being defined
 //   - kill[B] = vregs defined in B
 //   - GPR and FPR solved independently via shared solver
-//   - CFG edges extracted from Br, BCond, Cbz terminators
+//   - CFG edges include all modeled branches, jump tables, fallthrough, returns,
+//     and no-return calls
 //
 // Ownership/Lifetime:
 //   - State owned by the LivenessAnalysis object; valid until run() is called again.
@@ -34,8 +35,12 @@
 
 #include <algorithm>
 
+/// @file
+/// @brief Implements AArch64 CFG extraction and backward virtual-register liveness.
+
 namespace zanna::codegen::aarch64::ra {
 
+/// @copydoc LivenessAnalysis::run
 void LivenessAnalysis::run(const MFunction &func) {
     const std::size_t n = func.blocks.size();
     succs_.assign(n, {});
@@ -49,12 +54,15 @@ void LivenessAnalysis::run(const MFunction &func) {
     computeLiveOutSets(func);
 }
 
+/// @copydoc LivenessAnalysis::buildBlockIndex
 void LivenessAnalysis::buildBlockIndex(const MFunction &func) {
     for (std::size_t i = 0; i < func.blocks.size(); ++i)
         blockIndex_[func.blocks[i].name] = i;
 }
 
+/// @copydoc LivenessAnalysis::buildCFG
 void LivenessAnalysis::buildCFG(const MFunction &func) {
+    /// Return the label operand used by register-test conditional branches.
     const auto condTarget = [](const MInstr &mi) -> const std::string * {
         if (mi.ops.size() >= 2 && mi.ops[1].kind == MOperand::Kind::Label)
             return &mi.ops[1].label;
@@ -64,7 +72,9 @@ void LivenessAnalysis::buildCFG(const MFunction &func) {
     succs_ = zanna::codegen::ra::extractSuccessors(
         func.blocks,
         blockIndex_,
+        /// Expose the instruction vector expected by the generic CFG extractor.
         [](const MBasicBlock &bb) -> const std::vector<MInstr> & { return bb.instrs; },
+        /// Translate an AArch64 instruction into the generic branch descriptor.
         [&](const MInstr &mi) {
             using Desc = zanna::codegen::ra::BranchDesc;
             switch (mi.opc) {
@@ -97,6 +107,7 @@ void LivenessAnalysis::buildCFG(const MFunction &func) {
         });
 }
 
+/// @copydoc LivenessAnalysis::computeLiveOutSets
 void LivenessAnalysis::computeLiveOutSets(const MFunction &func) {
     const std::size_t N = func.blocks.size();
 
@@ -135,18 +146,22 @@ void LivenessAnalysis::computeLiveOutSets(const MFunction &func) {
     liveOutFPR_ = std::move(fprResult.liveOut);
 }
 
+/// @copydoc LivenessAnalysis::liveOutGPR
 const std::unordered_set<uint16_t> &LivenessAnalysis::liveOutGPR(std::size_t blockIdx) const {
     return liveOutGPR_[blockIdx];
 }
 
+/// @copydoc LivenessAnalysis::liveOutFPR
 const std::unordered_set<uint16_t> &LivenessAnalysis::liveOutFPR(std::size_t blockIdx) const {
     return liveOutFPR_[blockIdx];
 }
 
+/// @copydoc LivenessAnalysis::successors
 const std::vector<std::size_t> &LivenessAnalysis::successors(std::size_t blockIdx) const {
     return succs_[blockIdx];
 }
 
+/// @copydoc LivenessAnalysis::predecessors
 const std::vector<std::size_t> &LivenessAnalysis::predecessors(std::size_t blockIdx) const {
     return preds_[blockIdx];
 }

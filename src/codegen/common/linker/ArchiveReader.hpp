@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/ArchiveReader.hpp
+// File: src/codegen/common/linker/ArchiveReader.hpp
 // Purpose: Parse Unix ar archives (.a files) containing object files.
 //          Supports GNU, BSD, and COFF archive variants.
 // Key invariants:
@@ -19,6 +19,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file ArchiveReader.hpp
+ * @brief Declares the validated GNU, BSD/Darwin, and COFF archive reader.
+ *
+ * Parsed archives own their complete byte buffer.  Member metadata and views
+ * therefore remain valid until the owning Archive is modified or destroyed.
+ */
+
 #pragma once
 
 #include <cstddef>
@@ -30,14 +38,17 @@
 
 namespace zanna::codegen::linker {
 
-/// A member within an archive.
+/// @brief Describes the payload range of one ordinary archive member.
 struct ArchiveMember {
     std::string name;      ///< Member name (e.g., "foo.o").
     size_t dataOffset = 0; ///< Byte offset of member data within the archive file.
     size_t dataSize = 0;   ///< Size of the member data in bytes.
 };
 
-/// Parsed archive with symbol index and member list.
+/// @brief Owns a parsed archive, its ordinary members, and linker symbol indices.
+/// @details `symbolIndex` records the first candidate for compatibility, while
+///          `symbolCandidates` retains every distinct indexed definition in
+///          archive order for extraction algorithms that must try alternatives.
 struct Archive {
     std::string path;                                    ///< Path to the archive file.
     std::vector<uint8_t> data;                           ///< Raw archive file contents.
@@ -47,27 +58,39 @@ struct Archive {
         symbolCandidates; ///< Symbol name → all indexed member candidates, in archive order.
 };
 
-/// Non-owning view over an archive member's bytes.
+/// @brief Non-owning view over an archive member's bytes.
+/// @warning The view is invalidated if the owning Archive's `data` buffer is
+///          modified or destroyed.
 struct ArchiveMemberView {
     const uint8_t *data{nullptr};
     size_t size{0};
 };
 
-/// Parse an archive file (.a / .lib).
-/// @param path  Path to the archive.
-/// @param ar    Output archive structure.
-/// @param err   Error output stream.
-/// @return true on success.
+/// @brief Parses an archive file (`.a` or `.lib`) into owned metadata and bytes.
+/// @details Validates archive magic, headers, payload bounds, padding, long-name
+///          encodings, and symbol-index member offsets.  @p ar is reset before
+///          the file is opened and may contain partial data after failure.
+/// @param path UTF-8 path to the archive.
+/// @param ar Destination archive structure.
+/// @param err Stream that receives a diagnostic on hard parse or I/O failure.
+/// @return `true` on success; `false` after reporting the first hard error.
 bool readArchive(const std::string &path, Archive &ar, std::ostream &err);
 
-/// Extract the raw bytes of a specific member.
-/// @param ar     The parsed archive.
-/// @param member The member to extract.
-/// @return A vector of the member's raw bytes.
+/// @brief Copies the raw bytes of a specific archive member.
+/// @param ar Parsed archive that owns the payload.
+/// @param member Member range to copy.
+/// @return A byte vector containing the member, or an empty vector when the
+///         requested range is outside @p ar.  A valid zero-length member also
+///         produces an empty vector.
 [[maybe_unused]] std::vector<uint8_t> extractMember(const Archive &ar,
                                                     const ArchiveMember &member);
 
-/// Return a non-copying view of a specific member's raw bytes.
+/// @brief Returns a non-copying view of a specific member's raw bytes.
+/// @param ar Parsed archive that owns the payload.
+/// @param member Member range to view.
+/// @return Pointer/size view into @p ar, or a null, zero-sized view when the
+///         requested range is invalid.
+/// @warning The returned pointer follows the lifetime of `ar.data`.
 ArchiveMemberView memberDataView(const Archive &ar, const ArchiveMember &member);
 
 } // namespace zanna::codegen::linker

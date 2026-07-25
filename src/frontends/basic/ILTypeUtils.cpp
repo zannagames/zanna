@@ -5,6 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/ILTypeUtils.cpp
+// Purpose: Implement BASIC AST, field-layout, and runtime-token IL type mappings.
+// Ownership/Lifetime: Stateless conversions return value-owned type descriptors
+//                     or views into caller-owned token storage.
+// Links: src/frontends/basic/ILTypeUtils.hpp,
+//        src/frontends/basic/BasicTypes.hpp,
+//        src/frontends/basic/ast/NodeFwd.hpp
+//
+//===----------------------------------------------------------------------===//
+//
 /// @file
 /// @brief Implements BASIC-to-IL type conversion helpers.
 /// @details Provides small, stateless utilities that map BASIC AST types to IL
@@ -87,6 +97,7 @@ il::core::Type astToIlType(::il::frontends::basic::Type ty) noexcept {
 /// @param type BASIC field type.
 /// @return Size in bytes for the type's storage representation.
 std::size_t getFieldSize(::il::frontends::basic::Type type) noexcept {
+    /// Host pointer width used by managed string fields in class layouts.
     constexpr std::size_t kPointerSize = sizeof(void *);
 
     switch (type) {
@@ -102,6 +113,7 @@ std::size_t getFieldSize(::il::frontends::basic::Type type) noexcept {
     }
 }
 
+/// @copydoc basicTypeToIlKind()
 il::core::Type::Kind basicTypeToIlKind(BasicType t) noexcept {
     using Kind = il::core::Type::Kind;
     switch (t) {
@@ -122,6 +134,7 @@ il::core::Type::Kind basicTypeToIlKind(BasicType t) noexcept {
     }
 }
 
+/// @copydoc runtimeScalarToType()
 il::core::Type runtimeScalarToType(std::string_view token) noexcept {
     using IlType = il::core::Type;
     token = normalizeRuntimeToken(token);

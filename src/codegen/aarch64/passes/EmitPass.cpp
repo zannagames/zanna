@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/EmitPass.cpp
+// File: src/codegen/aarch64/passes/EmitPass.cpp
 // Purpose: Assembly-text emission pass for the AArch64 modular pipeline.
 //          Emits rodata globals, then each MIR function via AsmEmitter;
 //          appends platform-specific module-level directives at the end.
@@ -16,9 +16,9 @@
 //   - .note.GNU-stack emitted on Linux ELF to mark non-executable stack.
 // Ownership/Lifetime:
 //   - Stateless pass; writes into AArch64Module::assembly string.
-// Links: codegen/aarch64/passes/EmitPass.hpp,
-//        codegen/aarch64/AsmEmitter.hpp,
-//        codegen/aarch64/RodataPool.hpp
+// Links: src/codegen/aarch64/passes/EmitPass.hpp,
+//        src/codegen/aarch64/AsmEmitter.hpp,
+//        src/codegen/aarch64/RodataPool.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,15 +28,23 @@
 
 #include <sstream>
 
+/**
+ * @file
+ * @brief Implements complete target-specific AArch64 assembly serialization.
+ *
+ * Read-only and writable globals precede functions. A final object-format
+ * directive enables Mach-O subsection dead stripping or marks the ELF stack
+ * non-executable; PE/COFF needs neither trailer.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
-/// @brief Emit AArch64 assembly text for the entire module.
-/// @details Pipeline: validates @p module.ti, prints the rodata pool, then
-///          asks @ref AsmEmitter to print every MIR function. Finally appends
-///          platform-specific module-level directives (`.subsections_via_symbols`
-///          on Mach-O, `.note.GNU-stack` on Linux ELF). The accumulated string
-///          is stored in @p module.assembly for downstream consumers.
-/// @return true on success; on failure records errors via @p diags.
+/**
+ * @brief Emits globals, functions, and format-specific trailer directives.
+ * @param[in,out] module Module whose `assembly` string is replaced on success.
+ * @param[in,out] diags Sink receiving a missing-target diagnostic.
+ * @return `false` only when `module.ti` is null; otherwise `true`.
+ */
 bool EmitPass::run(AArch64Module &module, Diagnostics &diags) {
     if (!module.ti) {
         diags.error("EmitPass: ti must be non-null");

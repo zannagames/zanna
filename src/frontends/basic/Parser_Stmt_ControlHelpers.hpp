@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
+/// @file Parser_Stmt_ControlHelpers.hpp
 /// @brief Shared helper utilities for BASIC control-flow parsing.
 /// @details Defines small inline helpers used by the parser to handle control
 ///          flow constructs (IF/ELSEIF, SELECT CASE, etc.). The helpers maintain
@@ -41,6 +41,7 @@ inline void Parser::skipOptionalLineLabelAfterBreak(
 
     ctx.skipLineBreaks();
 
+    /// Test whether the token after a candidate label permits consuming it.
     auto matchesFollowers = [&](TokenKind candidate) {
         if (followerKinds.size() == 0)
             return true;

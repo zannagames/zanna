@@ -12,6 +12,8 @@
 ///          @ref RuntimeStatementLowerer. The wrappers do not add extra logic;
 ///          they exist so callers can keep using the `Lowerer` interface while
 ///          the lowering code remains modular.
+/// @invariant The owning Lowerer initializes runtimeStmtLowerer_ before any
+///            forwarding member is invoked.
 //
 //===----------------------------------------------------------------------===//
 
@@ -118,7 +120,8 @@ void Lowerer::lowerConst(const ConstStmt &stmt) {
 
 /// @brief Forward STATIC statement lowering to the runtime statement lowerer.
 /// @details Delegates to @ref RuntimeStatementLowerer::lowerStatic, which
-///          handles any declaration-side bookkeeping for static storage.
+///          intentionally emits no instructions because static storage was
+///          materialized during variable collection.
 /// @param stmt Parsed STATIC statement.
 void Lowerer::lowerStatic(const StaticStmt &stmt) {
     runtimeStmtLowerer_->lowerStatic(stmt);
@@ -149,8 +152,8 @@ void Lowerer::lowerRandomize(const RandomizeStmt &stmt) {
 }
 
 /// @brief Forward SWAP statement lowering to the runtime statement lowerer.
-/// @details Delegates to @ref RuntimeStatementLowerer::lowerSwap to swap two
-///          l-values with proper coercion and lifetime handling.
+/// @details Delegates to @ref RuntimeStatementLowerer::lowerSwap, which
+///          exchanges variable or array-element l-values through a temporary.
 /// @param stmt Parsed SWAP statement.
 void Lowerer::lowerSwap(const SwapStmt &stmt) {
     runtimeStmtLowerer_->lowerSwap(stmt);
@@ -158,7 +161,8 @@ void Lowerer::lowerSwap(const SwapStmt &stmt) {
 
 /// @brief Forward array length checks to the runtime statement lowerer.
 /// @details Delegates to @ref RuntimeStatementLowerer::emitArrayLengthCheck to
-///          perform bounds validation and emit the required control flow.
+///          add one to the inclusive upper bound and, in an active function,
+///          trap if the resulting length is negative.
 /// @param bound Raw bound value provided by the user.
 /// @param loc Source location for diagnostics and emitted instructions.
 /// @param labelBase Prefix for generated block labels.

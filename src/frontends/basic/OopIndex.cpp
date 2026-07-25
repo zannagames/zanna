@@ -10,6 +10,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file OopIndex.cpp
+/// @brief Implements case-insensitive BASIC OOP metadata queries.
+/// @details Direct queries inspect one indexed class, while hierarchy queries
+///          repeatedly follow `baseQualified`. Returned pointers refer to
+///          records owned by the index and remain valid only while the
+///          corresponding containers are not invalidated.
+
 #include "frontends/basic/OopIndex.hpp"
 
 #include <algorithm>
@@ -77,6 +84,13 @@ const ClassInfo *OopIndex::findClass(const std::string &name) const {
 // Field Query API Implementation
 // =============================================================================
 
+/// @brief Find an instance or static field declared directly by a class.
+/// @details Resolves @p className case-insensitively, searches instance fields
+///          before static fields, and compares field identifiers
+///          case-insensitively.
+/// @param className Qualified or unqualified class key to resolve.
+/// @param fieldName Field identifier to compare.
+/// @return Pointer to index-owned field metadata, or @c nullptr if absent.
 const ClassInfo::FieldInfo *OopIndex::findField(const std::string &className,
                                                 std::string_view fieldName) const {
     const ClassInfo *info = findClass(className);
@@ -98,6 +112,13 @@ const ClassInfo::FieldInfo *OopIndex::findField(const std::string &className,
     return nullptr;
 }
 
+/// @brief Find a field in a class or the first base class that declares it.
+/// @details At each level, instance fields precede static fields. The search
+///          follows `baseQualified` until it is empty or cannot be resolved.
+/// @param className Class at which to begin the case-insensitive search.
+/// @param fieldName Field identifier compared case-insensitively.
+/// @return Pointer to index-owned field metadata, or @c nullptr if the hierarchy
+///         contains no matching field.
 const ClassInfo::FieldInfo *OopIndex::findFieldInHierarchy(const std::string &className,
                                                            std::string_view fieldName) const {
     const ClassInfo *cur = findClass(className);
@@ -126,6 +147,12 @@ const ClassInfo::FieldInfo *OopIndex::findFieldInHierarchy(const std::string &cl
 // Method Query API Implementation
 // =============================================================================
 
+/// @brief Find a method declared directly by a class.
+/// @details Attempts heterogeneous map lookup first, then performs a
+///          case-insensitive scan to preserve BASIC identifier semantics.
+/// @param className Qualified or unqualified class key to resolve.
+/// @param methodName Method identifier to compare.
+/// @return Pointer to index-owned method metadata, or @c nullptr if absent.
 const ClassInfo::MethodInfo *OopIndex::findMethod(const std::string &className,
                                                   std::string_view methodName) const {
     const ClassInfo *info = findClass(className);
@@ -145,6 +172,13 @@ const ClassInfo::MethodInfo *OopIndex::findMethod(const std::string &className,
     return nullptr;
 }
 
+/// @brief Find a method in a class or the first base class that declares it.
+/// @details Each class uses exact heterogeneous lookup followed by a
+///          case-insensitive scan before the search follows `baseQualified`.
+/// @param className Class at which to begin the search.
+/// @param methodName Method identifier to resolve using BASIC casing rules.
+/// @return Pointer to index-owned method metadata, or @c nullptr if the
+///         hierarchy contains no matching method.
 const ClassInfo::MethodInfo *OopIndex::findMethodInHierarchy(const std::string &className,
                                                              std::string_view methodName) const {
     const ClassInfo *cur = findClass(className);
@@ -171,6 +205,11 @@ const ClassInfo::MethodInfo *OopIndex::findMethodInHierarchy(const std::string &
 // Virtual Slot Query
 // =============================================================================
 
+/// @brief Return the stored virtual slot for a method resolved through inheritance.
+/// @param index OOP index containing the class hierarchy.
+/// @param qualifiedClass Class at which method lookup begins.
+/// @param methodName Method identifier resolved by hierarchy lookup.
+/// @return The stored slot index, or `-1` for a missing or non-virtual method.
 int getVirtualSlot(const OopIndex &index,
                    const std::string &qualifiedClass,
                    const std::string &methodName) {

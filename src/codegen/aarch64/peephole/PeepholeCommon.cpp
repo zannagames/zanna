@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/PeepholeCommon.cpp
+// File: src/codegen/aarch64/peephole/PeepholeCommon.cpp
 // Purpose: Out-of-line implementations for the switch-heavy AArch64 peephole
 //          classifiers (definesReg, usesReg, classifyOperand, hasSideEffects,
 //          getDefinedReg, updateKnownConsts). Keeping the per-opcode switches
@@ -27,8 +27,12 @@
 
 #include "PeepholeCommon.hpp"
 
+/// @file
+/// @brief Implements opcode-specific AArch64 peephole dataflow classifiers.
+
 namespace zanna::codegen::aarch64::peephole {
 
+/// @copydoc definesReg
 bool definesReg(const MInstr &instr, const MOperand &reg) noexcept {
     if (!isPhysReg(reg))
         return false;
@@ -172,6 +176,7 @@ bool definesReg(const MInstr &instr, const MOperand &reg) noexcept {
     return false;
 }
 
+/// @copydoc usesReg
 bool usesReg(const MInstr &instr, const MOperand &reg) noexcept {
     if (!isPhysReg(reg))
         return false;
@@ -359,6 +364,7 @@ bool usesReg(const MInstr &instr, const MOperand &reg) noexcept {
     return false;
 }
 
+/// @copydoc classifyOperand
 std::pair<bool, bool> classifyOperand(const MInstr &instr, std::size_t idx) noexcept {
     switch (instr.opc) {
         case MOpcode::LdrRegBaseRegLsl:
@@ -544,6 +550,7 @@ std::pair<bool, bool> classifyOperand(const MInstr &instr, std::size_t idx) noex
     }
 }
 
+/// @copydoc updateKnownConsts
 void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
     if (instr.opc == MOpcode::MovRI && instr.ops.size() == 2 && isPhysReg(instr.ops[0]) &&
         instr.ops[1].kind == MOperand::Kind::Imm) {
@@ -615,6 +622,7 @@ void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
     }
 }
 
+/// @copydoc hasSideEffects
 bool hasSideEffects(const MInstr &instr) noexcept {
     switch (instr.opc) {
         case MOpcode::StrRegBaseRegLsl:
@@ -693,6 +701,7 @@ bool hasSideEffects(const MInstr &instr) noexcept {
     }
 }
 
+/// @copydoc getDefinedReg
 std::optional<MOperand> getDefinedReg(const MInstr &instr) noexcept {
     switch (instr.opc) {
         case MOpcode::MovRR:

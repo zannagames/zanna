@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/LowerDiv.cpp
+// File: src/codegen/x86_64/LowerDiv.cpp
 // Purpose: Expand signed and unsigned 64-bit division/remainder pseudos into
 //          explicit CQO/IDIV or XOR/DIV sequences for the x86-64 backend.
 // Key invariants:
@@ -15,8 +15,8 @@
 //   - The pass executes between IL→MIR lowering and register allocation.
 // Ownership/Lifetime:
 //   - Mutates the MFunction in-place; no persistent auxiliary structures.
-// Links: codegen/x86_64/LowerILToMIR.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/LowerILToMIR.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,6 +32,16 @@
 #include <string>
 #include <string_view>
 #include <utility>
+
+/**
+ * @file
+ * @brief Implements x86-64 signed and unsigned 64-bit div/rem pseudo expansion.
+ *
+ * Constant divisors are strength-reduced to shifts, masks, or magic-number
+ * multiplies when legal. Remaining pseudos become explicit architectural
+ * RDX:RAX division sequences, with checked operations branching to lazily
+ * created divide-by-zero or overflow trap blocks.
+ */
 
 namespace zanna::codegen::x64 {
 
@@ -122,6 +132,8 @@ namespace {
 }
 
 /// @brief Return log2(v) if v is a positive power of 2, else -1.
+/// @param v Candidate positive divisor.
+/// @return Base-two logarithm for a power of two, otherwise @c -1.
 [[nodiscard]] int log2IfPowerOf2(int64_t v) {
     if (v <= 0 || (v & (v - 1)) != 0)
         return -1;
@@ -132,6 +144,11 @@ namespace {
 }
 
 /// @brief Scan backward in a block for a MOVri that loads into the given vreg.
+/// @details Stops at the first earlier definition of the register, preventing a
+///          stale constant from being propagated across a redefinition.
+/// @param block Block containing the divisor use.
+/// @param beforeIdx Exclusive upper bound of the backward scan.
+/// @param regOp Candidate virtual-register operand.
 /// @return The immediate value, or nullopt if not found.
 [[nodiscard]] std::optional<int64_t> findVRegConstant(const MBasicBlock &block,
                                                       std::size_t beforeIdx,
@@ -176,6 +193,8 @@ struct DivOpcodeKind {
 /// @brief Decode the opcode flags for a candidate instruction.
 /// @details Returns `matched == false` for any opcode that is not a div/rem
 ///          pseudo so callers can quickly skip non-targets.
+/// @param opcode Machine opcode to classify.
+/// @return Independent quotient, signedness, checking, and match flags.
 [[nodiscard]] DivOpcodeKind classifyDivOpcode(MOpcode opcode) noexcept {
     DivOpcodeKind k;
     const bool isSignedDiv = opcode == MOpcode::DIVS64rr;
@@ -202,6 +221,11 @@ struct DivOpcodeKind {
 ///          any missing CALL/UD2 to keep the trap shape canonical. Otherwise a
 ///          fresh block is appended to @p fn. The resolved index is cached in
 ///          @p trapIndex so subsequent calls return in O(1).
+/// @param fn Function that owns or will receive the trap block.
+/// @param label Unique trap-block label.
+/// @param callee Runtime trap routine invoked by the block.
+/// @param trapIndex Optional cached block index, populated before return.
+/// @return Index of the canonical trap block in @c fn.blocks.
 [[nodiscard]] std::size_t ensureTrapBlock(MFunction &fn,
                                           const std::string &label,
                                           const char *callee,
@@ -212,6 +236,7 @@ struct DivOpcodeKind {
     if (auto existing = findBlockIndex(fn, label)) {
         trapIndex = *existing;
         auto &trapBlock = fn.blocks[*trapIndex];
+        /// Match a direct call to the requested runtime trap routine.
         const bool hasCall = std::any_of(
             trapBlock.instructions.begin(), trapBlock.instructions.end(), [&](const MInstr &instr) {
                 return instr.opcode == MOpcode::CALL && !instr.operands.empty() &&
@@ -222,6 +247,7 @@ struct DivOpcodeKind {
             trapBlock.append(
                 MInstr::make(MOpcode::CALL, std::vector<Operand>{makeLabelOperand(callee)}));
         }
+        /// Recognize the non-returning illegal-instruction terminator.
         const bool hasTerminator =
             std::any_of(trapBlock.instructions.begin(),
                         trapBlock.instructions.end(),
@@ -242,6 +268,12 @@ struct DivOpcodeKind {
 
 /// @brief Try replacing an unsigned div/rem by a power-of-2 constant with a
 ///        shift/mask sequence in-place.
+/// @param block Block containing the candidate pseudo.
+/// @param instrIdx Candidate index, advanced to the final inserted instruction.
+/// @param kind Decoded opcode behavior.
+/// @param candidate Original div/rem pseudo.
+/// @param dividendOp Dividend operand.
+/// @param divisorOp Virtual register whose local constant definition is sought.
 /// @return true if the rewrite happened (and @p instrIdx was advanced past the
 ///         emitted instruction(s)). false if the dispatcher must fall through
 ///         to the generic IDIV/DIV expansion.
@@ -326,6 +358,12 @@ struct DivOpcodeKind {
 ///          constant divisor satisfies the div0 check statically, and d != -1
 ///          rules out the INT_MIN / -1 overflow. The emitted sequence mirrors
 ///          the AArch64 peephole's proven expansions.
+/// @param block Block containing the candidate pseudo.
+/// @param instrIdx Candidate index, advanced to the final replacement instruction.
+/// @param kind Decoded quotient/remainder and signedness behavior.
+/// @param candidate Original pseudo supplying the destination.
+/// @param dividendOp Register dividend read by the generated sequence.
+/// @param divisorOp Virtual register whose constant definition is sought.
 /// @return true if the pseudo was rewritten in place (and @p instrIdx points
 ///         at the last emitted instruction).
 [[nodiscard]] bool tryLowerDivByMagic(MBasicBlock &block,
@@ -350,9 +388,11 @@ struct DivOpcodeKind {
     const Operand r11 = makePhysRegOperand(PhysReg::R11);
 
     std::vector<MInstr> seq;
+    /// Append a two-operand instruction while cloning both source descriptors.
     const auto emit2 = [&](MOpcode op, const Operand &a, const Operand &b) {
         seq.push_back(MInstr::make(op, std::vector<Operand>{cloneOperand(a), cloneOperand(b)}));
     };
+    /// Append an immediate shift of @p reg by @p amount.
     const auto emitShift = [&](MOpcode op, const Operand &reg, int amount) {
         seq.push_back(MInstr::make(
             op, std::vector<Operand>{cloneOperand(reg), makeImmOperand(amount)}));
@@ -454,6 +494,16 @@ struct DivOpcodeKind {
 ///          checked rem the result is forced to 0 and control jumps to
 ///          @p afterLabel. On the non-overflow path control falls through to a
 ///          @c LABEL marking the post-guard join point.
+/// @param currentBlock Block extended with the guard sequence.
+/// @param fn Function providing unique local labels.
+/// @param raxOp RAX operand containing the materialized dividend.
+/// @param divisorRegOp Register containing the divisor.
+/// @param scratchRegOp Scratch GPR used to materialize @c INT64_MIN.
+/// @param destOp Pseudo destination used for the checked-remainder special case.
+/// @param dividendClone Original dividend used for constant-folding the first test.
+/// @param kind Decoded operation flags; must describe a checked signed pseudo.
+/// @param ovfTrapLabel Shared overflow-trap block label.
+/// @param afterLabel Continuation label for the checked-remainder special case.
 void emitDivOverflowGuards(MBasicBlock &currentBlock,
                            MFunction &fn,
                            const Operand &raxOp,
@@ -506,6 +556,12 @@ void emitDivOverflowGuards(MBasicBlock &currentBlock,
 
 /// @brief Emit the canonical CQO/IDIV (signed) or XOR/DIV (unsigned) sequence
 ///        and copy the quotient or remainder into @p destOp.
+/// @param currentBlock Block extended with the architectural division sequence.
+/// @param raxOp RAX operand holding the low dividend and eventual quotient.
+/// @param rdxOp RDX operand holding the high dividend and eventual remainder.
+/// @param divisorRegOp Explicit divisor register, distinct from RAX and RDX.
+/// @param destOp Destination that receives the selected result.
+/// @param kind Decoded signedness and quotient-versus-remainder behavior.
 void emitDivOrIdiv(MBasicBlock &currentBlock,
                    const Operand &raxOp,
                    const Operand &rdxOp,
@@ -536,13 +592,14 @@ void emitDivOrIdiv(MBasicBlock &currentBlock,
 ///          guarded control-flow pattern: the divisor is tested for zero, a
 ///          shared trap block is invoked when necessary, and otherwise the
 ///          CQO/IDIV (signed) or XOR/DIV (unsigned) sequence executes using the
-///          SysV register convention.  The
+///          architecturally implicit RDX:RAX register pair.  The
 ///          remaining instructions from the original block are moved into a
 ///          freshly created continuation block so the program order remains
 ///          intact after the branch sequence.  A single trap block is allocated
 ///          lazily and reused for every lowered pseudo within the function.
 ///
 /// @param fn Machine IR function being rewritten in place.
+/// @throws std::runtime_error If a matched pseudo has missing or unsupported operands.
 void lowerSignedDivRem(MFunction &fn) {
     const std::string trapLabel = ".Ltrap_div0_" + fn.name;
     const std::string ovfTrapLabel = ".Ltrap_ovf_" + fn.name;

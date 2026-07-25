@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
+/// @file ProcRegistry.cpp
 /// @brief Procedure registry implementation for the BASIC semantic analyser.
 /// @details Maintains a hash table of function/subroutine signatures and exposes
 ///          helpers for registering new declarations, clearing state, and
@@ -28,15 +28,17 @@
 
 namespace il::frontends::basic {
 
-/// @brief Construct a registry that records diagnostics through @p d.
+/// @brief Construct a registry and seed its runtime-visible procedures.
+/// @param d Diagnostic service borrowed for the registry's lifetime.
+/// @pre @p d outlives this registry.
 ProcRegistry::ProcRegistry(SemanticDiagnostics &d) : de(d) {
     // Seed built-in extern procedure signatures from runtime registry.
     seedRuntimeBuiltins();
 }
 
 /// @brief Remove all procedures registered so far.
-/// @details Clears the internal table so a new compilation unit can start with a
-///          clean namespace.
+/// @details Clears signature and qualified-entry tables, then immediately
+///          repopulates supported dotted runtime builtins for the next unit.
 void ProcRegistry::clear() {
     procs_.clear();
     byQualified_.clear();
@@ -73,14 +75,9 @@ ProcSignature ProcRegistry::buildSignature(const ProcDescriptor &descriptor) {
     return sig;
 }
 
-/// @brief Register a procedure using the shared descriptor implementation.
-///
-/// Emits diagnostics when duplicate declarations are discovered; otherwise the
-/// signature is stored for later lookup.
-///
-/// @param name Name of the procedure to register.
-/// @param descriptor Metadata describing the procedure signature.
-/// @param loc Source location of the declaration for diagnostics.
+/// @brief Remove one trailing BASIC type suffix from a procedure spelling.
+/// @param name Identifier segment to normalize.
+/// @return Owned spelling without a final `$`, `#`, `!`, `&`, or `%`.
 static std::string stripSuffix(std::string_view name) {
     if (name.empty())
         return std::string{};
@@ -90,6 +87,13 @@ static std::string stripSuffix(std::string_view name) {
     return std::string{name};
 }
 
+/// @brief Canonicalize every segment of a dotted procedure name.
+/// @details Splits on dots, strips a BASIC type suffix only from the final
+///          segment, canonicalizes non-empty segments, and rejoins them.
+///          Empty segments are retained; an invalid non-empty segment makes the
+///          entire result empty.
+/// @param dotted Qualified or unqualified dotted spelling.
+/// @return Canonical joined key, or an empty string on invalid input.
 static std::string canonicalizeQualifiedFlat(std::string_view dotted) {
     // Split on '.' and canonicalize each segment (ASCII lowercase).
     // For the final segment only, strip BASIC type suffix before canonicalization.
@@ -130,6 +134,14 @@ static std::string canonicalizeQualifiedFlat(std::string_view dotted) {
     return JoinQualified(parts);
 }
 
+/// @brief Register one descriptor under display and canonical lookup keys.
+/// @details Canonicalizes qualified segments and the final type suffix, rejects
+///          invalid names, checks the qualified-entry table for user/builtin
+///          conflicts, validates the descriptor, and inserts signature copies
+///          under both the supplied spelling and canonical key.
+/// @param name Display or dotted procedure name.
+/// @param descriptor Kind, return type, and borrowed parameter declarations.
+/// @param loc Declaration location used for invalid/duplicate diagnostics and storage.
 void ProcRegistry::registerProcImpl(std::string_view name,
                                     const ProcDescriptor &descriptor,
                                     il::support::SourceLoc loc) {
@@ -174,7 +186,9 @@ void ProcRegistry::registerProcImpl(std::string_view name,
 
 /// @brief Register a FUNCTION declaration with its return type and parameters.
 /// @details Constructs a @ref ProcDescriptor capturing the declaration metadata
-///          before delegating to @ref registerProcImpl.
+///          and chooses `qualifiedName`, namespace path plus name, or the
+///          unqualified name before delegating to @ref registerProcImpl.
+/// @param f Function declaration to index; no AST pointer is retained.
 void ProcRegistry::registerProc(const FunctionDecl &f) {
     const ProcDescriptor descriptor{
         ProcSignature::Kind::Function, f.ret, std::span<const Param>{f.params}, f.loc};
@@ -200,7 +214,8 @@ void ProcRegistry::registerProc(const FunctionDecl &f) {
 
 /// @brief Register a SUB declaration with its parameter list.
 /// @details Functions similarly to @ref registerProc for functions but records a
-///          void return type.
+///          void return type and the best available qualified spelling.
+/// @param s Subroutine declaration to index; no AST pointer is retained.
 void ProcRegistry::registerProc(const SubDecl &s) {
     const ProcDescriptor descriptor{
         ProcSignature::Kind::Sub, std::nullopt, std::span<const Param>{s.params}, s.loc};
@@ -224,6 +239,7 @@ void ProcRegistry::registerProc(const SubDecl &s) {
 }
 
 /// @brief Access the internal procedure table for iteration.
+/// @return Const reference to the registry-owned display/canonical signature map.
 const ProcTable &ProcRegistry::procs() const {
     return procs_;
 }
@@ -252,6 +268,12 @@ const ProcSignature *ProcRegistry::lookup(std::string_view name) const {
     return it == procs_.end() ? nullptr : &it->second;
 }
 
+/// @brief Register a function pointer through the legacy phase-one API.
+/// @details A null pointer is ignored. The explicit @p loc supplies stored and
+///          diagnostic location data; `qualifiedName` is preferred over the
+///          unqualified name, and namespacePath is not synthesized by this API.
+/// @param fn Function declaration to register, or null for no operation.
+/// @param loc Location associated with this registration.
 void ProcRegistry::AddProc(const FunctionDecl *fn, il::support::SourceLoc loc) {
     if (!fn)
         return;
@@ -262,6 +284,11 @@ void ProcRegistry::AddProc(const FunctionDecl *fn, il::support::SourceLoc loc) {
     registerProcImpl(nm, descriptor, loc);
 }
 
+/// @brief Look up an entry by its exact qualified-table key.
+/// @details Performs heterogeneous lookup without case folding, suffix stripping,
+///          or dotted-name canonicalization.
+/// @param qualified Exact key, normally already canonicalized.
+/// @return Pointer to the registry-owned entry, or null when absent.
 const ProcRegistry::ProcEntry *ProcRegistry::LookupExact(std::string_view qualified) const {
     // Heterogeneous lookup, no allocation
     auto it = byQualified_.find(qualified);
@@ -270,9 +297,10 @@ const ProcRegistry::ProcEntry *ProcRegistry::LookupExact(std::string_view qualif
 
 /// @brief Seed the procedure registry with builtin externs from the runtime registry.
 /// @details Iterates runtime descriptors, selects canonical dotted names (e.g.,
-///          "Zanna.*"), maps IL types to BASIC types, and registers them as
-///          procedures so the semantic analyzer can resolve calls like
-///          Zanna.Terminal.PrintI64.
+///          "Zanna.*"), skips signatures whose non-void types cannot map to
+///          BASIC, and records runtime IDs plus raw-pointer/object masks. Each
+///          accepted descriptor is inserted under its display and canonical
+///          keys unless that canonical key already exists.
 void ProcRegistry::seedRuntimeBuiltins() {
     using namespace il::runtime;
     const auto &registry = runtimeRegistry();

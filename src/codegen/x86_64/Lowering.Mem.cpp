@@ -5,19 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Lowering.Mem.cpp
+// File: src/codegen/x86_64/Lowering.Mem.cpp
 // Purpose: Implement memory-oriented opcode lowering rules for the x86-64
 //          backend, including loads, stores, and call sequencing.
 // Key invariants:
 //   - Emitters rely on EmitCommon for operand preparation.
 //   - ABI-mandated register classes are preserved.
-//   - No instructions are emitted when operand requirements are unmet.
+//   - Malformed operand shapes produce an explicit backend diagnostic.
 // Ownership/Lifetime:
 //   - Operates on borrowed MIRBuilder state; call metadata is recorded for
 //     later passes without taking ownership of IR nodes.
-// Links: codegen/x86_64/LoweringRules.hpp,
-//        codegen/x86_64/Lowering.EmitCommon.hpp,
-//        codegen/x86_64/CallLowering.hpp
+// Links: src/codegen/x86_64/LoweringRules.hpp,
+//        src/codegen/x86_64/Lowering.EmitCommon.hpp,
+//        src/codegen/x86_64/CallLowering.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,6 +39,16 @@
 #include <utility>
 #include <vector>
 
+/**
+ * @file
+ * @brief Implements memory, call, literal, stack-allocation, and address rules.
+ *
+ * Direct and indirect calls are translated into delayed ABI call plans and
+ * result-register captures, including string-retain policy. Memory operations
+ * reuse EmitCommon addressing, while allocas, GEPs, globals, nulls, strings,
+ * and floating constants are materialized into the appropriate MIR forms.
+ */
+
 namespace zanna::codegen::x64::lowering {
 namespace {
 
@@ -46,11 +56,16 @@ namespace {
 /// @details Duplicate of helpers in other lowering TUs; keeping a local copy
 ///          avoids cross-file include churn while these emitters remain
 ///          stand-alone.
+/// @param kind IL kind to classify.
+/// @return @c true for an integer, boolean, or pointer.
 [[nodiscard]] bool isIntegerLikeKind(ILValue::Kind kind) noexcept {
     return kind == ILValue::Kind::I64 || kind == ILValue::Kind::I1 || kind == ILValue::Kind::PTR;
 }
 
 /// @brief Predicate: is @p value an immediate of integer-class kind?
+/// @param builder Builder used for immediate classification.
+/// @param value Candidate IL value.
+/// @return @c true for an inline integer, boolean, or pointer payload.
 [[nodiscard]] bool isIntegerLikeImmediate(const MIRBuilder &builder,
                                           const ILValue &value) noexcept {
     return builder.isImmediate(value) && isIntegerLikeKind(value.kind);
@@ -58,6 +73,8 @@ namespace {
 
 /// @brief Canonicalise an integer-class IL immediate to its signed 64-bit value.
 /// @details I1 booleans are clamped to {0, 1} before being treated as i64.
+/// @param value Integer-like immediate.
+/// @return Canonical payload for MIR immediate emission.
 [[nodiscard]] int64_t integerImmediateValue(const ILValue &value) noexcept {
     return value.kind == ILValue::Kind::I1 ? (value.i64 != 0 ? 1 : 0) : value.i64;
 }
@@ -139,6 +156,9 @@ void applyKnownVarArgMetadata(CallLoweringPlan &plan,
 /// @brief Build a CALL instruction tagged with the supplied call-plan id.
 /// @details Tagged CALLs let the FrameLowering pass find their plan when
 ///          emitting argument shuffles and stack adjustment.
+/// @param target Direct label or indirect call target operand.
+/// @param callPlanId Stable plan index recorded by MIRBuilder.
+/// @return CALL instruction carrying @p callPlanId.
 MInstr makePlannedCall(Operand target, uint32_t callPlanId) {
     MInstr call = MInstr::make(MOpcode::CALL, std::vector<Operand>{std::move(target)});
     call.callPlanId = callPlanId;

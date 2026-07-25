@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/LinkerSupport.hpp
+// File: src/codegen/common/LinkerSupport.hpp
 // Purpose: Shared linker utilities used by both x86_64 and AArch64 backends.
 // Key invariants: Archive paths are validated via fileExists() before use;
 //                 missing archives trigger cmake rebuild before link failure.
@@ -29,6 +29,9 @@
 #include <utility>
 #include <vector>
 
+/// @file
+/// @brief Declares archive discovery, link-context preparation, and tool launching.
+
 namespace zanna::codegen::common {
 
 // =========================================================================
@@ -37,6 +40,8 @@ namespace zanna::codegen::common {
 
 /// @brief Encode a filesystem path as UTF-8 without consulting the active code page.
 /// @details Process-launch and linker option strings use UTF-8 on every host.
+/// @param path Native filesystem path to encode.
+/// @return UTF-8 representation suitable for Zanna process and linker APIs.
 std::string pathToUtf8(const std::filesystem::path &path);
 
 /// @brief Check if a regular file exists at the given path, suppressing filesystem exceptions.
@@ -46,8 +51,8 @@ bool fileExists(const std::filesystem::path &path);
 
 /// @brief Read the entire contents of a file into a string.
 /// @param path The filesystem path to read from.
-/// @param dst Output string to receive the file contents.
-/// @return True if the file was read successfully, false on error.
+/// @param[out] dst Receives binary-preserving file contents on success.
+/// @return `true` if the file was opened and consumed; `false` on open failure.
 bool readFileToString(const std::filesystem::path &path, std::string &dst);
 
 /// @brief Write a string to disk, replacing any existing contents.
@@ -58,17 +63,22 @@ bool readFileToString(const std::filesystem::path &path, std::string &dst);
 bool writeTextFile(const std::filesystem::path &path, std::string_view text, std::ostream &err);
 
 /// @brief Search for the CMake build directory by walking parent directories.
-/// @details Starts from the current working directory and walks upward looking
-///          for a directory containing `CMakeCache.txt`. Returns the first match.
+/// @details Checks `ZANNA_BUILD_DIR`, ancestors of the running executable, a
+///          `build` child of the current directory, and then current-directory
+///          ancestors. Each probe requires a regular `CMakeCache.txt`.
 /// @return The path to the build directory, or std::nullopt if not found.
 std::optional<std::filesystem::path> findBuildDir();
 
 /// @brief Return the canonical path to the current executable when available.
+/// @return Host-native absolute executable path, or `std::nullopt` when the
+///         platform query or canonicalization fails.
 std::optional<std::filesystem::path> currentExecutablePath();
 
 /// @brief Resolve the installed library directory for the current Zanna executable.
 /// @details Searches explicit environment overrides, executable-relative layouts,
 ///          and platform standard locations before falling back to build-tree logic.
+/// @return First directory containing the base runtime archive, or
+///         `std::nullopt` when no installed layout is detected.
 std::optional<std::filesystem::path> findInstalledLibDir();
 
 /// @brief Scan assembly text for referenced runtime symbols (rt_* / _rt_*).
@@ -91,6 +101,10 @@ std::filesystem::path runtimeArchivePath(const std::filesystem::path &buildDir,
 /// @details Used for companion graphics/audio libraries such as zannagfx,
 ///          zannagui, and zannaaud. Prefers discovered installed layouts before
 ///          build-tree fallback paths.
+/// @param buildDir Optional CMake build root used for development-tree probes.
+/// @param libBaseName Library name without platform prefix or extension.
+/// @return Preferred installed, build-tree, or fallback archive path. The
+///         fallback is not guaranteed to exist.
 std::filesystem::path supportLibraryPath(const std::filesystem::path &buildDir,
                                          std::string_view libBaseName);
 
@@ -102,10 +116,18 @@ std::filesystem::path supportLibraryPath(const std::filesystem::path &buildDir,
 ///          Zanna's in-process linker must search that archive before it
 ///          generates import thunks, otherwise binaries can import non-exported
 ///          helper names and fail during Windows loader startup.
+/// @param buildDir CMake build root used to inspect generator/toolset metadata.
+/// @param arch Requested MSVC library architecture; `arm64` selects ARM64 and
+///             other values select x64.
+/// @param debugRuntime Whether to search for debug rather than release CRT archives.
+/// @return Existing C++ and C runtime archive paths found in environment or
+///         CMake-discovered toolsets; empty on non-Windows hosts.
 std::vector<std::filesystem::path> windowsMsvcCxxRuntimeArchives(
     const std::filesystem::path &buildDir, std::string_view arch, bool debugRuntime);
 
 /// @brief Heuristically detect whether Windows archive paths use debug CRTs.
+/// @param archivePaths UTF-8 archive paths or names to inspect case-insensitively.
+/// @return `true` when a debug directory marker or known debug CRT filename appears.
 bool windowsArchivePathsUseDebugRuntime(const std::vector<std::string> &archivePaths);
 
 /// @brief Static-archive closure pulled in when a codegen'd binary embeds the
@@ -114,11 +136,13 @@ bool windowsArchivePathsUseDebugRuntime(const std::vector<std::string> &archiveP
 ///        force-loaded zia_editor_services objects actually reference get
 ///        extracted. Names are both the CMake target names and
 ///        `supportLibraryPath` base names.
+/// @return Process-lifetime ordered dependency-name vector.
 const std::vector<std::string> &ziaFrontendClosureLibs();
 
 /// @brief Static-archive closure pulled in with the BASIC language-service bridge.
 /// @details fe_basic itself is force-loaded so its strong runtime entry points
 ///          override weak stubs; these dependency archives remain demand-driven.
+/// @return Process-lifetime ordered dependency-name vector.
 const std::vector<std::string> &basicFrontendClosureLibs();
 
 // =========================================================================
@@ -173,7 +197,8 @@ int prepareLinkContext(const std::string &asmPath,
 /// @param ctx Output link context to populate.
 /// @param out Standard output stream for progress messages.
 /// @param err Standard error stream for error messages.
-/// @return 0 on success, non-zero on failure.
+/// @return Zero on successful resolution/build, or nonzero when archive
+///         inspection or a required target build fails.
 int prepareLinkContextFromSymbols(const std::unordered_set<std::string> &symbols,
                                   LinkContext &ctx,
                                   std::ostream &out,
@@ -189,7 +214,7 @@ int prepareLinkContextFromSymbols(const std::unordered_set<std::string> &symbols
 /// @param objPath Path for the output object file.
 /// @param out Standard output stream for assembler messages.
 /// @param err Standard error stream for assembler error messages.
-/// @return The assembler's exit code (0 on success).
+/// @return The assembler's exit code, or `-1` when the process could not launch.
 int invokeAssembler(const std::vector<std::string> &ccArgs,
                     const std::string &asmPath,
                     const std::string &objPath,
@@ -200,7 +225,7 @@ int invokeAssembler(const std::vector<std::string> &ccArgs,
 /// @param exePath Path to the executable to run.
 /// @param out Standard output stream to forward the executable's stdout to.
 /// @param err Standard error stream to forward the executable's stderr to.
-/// @return The executable's exit code.
+/// @return The executable's exit code, or `-1` when process launch fails.
 int runExecutable(const std::string &exePath, std::ostream &out, std::ostream &err);
 
 } // namespace zanna::codegen::common

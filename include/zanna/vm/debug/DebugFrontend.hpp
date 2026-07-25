@@ -18,6 +18,23 @@
 // Links: src/vm/debug/VMDebug.cpp, src/tools/zanna/DebugAdapter.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file include/zanna/vm/debug/DebugFrontend.hpp
+ * @brief Defines the host interface and stop snapshots for interactive VM
+ *        debugging.
+ *
+ * @details
+ * At each debugger stop, the VM constructs an owning `DebugStopInfo` containing
+ * source location, stack frames, and top-frame locals, then synchronously calls
+ * `DebugFrontend::onStop()` on the VM thread. The host returns the next
+ * `DebugAction` before execution can resume.
+ *
+ * Expandable values use stop-scoped integer handles resolved through a shared
+ * `DebugVarExpander`. Those handles and the expander become invalid after the
+ * stop snapshot is released.
+ */
+
 #pragma once
 
 #include "zanna/vm/debug/Debug.hpp"
@@ -29,18 +46,20 @@
 
 namespace il::vm {
 
-/// @brief One call-stack frame at a debugger stop (most-recent first in a list).
+/// @brief Owning source-level snapshot of one paused call-stack frame.
 struct DebugFrameInfo {
     std::string function; ///< Function name (without leading '@').
     std::string path;     ///< Source file of the frame, or empty when unknown.
     uint32_t line = 0;    ///< 1-based line, or 0 when unknown.
 };
 
-/// @brief One named local at a debugger stop.
-/// @details Composite values (lists, seqs, maps) advertise a non-zero @ref varRef
-///          and a @ref childCount; a host expands them one level at a time through
-///          the stop's DebugVarExpander. Leaves keep varRef == 0, matching the
-///          historical flat shape so pre-expansion consumers are unaffected.
+/**
+ * @brief Owns the name, type, summary, and expansion metadata for one local.
+ *
+ * Composite values advertise a positive `varRef` and a `childCount`; a host
+ * expands them one level at a time through the stop's `DebugVarExpander`.
+ * Leaves keep `varRef == 0`, preserving the historical flat representation.
+ */
 struct DebugLocalInfo {
     std::string name;       ///< Source-level variable name.
     std::string value;      ///< Formatted value (a compact summary for composites).
@@ -49,26 +68,38 @@ struct DebugLocalInfo {
     int64_t childCount = 0; ///< Child count when varRef>0; 0 for leaves.
 };
 
-/// @brief Lazy, one-level child provider for structured debugger values.
-/// @details Produced by the VM for a single stop and owned by that stop's
-///          DebugStopInfo. All @ref varRef handles it hands out are valid only
-///          while that DebugStopInfo is alive (i.e. while the VM is paused at the
-///          stop); they become invalid as soon as execution resumes and the info
-///          is discarded. Implementations never recurse — each call expands
-///          exactly one level so depth is bounded by host requests.
+/**
+ * @brief Provides lazy, one-level children for structured debugger values.
+ *
+ * The VM creates an implementation for one stop and shares ownership through
+ * `DebugStopInfo::vars`. Every reference it advertises is scoped to that
+ * expander. Implementations expand exactly one level; recursion depth is driven
+ * explicitly by subsequent host requests.
+ */
 class DebugVarExpander {
   public:
+    /// @brief Destroy a concrete stop-scoped expander through the interface.
     virtual ~DebugVarExpander() = default;
 
-    /// @brief Return children [start, start+count) of the value behind @p ref.
-    /// @param ref A varRef previously advertised on a DebugLocalInfo this stop.
-    /// @param start First child index to return (0-based).
-    /// @param count Maximum number of children to return.
-    /// @return The requested slice of children; empty when @p ref is unknown.
+    /**
+     * @brief Materialize a bounded slice of a structured value's direct children.
+     * @param ref Positive handle advertised by this expander during the current
+     *            stop.
+     * @param start Zero-based index of the first requested child.
+     * @param count Maximum number of children to return.
+     * @return Owning child snapshots for the requested slice, or an empty vector
+     *         when the handle or range is unavailable.
+     */
     virtual std::vector<DebugLocalInfo> expand(int64_t ref, int64_t start, int64_t count) = 0;
 };
 
-/// @brief Plain, serializable description of why and where execution paused.
+/**
+ * @brief Owns the serializable state presented for one debugger pause.
+ *
+ * Frames are ordered most-recent first and locals describe the top frame.
+ * `vars`, when present, keeps all expansion handles alive for exactly the
+ * snapshot lifetime.
+ */
 struct DebugStopInfo {
     std::string reason;                 ///< "breakpoint" | "step" | "step-over" | ...
     std::string path;                   ///< Source file of the top frame.
@@ -81,17 +112,27 @@ struct DebugStopInfo {
     std::shared_ptr<DebugVarExpander> vars;
 };
 
-/// @brief Interactive debugger driver implemented by the host.
-/// @details The VM calls @ref onStop at every pause with a plain DebugStopInfo and
-///          applies the returned DebugAction. Implementations live outside the VM
-///          (an IDE adapter) and communicate over their own transport.
+/**
+ * @brief Host-implemented synchronous driver for interactive VM debugging.
+ *
+ * The VM borrows this interface from its host and invokes it on the VM thread
+ * while execution is stopped. Implementations may communicate with an IDE or
+ * debugger transport but must return an action before the VM resumes.
+ */
 class DebugFrontend {
   public:
+    /// @brief Destroy a host implementation through the interface.
     virtual ~DebugFrontend() = default;
 
-    /// @brief Report a pause and obtain the next action to apply.
-    /// @param info Where/why execution paused (top location, backtrace, locals).
-    /// @return The action the VM should take (continue/step/step-over/step-out).
+    /**
+     * @brief Present a pause snapshot and choose the VM's next debug action.
+     * @param info Borrowed snapshot valid for the duration of the call. Copy any
+     *             data needed after return; expansion handles are not reusable
+     *             after execution resumes.
+     * @return Action applied immediately after the callback returns.
+     *
+     * @note The callback runs synchronously on the VM thread.
+     */
     virtual DebugAction onStop(const DebugStopInfo &info) = 0;
 };
 

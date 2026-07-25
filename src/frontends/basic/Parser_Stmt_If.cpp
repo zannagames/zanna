@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file Parser_Stmt_If.cpp
+/// @brief Implements single-line and block IF parsing for BASIC.
+/// @details IF parsing is divided into header, block-body, and same-line
+///          ELSE-chain phases. All constructed branches remain owned by the
+///          resulting IfStmt and retain the source line supplied by statement
+///          sequencing.
+
 #include "frontends/basic/Parser.hpp"
 #include "frontends/basic/Parser_Stmt_ControlHelpers.hpp"
 
@@ -58,6 +65,7 @@ void Parser::parseIfBlock(IfParseState &state) {
     using parser_helpers::buildBranchList;
     using parser_helpers::collectBranchStatements;
 
+    /// Clause or closing token that stopped collection of one block branch.
     enum class BlockTerminator {
         None,
         ElseIf,
@@ -67,8 +75,10 @@ void Parser::parseIfBlock(IfParseState &state) {
 
     auto ctxIf = statementSequencer();
 
+    /// Collect one branch and classify the token sequence that terminated it.
     auto collectBranch = [&](bool allowElseBranches) -> std::pair<StmtPtr, BlockTerminator> {
         BlockTerminator term = BlockTerminator::None;
+        /// Stop at END IF and, when permitted, at ELSEIF or ELSE.
         auto predicate = [&](int, il::support::SourceLoc) {
             if (at(TokenKind::KeywordEnd) && peek(1).kind == TokenKind::KeywordIf)
                 return true;
@@ -80,6 +90,7 @@ void Parser::parseIfBlock(IfParseState &state) {
                 return true;
             return false;
         };
+        /// Record source metadata, consume END IF, or classify an ELSE delimiter.
         auto consumer =
             [&](int lineNumber, il::support::SourceLoc, StatementSequencer::TerminatorInfo &info) {
                 info.line = lineNumber;

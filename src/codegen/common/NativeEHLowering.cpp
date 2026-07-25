@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/NativeEHLowering.cpp
+// File: src/codegen/common/NativeEHLowering.cpp
 // Purpose: Rewrite structured EH into setjmp-backed IL that native backends can
 // lower like ordinary control flow.
 //
@@ -31,6 +31,9 @@
 #include <utility>
 #include <vector>
 
+/// @file
+/// @brief Implements setjmp-backed lowering of structured IL exception handling.
+
 namespace zanna::codegen::common {
 namespace {
 
@@ -53,27 +56,36 @@ constexpr const char *kFrameGetSite = "rt_native_eh_get_site";
 constexpr const char *kSetjmpSymbol = "setjmp";
 constexpr int32_t kErrInvalidOperation = 8;
 
+/// @brief Identifies one `eh.push` by its original function position.
 struct PushKey {
     std::size_t blockIndex = 0;
     std::size_t instrIndex = 0;
 
+    /// @brief Compare original block/instruction coordinates.
+    /// @param other Key to compare.
+    /// @return `true` when both indices match.
     bool operator==(const PushKey &other) const noexcept {
         return blockIndex == other.blockIndex && instrIndex == other.instrIndex;
     }
 };
 
+/// @brief Hashes an original `eh.push` coordinate for unordered maps.
 struct PushKeyHash {
+    /// @param key Push coordinate to hash.
+    /// @return Deterministic mixed block/instruction hash.
     std::size_t operator()(const PushKey &key) const noexcept {
         return (key.blockIndex * 1315423911u) ^ key.instrIndex;
     }
 };
 
+/// @brief Synthetic resume metadata for one potentially trapping instruction.
 struct SiteInfo {
     int64_t siteId = 0;
     std::string sameLabel;
     std::string nextLabel;
 };
 
+/// @brief Lowering state for one dynamic native EH frame scope.
 struct ScopeInfo {
     int id = -1;
     std::string handlerLabel;
@@ -83,27 +95,38 @@ struct ScopeInfo {
     std::vector<SiteInfo> sites;
 };
 
+/// @brief Candidate replacement blocks and mutation flag for one function.
 struct RewrittenFunction {
     std::vector<BasicBlock> blocks;
     bool changed = false;
 };
 
+/// @brief Construct the IL `void` type used by injected calls.
+/// @return Fresh primitive type value.
 static Type voidTy() {
     return Type(Type::Kind::Void);
 }
 
+/// @brief Construct the IL pointer type used for native EH frames.
+/// @return Fresh primitive type value.
 static Type ptrTy() {
     return Type(Type::Kind::Ptr);
 }
 
+/// @brief Construct the IL boolean type used by synthetic comparisons.
+/// @return Fresh primitive type value.
 static Type i1Ty() {
     return Type(Type::Kind::I1);
 }
 
+/// @brief Construct the IL 32-bit integer type used by error traps.
+/// @return Fresh primitive type value.
 static Type i32Ty() {
     return Type(Type::Kind::I32);
 }
 
+/// @brief Construct the IL 64-bit integer type used by setjmp/site tokens.
+/// @return Fresh primitive type value.
 static Type i64Ty() {
     return Type(Type::Kind::I64);
 }
@@ -112,6 +135,9 @@ static Type i64Ty() {
 /// @details `Type` intentionally has a tiny value representation, so native EH
 ///          signature checks only need to compare the primitive kind. Keeping
 ///          this in one helper makes the extern validation path explicit.
+/// @param lhs First type.
+/// @param rhs Second type.
+/// @return `true` when primitive kinds match.
 static bool sameType(const Type &lhs, const Type &rhs) {
     return lhs.kind == rhs.kind;
 }
@@ -122,6 +148,10 @@ static bool sameType(const Type &lhs, const Type &rhs) {
 ///          would produce invalid call sites, so this helper performs an exact
 ///          arity and primitive-type comparison before `ensureExtern` accepts
 ///          an existing declaration.
+/// @param ext Existing module declaration.
+/// @param retType Expected return type.
+/// @param params Expected parameter types in ABI order.
+/// @return `true` for exact primitive return/parameter shape equality.
 static bool externSignatureMatches(const Extern &ext,
                                    const Type &retType,
                                    const std::vector<Type> &params) {
@@ -134,12 +164,19 @@ static bool externSignatureMatches(const Extern &ext,
     return true;
 }
 
+/// @brief Reserve the next function value identifier and assign its debug name.
+/// @param[in,out] fn Function value-name table to extend.
+/// @param name Synthetic value name.
+/// @return Newly reserved temporary identifier.
 static unsigned reserveTemp(Function &fn, const std::string &name) {
     const unsigned id = static_cast<unsigned>(fn.valueNames.size());
     fn.valueNames.push_back(name);
     return id;
 }
 
+/// @brief Test whether an opcode is a structured EH marker handled here.
+/// @param op IL opcode to classify.
+/// @return `true` for push/pop/entry and resume marker families.
 static bool isEhOpcode(Opcode op) {
     switch (op) {
         case Opcode::EhPush:
@@ -154,11 +191,18 @@ static bool isEhOpcode(Opcode op) {
     }
 }
 
+/// @brief Test whether a block begins with structured error/resume parameters.
+/// @param bb Basic block to inspect.
+/// @return `true` when the first two parameters are `error` and `resume.token`.
 static bool hasStructuredHandlerParams(const BasicBlock &bb) {
     return bb.params.size() >= 2 && bb.params[0].type.kind == Type::Kind::Error &&
            bb.params[1].type.kind == Type::Kind::ResumeTok;
 }
 
+/// @brief Test whether an IL opcode requires an active-scope resume site.
+/// @param op IL opcode to classify.
+/// @return `true` for calls, explicit traps, checked arithmetic/memory, and
+///         checked numeric casts modeled by native EH.
 static bool mayTrap(Opcode op) {
     switch (op) {
         case Opcode::Call:
@@ -183,6 +227,12 @@ static bool mayTrap(Opcode op) {
     }
 }
 
+/// @brief Ensure one exact native helper declaration exists in a module.
+/// @param[in,out] module Module extern and identifier tables to inspect/extend.
+/// @param name Required symbol name.
+/// @param retType Required return type.
+/// @param params Required parameter types.
+/// @note A conflicting existing declaration is an internal compiler error.
 static void ensureExtern(Module &module, std::string name, Type retType, std::vector<Type> params) {
     for (const auto &ext : module.externs) {
         if (ext.name != name)
@@ -198,6 +248,8 @@ static void ensureExtern(Module &module, std::string name, Type retType, std::ve
     module.externs.back().nameSymbol = module.internIdentifier(module.externs.back().name);
 }
 
+/// @brief Ensure declarations for all runtime frame helpers and `setjmp`.
+/// @param[in,out] module Module extern table to extend.
 static void ensureRuntimeExterns(Module &module) {
     ensureExtern(module, kFrameAlloc, ptrTy(), {});
     ensureExtern(module, kFrameFree, voidTy(), {ptrTy()});
@@ -208,6 +260,10 @@ static void ensureRuntimeExterns(Module &module) {
     ensureExtern(module, kSetjmpSymbol, i64Ty(), {ptrTy()});
 }
 
+/// @brief Build a direct void call to an injected helper.
+/// @param callee Static helper symbol.
+/// @param operands Call arguments in source order.
+/// @return Fully initialized call instruction without a result.
 static Instr makeCallVoid(const char *callee, std::vector<Value> operands = {}) {
     Instr instr;
     instr.op = Opcode::Call;
@@ -217,6 +273,12 @@ static Instr makeCallVoid(const char *callee, std::vector<Value> operands = {}) 
     return instr;
 }
 
+/// @brief Build a direct helper call producing a temporary.
+/// @param result Destination temporary identifier.
+/// @param type Call result type.
+/// @param callee Static helper symbol.
+/// @param operands Call arguments in source order.
+/// @return Fully initialized result-producing call instruction.
 static Instr makeCallResult(unsigned result,
                             Type type,
                             const char *callee,
@@ -230,6 +292,10 @@ static Instr makeCallResult(unsigned result,
     return instr;
 }
 
+/// @brief Build a pointer-typed load used for an EH frame slot.
+/// @param result Destination temporary identifier.
+/// @param ptr Address value to load.
+/// @return Fully initialized load instruction.
 static Instr makeLoad(unsigned result, Value ptr) {
     Instr instr;
     instr.result = result;
@@ -239,6 +305,11 @@ static Instr makeLoad(unsigned result, Value ptr) {
     return instr;
 }
 
+/// @brief Build a store to a synthetic EH slot.
+/// @param ptr Destination address.
+/// @param value Value to write.
+/// @param storedType IL value type recorded on the store.
+/// @return Fully initialized store instruction.
 static Instr makeStore(Value ptr, Value value, Type storedType = ptrTy()) {
     Instr instr;
     instr.op = Opcode::Store;
@@ -248,6 +319,10 @@ static Instr makeStore(Value ptr, Value value, Type storedType = ptrTy()) {
     return instr;
 }
 
+/// @brief Build a fixed-size stack allocation for an EH frame pointer slot.
+/// @param result Destination pointer temporary.
+/// @param sizeBytes Allocation size encoded as a constant operand.
+/// @return Fully initialized `alloca`.
 static Instr makeAlloca(unsigned result, int64_t sizeBytes) {
     Instr instr;
     instr.result = result;
@@ -257,6 +332,10 @@ static Instr makeAlloca(unsigned result, int64_t sizeBytes) {
     return instr;
 }
 
+/// @brief Build an unconditional branch with optional block arguments.
+/// @param label Destination block label.
+/// @param args Values forwarded to destination parameters.
+/// @return Fully initialized branch instruction.
 static Instr makeBr(const std::string &label, std::vector<Value> args = {}) {
     Instr instr;
     instr.op = Opcode::Br;
@@ -265,6 +344,11 @@ static Instr makeBr(const std::string &label, std::vector<Value> args = {}) {
     return instr;
 }
 
+/// @brief Build a conditional branch without edge arguments.
+/// @param cond Boolean condition.
+/// @param trueLabel Taken-edge destination.
+/// @param falseLabel Not-taken-edge destination.
+/// @return Fully initialized conditional branch.
 static Instr makeCBr(Value cond, const std::string &trueLabel, const std::string &falseLabel) {
     Instr instr;
     instr.op = Opcode::CBr;
@@ -297,6 +381,9 @@ static Instr makeCBrWithTrueArgs(Value cond,
     return instr;
 }
 
+/// @brief Build a terminal trap from a runtime error code.
+/// @param code Numeric Zanna runtime error code.
+/// @return Fully initialized `trap.from.err` instruction.
 static Instr makeTrapFromErr(int32_t code) {
     Instr instr;
     instr.op = Opcode::TrapFromErr;
@@ -305,6 +392,11 @@ static Instr makeTrapFromErr(int32_t code) {
     return instr;
 }
 
+/// @brief Resolve ordinary branch successors of one terminator.
+/// @param terminator Final instruction of a block.
+/// @param blockIndex Label-to-index map for the original function.
+/// @return Known target indices for `br`, `cbr`, or `switch.i32`; empty for
+///         other opcodes and unknown labels.
 static std::vector<std::size_t> normalSuccessors(
     const Instr &terminator, const std::unordered_map<std::string, std::size_t> &blockIndex) {
     std::vector<std::size_t> successors;
@@ -330,6 +422,16 @@ static std::vector<std::size_t> normalSuccessors(
     return successors;
 }
 
+/// @brief Remove an obsolete error-token operand from handler getter operations.
+///
+/// After handler error parameters become native pointers, the runtime error
+/// getter opcodes use implicit current-error state rather than consuming that
+/// parameter explicitly.
+///
+/// @param handlerErrParam Handler label to converted error-parameter id map.
+/// @param block Block containing @p instr.
+/// @param[in,out] instr Candidate getter instruction.
+/// @return `true` when a matching explicit token operand was removed.
 static bool rewriteErrGetterForHandlerToken(
     const std::unordered_map<std::string, unsigned> &handlerErrParam,
     const BasicBlock &block,
@@ -355,6 +457,10 @@ static bool rewriteErrGetterForHandlerToken(
     return true;
 }
 
+/// @brief Find the captured outer EH stack for a handler label.
+/// @param scopes Discovered push scopes.
+/// @param handlerLabel Handler block label to match.
+/// @return First initialized outer stack for that handler, or an empty vector.
 static std::vector<int> handlerEntryStackFor(const std::vector<ScopeInfo> &scopes,
                                              const std::string &handlerLabel) {
     for (const auto &scope : scopes) {
@@ -441,6 +547,16 @@ static void propagateEntryStacks(const Function &fn,
     }
 }
 
+/// @brief Lower structured EH in one function into runtime calls and ordinary CFG.
+///
+/// The analysis discovers push scopes, propagates active-scope stacks, assigns
+/// resume sites to trapping operations, converts handler parameter types, then
+/// rebuilds blocks with setjmp dispatch, frame cleanup, and validated resume
+/// tables. The original block vector is replaced only when EH was present.
+///
+/// @param[in,out] module Owning module whose runtime externs may be inserted.
+/// @param[in,out] fn Function whose value names, parameters, and blocks may change.
+/// @return Replacement block snapshot and whether a rewrite occurred.
 static RewrittenFunction rewriteFunction(Module &module, Function &fn) {
     RewrittenFunction rewritten{};
 
@@ -559,10 +675,12 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn) {
     bool needsInvalidResume = false;
     int synthCounter = 0;
 
+    /// Generate a function-scoped unique native-EH block label.
     auto newLabel = [&](const std::string &base) {
         return fn.name + ".__neh." + base + "." + std::to_string(synthCounter++);
     };
 
+    /// Finalize termination metadata and append one rebuilt block.
     auto appendBlock = [&](BasicBlock &&bb) {
         if (!bb.instructions.empty())
             bb.terminated = il::verify::isTerminator(bb.instructions.back().op);
@@ -849,6 +967,7 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn) {
 
 } // namespace
 
+/// @copydoc lowerNativeEh
 bool lowerNativeEh(Module &module) {
     bool changed = false;
     for (auto &fn : module.functions) {
@@ -858,6 +977,7 @@ bool lowerNativeEh(Module &module) {
     return changed;
 }
 
+/// @copydoc findResidualStructuredEh
 std::optional<std::string> findResidualStructuredEh(const Module &module) {
     for (const auto &fn : module.functions) {
         for (const auto &bb : fn.blocks) {

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/CallLoweringPlan.hpp
+// File: src/codegen/common/CallLoweringPlan.hpp
 // Purpose: Target-independent data structures describing a function call to be
 //          lowered into MIR. Both x86-64 and AArch64 backends can use these
 //          types to represent call arguments and metadata before emitting
@@ -18,7 +18,7 @@
 //     AArch64: force anonymous args to stack per AAPCS64).
 //   - numNamedArgs specifies the boundary between named and variadic arguments.
 //
-// Ownership/Lifetime: Value types, no heap allocation.
+// Ownership/Lifetime: Value types that own their string and argument storage.
 // Links: codegen/x86_64/CallLowering.hpp, codegen/aarch64/InstrLowering.cpp,
 //        plans/audit-01-backend-abstraction.md
 //
@@ -30,6 +30,9 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+
+/// @file
+/// @brief Defines target-independent inputs to native call lowering.
 
 namespace zanna::codegen::common {
 
@@ -53,7 +56,11 @@ enum class AggregatePassKind : uint8_t {
     Indirect ///< Pass the aggregate storage address as a pointer scalar.
 };
 
-/// @brief Describes a single argument in a call lowering plan.
+/// @brief Describes one source-order scalar or aggregate call argument.
+///
+/// Scalar values are represented by either `vreg` or `imm`. Aggregate-memory
+/// values use `vreg` as the storage address and carry explicit byte size,
+/// alignment, and direct-versus-indirect ABI policy.
 struct CallArg {
     CallArgClass cls{CallArgClass::GPR}; ///< Register class for this argument.
     uint16_t vreg{0};                    ///< Virtual register holding the value (when !isImm).
@@ -71,9 +78,8 @@ struct CallArg {
 ///          target-specific call sequence: callee name, argument list, return
 ///          type classification, and variadic metadata.
 ///
-///          x86-64 uses this directly in its CallLowering.cpp.
-///          AArch64 can adopt this as its InstrLowering.cpp call handling
-///          matures into a standalone module.
+///          Native backends combine this semantic description with their
+///          target register sets and stack-layout rules.
 struct CallLoweringPlan {
     std::string callee{};        ///< Symbolic name of the callee.
     std::vector<CallArg> args{}; ///< Ordered list of call arguments.

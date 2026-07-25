@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/ICF.cpp
+// File: src/codegen/common/linker/ICF.cpp
 // Purpose: Implements Identical Code Folding for the native linker.
 //          Operates between deduplicateStrings() and dead-symbol cleanup in the
 //          link pipeline.
@@ -17,6 +17,11 @@
 // Links: codegen/common/linker/ICF.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ICF.cpp
+ * @brief Implements relocation-aware identical-code folding with address-identity guards.
+ */
 
 #include "codegen/common/linker/ICF.hpp"
 
@@ -38,7 +43,10 @@ namespace zanna::codegen::linker {
 
 namespace {
 
-/// FNV-1a hash over a byte range.
+/// @brief Computes FNV-1a over a byte range.
+/// @param data Pointer to @p len bytes.
+/// @param len Number of bytes to hash.
+/// @return 64-bit FNV-1a digest.
 uint64_t fnv1a(const uint8_t *data, size_t len) {
     uint64_t h = 14695981039346656037ULL;
     for (size_t i = 0; i < len; ++i) {
@@ -48,7 +56,10 @@ uint64_t fnv1a(const uint8_t *data, size_t len) {
     return h;
 }
 
-/// Mix an integer into an FNV-1a hash.
+/// @brief Mixes all eight little-endian bytes of an integer into an FNV-1a state.
+/// @param h Existing hash state.
+/// @param val Integer payload.
+/// @return Updated hash state.
 uint64_t fnv1aMix(uint64_t h, uint64_t val) {
     for (int i = 0; i < 8; ++i) {
         h ^= static_cast<uint8_t>(val >> (i * 8));
@@ -57,7 +68,7 @@ uint64_t fnv1aMix(uint64_t h, uint64_t val) {
     return h;
 }
 
-/// Normalized relocation signature for identity comparison.
+/// @brief Normalized relocation signature used in section identity comparisons.
 struct RelocSig {
     size_t offset = 0;
     uint32_t type = 0;
@@ -68,6 +79,9 @@ struct RelocSig {
     bool targetIsLocalDefinition = false;
     int64_t addend = 0;
 
+    /// @brief Tests every normalized relocation field for equality.
+    /// @param o Signature to compare.
+    /// @return `true` when the relocation identities match exactly.
     bool operator==(const RelocSig &o) const {
         return offset == o.offset && type == o.type && targetName == o.targetName &&
                targetObjIdx == o.targetObjIdx && targetSectionIndex == o.targetSectionIndex &&
@@ -75,6 +89,9 @@ struct RelocSig {
                targetIsLocalDefinition == o.targetIsLocalDefinition && addend == o.addend;
     }
 
+    /// @brief Orders signatures lexicographically for deterministic normalization.
+    /// @param o Signature to compare.
+    /// @return `true` when this signature precedes @p o.
     bool operator<(const RelocSig &o) const {
         if (offset != o.offset)
             return offset < o.offset;
@@ -94,7 +111,7 @@ struct RelocSig {
     }
 };
 
-/// ICF candidate: a per-function .text section.
+/// @brief ICF candidate representing one per-function executable section.
 struct Candidate {
     size_t objIdx = 0;
     size_t secIdx = 0;
@@ -103,17 +120,25 @@ struct Candidate {
     std::vector<RelocSig> sigs;
 };
 
+/// @brief Identifies an exact code location whose address is observable.
 struct CodeAddressKey {
     size_t objIdx = 0;
     uint32_t secIdx = 0;
     size_t offset = 0;
 
+    /// @brief Compares object, section, and byte offset.
+    /// @param o Address key to compare.
+    /// @return `true` when both keys identify the same code byte.
     bool operator==(const CodeAddressKey &o) const {
         return objIdx == o.objIdx && secIdx == o.secIdx && offset == o.offset;
     }
 };
 
+/// @brief Hash adapter for address-taken code-location sets.
 struct CodeAddressKeyHash {
+    /// @brief Combines an object's section-location tuple.
+    /// @param k Code address key.
+    /// @return Host-sized hash value.
     size_t operator()(const CodeAddressKey &k) const noexcept {
         size_t h = std::hash<size_t>{}(k.objIdx);
         h ^= std::hash<uint32_t>{}(k.secIdx) + 0x9e3779b9u + (h << 6) + (h >> 2);
@@ -122,6 +147,11 @@ struct CodeAddressKeyHash {
     }
 };
 
+/// @brief Adds a signed relocation addend to a host-sized section offset.
+/// @param base Unsigned base offset.
+/// @param addend Signed relocation addend.
+/// @param out Receives the checked result.
+/// @return `true` when the result is nonnegative and representable.
 bool addSignedOffset(size_t base, int64_t addend, size_t &out) {
     if (addend >= 0) {
         const auto u = static_cast<uint64_t>(addend);
@@ -139,7 +169,11 @@ bool addSignedOffset(size_t base, int64_t addend, size_t &out) {
     return true;
 }
 
-/// Build sorted relocation signatures for a section.
+/// @brief Builds sorted normalized relocation signatures for a section.
+/// @param obj Object owning the section and referenced symbols.
+/// @param objIdx Object index used to qualify local definitions.
+/// @param sec Candidate executable section.
+/// @return Relocation signatures sorted by all identity fields.
 std::vector<RelocSig> buildRelocSigs(const ObjFile &obj, size_t objIdx, const ObjSection &sec) {
     std::vector<RelocSig> sigs;
     sigs.reserve(sec.relocs.size());
@@ -167,7 +201,10 @@ std::vector<RelocSig> buildRelocSigs(const ObjFile &obj, size_t objIdx, const Ob
     return sigs;
 }
 
-/// Compute a combined hash of section bytes and relocation signatures.
+/// @brief Computes a combined hash of section bytes and relocation identities.
+/// @param sec Candidate section containing instruction bytes.
+/// @param sigs Normalized, sorted relocation signatures.
+/// @return Hash used to partition candidates before exact comparison.
 uint64_t hashCandidate(const ObjSection &sec, const std::vector<RelocSig> &sigs) {
     uint64_t h = fnv1a(sec.data.data(), sec.data.size());
     for (const auto &sig : sigs) {
@@ -186,7 +223,11 @@ uint64_t hashCandidate(const ObjSection &sec, const std::vector<RelocSig> &sigs)
     return h;
 }
 
-/// Check if two candidates are truly identical (not just hash-equal).
+/// @brief Performs exact byte and relocation comparison after a hash match.
+/// @param objects Object collection owning both candidates.
+/// @param a First candidate.
+/// @param b Second candidate.
+/// @return `true` when both executable sections are safely interchangeable.
 bool candidatesIdentical(const std::vector<ObjFile> &objects,
                          const Candidate &a,
                          const Candidate &b) {
@@ -209,11 +250,12 @@ bool candidatesIdentical(const std::vector<ObjFile> &objects,
     return true;
 }
 
-/// Map an ObjFile's e_machine / IMAGE_FILE_MACHINE_* value to LinkArch.
-/// Returns nullopt for machine codes we don't natively link — callers must
-/// treat that as "skip ICF for this object" rather than defaulting the
-/// classification to X86_64, which used to silently misroute relocations
-/// through the wrong type-number space.
+/// @brief Maps an object-format machine value to the linker's architecture enum.
+/// @details Unknown machine codes return `std::nullopt`; callers conservatively
+///          skip folding rather than interpreting relocations in the wrong
+///          architecture's number space.
+/// @param obj Object whose machine code is inspected.
+/// @return x86-64 or AArch64 when recognized, otherwise `std::nullopt`.
 std::optional<LinkArch> archForObject(const ObjFile &obj) {
     if (obj.machine == 62 || obj.machine == 0x8664) // EM_X86_64 / IMAGE_FILE_MACHINE_AMD64
         return LinkArch::X86_64;
@@ -222,6 +264,11 @@ std::optional<LinkArch> archForObject(const ObjFile &obj) {
     return std::nullopt;
 }
 
+/// @brief Distinguishes direct branch relocations from address-materializing uses.
+/// @param obj Object providing the native relocation namespace.
+/// @param action Neutral relocation classification.
+/// @param type Original format-specific relocation type.
+/// @return `true` for recognized direct call/jump/conditional-branch relocations.
 bool isKnownBranchReloc(const ObjFile &obj, RelocAction action, uint32_t type) {
     if (action == RelocAction::Branch26 || action == RelocAction::CondBr19)
         return true;
@@ -232,6 +279,12 @@ bool isKnownBranchReloc(const ObjFile &obj, RelocAction action, uint32_t type) {
     return false;
 }
 
+/// @brief Determines whether a relocation makes its target function address observable.
+/// @param obj Object owning the relocation.
+/// @param sec Section containing the relocation.
+/// @param rel Relocation to classify.
+/// @return `false` only for recognized direct branches in executable sections;
+///         unknown machines and all other uses are conservative address-takes.
 bool isAddressTakingReloc(const ObjFile &obj, const ObjSection &sec, const ObjReloc &rel) {
     const auto arch = archForObject(obj);
     if (!arch)
@@ -246,6 +299,7 @@ bool isAddressTakingReloc(const ObjFile &obj, const ObjSection &sec, const ObjRe
 
 } // namespace
 
+/// @copydoc foldIdenticalCode(std::vector<ObjFile> &, std::unordered_map<std::string, GlobalSymEntry> &)
 size_t foldIdenticalCode(std::vector<ObjFile> &allObjects,
                          std::unordered_map<std::string, GlobalSymEntry> &globalSyms) {
     // Step 1: Identify address-taken functions.

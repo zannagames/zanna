@@ -56,6 +56,7 @@ class SceneTilesetInspector2D {
     hide Integer lastLibraryRevision;
     hide Integer lastLayer;
     hide Integer lastSelectedTile;
+    hide Integer lastMarksRevision;
 
     expose func init() {
         guiApp = null;
@@ -71,6 +72,7 @@ class SceneTilesetInspector2D {
         lastLibraryRevision = -1;
         lastLayer = -1;
         lastSelectedTile = -1;
+        lastMarksRevision = -1;
     }
 
     /// @brief Build the complete scrollable palette surface.
@@ -114,6 +116,18 @@ class SceneTilesetInspector2D {
         library: scene_tileset_2d.SceneTilesetLibrary2D,
         layer: Integer,
         selectedTile: Integer) {
+        RefreshMarked(library, layer, selectedTile, [], 0);
+    }
+
+    /// @brief Refresh the palette with behavior badges on marked tiles.
+    /// @details `marksRevision` extends the render cache key so authored
+    ///          behavior changes repaint badges without per-frame re-rendering.
+    expose func RefreshMarked(
+        library: scene_tileset_2d.SceneTilesetLibrary2D,
+        layer: Integer,
+        selectedTile: Integer,
+        marked: List[Integer],
+        marksRevision: Integer) {
         if status == null or image == null or library == null { return; }
         status.SetText(library.Status(layer));
         var entry = library.Entry(layer);
@@ -127,19 +141,22 @@ class SceneTilesetInspector2D {
             lastLibraryRevision = library.revision;
             lastLayer = layer;
             lastSelectedTile = selectedTile;
+            lastMarksRevision = marksRevision;
             return;
         }
         if palettePixels != null
            and lastLibraryRevision == library.revision
            and lastLayer == layer
-           and lastSelectedTile == selectedTile {
+           and lastSelectedTile == selectedTile
+           and lastMarksRevision == marksRevision {
             scroll.SetVisible(true);
             return;
         }
-        palettePixels = library.RenderPalette(layer, selectedTile);
+        palettePixels = library.RenderPaletteMarked(layer, selectedTile, marked);
         lastLibraryRevision = library.revision;
         lastLayer = layer;
         lastSelectedTile = selectedTile;
+        lastMarksRevision = marksRevision;
         if palettePixels == null {
             image.Clear();
             scroll.SetVisible(false);

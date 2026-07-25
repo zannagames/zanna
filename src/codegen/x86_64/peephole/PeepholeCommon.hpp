@@ -5,16 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/peephole/PeepholeCommon.hpp
+// File: src/codegen/x86_64/peephole/PeepholeCommon.hpp
 // Purpose: Shared utility functions and types for x86-64 peephole sub-passes.
 // Key invariants:
-//   - All helpers are pure queries or in-place rewrites; no persistent state allocated.
+//   - Helpers are pure queries, local state updates, or immutable static-set accessors.
 //   - Register classification must stay in sync with MachineIR opcode additions.
 // Ownership/Lifetime:
-//   - Header-only; no dynamic state.
-// Links: codegen/x86_64/Peephole.hpp,
-//        codegen/x86_64/MachineIR.hpp,
-//        codegen/common/PeepholeUtil.hpp
+//   - Header-only; returned register vectors live for the process duration.
+// Links: src/codegen/x86_64/Peephole.hpp,
+//        src/codegen/x86_64/MachineIR.hpp,
+//        src/codegen/common/PeepholeUtil.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,28 +29,45 @@
 #include <string>
 #include <vector>
 
+/// @file
+/// @brief Defines shared x86-64 peephole statistics, queries, and tracking helpers.
+
 namespace zanna::codegen::x64::peephole {
 
-// Bring the shared compaction helper into this namespace scope.
+/// @brief Exposes the target-independent marked-instruction compactor locally.
 using zanna::codegen::common::removeMarkedInstructions;
 
 // ---- Statistics -------------------------------------------------------------
 
 /// @brief Statistics tracking for peephole optimizations.
 struct PeepholeStats {
+    /// @brief Immediate-zero moves replaced by self-XOR.
     std::size_t movZeroToXor{0};
+    /// @brief Compare-with-zero instructions replaced by self-TEST.
     std::size_t cmpZeroToTest{0};
+    /// @brief Flag-dead arithmetic identities selected for removal.
     std::size_t arithmeticIdentities{0};
+    /// @brief Constant-power-of-two multiplies replaced by shifts.
     std::size_t strengthReductions{0};
+    /// @brief Integer and scalar-double self-moves removed.
     std::size_t identityMovesRemoved{0};
+    /// @brief Adjacent move chains folded.
     std::size_t consecutiveMovsFolded{0};
+    /// @brief Jumps to physically adjacent blocks removed.
     std::size_t branchesToNextRemoved{0};
+    /// @brief Dead instructions and forwarded memory-load operations counted.
     std::size_t deadCodeEliminated{0};
+    /// @brief Cold blocks appended to the cold partition.
     std::size_t coldBlocksMoved{0};
+    /// @brief Conditional branches inverted while removing a companion jump.
     std::size_t branchesInverted{0};
+    /// @brief Blocks participating in a changed trace layout.
     std::size_t blocksReordered{0};
+    /// @brief Branch instructions retargeted through forwarding blocks.
     std::size_t branchChainsEliminated{0};
 
+    /// @brief Sums every optimization counter in this record.
+    /// @return Aggregate transformation/counting units accumulated by all sub-passes.
     [[nodiscard]] std::size_t total() const noexcept {
         return movZeroToXor + cmpZeroToTest + arithmeticIdentities + strengthReductions +
                identityMovesRemoved + consecutiveMovsFolded + branchesToNextRemoved +
@@ -61,8 +78,11 @@ struct PeepholeStats {
 
 // ---- Pre-computed register sets ---------------------------------------------
 
-/// @brief Registers assumed live at block exit (callee-saved + return registers).
-/// @details Pre-computed to avoid 11 individual insert() calls per DCE iteration.
+/// @brief Returns the legacy fixed conservative block-exit register set.
+/// @details Contains RAX, RBX, RBP, RDI, RSI, RSP, R12-R15, and XMM0.
+///          The vector is precomputed once and is not derived from a selected
+///          target ABI.
+/// @return Process-lifetime immutable register-id vector.
 inline const std::vector<uint16_t> &getBlockExitLiveRegs() {
     static const std::vector<uint16_t> regs = {
         static_cast<uint16_t>(PhysReg::RAX),
@@ -80,8 +100,10 @@ inline const std::vector<uint16_t> &getBlockExitLiveRegs() {
     return regs;
 }
 
-/// @brief All allocatable registers (GPR + XMM), marked live at labels.
-/// @details Pre-computed to avoid 32 individual insert() calls when hitting a label.
+/// @brief Returns all 32 physical-register ids, marked live at labels.
+/// @details Despite the legacy function name, the vector includes fixed RBP
+///          and RSP as well as every GPR and XMM enumerator.
+/// @return Process-lifetime immutable register-id vector.
 inline const std::vector<uint16_t> &getAllAllocatableRegs() {
     static const std::vector<uint16_t> regs = {
         // GPRs
@@ -125,24 +147,33 @@ inline const std::vector<uint16_t> &getAllAllocatableRegs() {
 // ---- Operand query helpers --------------------------------------------------
 
 /// @brief Test whether an operand is the immediate integer zero.
+/// @param operand Operand variant to inspect.
+/// @return @c true only for @c OpImm carrying value zero.
 [[nodiscard]] inline bool isZeroImm(const Operand &operand) noexcept {
     const auto *imm = std::get_if<OpImm>(&operand);
     return imm != nullptr && imm->val == 0;
 }
 
 /// @brief Check whether an operand refers to a general-purpose register.
+/// @param operand Operand variant to inspect.
+/// @return @c true for an @c OpReg classified as GPR, physical or virtual.
 [[nodiscard]] inline bool isGprReg(const Operand &operand) noexcept {
     const auto *reg = std::get_if<OpReg>(&operand);
     return reg != nullptr && reg->cls == RegClass::GPR;
 }
 
 /// @brief Check if an operand is a physical register.
+/// @param operand Operand variant to inspect.
+/// @return @c true only for a physical @c OpReg.
 [[nodiscard]] inline bool isPhysReg(const Operand &operand) noexcept {
     const auto *reg = std::get_if<OpReg>(&operand);
     return reg != nullptr && reg->isPhys;
 }
 
 /// @brief Check if two register operands refer to the same physical register.
+/// @param a First operand variant.
+/// @param b Second operand variant.
+/// @return @c true when both are physical registers with equal class and id.
 [[nodiscard]] inline bool samePhysReg(const Operand &a, const Operand &b) noexcept {
     const auto *regA = std::get_if<OpReg>(&a);
     const auto *regB = std::get_if<OpReg>(&b);
@@ -154,6 +185,8 @@ inline const std::vector<uint16_t> &getAllAllocatableRegs() {
 }
 
 /// @brief Check if an instruction is an identity move (mov r, r).
+/// @param instr Machine instruction to inspect.
+/// @return @c true for a two-operand @c MOVrr whose physical registers match.
 [[nodiscard]] inline bool isIdentityMovRR(const MInstr &instr) noexcept {
     if (instr.opcode != MOpcode::MOVrr)
         return false;
@@ -163,6 +196,8 @@ inline const std::vector<uint16_t> &getAllAllocatableRegs() {
 }
 
 /// @brief Check if an instruction is an identity FPR move (movsd d, d).
+/// @param instr Machine instruction to inspect.
+/// @return @c true for a two-operand @c MOVSDrr whose physical registers match.
 [[nodiscard]] inline bool isIdentityMovSDRR(const MInstr &instr) noexcept {
     if (instr.opcode != MOpcode::MOVSDrr)
         return false;
@@ -172,6 +207,8 @@ inline const std::vector<uint16_t> &getAllAllocatableRegs() {
 }
 
 /// @brief Get immediate value from an operand if it is an immediate.
+/// @param operand Operand variant to inspect.
+/// @return Contained integer value, or @c std::nullopt.
 [[nodiscard]] inline std::optional<int64_t> getImmValue(const Operand &operand) noexcept {
     const auto *imm = std::get_if<OpImm>(&operand);
     if (imm)
@@ -180,12 +217,17 @@ inline const std::vector<uint16_t> &getAllAllocatableRegs() {
 }
 
 /// @brief Check whether a memory operand references a physical register.
+/// @param mem Memory address whose base and active index are inspected.
+/// @param reg Candidate physical-register operand.
+/// @return @c true when @p reg matches the base or enabled index.
 [[nodiscard]] inline bool memUsesPhysReg(const OpMem &mem, const Operand &reg) noexcept {
     return samePhysReg(Operand{mem.base}, reg) ||
            (mem.hasIndex && samePhysReg(Operand{mem.index}, reg));
 }
 
 /// @brief Check if a value is a power of 2 and return the log2, or -1 if not.
+/// @param value Signed integer to classify.
+/// @return Exact base-two logarithm for a positive power of two; otherwise -1.
 [[nodiscard]] inline int log2IfPowerOf2(int64_t value) noexcept {
     if (value <= 0)
         return -1;
@@ -207,7 +249,13 @@ inline const std::vector<uint16_t> &getAllAllocatableRegs() {
 /// has 32 entries (RAX=0 ... XMM15=31) so the array is always in-bounds.
 using RegConstMap = std::array<std::optional<int64_t>, 32>;
 
-/// @brief Update register constant tracking based on an instruction.
+/// @brief Updates physical-GPR constant facts after one instruction.
+/// @details Records immediate moves and the zero-XOR idiom, invalidates
+///          explicitly defined registers through operand-role metadata, handles
+///          implicit divide/sign-extension definitions, and clears the fixed
+///          conservative caller-saved GPR set at calls.
+/// @param instr Instruction whose effects are applied.
+/// @param knownConsts Register-indexed facts mutated in place.
 inline void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
     // MOVri loads a constant into a register
     if (instr.opcode == MOpcode::MOVri && instr.operands.size() == 2) {
@@ -265,6 +313,10 @@ inline void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
 }
 
 /// @brief Get constant value for a register if known.
+/// @param operand Candidate physical GPR operand.
+/// @param knownConsts Current register-indexed constant facts.
+/// @return Tracked value, or @c std::nullopt for another operand kind, virtual
+///         register, non-GPR class, out-of-range id, or unknown value.
 [[nodiscard]] inline std::optional<int64_t> getConstValue(const Operand &operand,
                                                           const RegConstMap &knownConsts) {
     const auto *reg = std::get_if<OpReg>(&operand);
@@ -276,6 +328,11 @@ inline void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
 // ---- Register def/use classification ----------------------------------------
 
 /// @brief Check if an instruction defines a given physical register.
+/// @details Consults explicit operand roles and selected implicit CQO/divide
+///          definitions.
+/// @param instr Machine instruction to inspect.
+/// @param reg Candidate physical-register operand.
+/// @return @c true when @p instr defines @p reg.
 [[nodiscard]] inline bool definesReg(const MInstr &instr, const Operand &reg) noexcept {
     if (!isPhysReg(reg))
         return false;
@@ -299,6 +356,11 @@ inline void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
 }
 
 /// @brief Check if an instruction uses a given physical register as a source.
+/// @details Consults explicit operand roles, used memory-address registers, and
+///          selected implicit return/sign-extension/division inputs.
+/// @param instr Machine instruction to inspect.
+/// @param reg Candidate physical-register operand.
+/// @return @c true when @p instr reads @p reg.
 [[nodiscard]] inline bool usesReg(const MInstr &instr, const Operand &reg) noexcept {
     if (!isPhysReg(reg))
         return false;
@@ -334,6 +396,10 @@ inline void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
 // ---- Misc helpers -----------------------------------------------------------
 
 /// @brief Check if a register is an argument-passing register (RDI, RSI, RDX, RCX, R8, R9).
+/// @details The fixed set covers all SysV integer argument registers and is a
+///          conservative superset of the Win64 set.
+/// @param operand Candidate register operand.
+/// @return @c true for a physical GPR in the fixed set.
 [[nodiscard]] inline bool isArgReg(const Operand &operand) noexcept {
     const auto *reg = std::get_if<OpReg>(&operand);
     if (!reg || !reg->isPhys || reg->cls != RegClass::GPR)
@@ -344,6 +410,9 @@ inline void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
 }
 
 /// @brief Check if an instruction is an unconditional jump to a specific label.
+/// @param instr Candidate instruction; only operand zero is inspected.
+/// @param label Exact target label spelling.
+/// @return @c true for @c JMP with an operand-zero label equal to @p label.
 [[nodiscard]] inline bool isJumpTo(const MInstr &instr, const std::string &label) noexcept {
     if (instr.opcode != MOpcode::JMP)
         return false;
@@ -361,7 +430,9 @@ inline void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
 ///          instruction or a block boundary.
 /// @param instrs Instruction vector for the basic block.
 /// @param idx Index of the instruction being considered for rewrite.
-/// @return true if a subsequent instruction reads flags before they are overwritten.
+/// @return @c true if a subsequent instruction reads flags before they are
+///         overwritten, or if a label boundary is encountered first.
+/// @pre @p idx is less than @c instrs.size().
 [[nodiscard]] inline bool nextInstrReadsFlags(const std::vector<MInstr> &instrs,
                                               std::size_t idx) noexcept {
     for (std::size_t j = idx + 1; j < instrs.size(); ++j) {

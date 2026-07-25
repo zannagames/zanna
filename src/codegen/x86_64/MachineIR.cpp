@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/MachineIR.cpp
+// File: src/codegen/x86_64/MachineIR.cpp
 // Purpose: Provide the concrete implementations for the lightweight Machine IR
 //          types used by the x86-64 code generator.
 // Key invariants:
@@ -15,8 +15,8 @@
 // Ownership/Lifetime:
 //   - All Machine IR nodes own their operands by value; helper functions
 //     return new values without introducing aliasing.
-// Links: codegen/x86_64/MachineIR.hpp,
-//        codegen/x86_64/TargetX64.hpp
+// Links: src/codegen/x86_64/MachineIR.hpp,
+//        src/codegen/x86_64/TargetX64.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +28,16 @@
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+
+/**
+ * @file
+ * @brief Implements x86-64 MIR construction, validation, labels, and formatting.
+ *
+ * Memory operands are validated against SIB restrictions at construction time.
+ * Function-local labels incorporate a sanitized function stem for module-wide
+ * textual uniqueness, and deterministic stringification exposes every operand,
+ * instruction, block, and function for diagnostics and debugging.
+ */
 
 namespace zanna::codegen::x64 {
 
@@ -513,6 +523,7 @@ std::string toString(const OpRipLabel &op) {
 /// @param operand Operand variant to print.
 /// @return Textual representation selected by the active operand kind.
 std::string toString(const Operand &operand) {
+    /// Dispatch formatting to the active operand alternative.
     return std::visit([](const auto &value) { return toString(value); }, operand);
 }
 

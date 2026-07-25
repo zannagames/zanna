@@ -5,8 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the BASIC front-end diagnostic emitter responsible for capturing,
-// formatting, and printing diagnostics with caret annotations and codes.
+// File: src/frontends/basic/DiagnosticEmitter.cpp
+// Purpose: Capture, forward, format, and print BASIC diagnostics with source
+//          snippets, caret annotations, and codes.
+// Ownership/Lifetime: Owns presentation entries and source snapshots; borrows
+//                     the diagnostic engine and source manager.
+// Links: src/frontends/basic/DiagnosticEmitter.hpp,
+//        src/frontends/common/DiagnosticFormatter.hpp
 //
 //===----------------------------------------------------------------------===//
 //
@@ -114,6 +119,7 @@ std::string DiagnosticEmitter::getLine(uint32_t fileId, uint32_t line) const {
 /// @param os Output stream receiving formatted diagnostics.
 void DiagnosticEmitter::printAll(std::ostream &os) const {
     for (const auto &e : entries_) {
+        /// Suppress location text for BASIC's synthetic unlabeled-line sentinel.
         std::string locStr =
             dfmt::formatLocation(sm_, e.loc, [](uint32_t line) { return isUnlabeledLine(line); });
         std::string line = getLine(e.loc.file_id, e.loc.line);
@@ -139,6 +145,8 @@ size_t DiagnosticEmitter::warningCount() const {
 
 /// @brief Format a path:line string for a source location.
 /// @details Delegates to the common DiagnosticFormatter utility.
+/// @param loc Source location whose file and line are formatted.
+/// @return Path-and-line text or an empty string when unavailable.
 std::string DiagnosticEmitter::formatFileLine(il::support::SourceLoc loc) const {
     return dfmt::formatFileLine(sm_, loc);
 }

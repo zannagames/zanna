@@ -148,9 +148,37 @@ remains local to its scene tab/session. Both editors load bounded project-root
 across a selection without overwriting authored same-kind values. Their shared
 structured schema form maintains every cross-target definition with validated
 atomic writes, unknown-member preservation, external-conflict detection, and
-independent 20-step file undo/redo without dirtying a scene. A full asset
-library with tagging/import settings and advanced tileset metadata/animation
-tools is still missing. Persistent assigned-map thumbnails are present, but
+independent 20-step file undo/redo without dirtying a scene. Project component
+schemas accept version 2 with validated enum-choice and asset-reference
+fields (authored as ordinary string values), the structured schema form
+authors both kinds and writes the lowest required file version, and a saved
+field rename/retype offers an explicit scan-review-confirm migration across
+the workspace root's 2D scenes with per-file transactional refusals; 3D
+scenes are reported for manual migration. The 2D tile
+palette owns a per-tile behavior inspector: collision kind (solid or
+one-way-up), typed int/bool tile properties, per-frame tile animations, and
+16-variant autotile rules author through the typed SceneDocument sections of
+ADR 0176, each accepted edit is one canonical history transaction, and palette
+frames carrying behavior show a corner badge. Objects with an `editor.sprite`
+or loadable `sprite` string property render their authored atlas frame in the
+canvas under the shared image budgets, falling back to the existing marker;
+`route`-typed objects draw an ordered child-waypoint polyline and
+`light`-component objects draw a halo ring, all workspace-only. Camera and
+Lighting inspector groups author the complete scene-global sections of
+ADR 0177 as single transactions with a canvas bounds overlay; the runtime
+validates every documented field range. An optional per-root
+`asset-library.json` (ADR 0180) annotates discovery with tags and native
+frame grids: the project asset browser filters by tag or library membership,
+badges tagged rows, edits entries through the same atomic
+conflict-safe/undoable file transaction model as the component schema, and a
+library grid that disagrees with the scene's tile size is reported without
+resizing anything. Runtimes and games never read the library. A Preview toggle
+plays authored per-frame tile animations on a bounded workspace-only clock
+with camera-bounds and follow-deadzone overlays — canonical bytes, history,
+and dirty state never change and every tool stays usable — and a Run Scene
+command (toolbar and Command Palette) runs the owning project with
+`-- --scene <path>` appended so the game's own entry point loads the scene
+(ADR 0181). Persistent assigned-map thumbnails are present, but
 automatic schema/scene-data migration, generalized runtime components,
 material-library/thumbnail workflows, and advanced cubemap/lightmap authoring
 remain well short of a mature game-engine editor.
@@ -180,7 +208,7 @@ scene authoring, and panel virtualization for very large result sets.
 | Zia IntelliSense | Implemented with limits | Completion, diagnostics, hover, signature help, symbols, definition, references, rename, workspace symbols. |
 | BASIC IntelliSense | Implemented with limits | Completion, diagnostics, hover, document symbols, scanner-backed definition, references, rename, workspace symbols, call hierarchy, and signature help. |
 | Plain text | Implemented | Opens unknown/text-like files as text without semantic features. |
-| Scene files | Implemented with limits | `.scene`/`.level` mount the 2D editor and `.vscn` mounts the 3D editor. Both retain per-document workspace/history state and provide real expandable multi-select hierarchies, transactional before/into/after row drops, group edits, typed gameplay data, searchable project assets, hierarchy-preserving clipboard transfer, undo/redo, and safe save/import flows. The 2D surface includes a runtime-backed organizational hierarchy with absolute positions, one-step root/child creation, explicit cycle-safe multi-root reparenting, stable subtree/sibling ordering, real bounded atlas rendering/palettes, captured gap-free paint/erase with exact cancellation, inclusive rectangle paint, four-connected fill, active-layer tile picking, modifier-aware point and inclusive authored-cell marquee selection, object dragging, scene/object properties, nudging, alignment, and distribution. The 3D surface includes a runtime-backed shaded/triangle-wireframe viewport with exact editor-overlay alignment, exact preserve-world chooser/direct reparenting with preserve-local opt-out, stable sibling ordering, mixed-state batch visibility, switchable Local/World Move/Rotate/Scale with snapping and atomic exact-or-reject world conversion, filled Move-plane and crossed Scale-plane XY/XZ/YZ handles, projected X/Y/Z rotation rings with wrap-safe angular dragging, truthful mixed-value batch PBR materials, batch embedded texture maps, and single-node authoring for every runtime light type with hierarchy/viewport feedback. Both load compatible definitions from bounded root-local `scene-components.json`; Add Missing preserves same-kind values, rejects any type conflict before mutation, and commits the complete selection once. A shared structured form maintains the complete cross-target schema through parser-validated atomic writes, external-conflict detection, and separate bounded file undo/redo. Automatic schema/scene-data migration, enums, asset-reference fields, generalized runtime components, batch light editing, advanced tileset metadata/animation/collision, material-library/thumbnail workflows, and cubemap/lightmap authoring are not yet present. |
+| Scene files | Implemented with limits | `.scene`/`.level` mount the 2D editor and `.vscn` mounts the 3D editor. Both retain per-document workspace/history state and provide real expandable multi-select hierarchies, transactional before/into/after row drops, group edits, typed gameplay data, searchable project assets, hierarchy-preserving clipboard transfer, undo/redo, and safe save/import flows. The 2D surface includes a runtime-backed organizational hierarchy with absolute positions, one-step root/child creation, explicit cycle-safe multi-root reparenting, stable subtree/sibling ordering, real bounded atlas rendering/palettes, captured gap-free paint/erase with exact cancellation, inclusive rectangle paint, four-connected fill, active-layer tile picking, modifier-aware point and inclusive authored-cell marquee selection, object dragging, scene/object properties, nudging, alignment, and distribution. The 3D surface includes a runtime-backed shaded/triangle-wireframe viewport with exact editor-overlay alignment, exact preserve-world chooser/direct reparenting with preserve-local opt-out, stable sibling ordering, mixed-state batch visibility, switchable Local/World Move/Rotate/Scale with snapping and atomic exact-or-reject world conversion, filled Move-plane and crossed Scale-plane XY/XZ/YZ handles, projected X/Y/Z rotation rings with wrap-safe angular dragging, truthful mixed-value batch PBR materials, batch embedded texture maps, and single-node authoring for every runtime light type with hierarchy/viewport feedback. Both load compatible definitions from bounded root-local `scene-components.json`; Add Missing preserves same-kind values, rejects any type conflict before mutation, and commits the complete selection once. A shared structured form maintains the complete cross-target schema through parser-validated atomic writes, external-conflict detection, and separate bounded file undo/redo. The 2D tile palette authors per-tile collision, typed int/bool properties, per-frame animations, and 16-variant autotile rules as one-transaction typed-section edits with palette behavior badges. Schema v2 enum/asset fields, the explicit 2D migration assistant, and the per-root asset library with tag filtering and import-grid surfacing are present; automatic unattended migration, 3D scene migration, generalized runtime components, batch light editing, material-library/thumbnail workflows, and cubemap/lightmap authoring are not. |
 | 3D node gameplay metadata | Implemented with limits | One selected `SceneNode` exposes deterministically ordered null, Boolean, integer, float, and string values for roles, IDs, spawn/trigger data, and component parameters. Create, rename, update, and remove validate bounds/no-ops before one canonical VSCN history transaction; values round-trip through VSCN v6 and row selection stays with its tab/session. Project schemas can batch-add missing metadata to multiple nodes, while arbitrary raw metadata editing remains single-node. |
 | Scene clipboard | Implemented with limits | Standard Cut/Copy/Paste/Select All commands follow the active visual editor. A versioned, typed text envelope supports same-kind cross-tab transfer of up to 1,024 selected identities and 64 MB total, preserving typed 2D properties and internal parent links or serializable 3D subtrees. Cut and paste are one-step history transactions with exact rollback. Mixed 2D/3D paste and interchange with other editors are intentionally rejected. |
 | Project explorer | Implemented with limits | Demand-loaded, scrollable tree; multi-root support; Quick Open cache; file actions; ignores. Rename/move preserve live editor buffers and undo state, while delete releases any removed split-pane owner. |
@@ -458,12 +486,23 @@ Hierarchy badges and viewport color, direction, offset, and range markers keep
 meshless emitters visible and pickable. Multi-node light editing remains
 explicitly disabled rather than presenting false mixed-state behavior.
 
+The 2D tile palette's behavior inspector authors the typed scene sections of
+ADR 0176 for the selected palette tile: a collision dropdown (none, solid,
+one-way-up), bounded typed int/bool tile properties with the same draft/Set/
+Remove vocabulary as scene properties, comma-separated per-frame animation
+frames and positive millisecond durations, and exactly-16-variant autotile
+rules. The editor validates every draft before mutation, commits each accepted
+edit as one canonical history transaction with exact rollback, treats exact
+no-ops as history-free, and re-renders palette badges for tiles carrying any
+authored behavior. `BuildTilemap()` applies the authored sections at runtime,
+so games no longer need code-side collision/animation registries for authored
+scenes.
+
 The scene editors are intentionally v1: a full tagged asset
 library/import-settings workflow,
 automatic component-schema/scene-data migration, generalized runtime component
 composition, advanced Tiled atlas
-metadata/image-collection editing, tile
-animation/collision/metadata editing, batch light editing, and
+metadata/image-collection editing, batch light editing, and
 cubemap/lightmap authoring still need depth.
 
 ## Workbench Status
@@ -738,9 +777,8 @@ These gaps are current documentation, not a plan commitment:
   merge-abort, and multi-file conflict recovery.
 - Deepen the 2D/3D scene editors with automatic schema/scene-data migration and
   richer asset/runtime-component workflows,
-  asset tagging/import settings, advanced tileset animation/collision/metadata
-  editing, material-library/thumbnail workflows, and cubemap/lightmap
-  authoring.
+  asset tagging/import settings, material-library/thumbnail workflows, and
+  cubemap/lightmap authoring.
 - Split oversized coordinator modules.
 - Expand platform and display test coverage.
 
@@ -755,9 +793,8 @@ Use these phrasing rules when updating user-facing docs:
 - Say "integrated PTY terminal covering the vim/less/htop sequence table"
   instead of "full terminal emulator".
 - Say "Git Source Control view" instead of "SCM platform".
-- Say "built-in v1 2D/3D scene editors" while naming their advanced tileset,
-  animation/collision/metadata, asset-library/material-preview/advanced-map,
-  component, and gizmo limits.
+- Say "built-in v1 2D/3D scene editors" while naming their
+  asset-library/material-preview/advanced-map, component, and gizmo limits.
 - Say "debug adapter supports stepping, breakpoints, locals, call stack,
   evaluate, inline watch management, and structured expansion of collections
   and class-instance fields" while still mentioning the struct-payload leaf

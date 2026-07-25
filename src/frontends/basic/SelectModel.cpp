@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file SelectModel.cpp
+/// @brief Implements conversion from parsed SELECT CASE arms to SelectModel.
+/// @details Model construction is intentionally mechanical: it pre-reserves
+///          storage, retains AST order and arm indices, and excludes only
+///          numeric entries that cannot be represented as signed 32-bit values.
+
 #include "frontends/basic/SelectModel.hpp"
 
 #include "frontends/basic/SelectCaseRange.hpp"
@@ -24,22 +30,22 @@
 
 namespace il::frontends::basic {
 
-/// @brief Construct a builder that reports diagnostics through @p diagnose.
-/// @details Stores the callback so later conversions can surface range and type
-///          issues using the caller's diagnostic machinery.  The builder itself
-///          maintains no additional state beyond the callback.
-/// @param diagnose Function invoked when semantic issues are detected.
+/// @brief Stores the diagnostic sink used by subsequent model builds.
+/// @param diagnose Callback invoked for out-of-range numeric operands. It may
+///                 be empty to suppress emission.
+/// @post The callback has been moved into this builder; no AST is inspected.
 SelectModelBuilder::SelectModelBuilder(DiagnoseFn diagnose) noexcept
     : diagnose_(std::move(diagnose)) {}
 
-/// @brief Narrow a 64-bit literal to the 32-bit range allowed by SELECT CASE.
-/// @details Checks the bounds mandated by the BASIC specification and emits a
-///          diagnostic through the stored callback when @p value falls outside
-///          the permitted interval.  Successful conversions return the narrowed
-///          value wrapped in @c std::optional.
-/// @param value Literal being narrowed.
-/// @param loc Source location used when reporting diagnostics.
-/// @return Narrowed value on success; @c std::nullopt when out of range.
+/// @brief Narrows one parsed numeric operand to SELECT's 32-bit model type.
+/// @details Values outside the inclusive interval
+///          [@ref kCaseLabelMin, @ref kCaseLabelMax] are rejected. When a
+///          callback exists, rejection emits `DiagSelectCaseLabelRange` with a
+///          highlight length of one and the shared range-message text.
+/// @param value Parsed signed 64-bit operand.
+/// @param loc Beginning of the owning CASE arm.
+/// @return The exact @c int32_t conversion on success, or @c std::nullopt when
+///         @p value is outside the representable interval.
 std::optional<int32_t> SelectModelBuilder::narrowToI32(int64_t value,
                                                        il::support::SourceLoc loc) const {
     if (value < kCaseLabelMin || value > kCaseLabelMax) {
@@ -54,14 +60,19 @@ std::optional<int32_t> SelectModelBuilder::narrowToI32(int64_t value,
     return static_cast<int32_t>(value);
 }
 
-/// @brief Construct the canonical model describing a SELECT CASE statement.
-/// @details Iterates the statement's clauses, narrows literal values to the
-///          runtime representation, records relational operators, and captures
-///          the location of each branch target.  The resulting model is consumed
-///          by lowering code to emit efficient IL while preserving diagnostic
-///          fidelity.
-/// @param stmt AST node describing the SELECT CASE statement.
-/// @return Structured model containing normalised case ranges and metadata.
+/// @brief Flattens one parsed SELECT CASE statement into dispatch vectors.
+/// @details Marks CASE ELSE only when `elseBody` is non-empty, computes reserve
+///          capacities from all arms, and traverses arms in source order.
+///          Strings become non-owning views. Discrete labels and relation RHS
+///          values are added only after successful narrowing. A range is added
+///          only when both endpoints narrow successfully; its original endpoint
+///          order is preserved. Relation operators are translated one-for-one
+///          to the model enumeration. No sorting, duplicate detection, overlap
+///          checking, or range canonicalization occurs.
+/// @param stmt Parsed AST borrowed for the duration of this call.
+/// @return Independent numeric vectors plus string views into @p stmt. The
+///         caller must keep the AST's strings alive and unmoved while using the
+///         returned model.
 SelectModel SelectModelBuilder::build(const SelectCaseStmt &stmt) {
     SelectModel model{};
     model.hasCaseElse = !stmt.elseBody.empty();

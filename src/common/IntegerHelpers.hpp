@@ -16,6 +16,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file IntegerHelpers.hpp
+ * @brief Defines fixed-width two's-complement conversion and promotion helpers.
+ *
+ * Values travel in a signed 64-bit carrier while explicit widths and
+ * signedness describe their logical integer domain. All shift and mask
+ * operations are performed through unsigned representations to avoid signed
+ * overflow and implementation-defined arithmetic shifts.
+ */
+
 #pragma once
 
 #include <bit>
@@ -25,11 +35,14 @@
 
 namespace il::common::integer {
 
+/// Signed 64-bit carrier used by the integer helper API.
 using Value = long long;
 
 /// @brief Indicates how sign-extension should be applied when widening values.
 enum class Signedness {
+    /// Interpret the logical value using two's-complement sign.
     Signed,
+    /// Interpret the logical value as an unsigned bit pattern.
     Unsigned,
 };
 
@@ -66,6 +79,11 @@ inline void validate_width(int bits) {
     }
 }
 
+/// @brief Return a mask containing @p bits low one-bits.
+/// @param bits Requested mask width.
+/// @return Zero for non-positive widths, all 64 bits for widths of at least
+///         64, or `(1 << bits) - 1` otherwise.
+/// @note This internal helper deliberately clamps rather than validates.
 [[nodiscard]] inline std::uint64_t mask_for(int bits) noexcept {
     if (bits <= 0) {
         return 0;
@@ -76,6 +94,11 @@ inline void validate_width(int bits) {
     return (std::uint64_t{1} << static_cast<unsigned>(bits)) - 1U;
 }
 
+/// @brief Return the minimum signed two's-complement value for a width.
+/// @param bits Logical signed width.
+/// @return Zero for non-positive widths, the carrier minimum for widths of at
+///         least 64, or `-2^(bits-1)` otherwise.
+/// @note This internal helper deliberately clamps rather than validates.
 [[nodiscard]] inline Value min_for(int bits) noexcept {
     if (bits <= 0) {
         return 0;
@@ -87,6 +110,11 @@ inline void validate_width(int bits) {
     return -static_cast<Value>(sign);
 }
 
+/// @brief Return the maximum signed two's-complement value for a width.
+/// @param bits Logical signed width.
+/// @return Zero for non-positive widths, the carrier maximum for widths of at
+///         least 64, or `2^(bits-1)-1` otherwise.
+/// @note This internal helper deliberately clamps rather than validates.
 [[nodiscard]] inline Value max_for(int bits) noexcept {
     if (bits <= 0) {
         return 0;
@@ -98,6 +126,9 @@ inline void validate_width(int bits) {
     return static_cast<Value>(payload);
 }
 
+/// @brief Determine the narrowest signed width that represents @p v.
+/// @param v Carrier value interpreted as signed.
+/// @return A width in 1..64, including the sign bit.
 [[nodiscard]] inline int bits_required_signed(Value v) noexcept {
     if (v == 0 || v == -1) {
         return 1;
@@ -110,6 +141,10 @@ inline void validate_width(int bits) {
     return 64;
 }
 
+/// @brief Determine the narrowest unsigned width for @p v's bit pattern.
+/// @param v Carrier value reinterpreted modulo 2^64.
+/// @return One for zero; otherwise the position of the highest set bit plus
+///         one. Negative carrier values therefore require 64 bits.
 [[nodiscard]] inline int bits_required_unsigned(Value v) noexcept {
     const std::uint64_t u = static_cast<std::uint64_t>(v);
     if (u == 0) {
@@ -132,7 +167,7 @@ inline void validate_bit_width(int bits) {
 
 /// @brief Return the minimum representable value for a width and signedness.
 /// @details Signed widths use two's-complement ranges.  Unsigned widths have a
-///          minimum of zero.  Width zero also returns zero.
+///          minimum of zero. Width zero also returns zero.
 /// @param bits Bit width in the inclusive range 0..64.
 /// @param signedness Interpretation used for the representable range.
 /// @return Minimum value representable by the requested integer domain.
@@ -149,7 +184,8 @@ inline void validate_bit_width(int bits) {
 /// @details The helper returns the largest value expressible in the signed
 ///          64-bit carrier type.  For unsigned 64-bit domains this means
 ///          @c std::numeric_limits<Value>::max() because values above that
-///          cannot be represented by @ref Value.
+///          cannot be represented by @ref Value. The same carrier cap applies
+///          to an unsigned width of 63.
 /// @param bits Bit width in the inclusive range 0..64.
 /// @param signedness Interpretation used for the representable range.
 /// @return Maximum value representable by the requested integer domain.
@@ -169,6 +205,10 @@ inline void validate_bit_width(int bits) {
 }
 
 /// @brief Widen @p value from @p bits to 64 bits using the requested signedness.
+/// @details Widths below 64 first discard bits above the logical source width.
+///          Signed values whose retained sign bit is set are extended with
+///          one-bits; unsigned values are returned as the zero-extended low
+///          bits. At width 64 the carrier value is returned unchanged.
 /// @param value Source value whose low @p bits should be interpreted.
 /// @param bits Source bit width in the inclusive range 0..64.
 /// @param signedness Whether to sign-extend or zero-extend the low bits.
@@ -199,7 +239,10 @@ inline void validate_bit_width(int bits) {
 /// @brief Narrow @p value to @p bits using an explicit signedness.
 /// @details Wrap mode truncates modulo 2^bits and then interprets the result
 ///          according to @p signedness.  Trap and saturate modes compare against
-///          the explicit signed or unsigned representable range.
+///          the explicit signed or unsigned representable range. At width 64,
+///          signed values and non-negative unsigned values return unchanged;
+///          a negative unsigned carrier traps, saturates to zero, or remains
+///          unchanged according to the selected policy.
 /// @param value Source value in the 64-bit carrier type.
 /// @param bits Destination bit width in the inclusive range 0..64.
 /// @param signedness Interpretation used for the narrowed result.
@@ -280,7 +323,9 @@ inline void validate_bit_width(int bits) {
 /// @details This compatibility overload infers signedness from the runtime
 ///          values.  Prefer the explicit-signedness overload when source types
 ///          are known because non-negative signed and unsigned values otherwise
-///          look identical in the carrier type.
+///          look identical in the carrier type. If either operand is negative,
+///          both are measured as signed; otherwise both are measured as
+///          unsigned.
 /// @param lhs Left operand.
 /// @param rhs Right operand.
 /// @return Both operands widened to the inferred common domain.
@@ -306,6 +351,8 @@ inline void validate_bit_width(int bits) {
 /// @details The required width is computed using @p signedness instead of
 ///          guessing from operand values.  This is the preferred overload for
 ///          frontend and backend code that knows the source integer domain.
+///          Under unsigned interpretation, a negative carrier is its modulo
+///          2^64 bit pattern and therefore requires the full 64-bit width.
 /// @param lhs Left operand.
 /// @param rhs Right operand.
 /// @param signedness Signedness to use while computing required widths.

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/DynStubGen.cpp
+// File: src/codegen/common/linker/DynStubGen.cpp
 // Purpose: Generate synthetic AArch64 object files containing stub trampolines
 //          for dynamic symbols and ObjC selector dispatch.
 // Key invariants:
@@ -18,6 +18,11 @@
 // Links: codegen/common/linker/NativeLinker.cpp, codegen/common/linker/RelocApplier.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file DynStubGen.cpp
+ * @brief Implements deterministic synthetic stubs, GOT slots, and selector references.
+ */
 
 #include "DynStubGen.hpp"
 #include "RelocConstants.hpp"
@@ -34,6 +39,9 @@ namespace zanna::codegen::linker {
 
 namespace {
 
+/// @brief Appends one 32-bit instruction in little-endian byte order.
+/// @param buf Destination section byte buffer.
+/// @param v Instruction word to append.
 void emitLE32(std::vector<uint8_t> &buf, uint32_t v) {
     buf.push_back(static_cast<uint8_t>(v));
     buf.push_back(static_cast<uint8_t>(v >> 8));
@@ -46,6 +54,10 @@ void emitLE32(std::vector<uint8_t> &buf, uint32_t v) {
 ///          still store symbol indices in the same 32-bit field used by object
 ///          files. Throwing here prevents silent wraparound if an unexpectedly
 ///          large import set ever pushes the synthetic table past that limit.
+/// @param index Host-sized symbol-table index.
+/// @param context Human-readable generated record used in an exception message.
+/// @return The index narrowed to the relocation field width.
+/// @throws std::runtime_error If @p index exceeds `uint32_t`.
 uint32_t checkedSymbolIndex(size_t index, const char *context) {
     if (index > std::numeric_limits<uint32_t>::max()) {
         throw std::runtime_error(std::string("dynamic stub symbol index overflow while adding ") +
@@ -58,6 +70,11 @@ uint32_t checkedSymbolIndex(size_t index, const char *context) {
 /// @details Stub and GOT offsets are derived from fixed record sizes. This
 ///          helper keeps those calculations from wrapping before the vector
 ///          append paths get a chance to fail cleanly.
+/// @param lhs Left factor.
+/// @param rhs Right factor.
+/// @param context Human-readable operation used in an exception message.
+/// @return The checked product.
+/// @throws std::runtime_error If the product exceeds `size_t`.
 size_t checkedMulSize(size_t lhs, size_t rhs, const char *context) {
     if (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs) {
         throw std::runtime_error(std::string("dynamic stub size multiplication overflow in ") +
@@ -70,6 +87,11 @@ size_t checkedMulSize(size_t lhs, size_t rhs, const char *context) {
 /// @details Used before vector resize operations so size arithmetic errors are
 ///          diagnosed as linker bugs instead of relying on implementation-
 ///          defined overflow behaviour.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param context Human-readable operation used in an exception message.
+/// @return The checked sum.
+/// @throws std::runtime_error If the sum exceeds `size_t`.
 size_t checkedAddSize(size_t lhs, size_t rhs, const char *context) {
     if (lhs > std::numeric_limits<size_t>::max() - rhs) {
         throw std::runtime_error(std::string("dynamic stub size addition overflow in ") + context);
@@ -79,6 +101,7 @@ size_t checkedAddSize(size_t lhs, size_t rhs, const char *context) {
 
 } // namespace
 
+/// @copydoc generateObjcSelectorStubsAArch64(std::unordered_set<std::string> &)
 ObjFile generateObjcSelectorStubsAArch64(std::unordered_set<std::string> &dynamicSyms) {
     ObjFile stubObj;
     stubObj.name = "<objc-stubs>";
@@ -241,6 +264,7 @@ ObjFile generateObjcSelectorStubsAArch64(std::unordered_set<std::string> &dynami
     return stubObj;
 }
 
+/// @copydoc generateDynStubsAArch64(const std::unordered_set<std::string> &)
 ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSyms) {
     ObjFile stubObj;
     stubObj.name = "<dyld-stubs>";
@@ -333,6 +357,7 @@ ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSy
     return stubObj;
 }
 
+/// @copydoc generateDynStubsX8664(const std::unordered_set<std::string> &)
 ObjFile generateDynStubsX8664(const std::unordered_set<std::string> &dynamicSyms) {
     ObjFile stubObj;
     stubObj.name = "<elf64-dyn-stubs>";

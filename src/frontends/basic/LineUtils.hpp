@@ -13,6 +13,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file LineUtils.hpp
+ * @brief Defines stateless helpers for classifying and parsing BASIC line labels.
+ *
+ * These routines centralize the legacy convention that positive integral
+ * values identify user-written line labels while zero and negative signed
+ * values denote compiler-generated statement positions.
+ */
+
 #pragma once
 
 #include <charconv>
@@ -50,8 +59,10 @@ template <typename T> [[nodiscard]] constexpr bool hasUserLine(T line) noexcept 
 /// @details Requires the entire token text to be consumed and rejects overflow.
 ///          BASIC labels are stored as @c int throughout the legacy frontend, so
 ///          this helper centralizes that boundary check for parser code paths
-///          that previously used unchecked C conversions.
-/// @param text Token lexeme containing decimal digits for a line label.
+///          that previously used unchecked C conversions. Leading whitespace
+///          and plus signs are rejected; a leading minus sign is accepted by
+///          the underlying signed conversion.
+/// @param text Complete base-10 token spelling to parse.
 /// @return Parsed line number, or @c std::nullopt if the token is malformed or
 ///         outside the representable @c int range.
 [[nodiscard]] inline std::optional<int> parseLineNumberLiteral(std::string_view text) noexcept {

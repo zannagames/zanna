@@ -1,0 +1,69 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/soak_probe.zia
+// Purpose: Runs a deterministic one-minute worst-case campaign simulation soak.
+// Key invariants:
+//   - Enemy and particle pools remain bounded for 3,600 continuous updates.
+//   - Dynamic tiles, boss AI, projectile pressure, and effects keep advancing.
+// Ownership/Lifetime:
+//   - Probe owns one Core level and fresh combat/presentation systems.
+// Links: performance_probe.zia, enemy.zia, level.zia, docs/internals/testing.md
+//
+//===----------------------------------------------------------------------===//
+
+module soak_probe;
+
+bind Zanna.Math.Random as Random;
+bind Zanna.Terminal as Terminal;
+bind "./config";
+bind "./difficulty";
+bind "./enemy";
+bind "./level";
+bind "./palette";
+bind "./particles";
+
+final XENOSCAPE_SOAK_FRAMES = 3600;
+final XENOSCAPE_SOAK_PARTICLE_CAP = 256;
+
+/// @brief Execute a one-minute Veteran NG+ simulation at the campaign climax.
+/// @return Nothing. Prints `RESULT: ok` after all 3,600 bounded frames.
+func main() {
+    Random.Seed(730201);
+    var pal = new Palette();
+    var particles = new ParticleSystem(pal);
+    var level = new Level();
+    level.loadLevel(10);
+    level.enrichEnemies(10);
+    var enemies = new EnemyManager();
+    enemies.setDifficultyProfile(DIFFICULTY_VETERAN);
+    enemies.setNewGamePlusActive(true);
+    enemies.spawnFromLevel(level);
+
+    var checksum = 29;
+    var frame = 0;
+    while frame < XENOSCAPE_SOAK_FRAMES {
+        var worldWidth = level.levelWidth * TILE_SIZE;
+        var playerX = (frame * 37 + (frame / 180) * 503) % worldWidth;
+        var playerY = level.playerStartY + (frame % 11) * 8;
+        level.updateDynamicTiles(DT_BASE);
+        enemies.updateAll(level, playerX, playerY, DT_BASE, particles);
+        particles.updateAll();
+        if enemies.activeCount() > MAX_ENEMIES or
+           particles.activeCount() > XENOSCAPE_SOAK_PARTICLE_CAP {
+            Terminal.Say("RESULT: fail pool capacity"); return;
+        }
+        checksum = (checksum * 131 + enemies.activeCount() * 7 +
+                    particles.activeCount() * 11 + frame) % 1000003;
+        if checksum < 0 { checksum = 0 - checksum; }
+        frame = frame + 1;
+    }
+    if checksum == 0 {
+        Terminal.Say("RESULT: fail inert simulation"); return;
+    }
+    Terminal.Say("RESULT: ok");
+}

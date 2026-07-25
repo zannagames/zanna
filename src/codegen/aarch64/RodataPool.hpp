@@ -5,13 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/RodataPool.hpp
+// File: src/codegen/aarch64/RodataPool.hpp
 // Purpose: Deduplicate string literals and emit a rodata section for AArch64.
 // Key invariants: Identical string contents are pooled to a single label;
 //                 ordered_ preserves first-seen insertion order for deterministic output.
 // Ownership/Lifetime: Constructed per-function or per-module; borrows IL Module
 //                     data during buildFromModule but does not retain references.
-// Links: codegen/x86_64/AsmEmitter.hpp (x86-64 equivalent), docs/internals/architecture.md
+// Links: src/codegen/aarch64/RodataPool.cpp,
+//        src/codegen/x86_64/AsmEmitter.hpp (x86-64 equivalent),
+//        docs/internals/architecture.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,50 +29,91 @@
 
 #include "codegen/aarch64/TargetAArch64.hpp"
 
+/**
+ * @file
+ * @brief Declares deterministic string pooling and scalar-global emission for AArch64.
+ *
+ * `RodataPool` collects string and scalar global initializers from IL. Strings
+ * are deduplicated by byte content for assembly rodata emission, while writable
+ * scalars retain per-global storage and little-endian bytes for assembly and
+ * direct object emission paths.
+ */
+
 namespace il::core {
 struct Module;
 }
 
 namespace zanna::codegen::aarch64 {
 
-/// @brief Manages a pool of deduplicated read-only string data for AArch64 assembly emission.
-/// @details Collects string literals from IL global constants, deduplicates by content,
-///          assigns unique assembly labels, and emits a `.section __DATA,__const` (macOS)
-///          or `.rodata` (Linux) section containing `.asciz` directives.
+/**
+ * @brief Owns pooled string literals and writable scalar globals for AArch64 output.
+ *
+ * String labels are assigned in first-seen content order and remain stable for
+ * the lifetime of the pool. IL global names map to those labels even when
+ * several names share identical bytes. Scalar globals are not deduplicated.
+ *
+ * @invariant `ordered_` contains exactly one entry for each key in
+ *            `contentToLabel_`.
+ * @invariant Every value in `nameToLabel_` names an entry in `ordered_`.
+ */
 class RodataPool {
   public:
-    /// @brief Get the mapping from IL global string names to their pooled assembly labels.
-    /// @return Const reference to the name-to-label map. Populated after buildFromModule().
+    /**
+     * @brief Returns the IL-global-name to pooled-label mapping.
+     *
+     * @return Const reference valid until this pool is mutated or destroyed.
+     */
     const std::unordered_map<std::string, std::string> &nameToLabel() const noexcept {
         return nameToLabel_;
     }
 
-    /// @brief Get the ordered (label, content) pairs for binary emission.
-    /// @return Const reference to the insertion-ordered pool entries.
+    /**
+     * @brief Returns unique string entries in deterministic first-seen order.
+     *
+     * @return Const reference to owned `(label, raw bytes)` pairs, valid until
+     *         this pool is mutated or destroyed.
+     */
     const std::vector<std::pair<std::string, std::string>> &entries() const noexcept {
         return ordered_;
     }
 
-    /// @brief Scan an IL module's globals and pool all string constants.
-    /// @details Iterates over all globals in @p mod, identifies string constants,
-    ///          deduplicates by content, and records the IL name to label mapping.
-    /// @param mod The IL module whose global string constants should be pooled.
+    /**
+     * @brief Collects supported string and scalar globals from an IL module.
+     *
+     * String contents are deduplicated; supported non-string scalar types
+     * produce writable `DataGlobal` entries with serialized object bytes.
+     * Existing pool contents are retained, so callers normally invoke this
+     * once per freshly constructed pool.
+     *
+     * @param mod Module borrowed for the duration of the scan.
+     * @post No reference into @p mod is retained.
+     */
     void buildFromModule(const il::core::Module &mod);
 
-    /// @brief Emit the read-only data section to an output stream.
-    /// @details Writes platform-appropriate section directives followed by labeled
-    ///          `.asciz` entries for each unique string in insertion order.
-    /// @param os The output stream to write assembly text to.
+    /**
+     * @brief Emits pooled strings as platform-specific assembly rodata.
+     *
+     * Linux uses `.rodata`, Windows uses `.rdata`, and Mach-O uses
+     * `__TEXT,__const`. An empty pool emits no text.
+     *
+     * @param[in,out] os Stream that receives assembly directives.
+     * @param target Target ABI selecting section syntax.
+     */
     void emit(std::ostream &os, const TargetInfo &target) const;
 
-    /// @brief Emit writable scalar globals to a `.data` section.
-    /// @details Each non-string global is given an externally visible, mangled
-    ///          symbol matching the AsmEmitter's adrp/add references, plus a
-    ///          size-appropriate initializer directive. Without this, `gaddr @g`
-    ///          on a mutable scalar global resolves to an undefined symbol.
+    /**
+     * @brief Emits writable scalar globals to a target-specific data section.
+     *
+     * Each global receives alignment, external visibility, target symbol
+     * mangling, and a size/type-appropriate initializer directive. An empty
+     * scalar-global collection emits no text.
+     *
+     * @param[in,out] os Stream that receives assembly directives.
+     * @param target Target ABI selecting section and symbol syntax.
+     */
     void emitData(std::ostream &os, const TargetInfo &target) const;
 
-    /// @brief A writable scalar global to emit into `.data`.
+    /// @brief Owns the assembly and object-emission representation of one writable scalar.
     struct DataGlobal {
         std::string name;          ///< Unmangled IL global name (e.g. "counter").
         int sizeBytes = 0;         ///< 1, 2, 4, or 8.
@@ -79,7 +122,11 @@ class RodataPool {
         std::vector<uint8_t> bytes;///< Little-endian initializer bytes for the object path.
     };
 
-    /// @brief Writable scalar globals collected from the module (for the binary path).
+    /**
+     * @brief Returns writable scalar globals in module traversal order.
+     *
+     * @return Const reference to owned global records, valid until mutation or destruction.
+     */
     const std::vector<DataGlobal> &dataGlobals() const noexcept {
         return dataGlobals_;
     }
@@ -97,20 +144,33 @@ class RodataPool {
     /// @brief Writable scalar (non-string) globals collected from the module.
     std::vector<DataGlobal> dataGlobals_;
 
-    /// @brief Generate a unique rodata label for the given pool index.
-    /// @param index Zero-based index of the string in the pool.
-    /// @return A label string like ".Lstr0", ".Lstr1", etc.
+    /**
+     * @brief Generates the assembler label for a string-pool index.
+     *
+     * @param index Zero-based insertion index.
+     * @return Owned label of the form `L.str.<index>`.
+     */
     static std::string makeLabel(std::size_t index);
 
-    /// @brief Escape a raw byte string for use in a `.asciz` assembly directive.
-    /// @details Converts non-printable and special characters to octal escapes.
-    /// @param bytes The raw string content to escape.
-    /// @return The escaped string suitable for `.asciz`.
+    /**
+     * @brief Escapes raw bytes for inclusion inside an assembler `.asciz` string.
+     *
+     * Quotes and backslashes receive backslash escapes, newline/tab use named
+     * escapes, printable ASCII is copied, and remaining bytes use three-digit
+     * octal escapes.
+     *
+     * @param bytes Raw byte sequence; embedded nulls are supported.
+     * @return Owned escaped text without surrounding quotes.
+     */
     static std::string escapeAsciz(std::string_view bytes);
 
-    /// @brief Add a string to the pool, deduplicating by content.
-    /// @param ilName The IL global name referencing this string.
-    /// @param bytes The raw string content.
+    /**
+     * @brief Adds or aliases an IL string global by byte content.
+     *
+     * @param ilName IL global name to map.
+     * @param bytes Raw string bytes used as the deduplication key.
+     * @post `nameToLabel_[ilName]` identifies the unique entry for @p bytes.
+     */
     void addString(const std::string &ilName, const std::string &bytes);
 };
 

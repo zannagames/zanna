@@ -25,6 +25,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file DynamicSymbolPolicy.hpp
+ * @brief Defines the cross-platform allowlist and rejection policy for
+ *        loader-resolved native symbols.
+ *
+ * The policy normalizes object-format decoration, rejects names known to
+ * belong exclusively to a different target, and recognizes tightly scoped
+ * system, C++, compiler-runtime, framework, and ABI symbol families.
+ */
+
 #pragma once
 
 #include "codegen/common/linker/LinkTypes.hpp"
@@ -38,6 +48,7 @@ namespace zanna::codegen::linker {
 /// @details Drops any leading underscores (Mach-O mangles "main" to "_main")
 ///          and trims the trailing "$DARWIN_EXTSN" Darwin-extension marker so
 ///          variants like `select` and `select$DARWIN_EXTSN` compare equal.
+/// @param name Raw object-format symbol name.
 /// @return The stripped name, or @p name unchanged when no transform applied.
 inline std::string stripDynamicSymbolLeadingUnderscores(const std::string &name) {
     size_t i = 0;
@@ -57,6 +68,9 @@ inline std::string stripDynamicSymbolLeadingUnderscores(const std::string &name)
 
 /// @brief Test whether @p name (or its stripped form) starts with any of the
 ///        null-terminated prefix list @p prefixes (terminated by a nullptr entry).
+/// @param name Raw symbol name to test.
+/// @param prefixes Pointer to a null-terminated array of C-string prefixes.
+/// @return `true` when the raw or normalized name starts with any prefix.
 inline bool dynamicSymbolHasPrefix(const std::string &name, const char *const *prefixes) {
     const std::string stripped = stripDynamicSymbolLeadingUnderscores(name);
     for (const char *const *p = prefixes; p != nullptr && *p != nullptr; ++p) {
@@ -69,6 +83,11 @@ inline bool dynamicSymbolHasPrefix(const std::string &name, const char *const *p
 
 /// @brief Test whether @p name (or its de-underscored form) exactly matches any
 ///        entry in @p arr (length @p count), mirroring the exact-list comparison.
+/// @param name Raw symbol name.
+/// @param stripped Precomputed normalized form of @p name.
+/// @param arr Array of exact C-string candidates.
+/// @param count Number of entries in @p arr.
+/// @return `true` when either form equals an entry.
 inline bool matchesExactName(const std::string &name,
                              const std::string &stripped,
                              const char *const *arr,
@@ -90,6 +109,7 @@ inline bool matchesExactName(const std::string &name,
 ///          legitimately be a cross-platform libc/libm/POSIX reference is left in
 ///          the shared exact list. Missing an entry is safe (stays permissive as
 ///          before); it can never wrongly reject a real cross-platform symbol.
+/// @return Stable process-lifetime list of Windows-only import names.
 inline const std::vector<const char *> &windowsExclusiveDynamicSymbols() {
     static const std::vector<const char *> kSyms = {
         "ExitProcess",
@@ -246,6 +266,8 @@ inline const std::vector<const char *> &windowsExclusiveDynamicSymbols() {
     return kSyms;
 }
 
+/// @brief Returns symbols supplied exclusively by macOS system libraries and ABIs.
+/// @return Stable process-lifetime list of macOS-only import names.
 inline const std::vector<const char *> &macExclusiveDynamicSymbols() {
     static const std::vector<const char *> kSyms = {"sincosf_stret",
                                                     "memset_pattern4",
@@ -289,6 +311,8 @@ inline const std::vector<const char *> &macExclusiveDynamicSymbols() {
     return kSyms;
 }
 
+/// @brief Returns symbols supplied exclusively by Linux system libraries and ABIs.
+/// @return Stable process-lifetime list of Linux-only import names.
 inline const std::vector<const char *> &linuxExclusiveDynamicSymbols() {
     static const std::vector<const char *> kSyms = {"__errno_location",
                                                     "__assert_fail",
@@ -311,6 +335,8 @@ inline const std::vector<const char *> &linuxExclusiveDynamicSymbols() {
 ///          Zanna's own archives. The matcher stays narrow to known `std::*`,
 ///          RTTI/vtable, operator new/delete, and exception-runtime prefixes so
 ///          arbitrary user-defined C++ mangled names are not treated as system imports.
+/// @param name Raw object-format symbol name.
+/// @return `true` for a recognized Itanium C++ ABI/runtime symbol.
 inline bool isKnownCppRuntimeDynamicSymbol(const std::string &name) {
     const std::string stripped = stripDynamicSymbolLeadingUnderscores(name);
     static const char *const kCppRuntimeExact[] = {
@@ -383,7 +409,11 @@ inline bool isKnownCppRuntimeDynamicSymbol(const std::string &name) {
     return dynamicSymbolHasPrefix(name, kCppRuntimePrefixes);
 }
 
-/// @brief Recognise compiler runtime helper symbols supplied by libgcc_s/compiler-rt.
+/// @brief Recognises compiler runtime helper symbols supplied by libgcc_s/compiler-rt.
+/// @param name Raw object-format symbol name.
+/// @param platform Target platform, reserved for platform-specific compiler
+///                 helper policy.
+/// @return `true` when @p name is a recognized compiler support routine.
 inline bool isKnownCompilerRuntimeDynamicSymbol(const std::string &name, LinkPlatform platform) {
     const std::string stripped = stripDynamicSymbolLeadingUnderscores(name);
 
@@ -400,8 +430,16 @@ inline bool isKnownCompilerRuntimeDynamicSymbol(const std::string &name, LinkPla
     return false;
 }
 
-/// Known system/dynamic library symbols that won't be present in runtime
-/// archives and may be resolved through platform loader metadata instead.
+/// @brief Determines whether an unresolved name may be delegated to the target loader.
+/// @details Applies foreign-platform negative filters before shared and
+///          platform-specific exact/prefix allowlists.  Linux additionally
+///          recognizes constrained X11/OpenGL families; Windows recognizes
+///          MSVC-mangled library names while explicitly excluding thread-safe
+///          static guard symbols that must resolve internally.
+/// @param name Raw object-format unresolved symbol name.
+/// @param platform Platform for which the output is being linked.
+/// @return `true` only when target system libraries or ABI runtimes are
+///         expected to supply the symbol.
 inline bool isKnownDynamicSymbol(const std::string &name, LinkPlatform platform) {
     const std::string stripped = stripDynamicSymbolLeadingUnderscores(name);
 

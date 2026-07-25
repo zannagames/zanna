@@ -1,0 +1,828 @@
+// =============================================================================
+// texture.zia — Procedural tile / background texture generation
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — WHY GENERATE TEXTURES AT RUNTIME?
+// --------------------------------------------
+// A 2D platformer can ship tiles two ways:
+//
+//   A. Ship PNG sprite sheets, blit them onto tiles.
+//      Pros: exact artistic control.  Cons: bloats the
+//      binary; any palette swap requires a re-export.
+//
+//   B. Generate textures at boot from code.  Pros: binary is
+//      tiny; palette changes are free; variations are
+//      automatic.  Cons: every surface has to be
+//      *algorithmically describable*.
+//
+// Xenoscape goes with **B** for atmosphere reasons: the game
+// has eight biomes and each has several surface types.  Ship-
+// size is tight (the demo build must fit a single binary),
+// and we want per-biome palette retheming without an art
+// pipeline.
+//
+// This file is where the code does that.  At boot,
+// `TextureSet.init(palette)` calls roughly a dozen builders
+// that bake `Zanna.Graphics.Pixels` objects for each
+// surface: grass, dirt, stone, brick, metal, crystal, ice,
+// lava glow, etc.  The result is cached on the TextureSet
+// and re-blitted onto tiles at draw time — one generation
+// pass, zero per-frame cost.
+//
+// TECHNIQUES USED
+// ---------------
+//   * **Bayer 4×4 ordered dithering** — gives that retro
+//     pixel-art-mesh look where two colours alternate on
+//     a fixed pattern.  Cheap to compute, very recognisable.
+//
+//   * **Deterministic LCG noise** — a simple linear
+//     congruential generator seeded per-texture.  Noise is
+//     *reproducible* across runs so saves / replays look
+//     identical.
+//
+//   * **Stipple patterns** — random-placed darker pixels
+//     at a configured density; used for rough / organic
+//     surfaces (dirt, moss).
+//
+//   * **Crosshatch lines** — short diagonal strokes
+//     drawn with `Pixels.DrawLine`; gives stone + metal a
+//     hand-drawn edge.
+//
+//   * **Layer composition** — base fill, then noise, then
+//     detail, then highlight, then shadow.  The order is
+//     what makes the final texture look depth-ful.
+//
+// RUNTIME APIS USED
+// -----------------
+//   Pixels.New(w, h)       — allocate a texture buffer.
+//   Pixels.Set(x, y, col)  — write one pixel.
+//   Pixels.DrawBox / Line / Disc — draw primitives into
+//                            the buffer.
+//   Pixels.BlendPixel      — alpha-composite onto a pixel.
+//   Color.RGB(r, g, b)     — pack a colour.
+//   Color.GetR / GetG / GetB — unpack.
+//   Color.Darken / Brighten / Lerp — per-channel transforms
+//                            for highlights + shadows.
+//
+// WHERE THIS FITS
+// ---------------
+//     game.zia / level.zia ──► build a TextureSet once per
+//                              biome and hand it to renderer.
+//     renderer.zia         ──► blits the pre-baked textures
+//                              onto tile cells instead of
+//                              filling with flat colour.
+//
+// HOW TO READ THIS FILE
+// ---------------------
+//   1. LCG / noise helpers.
+//   2. Bayer matrix + dithering.
+//   3. Per-surface builder functions (buildGrass,
+//      buildDirt, buildStone, ...).
+//   4. `TextureSet` class — init constructs + caches every
+//      surface's Pixels.
+//
+// =============================================================================
+
+module texture;
+
+bind Zanna.Graphics;
+bind "./config";
+bind "./palette";
+
+// =============================================================================
+// Pseudo-random number generator (deterministic, no external deps)
+// Uses a simple LCG for reproducible texture noise
+// =============================================================================
+
+// LCG state — deterministic per-pixel seeding
+/// @brief 2D position-mixing hash.  Cheap LCG-style scramble
+///        used as the seed for `noise2d`.  Same (x, y) always
+///        yields the same hash → texture noise is reproducible
+///        across runs.
+func hashSeed(x: Integer, y: Integer) -> Integer {
+    var s = x * 374761393 + y * 668265263;
+    s = (s * s * s) / 1000;  // bit mixing approximation
+    if s < 0 { s = 0 - s; }
+    return s;
+}
+
+// Returns a pseudo-random value 0..range-1 seeded by (x, y, salt)
+/// @brief Deterministic 2D noise in `[0, range)`.  `salt`
+///        decorrelates multiple calls at the same (x, y) —
+///        e.g. one for highlight, one for shadow noise on
+///        the same surface.
+func noise2d(x: Integer, y: Integer, salt: Integer, range: Integer) -> Integer {
+    var s = hashSeed(x + salt * 17, y + salt * 31);
+    s = s + salt * 7919;
+    if s < 0 { s = 0 - s; }
+    return s % range;
+}
+
+// =============================================================================
+// Bayer 4x4 Ordered Dither Matrix
+// =============================================================================
+// The classic 4x4 Bayer matrix scaled to 0-15:
+//   0  8  2  10
+//  12  4  14  6
+//   3  11  1  9
+//  15  7  13  5
+
+/// @brief Lookup into a 4×4 Bayer ordered-dither matrix.
+///        Returns a value 0..15 used as the threshold for
+///        on/off pixel decisions in `orderedDither`.  The
+///        Bayer matrix is the classic recipe for the
+///        "checkered" pixel-art dither look.
+func bayerThreshold(x: Integer, y: Integer) -> Integer {
+    var bx = x % 4;
+    var by = y % 4;
+    // Flatten the 4x4 matrix into a lookup
+    if by == 0 {
+        if bx == 0 { return 0; }
+        if bx == 1 { return 8; }
+        if bx == 2 { return 2; }
+        return 10;
+    }
+    if by == 1 {
+        if bx == 0 { return 12; }
+        if bx == 1 { return 4; }
+        if bx == 2 { return 14; }
+        return 6;
+    }
+    if by == 2 {
+        if bx == 0 { return 3; }
+        if bx == 1 { return 11; }
+        if bx == 2 { return 1; }
+        return 9;
+    }
+    // by == 3
+    if bx == 0 { return 15; }
+    if bx == 1 { return 7; }
+    if bx == 2 { return 13; }
+    return 5;
+}
+
+// =============================================================================
+// Core Texture Functions
+// =============================================================================
+
+// Fill a region with ordered dithering between two colors.
+// `mix` controls blend ratio (0 = all color1, 16 = all color2).
+/// @brief Fill a w×h area with a Bayer ordered-dither
+///        pattern blending two colours by `ratio` (0..16).
+///        Used wherever you want the retro "shaded with two
+///        colours" look — stone, metal, brick.
+func orderedDither(pix: Pixels, ox: Integer, oy: Integer,
+                   w: Integer, h: Integer,
+                   color1: Integer, color2: Integer, mix: Integer) {
+    var y = 0;
+    while y < h {
+        var x = 0;
+        while x < w {
+            var threshold = bayerThreshold(x, y);
+            if threshold < mix {
+                Pixels.Set(pix, ox + x, oy + y, color2);
+            } else {
+                Pixels.Set(pix, ox + x, oy + y, color1);
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+// Fill a region with per-pixel color noise (RGB ± variance).
+/// @brief Fill a w×h area with per-pixel noise that
+///        modulates `baseColor`.  Each pixel gets a small
+///        random brightness offset.  Adds organic variation
+///        without any obvious pattern.
+func noiseFill(pix: Pixels, ox: Integer, oy: Integer,
+               w: Integer, h: Integer, baseColor: Integer, variance: Integer) {
+    var br = Color.GetRed(baseColor);
+    var bg = Color.GetGreen(baseColor);
+    var bb = Color.GetBlue(baseColor);
+    var y = 0;
+    while y < h {
+        var x = 0;
+        while x < w {
+            var nr = noise2d(ox + x, oy + y, 0, variance * 2 + 1) - variance;
+            var ng = noise2d(ox + x, oy + y, 1, variance * 2 + 1) - variance;
+            var nb = noise2d(ox + x, oy + y, 2, variance * 2 + 1) - variance;
+            var r = br + nr;
+            var g = bg + ng;
+            var b = bb + nb;
+            if r < 0 { r = 0; } if r > 255 { r = 255; }
+            if g < 0 { g = 0; } if g > 255 { g = 255; }
+            if b < 0 { b = 0; } if b > 255 { b = 255; }
+            Pixels.Set(pix, ox + x, oy + y, Color.RGB(r, g, b));
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+// Scatter random dots (stipple pattern) for rough surfaces.
+/// @brief Sprinkle darker dots at random positions.  Density
+///        controls the dot count.  Used for rough surfaces
+///        (dirt, moss).
+func stipple(pix: Pixels, ox: Integer, oy: Integer,
+             w: Integer, h: Integer, color: Integer, density: Integer) {
+    var y = 0;
+    while y < h {
+        var x = 0;
+        while x < w {
+            var r = noise2d(ox + x, oy + y, 42, 100);
+            if r < density {
+                Pixels.Set(pix, ox + x, oy + y, color);
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+// Crosshatch pattern for metal/stone textures.
+/// @brief Diagonal-line hatching for a hand-drawn look.
+///        Used on metal + stone to imply tooling marks.
+func crosshatch(pix: Pixels, ox: Integer, oy: Integer,
+                w: Integer, h: Integer, color: Integer, spacing: Integer) {
+    var y = 0;
+    while y < h {
+        var x = 0;
+        while x < w {
+            if (x + y) % spacing == 0 {
+                Pixels.BlendPixel(pix, ox + x, oy + y, color, 80);
+            }
+            if (x - y + 100) % spacing == 0 {
+                Pixels.BlendPixel(pix, ox + x, oy + y, color, 80);
+            }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+// Add highlight and shadow edges to a rectangular region (bevel effect).
+// Creates a raised-panel 3D look.
+/// @brief Paint a 1-pixel light edge on top+left and a 1-
+///        pixel dark edge on bottom+right.  Cheap "lit from
+///        top-left" depth on every solid surface.
+func bevelEdges(pix: Pixels, ox: Integer, oy: Integer, w: Integer, h: Integer,
+                highlightAlpha: Integer, shadowAlpha: Integer) {
+    // Top edge highlight
+    var x = 0;
+    while x < w {
+        Pixels.BlendPixel(pix, ox + x, oy, Color.RGB(255, 255, 255), highlightAlpha);
+        x = x + 1;
+    }
+    // Left edge highlight
+    var y = 0;
+    while y < h {
+        Pixels.BlendPixel(pix, ox, oy + y, Color.RGB(255, 255, 255), highlightAlpha - 8);
+        y = y + 1;
+    }
+    // Bottom edge shadow
+    x = 0;
+    while x < w {
+        Pixels.BlendPixel(pix, ox + x, oy + h - 1, Color.RGB(0, 0, 0), shadowAlpha);
+        x = x + 1;
+    }
+    // Right edge shadow
+    y = 0;
+    while y < h {
+        Pixels.BlendPixel(pix, ox + w - 1, oy + y, Color.RGB(0, 0, 0), shadowAlpha - 8);
+        y = y + 1;
+    }
+}
+
+// Add random crack lines to a surface for a weathered look.
+/// @brief Draw a few short jagged crack lines.  Adds age /
+///        damage to stone and metal textures.
+func addCracks(pix: Pixels, ox: Integer, oy: Integer, w: Integer, h: Integer,
+               color: Integer, count: Integer, salt: Integer) {
+    var i = 0;
+    while i < count {
+        // Random start point
+        var sx = noise2d(i, salt, 10, w);
+        var sy = noise2d(i, salt, 20, h);
+        // Random direction and length
+        var len = noise2d(i, salt, 30, 8) + 3;
+        var dir = noise2d(i, salt, 40, 4); // 0=right, 1=down, 2=right-down, 3=left-down
+        var j = 0;
+        while j < len {
+            var cx = sx;
+            var cy = sy;
+            if dir == 0 { cx = sx + j; }
+            if dir == 1 { cy = sy + j; }
+            if dir == 2 { cx = sx + j; cy = sy + j / 2; }
+            if dir == 3 { cx = sx - j; cy = sy + j / 2; }
+            if cx >= 0 and cx < w and cy >= 0 and cy < h {
+                Pixels.BlendPixel(pix, ox + cx, oy + cy, color, 120);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+// =============================================================================
+// Surface Generators — Pre-cached tile textures
+// =============================================================================
+
+/// @brief Texture factory: every `gen*` builds and returns a
+///        fresh `Pixels` for a given surface type.  Caller
+///        caches the result and re-blits.
+class TextureFactory {
+    /// @brief Stub.  Real construction is `initFactory`.
+    expose func init() {}
+    hide Palette pal;
+
+    /// @brief Wire the palette so per-`gen*` colours can pick
+    ///        accent shades from the centralised vocabulary.
+    expose func initFactory(p: Palette) {
+        pal = p;
+    }
+
+    // Generate a rock/stone surface texture.
+    //=========================================================
+    // SURFACE GENERATORS
+    //=========================================================
+    // Each `gen*` builds one Pixels of width × height with the
+    // given base colour (and sometimes accent params), then
+    // returns it.  Callers cache the result and re-blit each
+    // frame — generation cost is paid once.
+    //
+    // Internally each generator is a recipe:
+    //   base fill → noise/dither variation → detail strokes
+    //   → bevel edges → optional cracks/overlays.
+
+    /// @brief Stone-like rock.  Base fill + heavy noise +
+    ///        bevel + occasional crack.
+    expose func genRock(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        // Base: noise fill with moderate variance
+        noiseFill(pix, 0, 0, w, h, baseColor, 12);
+        // Grain: subtle stipple with darker dots
+        stipple(pix, 0, 0, w, h, Color.Darken(baseColor, 30), 15);
+        // Lighter mineral flecks
+        stipple(pix, 0, 0, w, h, Color.Brighten(baseColor, 25), 5);
+        // Cracks
+        addCracks(pix, 0, 0, w, h, Color.Darken(baseColor, 50), 3, 0);
+        // Bevel edges for 3D depth
+        bevelEdges(pix, 0, 0, w, h, 30, 40);
+        return pix;
+    }
+
+    // Generate a mossy/organic surface.
+    /// @brief Mossy rock.  Rock base + green stipple overlay.
+    expose func genMoss(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        // Base: organic noise
+        noiseFill(pix, 0, 0, w, h, baseColor, 18);
+        // Dark vein network
+        var y = 0;
+        while y < h {
+            var x = 0;
+            while x < w {
+                var v = noise2d(x, y, 77, 20);
+                if v < 2 {
+                    Pixels.BlendPixel(pix, x, y, Color.Darken(baseColor, 40), 100);
+                }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        // Bright tips (moss highlights)
+        stipple(pix, 0, 0, w, h, Color.Brighten(baseColor, 35), 8);
+        // Top row: grass-like fringe
+        var x2 = 0;
+        while x2 < w {
+            if noise2d(x2, 0, 55, 3) == 0 {
+                Pixels.Set(pix, x2, 0, Color.Brighten(baseColor, 20));
+                if h > 1 {
+                    Pixels.BlendPixel(pix, x2, 1, Color.Brighten(baseColor, 10), 160);
+                }
+            }
+            x2 = x2 + 1;
+        }
+        bevelEdges(pix, 0, 0, w, h, 20, 35);
+        return pix;
+    }
+
+    // Generate a metal surface with brushed texture and rivets.
+    /// @brief Metal plate.  Smooth base + dither + cross-hatch
+    ///        + bevel.
+    expose func genMetal(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        // Base: low noise for smooth metal
+        noiseFill(pix, 0, 0, w, h, baseColor, 6);
+        // Horizontal brushed lines
+        var y = 0;
+        while y < h {
+            if y % 3 == 0 {
+                var x = 0;
+                while x < w {
+                    Pixels.BlendPixel(pix, x, y, Color.Brighten(baseColor, 15), 60);
+                    x = x + 1;
+                }
+            }
+            y = y + 1;
+        }
+        // Rivets in corners
+        if w >= 8 and h >= 8 {
+            Pixels.DrawDisc(pix, 4, 4, 2, Color.Darken(baseColor, 20));
+            Pixels.DrawDisc(pix, w - 5, 4, 2, Color.Darken(baseColor, 20));
+            Pixels.DrawDisc(pix, 4, h - 5, 2, Color.Darken(baseColor, 20));
+            Pixels.DrawDisc(pix, w - 5, h - 5, 2, Color.Darken(baseColor, 20));
+            // Rivet highlights
+            Pixels.Set(pix, 3, 3, Color.Brighten(baseColor, 30));
+            Pixels.Set(pix, w - 6, 3, Color.Brighten(baseColor, 30));
+            Pixels.Set(pix, 3, h - 6, Color.Brighten(baseColor, 30));
+            Pixels.Set(pix, w - 6, h - 6, Color.Brighten(baseColor, 30));
+        }
+        // Rust spots
+        stipple(pix, 0, 0, w, h, Color.RGB(120, 70, 30), 3);
+        bevelEdges(pix, 0, 0, w, h, 35, 45);
+        return pix;
+    }
+
+    // Generate an ice surface with translucent layers and frost.
+    /// @brief Ice surface.  Pale-blue dither + bright sparkle
+    ///        highlights.
+    expose func genIce(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        // Base: very low variance for clean ice
+        noiseFill(pix, 0, 0, w, h, baseColor, 8);
+        // Frost crystals: bright stipple
+        stipple(pix, 0, 0, w, h, Color.RGB(220, 240, 255), 10);
+        // Crack lines
+        addCracks(pix, 0, 0, w, h, Color.RGB(180, 210, 240), 4, 99);
+        // Specular highlights
+        var sx = noise2d(0, 0, 88, w / 2) + w / 4;
+        var sy = noise2d(0, 0, 89, h / 2);
+        if sx < w and sy < h {
+            Pixels.Set(pix, sx, sy, Color.RGB(255, 255, 255));
+            if sx + 1 < w {
+                Pixels.BlendPixel(pix, sx + 1, sy, Color.RGB(255, 255, 255), 180);
+            }
+        }
+        bevelEdges(pix, 0, 0, w, h, 40, 25);
+        return pix;
+    }
+
+    // Generate a lava/magma surface with molten veins.
+    /// @brief Animated lava.  Frame index drives crack
+    ///        position so successive frames flicker.
+    expose func genLava(w: Integer, h: Integer, baseColor: Integer,
+                        frame: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        // Base: dark crust
+        noiseFill(pix, 0, 0, w, h, Color.Darken(baseColor, 40), 10);
+        // Molten veins: bright orange/yellow network
+        var y = 0;
+        while y < h {
+            var x = 0;
+            while x < w {
+                var v = noise2d(x + frame * 3, y, 33, 30);
+                if v < 4 {
+                    Pixels.Set(pix, x, y, Color.RGB(255, 200, 50));
+                } else { if v < 7 {
+                    Pixels.BlendPixel(pix, x, y, Color.RGB(255, 130, 20), 180);
+                }}
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        // Bright glow spots
+        stipple(pix, 0, 0, w, h, Color.RGB(255, 255, 100), 4);
+        // No bevel — lava is flat/molten
+        return pix;
+    }
+
+    // Generate a crystal surface with faceted geometry.
+    /// @brief Crystal facet.  Triangular highlights + sparkle.
+    expose func genCrystal(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        // Base: clean color
+        Pixels.Fill(pix, baseColor);
+        // Facets: diagonal lines creating crystal planes
+        var i = 0;
+        while i < w + h {
+            if i % 6 < 2 {
+                // Draw diagonal facet line
+                var x = i;
+                var y = 0;
+                while x >= 0 and y < h {
+                    if x < w {
+                        if i % 12 < 6 {
+                            Pixels.BlendPixel(pix, x, y, Color.Brighten(baseColor, 30), 100);
+                        } else {
+                            Pixels.BlendPixel(pix, x, y, Color.Darken(baseColor, 20), 80);
+                        }
+                    }
+                    x = x - 1;
+                    y = y + 1;
+                }
+            }
+            i = i + 1;
+        }
+        // Specular highlight cluster
+        var cx = w / 3;
+        var cy = h / 4;
+        Pixels.Set(pix, cx, cy, Color.RGB(255, 255, 255));
+        Pixels.BlendPixel(pix, cx + 1, cy, Color.RGB(255, 255, 255), 180);
+        Pixels.BlendPixel(pix, cx, cy + 1, Color.RGB(255, 255, 255), 120);
+        bevelEdges(pix, 0, 0, w, h, 45, 30);
+        return pix;
+    }
+
+    // Generate a wood surface with grain lines.
+    /// @brief Wood plank.  Horizontal grain lines + knots.
+    expose func genWood(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        noiseFill(pix, 0, 0, w, h, baseColor, 10);
+        // Horizontal grain lines
+        var y = 0;
+        while y < h {
+            var grainColor = baseColor;
+            if y % 4 < 2 {
+                grainColor = Color.Darken(baseColor, 12);
+            } else {
+                grainColor = Color.Brighten(baseColor, 8);
+            }
+            var x = 0;
+            while x < w {
+                Pixels.BlendPixel(pix, x, y, grainColor, 100);
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        // Knot detail
+        if w >= 12 and h >= 12 {
+            var kx = w / 2 + noise2d(0, 0, 71, 6) - 3;
+            var ky = h / 2 + noise2d(0, 0, 72, 6) - 3;
+            Pixels.DrawDisc(pix, kx, ky, 3, Color.Darken(baseColor, 25));
+            Pixels.DrawRing(pix, kx, ky, 3, Color.Darken(baseColor, 15));
+        }
+        bevelEdges(pix, 0, 0, w, h, 25, 35);
+        return pix;
+    }
+
+    // Generate a corrupted/organic bone surface.
+    /// @brief Bone / ivory.  Pale base + faint cracks.
+    expose func genBone(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        noiseFill(pix, 0, 0, w, h, baseColor, 15);
+        // Porous holes
+        var i = 0;
+        while i < 6 {
+            var hx = noise2d(i, 0, 60, w - 4) + 2;
+            var hy = noise2d(i, 0, 61, h - 4) + 2;
+            var hr = noise2d(i, 0, 62, 2) + 1;
+            Pixels.DrawDisc(pix, hx, hy, hr, Color.Darken(baseColor, 45));
+            i = i + 1;
+        }
+        // Surface cracks
+        addCracks(pix, 0, 0, w, h, Color.Darken(baseColor, 35), 2, 50);
+        bevelEdges(pix, 0, 0, w, h, 20, 35);
+        return pix;
+    }
+
+    // Generate a rusted metal surface with heavy oxidation.
+    /// @brief Metal plus orange rust patches.
+    expose func genRustedMetal(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        noiseFill(pix, 0, 0, w, h, baseColor, 8);
+        // Rust patches (orange-brown splotches)
+        var i = 0;
+        while i < 5 {
+            var rx = noise2d(i, 0, 90, w - 6) + 3;
+            var ry = noise2d(i, 0, 91, h - 6) + 3;
+            var rr = noise2d(i, 0, 92, 4) + 2;
+            Pixels.DrawDisc(pix, rx, ry, rr, Color.RGB(140, 80, 30));
+            // Rust edge highlight
+            Pixels.DrawRing(pix, rx, ry, rr, Color.RGB(160, 100, 40));
+            i = i + 1;
+        }
+        // Scratches
+        addCracks(pix, 0, 0, w, h, Color.RGB(100, 100, 110), 4, 33);
+        // Brushed texture lines
+        var y = 0;
+        while y < h {
+            if y % 4 == 0 {
+                var x = 0;
+                while x < w {
+                    Pixels.BlendPixel(pix, x, y, Color.RGB(130, 130, 140), 30);
+                    x = x + 1;
+                }
+            }
+            y = y + 1;
+        }
+        bevelEdges(pix, 0, 0, w, h, 30, 40);
+        return pix;
+    }
+
+    // Generate a vine-covered surface.
+    /// @brief Stone overgrown with vine strands.
+    expose func genVineSurface(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        noiseFill(pix, 0, 0, w, h, baseColor, 12);
+        // Vine tendrils (curving lines)
+        var i = 0;
+        while i < 3 {
+            var startX = noise2d(i, 0, 50, w);
+            var startY = 0;
+            var x = startX;
+            var y = startY;
+            while y < h {
+                if x >= 0 and x < w {
+                    Pixels.Set(pix, x, y, Color.RGB(40, 100, 30));
+                    if x + 1 < w {
+                        Pixels.BlendPixel(pix, x + 1, y, Color.RGB(30, 80, 20), 100);
+                    }
+                }
+                y = y + 1;
+                x = x + noise2d(x, y, 55, 3) - 1;
+            }
+            // Leaves at intervals
+            var leaf = 0;
+            while leaf < 3 {
+                var lx = startX + noise2d(leaf + i, 0, 60, 6) - 3;
+                var ly = noise2d(leaf + i, 0, 61, h);
+                if lx >= 2 and lx < w - 2 and ly >= 2 and ly < h - 2 {
+                    Pixels.DrawDisc(pix, lx, ly, 2, Color.RGB(60, 140, 40));
+                    Pixels.Set(pix, lx - 1, ly - 1, Color.RGB(100, 200, 60));
+                }
+                leaf = leaf + 1;
+            }
+            i = i + 1;
+        }
+        bevelEdges(pix, 0, 0, w, h, 20, 30);
+        return pix;
+    }
+
+    // Generate a sand surface with wind ripples.
+    /// @brief Sand / soil.  Heavy fine-grain noise.
+    expose func genSand(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        noiseFill(pix, 0, 0, w, h, baseColor, 8);
+        // Wind ripples (slightly curved horizontal lines)
+        var y = 3;
+        while y < h {
+            var x = 0;
+            while x < w {
+                var offset = noise2d(x, y, 70, 3) - 1;
+                var ry = y + offset;
+                if ry >= 0 and ry < h {
+                    Pixels.BlendPixel(pix, x, ry, Color.Darken(baseColor, 8), 80);
+                }
+                x = x + 1;
+            }
+            y = y + 5;
+        }
+        // Scattered pebbles
+        stipple(pix, 0, 0, w, h, Color.Darken(baseColor, 20), 4);
+        return pix;
+    }
+
+    // Generate a corrupted surface with dark veins and purple glow.
+    /// @brief Corruption surface.  Sickly purple-green dither
+    ///        with pulse highlights.  For the corrupted-core
+    ///        biome.
+    expose func genCorrupted(w: Integer, h: Integer, baseColor: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        noiseFill(pix, 0, 0, w, h, baseColor, 15);
+        // Dark corruption veins
+        var i = 0;
+        while i < 4 {
+            var vx = noise2d(i, 0, 40, w);
+            var vy = 0;
+            while vy < h {
+                if vx >= 0 and vx < w {
+                    Pixels.Set(pix, vx, vy, Color.RGB(40, 10, 60));
+                    // Glow next to vein
+                    if vx > 0 { Pixels.BlendPixel(pix, vx - 1, vy, Color.RGB(100, 30, 140), 60); }
+                    if vx < w - 1 { Pixels.BlendPixel(pix, vx + 1, vy, Color.RGB(100, 30, 140), 60); }
+                }
+                vy = vy + 1;
+                vx = vx + noise2d(vx, vy, 45, 3) - 1;
+            }
+            i = i + 1;
+        }
+        // Corruption nodes (bright purple spots)
+        stipple(pix, 0, 0, w, h, Color.RGB(150, 50, 200), 5);
+        // Dark ambient
+        bevelEdges(pix, 0, 0, w, h, 10, 50);
+        return pix;
+    }
+
+    // Generate a brick surface with mortar lines.
+    /// @brief Brick wall.  Mortar grid + brick-fill + mortar
+    ///        joints.
+    expose func genBrickwork(w: Integer, h: Integer,
+                              brickColor: Integer, mortarColor: Integer) -> Pixels  {
+        var pix = Pixels.New(w, h);
+        Pixels.Fill(pix, mortarColor);
+        var brickW = w / 4;
+        var brickH = h / 4;
+        var row = 0;
+        while row < 4 {
+            var offset = 0;
+            if row % 2 == 1 { offset = brickW / 2; }
+            var col = 0;
+            while col < 5 {
+                var bx = col * brickW + offset;
+                var by = row * brickH;
+                if bx < w and by < h {
+                    var bw = brickW - 1;
+                    if bx + bw > w { bw = w - bx; }
+                    var bh = brickH - 1;
+                    if by + bh > h { bh = h - by; }
+                    // Brick fill with slight noise
+                    var shade = noise2d(col + row * 4, 0, 85, 20) - 10;
+                    var r = Color.GetRed(brickColor) + shade;
+                    var g = Color.GetGreen(brickColor) + shade;
+                    var b = Color.GetBlue(brickColor) + shade;
+                    if r < 0 { r = 0; } if r > 255 { r = 255; }
+                    if g < 0 { g = 0; } if g > 255 { g = 255; }
+                    if b < 0 { b = 0; } if b > 255 { b = 255; }
+                    Pixels.DrawBox(pix, bx, by, bw, bh, Color.RGB(r, g, b));
+                    // Highlight top edge
+                    if bw > 2 {
+                        Pixels.DrawLine(pix, bx, by, bx + bw - 1, by,
+                                        Color.Brighten(brickColor, 15));
+                    }
+                }
+                col = col + 1;
+            }
+            row = row + 1;
+        }
+        return pix;
+    }
+
+    // Generate a starfield texture for space backgrounds.
+    /// @brief Star pattern for sky parallax — random pixel
+    ///        dots at the requested density.
+    expose func genStarfield(w: Integer, h: Integer, density: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        Pixels.Fill(pix, Color.RGB(2, 2, 8));
+        var i = 0;
+        while i < density {
+            var sx = noise2d(i, 0, 100, w);
+            var sy = noise2d(i, 0, 101, h);
+            var brightness = noise2d(i, 0, 102, 100) + 155;
+            if brightness > 255 { brightness = 255; }
+            var size = noise2d(i, 0, 103, 3);
+            if size == 0 {
+                Pixels.Set(pix, sx, sy, Color.RGB(brightness, brightness, brightness));
+            } else {
+                Pixels.DrawDisc(pix, sx, sy, size, Color.RGB(brightness, brightness, brightness - 20));
+            }
+            i = i + 1;
+        }
+        return pix;
+    }
+
+    // Generate a nebula cloud texture.
+    /// @brief Soft cloud-like nebula gradient between two
+    ///        colours.  Distant background layer.
+    expose func genNebula(w: Integer, h: Integer, color1: Integer, color2: Integer) -> Pixels {
+        var pix = Pixels.New(w, h);
+        var y = 0;
+        while y < h {
+            var x = 0;
+            while x < w {
+                var n = noise2d(x, y, 110, 16);
+                if n < 4 {
+                    Pixels.BlendPixel(pix, x, y, color1, 20 + n * 10);
+                } else if n < 8 {
+                    Pixels.BlendPixel(pix, x, y, color2, 10 + n * 5);
+                }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        return pix;
+    }
+
+    // Generate a poison/acid pool surface.
+    /// @brief Animated bubbling poison surface; the frame
+    ///        index drives bubble positions.
+    expose func genPoison(w: Integer, h: Integer, baseColor: Integer,
+                          frame: Integer) -> Pixels  {
+        var pix = Pixels.New(w, h);
+        noiseFill(pix, 0, 0, w, h, baseColor, 15);
+        // Bubbles
+        var i = 0;
+        while i < 4 {
+            var bx = noise2d(i + frame, 0, 80, w - 6) + 3;
+            var by = noise2d(i + frame, 0, 81, h / 2);
+            Pixels.DrawDisc(pix, bx, by, 2, Color.Brighten(baseColor, 30));
+            Pixels.Set(pix, bx - 1, by - 1, Color.RGB(255, 255, 255));
+            i = i + 1;
+        }
+        // Surface shimmer
+        stipple(pix, 0, 0, w, 3, Color.Brighten(baseColor, 40), 20);
+        return pix;
+    }
+}

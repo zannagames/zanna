@@ -17,10 +17,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
-/// @brief Namespace semantic checking for BASIC frontend.
-/// @details Implements validation rules for USING directives, namespace
-///          declarations, and reserved-root enforcement per Track A spec.
+/// @file SemanticAnalyzer_Namespace.cpp
+/// @brief Implements BASIC namespace, USING, and declaration-scope analysis.
+/// @details Maintains namespace/import stacks, enforces reserved-root and USING
+///          placement rules, resolves class base/interface names, analyzes
+///          class member bodies in rollback procedure scopes, and adapts
+///          TypeResolver failures into BASIC namespace diagnostics.
 
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/IdentifierUtil.hpp"
@@ -32,19 +34,30 @@
 
 namespace il::frontends::basic {
 
-/// @brief Case-insensitive string comparison.
+/// @brief Compares two byte strings case-insensitively.
+/// @details Requires equal length and lowercases each byte through
+///          @c std::tolower after unsigned-char conversion.
+/// @param a First string.
+/// @param b Second string.
+/// @return @c true when every corresponding byte compares equal.
 static bool iequals(std::string_view a, std::string_view b) {
     if (a.size() != b.size())
         return false;
+    /// Compares one byte pair after safe ctype conversion.
     return std::equal(a.begin(), a.end(), b.begin(), [](char ca, char cb) {
         return std::tolower(static_cast<unsigned char>(ca)) ==
                std::tolower(static_cast<unsigned char>(cb));
     });
 }
 
-/// @brief Analyze namespace declaration.
-/// @details Sets sawDecl_ to true to enforce USING placement rules.
-///          Also maintains nsStack_ for nested namespace tracking.
+/// @brief Analyzes one namespace declaration and its nested statements.
+/// @details Rejects any declaration rooted case-insensitively at reserved
+///          `Zanna` before mutating stacks. Otherwise marks a declaration seen,
+///          pushes all path segments, creates a child USING scope that inherits
+///          imports but not aliases, applies local USING declarations in a
+///          first pass, and visits every other statement in a second pass.
+///          Namespace and USING stacks are restored after traversal.
+/// @param decl Mutable declaration whose nested statements may be annotated.
 void SemanticAnalyzer::analyzeNamespaceDecl(NamespaceDecl &decl) {
     // Check for reserved "Zanna" root namespace: declarations are never allowed
     // under the reserved root. Emit a dedicated diagnostic.
@@ -95,8 +108,13 @@ void SemanticAnalyzer::analyzeNamespaceDecl(NamespaceDecl &decl) {
         usingStack_.pop_back();
 }
 
-/// @brief Analyze class declaration.
-/// @details Sets sawDecl_ to true and resolves base type and implemented interfaces.
+/// @brief Resolves and semantically analyzes a class declaration.
+/// @details Determines the declared qualified class spelling from the OOP
+///          index, resolves/mutates base and implemented-interface names, then
+///          analyzes constructor, destructor, and method bodies in isolated
+///          procedure scopes. Static members do not expose `ME`; method return
+///          presence selects FUNCTION versus SUB EXIT context.
+/// @param decl Mutable class declaration receiving resolved type references.
 void SemanticAnalyzer::analyzeClassDecl(ClassDecl &decl) {
     sawDecl_ = true;
 
@@ -109,6 +127,10 @@ void SemanticAnalyzer::analyzeClassDecl(ClassDecl &decl) {
     if (const ClassInfo *info = oopIndex_.findClass(classQName))
         classQName = info->qualifiedName;
 
+    /// Analyzes one class-member body with procedure-local rollback.
+    /// The helper saves/restores the active class/receiver state, registers
+    /// parameters and body line labels, visits statements, and brackets an
+    /// optional SUB/FUNCTION EXIT context.
     auto analyzeMemberBody = [&](const std::vector<Param> &params,
                                  const std::vector<StmtPtr> &body,
                                  bool hasMe,
@@ -200,19 +222,25 @@ void SemanticAnalyzer::analyzeClassDecl(ClassDecl &decl) {
     }
 }
 
-/// @brief Analyze interface declaration.
-/// @details Sets sawDecl_ to true to enforce USING placement rules.
+/// @brief Marks an interface declaration for subsequent USING placement rules.
+/// @param decl Declaration already indexed by the OOP/declaration pass; its
+///             contents are not inspected here.
 void SemanticAnalyzer::analyzeInterfaceDecl(InterfaceDecl &decl) {
     sawDecl_ = true;
 }
 
-/// @brief Analyze USING directive with full validation.
-/// @details Enforces:
-///          - USING cannot appear inside procedure bodies.
-///          - USING cannot appear inside namespace blocks.
-///          - Referenced namespace must exist.
-///          - Aliases must be unique and not shadow namespaces.
-///          - "Zanna" root is reserved.
+/// @brief Validates and records one namespace USING directive.
+/// @details Procedure-local USING is always rejected. Namespace-local USING is
+///          accepted only when runtime namespaces are enabled; file-level USING
+///          must precede declarations. Paths are canonicalized and must exist.
+///          Bare/reserved `Zanna` imports are rejected unless runtime namespaces
+///          are enabled and at least one child segment is present. Aliases must
+///          be single identifiers, cannot conflict with another target in the
+///          same scope, and cannot exactly shadow a namespace. Repeating the
+///          same alias-to-target mapping is an accepted no-op.
+/// @param decl Mutable declaration supplying path, optional alias, and location.
+/// @post On success, the active USING scope gains either an alias/location
+///       mapping or a canonical import. Validation failures leave it unchanged.
 void SemanticAnalyzer::analyzeUsingDecl(UsingDecl &decl) {
     // Placement rules (per docs/tutorials/basic-tutorial.md):
     // - USING must appear at file scope (not inside namespace blocks)
@@ -325,16 +353,19 @@ void SemanticAnalyzer::analyzeUsingDecl(UsingDecl &decl) {
     }
 }
 
-/// @brief Resolve a type reference and emit diagnostics if not found.
-/// @details Uses TypeResolver to resolve the type name and emits:
-///          - E_NS_002: Fully-qualified namespace exists but type is missing
-///          - E_NS_003: Ambiguous type with sorted contenders
-///          - E_NS_006: Type not found
-/// @param typeName Type name to resolve (simple or qualified).
-/// @param currentNsChain Current namespace context (segments).
-/// @param loc Source location for diagnostics.
-/// @param length Source length for diagnostics.
-/// @return Fully-qualified type name if resolved; empty string on error.
+/// @brief Resolves a type reference and translates failures to diagnostics.
+/// @details Returns silently when the resolver has not yet been initialized.
+///          A successful resolver result returns its qualified name. Contenders
+///          emit the ambiguous-type diagnostic in resolver-provided order.
+///          For a qualified miss, an existing namespace produces the
+///          type-not-in-namespace diagnostic; every remaining miss produces
+///          type-not-found.
+/// @param typeName Simple or dotted type spelling.
+/// @param currentNsChain Current namespace path supplied to @ref TypeResolver.
+/// @param loc Diagnostic source location.
+/// @param length Diagnostic highlight length.
+/// @return Resolved qualified name, or an empty string after no resolver or any
+///         failed resolution.
 std::string SemanticAnalyzer::resolveTypeRef(const std::string &typeName,
                                              const std::vector<std::string> &currentNsChain,
                                              il::support::SourceLoc loc,

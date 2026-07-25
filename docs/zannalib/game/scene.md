@@ -172,6 +172,62 @@ its complete queue and visited set before changing the first tile, so an
 allocation failure cannot leave a partial fill. See
 [ADR 0171](../../adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md).
 
+## Tile Behavior
+
+The `collision`, `tileProperties`, `animations`, and `autotiles` sections load
+into typed document state, serialize canonically, and retain unrecognized
+members verbatim ([ADR 0176](../../adr/0176-typed-tile-behavior-sections.md)).
+`BuildTilemap()` applies them exactly as before.
+
+| Method | Description |
+|---|---|
+| `TileCollision(tile)` / `SetTileCollision(tile, kind)` | Read or author one tile's collision kind: `0` none, `1` solid, `2` one-way-up. Kind `0` removes the record. |
+| `CollisionTiles()` | Ascending tile IDs with a non-none kind. |
+| `CollisionLayer()` / `SetCollisionLayer(layer)` | The layer consulted by Tilemap collision queries; the setter accepts `0..15`. |
+| `TilePropertyKind(tile, key)` | `int`, `bool`, or empty when absent. |
+| `TilePropertyInt/Bool(tile, key, default)` | Exact-kind typed reads. |
+| `SetTilePropertyInt/Bool(tile, key, value)` | Typed writes; at most 64 properties per tile and 4,096 across all tiles. |
+| `RemoveTileProperty(tile, key)` / `TilePropertyKeys(tile)` / `TilePropertyTiles()` | Remove or enumerate (lexicographic keys, ascending tiles). |
+| `SetTileAnim(baseTile, frames, durationsMs)` | Author 1..4,096 frames with equal-length positive per-frame durations; at most 65,536 frames across all rules. |
+| `TileAnimFrames/TileAnimDurations(baseTile)` / `TileAnimBases()` / `RemoveTileAnim(baseTile)` | Read, enumerate, or remove animation rules. |
+| `SetAutotileRule(baseTile, variants)` | Author exactly 16 variant tile IDs. |
+| `AutotileVariants(baseTile)` / `AutotileBases()` / `RemoveAutotileRule(baseTile)` | Read, enumerate, or remove autotile rules. |
+
+Setters validate tile IDs against Tilemap's `1..4095` behavior-table range and
+reject invalid input as edit-time warning no-ops. Loaders accept any integer
+tile ID so legacy files round-trip losslessly; out-of-range records are
+retained and re-emitted but remain inert in `BuildTilemap()`, exactly as
+before. Legacy uniform `frameCount`/`msPerFrame` animations load by expanding
+to per-frame `durations`, and the redundant uniform members are not re-emitted.
+Empty sections are omitted from JSON entirely, and a document that is loaded
+but never edited is never re-serialized.
+
+## Camera And Lighting Sections
+
+The `camera` and `lighting` sections carry scene-global settings as typed
+`int`/`string` fields
+([ADR 0177](../../adr/0177-scene-camera-and-lighting-sections.md)). Application
+stays game-owned: read the fields and configure your own
+`Zanna.Graphics2D.Camera` and `Zanna.Game2D.Lighting2D` instances. Placed
+point lights are ordinary objects carrying a project `light` component, not
+section entries.
+
+| Method | Description |
+|---|---|
+| `CameraFieldKind(key)` / `LightingFieldKind(key)` | `int`, `string`, or empty when absent. |
+| `CameraGetInt/GetStr(key, default)` / `LightingGetInt(key, default)` | Exact-kind typed reads. |
+| `CameraSetInt/SetStr(key, value)` / `LightingSetInt(key, value)` | Typed writes with known-field validation. |
+| `CameraRemove(key)` / `LightingRemove(key)` / `CameraKeys()` / `LightingKeys()` | Remove or enumerate fields. |
+
+Known camera fields: `mode` (`"follow"`/`"fixed"`), `minX`/`minY`/`maxX`/`maxY`
+(map onto `Camera.SetBounds` when all four are present), `deadzoneWidth`/
+`deadzoneHeight` (non-negative), `followLerpPct` (`1..100`, for
+`SmoothFollow`), and `zoomPct` (`10..1000`). Known lighting fields: `darkness`
+(`0..255`), `tint` and `playerLightColor` (32-bit ARGB), and
+`playerLightRadius` (`0..4096`). Out-of-range known-field writes are edit-time
+warning no-ops; unknown keys are accepted for game-owned extension, and
+non-int/string members in loaded files are retained verbatim.
+
 ## Objects And Properties
 
 Objects have reserved metadata fields: `type`, `id`, `x`, and `y`, plus an

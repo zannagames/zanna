@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/passes/BinaryEmitPass.cpp
+// File: src/codegen/x86_64/passes/BinaryEmitPass.cpp
 // Purpose: Implement the binary emission pass that encodes MIR into machine
 //          code bytes via the Backend::emitModuleToBinary entry point.
 // Key invariants:
@@ -13,8 +13,8 @@
 //   - Populates Module::binaryTextSections and Module::binaryRodata
 // Ownership/Lifetime:
 //   - Pass borrows Module during run(), does not own any state beyond options_
-// Links: codegen/x86_64/passes/BinaryEmitPass.hpp,
-//        codegen/x86_64/Backend.hpp
+// Links: src/codegen/x86_64/passes/BinaryEmitPass.hpp,
+//        src/codegen/x86_64/Backend.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,16 +31,22 @@
 #include <utility>
 #include <vector>
 
+/// @file
+/// @brief Implements binary-section emission for an allocated x86-64 module.
+
 namespace zanna::codegen::x64::passes {
 
 namespace {
 
-/// @brief Build the writable __data/.data section from a module's scalar globals.
-/// @details Mutable non-string globals (`global i64 @counter = 41`) become defined
-///          Global symbols carrying little-endian initializer bytes. The text
-///          section's undefined references to these names coalesce onto these
-///          definitions in the object writer. Layout rules are shared with the
-///          AArch64 path via @ref common::scalarGlobalLayout.
+/// @brief Builds the native initialized-data section from scalar IL globals.
+/// @details Every type accepted by @ref common::scalarGlobalLayout becomes a
+///          globally bound data symbol followed by naturally aligned,
+///          little-endian initializer bytes. Non-scalar kinds, including
+///          strings handled by the read-only-data pool, are skipped. Text
+///          relocations to matching names coalesce with these definitions in
+///          the object writer.
+/// @param mod Source module whose global declarations are inspected.
+/// @return Owned data section containing scalar symbols and initializers.
 objfile::CodeSection buildScalarDataSection(const il::core::Module &mod) {
     objfile::CodeSection data;
     for (const auto &g : mod.globals) {
@@ -61,6 +67,7 @@ objfile::CodeSection buildScalarDataSection(const il::core::Module &mod) {
 /// @brief Construct the binary emit pass with backend configuration.
 /// @details Stores @p options by value so the pass survives the caller's local
 ///          options object. Used to drive @ref emitModuleToBinary later.
+/// @param options Target ABI, object format, optimization, and debug policy.
 BinaryEmitPass::BinaryEmitPass(CodegenOptions options) noexcept : options_(std::move(options)) {}
 
 /// @brief Emit raw machine code for a lowered and allocated module.
@@ -69,8 +76,11 @@ BinaryEmitPass::BinaryEmitPass(CodegenOptions options) noexcept : options_(std::
 ///          target/frame state are consistent, then forwards to the backend's
 ///          @ref emitMIRToBinary which fills @p module.binaryTextSections and
 ///          @p module.binaryRodata. A merged @c binaryText is produced only
-///          when debug line emission needs one contiguous address space.
-/// @return true on success; otherwise records errors via @p diags.
+///          when debug line emission needs one contiguous address space, apart
+///          from the deliberately present empty section for an empty module.
+/// @param module Shared pipeline state whose binary artifacts are replaced.
+/// @param diags Diagnostic sink receiving all expected failures.
+/// @return @c true on success; otherwise @c false after recording an error.
 bool BinaryEmitPass::run(Module &module, Diagnostics &diags) {
     if (!module.registersAllocated) {
         diags.error("binary emit: register allocation has not completed");

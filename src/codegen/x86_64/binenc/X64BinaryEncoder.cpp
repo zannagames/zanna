@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/binenc/X64BinaryEncoder.cpp
+// File: src/codegen/x86_64/binenc/X64BinaryEncoder.cpp
 // Purpose: Encode x86_64 MIR instructions into raw machine code bytes.
 //          Implements the full encoding for all 49 instruction forms in the
 //          EncodingTable, handling REX prefix computation, ModR/M + SIB
@@ -19,9 +19,9 @@
 // Ownership/Lifetime:
 //   - Encoder state (labelOffsets_, pendingBranches_) is reset per function
 //   - CodeSection is borrowed, not owned
-// Links: codegen/x86_64/binenc/X64BinaryEncoder.hpp,
-//        codegen/x86_64/binenc/X64Encoding.hpp,
-//        codegen/common/objfile/CodeSection.hpp
+// Links: src/codegen/x86_64/binenc/X64BinaryEncoder.hpp,
+//        src/codegen/x86_64/binenc/X64Encoding.hpp,
+//        src/codegen/common/objfile/CodeSection.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,9 +42,14 @@
 #include <utility>
 #include <variant>
 
+/// @file
+/// @brief Implements x86-64 instruction encoding, layout, and relocation emission.
+
 namespace zanna::codegen::x64::binenc {
 
-/// Map IL extern names to C runtime symbol names.
+/// @brief Maps a canonical IL runtime name to its C ABI symbol spelling.
+/// @param name IL external name or an already-native symbol name.
+/// @return Mapped runtime spelling when registered, otherwise an unchanged copy.
 static std::string mapRuntimeSymbol(const std::string &name) {
     if (auto mapped = il::runtime::mapCanonicalRuntimeName(name))
         return std::string(*mapped);
@@ -82,7 +87,8 @@ static PhysReg toPhys(const OpReg &reg) {
 /// @brief Extract a validated `PhysReg` from a register-variant `Operand`.
 /// @param op Operand expected to be of `OpReg` variant.
 /// @return Validated physical register from the operand.
-/// @throws std::runtime_error if the operand fails @ref toPhys validation.
+/// @throws std::bad_variant_access If @p op does not contain @c OpReg.
+/// @throws std::runtime_error If the contained register fails @ref toPhys validation.
 static PhysReg regFromOperand(const Operand &op) {
     return toPhys(std::get<OpReg>(op));
 }
@@ -91,7 +97,8 @@ static PhysReg regFromOperand(const Operand &op) {
 /// @param op      Operand expected to be a register operand.
 /// @param context Short description for the error message on a class mismatch.
 /// @return Validated GPR physical register.
-/// @throws std::runtime_error if @p op is not a GPR.
+/// @throws std::bad_variant_access If @p op does not contain @c OpReg.
+/// @throws std::runtime_error If @p op contains a virtual, invalid, or non-GPR register.
 static PhysReg gprFromOperand(const Operand &op, const char *context) {
     const PhysReg reg = regFromOperand(op);
     if (!isGPR(reg))
@@ -103,7 +110,8 @@ static PhysReg gprFromOperand(const Operand &op, const char *context) {
 /// @param op      Operand expected to be a register operand.
 /// @param context Short description for the error message on a class mismatch.
 /// @return Validated XMM physical register.
-/// @throws std::runtime_error if @p op is not an XMM.
+/// @throws std::bad_variant_access If @p op does not contain @c OpReg.
+/// @throws std::runtime_error If @p op contains a virtual, invalid, or non-XMM register.
 static PhysReg xmmFromOperand(const Operand &op, const char *context) {
     const PhysReg reg = regFromOperand(op);
     if (!isXMM(reg))
@@ -114,6 +122,7 @@ static PhysReg xmmFromOperand(const Operand &op, const char *context) {
 /// @brief Extract the memory-operand variant from @p op (throws if not memory).
 /// @param op Operand expected to be of `OpMem` variant.
 /// @return Reference to the underlying `OpMem`.
+/// @throws std::bad_variant_access If @p op does not contain @c OpMem.
 static const OpMem &memFromOperand(const Operand &op) {
     return std::get<OpMem>(op);
 }
@@ -121,6 +130,7 @@ static const OpMem &memFromOperand(const Operand &op) {
 /// @brief Extract the integer immediate value from @p op.
 /// @param op Operand expected to be of `OpImm` variant.
 /// @return The 64-bit immediate value carried by @p op.
+/// @throws std::bad_variant_access If @p op does not contain @c OpImm.
 static int64_t immFromOperand(const Operand &op) {
     return std::get<OpImm>(op).val;
 }
@@ -128,6 +138,7 @@ static int64_t immFromOperand(const Operand &op) {
 /// @brief Extract the label-operand variant from @p op (throws if not a label).
 /// @param op Operand expected to be of `OpLabel` variant.
 /// @return Reference to the underlying `OpLabel`.
+/// @throws std::bad_variant_access If @p op does not contain @c OpLabel.
 static const OpLabel &labelFromOperand(const Operand &op) {
     return std::get<OpLabel>(op);
 }
@@ -135,6 +146,7 @@ static const OpLabel &labelFromOperand(const Operand &op) {
 /// @brief Extract the RIP-relative-label variant from @p op.
 /// @param op Operand expected to be of `OpRipLabel` variant.
 /// @return Reference to the underlying `OpRipLabel`.
+/// @throws std::bad_variant_access If @p op does not contain @c OpRipLabel.
 static const OpRipLabel &ripFromOperand(const Operand &op) {
     return std::get<OpRipLabel>(op);
 }
@@ -155,6 +167,14 @@ static int32_t checkedRel32(int64_t disp, const char *context) {
     return static_cast<int32_t>(disp);
 }
 
+/// @brief Computes a signed offset between two unsigned section positions.
+/// @details Handles both directions without first converting either endpoint
+///          to a signed type, including the exact @c INT64_MIN magnitude.
+/// @param target Destination byte offset.
+/// @param base Origin byte offset.
+/// @param context Description included in an overflow diagnostic.
+/// @return Signed value @p target minus @p base.
+/// @throws std::runtime_error If the magnitude cannot be represented by @c int64_t.
 static int64_t checkedOffsetDelta(size_t target, size_t base, const char *context) {
     if (target >= base) {
         const size_t diff = target - base;
@@ -171,12 +191,24 @@ static int64_t checkedOffsetDelta(size_t target, size_t base, const char *contex
     return -static_cast<int64_t>(diff);
 }
 
+/// @brief Adds two byte counts while detecting @c size_t overflow.
+/// @param lhs First byte count.
+/// @param rhs Second byte count.
+/// @param context Description included in an overflow diagnostic.
+/// @return Exact sum of @p lhs and @p rhs.
+/// @throws std::runtime_error If the sum exceeds addressable size.
 static size_t checkedAddSize(size_t lhs, size_t rhs, const char *context) {
     if (lhs > std::numeric_limits<size_t>::max() - rhs)
         throw std::runtime_error(std::string(context) + " offset overflows addressable size");
     return lhs + rhs;
 }
 
+/// @brief Validates and extracts an instruction's sole non-empty label operand.
+/// @param instr Instruction expected to contain exactly one @c OpLabel.
+/// @param context Opcode or operation name included in diagnostics.
+/// @return Reference to the validated label stored in @p instr.
+/// @throws std::bad_variant_access If the sole operand is not a label.
+/// @throws std::runtime_error If the operand count or label spelling is invalid.
 static const OpLabel &checkedSingleLabelOperand(const MInstr &instr, const char *context) {
     if (instr.operands.size() != 1)
         throw std::runtime_error(std::string(context) + " requires exactly one label operand");
@@ -186,11 +218,21 @@ static const OpLabel &checkedSingleLabelOperand(const MInstr &instr, const char 
     return label;
 }
 
+/// @brief Validated condition code and label target for a conditional branch.
 struct CheckedJccOperands {
+    /// @brief Backend condition-code value.
     int condition{0};
+    /// @brief Borrowed label operand within the validated operand vector.
     const OpLabel *label{nullptr};
 };
 
+/// @brief Finds the unique condition code and label target of a @c JCC.
+/// @details Operand order is irrelevant. Other operand variants are ignored,
+///          while duplicate recognized roles are rejected.
+/// @param ops Operand sequence to inspect.
+/// @param context Opcode name included in validation diagnostics.
+/// @return Pointers and values referring to the validated operands in @p ops.
+/// @throws std::runtime_error If either role is missing, duplicated, or empty.
 static CheckedJccOperands checkedJccOperands(const std::vector<Operand> &ops, const char *context) {
     const OpImm *condition = nullptr;
     const OpLabel *label = nullptr;
@@ -219,11 +261,21 @@ static CheckedJccOperands checkedJccOperands(const std::vector<Operand> &ops, co
     return CheckedJccOperands{static_cast<int>(condition->val), label};
 }
 
+/// @brief Validated condition code and destination for a set-on-condition form.
 struct CheckedSetccOperands {
+    /// @brief Backend condition-code value.
     int condition{0};
+    /// @brief Borrowed GPR-or-memory destination operand.
     const Operand *destination{nullptr};
 };
 
+/// @brief Finds the unique condition code and destination of a @c SETcc form.
+/// @details Accepts a register or memory destination in either operand order;
+///          other variants are ignored.
+/// @param ops Operand sequence to inspect.
+/// @param context Opcode name included in validation diagnostics.
+/// @return Values and pointer referring to the validated operands in @p ops.
+/// @throws std::runtime_error If either role is missing or duplicated.
 static CheckedSetccOperands checkedSetccOperands(const std::vector<Operand> &ops,
                                                  const char *context) {
     const OpImm *condition = nullptr;
@@ -363,8 +415,11 @@ static uint8_t win64RegNumber(PhysReg reg) {
     throw std::runtime_error("x86-64 binary encoder: unsupported register in Win64 unwind data");
 }
 
+/// @brief Planned Win64 unwind operation paired with its emitted end offset.
 struct EmittedWin64UnwindOp {
+    /// @brief Frame-lowering operation recognized in the prologue.
     Win64UnwindOp op;
+    /// @brief Absolute text offset immediately after the matching instruction.
     size_t endOffset = 0;
 };
 
@@ -443,21 +498,21 @@ static bool instrMatchesWin64UnwindOp(const MInstr &instr,
     return false;
 }
 
-/// @brief Emit a Win64 `UNWIND_INFO` record for @p fn into a `.xdata` section.
+/// @brief Records Win64 unwind metadata for later object-file serialization.
 /// @details Translates the list of prologue unwind ops gathered during code
-///          emission into the architectural `UNWIND_INFO` + `UNWIND_CODE`
-///          layout described in Microsoft x64 SEH documentation. The encoder
-///          must have already emitted the prologue at @p funcStartOffset; this
-///          helper appends the unwind metadata to the text/xdata section so the
-///          object-file writer can finalise the function's `RUNTIME_FUNCTION`
-///          entry.
+///          emission into the section's structured Win64 unwind entry. The
+///          object-file writer later serializes that entry as architectural
+///          `UNWIND_INFO`, `UNWIND_CODE`, and `RUNTIME_FUNCTION` records. The
+///          encoder must already have emitted the prologue at
+///          @p funcStartOffset.
 /// @param fn               Function whose prologue was emitted.
 /// @param frame            Frame metadata; the prologue must have been emitted.
 /// @param funcSymIdx       Index of the function symbol in the symbol table.
 /// @param funcStartOffset  Byte offset of the function start in the text section.
 /// @param emittedOps       Prologue ops recorded during emission with their end offsets.
-/// @param text             Output `.text` (or sibling `.xdata`) section to append to.
-/// @throws std::runtime_error if any unwind field exceeds the architectural 255-byte limit.
+/// @param text             Text section receiving the structured unwind entry.
+/// @throws std::runtime_error If an 8-bit unwind offset exceeds 255 bytes or
+///         the encoded function length exceeds 32 bits.
 static void recordWin64Unwind(const MFunction &fn,
                               const FrameInfo &frame,
                               uint32_t funcSymIdx,
@@ -467,6 +522,11 @@ static void recordWin64Unwind(const MFunction &fn,
     if (!frame.prologueEmitted || emittedOps.empty())
         return;
 
+    /// @brief Narrows an unwind byte-sized field with a function-aware diagnostic.
+    /// @param value Value to narrow.
+    /// @param field Field name used in an overflow message.
+    /// @return @p value converted to @c uint8_t.
+    /// @throws std::runtime_error If @p value exceeds 255.
     auto checkedU8 = [&](size_t value, const char *field) -> uint8_t {
         if (value > std::numeric_limits<uint8_t>::max()) {
             throw std::runtime_error("x86-64 binary encoder: Win64 unwind " + std::string(field) +
@@ -523,7 +583,16 @@ static void recordWin64Unwind(const MFunction &fn,
 
 /// @brief Predict the encoded byte size of a MIR instruction without emitting it.
 /// @details Used by the label offset pre-computation pass to determine branch
-///          displacement sizes before final encoding. Must match encodeInstruction.
+///          displacement sizes before final encoding. A scratch section with a
+///          logical offset bias preserves PC-relative decisions without
+///          mutating the caller's sections. The result must match
+///          @ref encodeInstruction byte for byte.
+/// @param instr Instruction to measure.
+/// @param currentOffset Logical instruction start used for branch displacement checks.
+/// @param knownLabelOffsets Current layout estimate for resolvable labels.
+/// @param isDarwin Target-format compatibility flag.
+/// @return Number of bytes the instruction would append.
+/// @throws std::runtime_error If the instruction or operands are not encodable.
 size_t X64BinaryEncoder::measureInstructionSize(const MInstr &instr,
                                                 size_t currentOffset,
                                                 const LabelOffsetMap &knownLabelOffsets,
@@ -571,6 +640,10 @@ X64BinaryEncoder::LabelLayout X64BinaryEncoder::computeFunctionLabelLayout(const
     if (!shortBranchRelaxationEnabled_) {
         size_t offset = 0;
         for (const auto &block : fn.blocks) {
+            /// @brief Records a unique label at its conservative-pass offset.
+            /// @param name Label spelling; an empty name is ignored.
+            /// @param labelOffset Function-relative predicted byte offset.
+            /// @throws std::runtime_error If @p name was already defined.
             auto assignLabel = [&](const std::string &name, size_t labelOffset) {
                 if (name.empty())
                     return;
@@ -607,6 +680,10 @@ X64BinaryEncoder::LabelLayout X64BinaryEncoder::computeFunctionLabelLayout(const
         LabelOffsetMap next;
         next.reserve(estimated.size() + fn.blocks.size());
 
+        /// @brief Records a label and reports layout changes for this iteration.
+        /// @param name Label spelling; an empty name is ignored.
+        /// @param offset Function-relative byte offset in the new estimate.
+        /// @throws std::runtime_error If @p name occurs twice in the function.
         auto assignLabel = [&](const std::string &name, size_t offset) {
             if (name.empty())
                 return;
@@ -654,6 +731,9 @@ X64BinaryEncoder::LabelLayout X64BinaryEncoder::computeFunctionLabelLayout(const
 ///          rel32 patch sites point at the wrong location and the function
 ///          would silently produce broken machine code. This routine throws
 ///          a descriptive error so the mismatch surfaces immediately.
+/// @param label Label whose stored prediction is being checked.
+/// @param actualOffset Absolute section offset observed during emission.
+/// @throws std::runtime_error If a stored prediction differs from @p actualOffset.
 void X64BinaryEncoder::verifyPredictedLabelOffset(const std::string &label,
                                                   size_t actualOffset) const {
     auto it = labelOffsets_.find(label);
@@ -669,7 +749,18 @@ void X64BinaryEncoder::verifyPredictedLabelOffset(const std::string &label,
 /// @brief Encode an entire MIR function into machine code bytes.
 /// @details Two-pass approach: first pass computes label offsets using instruction
 ///          size measurement, second pass emits actual bytes. Branch displacements
-///          are resolved using the pre-computed label-to-offset map.
+///          are resolved using the pre-computed label-to-offset map. The method
+///          also defines the function symbol, records optional debug locations,
+///          patches jump-table words, verifies predicted size, and serializes a
+///          matching Win64 unwind plan when requested.
+/// @param fn Allocated and legalized MIR function.
+/// @param text Mutable text section receiving bytes, symbols, and relocations.
+/// @param rodata Read-only section used to resolve local data symbols.
+/// @param isDarwin Target-format compatibility flag.
+/// @param frame Optional frame and unwind plan.
+/// @param emitWin64Unwind Whether Win64 unwind metadata should be recorded.
+/// @throws std::runtime_error If layout, instruction encoding, target
+///         resolution, size verification, or unwind-plan matching fails.
 void X64BinaryEncoder::encodeFunction(const MFunction &fn,
                                       objfile::CodeSection &text,
                                       const objfile::CodeSection &rodata,
@@ -779,7 +870,12 @@ void X64BinaryEncoder::encodeFunction(const MFunction &fn,
 
 // === Main instruction dispatch ===
 
-/// @brief Encode a single MIR instruction into machine code (dispatches by operand form).
+/// @brief Encodes a single MIR instruction and normalizes variant errors.
+/// @param instr Instruction to append.
+/// @param text Mutable machine-code destination.
+/// @param rodata Read-only section used for symbol lookup.
+/// @param isDarwin Target-format compatibility flag.
+/// @throws std::runtime_error If the opcode or operand shape cannot be encoded.
 void X64BinaryEncoder::encodeInstruction(const MInstr &instr,
                                          objfile::CodeSection &text,
                                          const objfile::CodeSection &rodata,
@@ -797,6 +893,15 @@ void X64BinaryEncoder::encodeInstruction(const MInstr &instr,
     }
 }
 
+/// @brief Dispatches a validated instruction to its concrete byte encoder.
+/// @details Enforces exact operand counts, rejects residual pseudos, handles
+///          simple encodings inline, and delegates compound forms to the
+///          category-specific helpers.
+/// @param instr Instruction to encode.
+/// @param text Mutable machine-code destination.
+/// @param rodata Read-only section used for RIP-relative references.
+/// @param isDarwin Target-format compatibility flag.
+/// @throws std::runtime_error If the instruction is malformed or unsupported.
 void X64BinaryEncoder::encodeInstructionImpl(const MInstr &instr,
                                              objfile::CodeSection &text,
                                              const objfile::CodeSection &rodata,
@@ -806,6 +911,9 @@ void X64BinaryEncoder::encodeInstructionImpl(const MInstr &instr,
     const auto nOps = ops.size();
 
     // Guard helper: abort early with a clear message on operand count mismatch.
+    /// @brief Requires the current instruction to have exactly @p n operands.
+    /// @param n Expected operand count.
+    /// @throws std::runtime_error If the actual count differs.
     auto requireOps = [&](std::size_t n) {
         if (nOps != n) {
             throw std::runtime_error("x86-64 binary encoder: opcode " +
@@ -1212,6 +1320,7 @@ void X64BinaryEncoder::encodeInstructionImpl(const MInstr &instr,
 
 // === Nullary instructions ===
 
+/// @copydoc X64BinaryEncoder::encodeNullary
 void X64BinaryEncoder::encodeNullary(MOpcode op, objfile::CodeSection &cs) {
     switch (op) {
         case MOpcode::RET:
@@ -1234,6 +1343,7 @@ void X64BinaryEncoder::encodeNullary(MOpcode op, objfile::CodeSection &cs) {
 
 // === Reg-Reg GPR ===
 
+/// @copydoc X64BinaryEncoder::encodeRegReg
 void X64BinaryEncoder::encodeRegReg(MOpcode op,
                                     PhysReg dst,
                                     PhysReg src,
@@ -1279,6 +1389,7 @@ void X64BinaryEncoder::encodeRegReg(MOpcode op,
 
 // === Reg-Imm ALU ===
 
+/// @copydoc X64BinaryEncoder::encodeRegImm
 void X64BinaryEncoder::encodeRegImm(MOpcode op,
                                     PhysReg dst,
                                     int64_t imm,
@@ -1326,6 +1437,7 @@ void X64BinaryEncoder::encodeRegImm(MOpcode op,
 
 // === Shift instructions ===
 
+/// @copydoc X64BinaryEncoder::encodeShiftImm
 void X64BinaryEncoder::encodeShiftImm(MOpcode op,
                                       PhysReg dst,
                                       int64_t count,
@@ -1346,6 +1458,7 @@ void X64BinaryEncoder::encodeShiftImm(MOpcode op,
     cs.emit8(static_cast<uint8_t>(count));
 }
 
+/// @copydoc X64BinaryEncoder::encodeShiftCL
 void X64BinaryEncoder::encodeShiftCL(MOpcode op, PhysReg dst, objfile::CodeSection &cs) {
     if (!isGPR(dst))
         throw std::runtime_error("x86-64 binary encoder: shift destination must be a GPR");
@@ -1362,6 +1475,7 @@ void X64BinaryEncoder::encodeShiftCL(MOpcode op, PhysReg dst, objfile::CodeSecti
 
 // === Division ===
 
+/// @copydoc X64BinaryEncoder::encodeDiv
 void X64BinaryEncoder::encodeDiv(MOpcode op, PhysReg src, objfile::CodeSection &cs) {
     if (!isGPR(src))
         throw std::runtime_error("x86-64 binary encoder: division source must be a GPR");
@@ -1381,6 +1495,7 @@ void X64BinaryEncoder::encodeDiv(MOpcode op, PhysReg src, objfile::CodeSection &
 
 // === MOVri (64-bit immediate move) ===
 
+/// @copydoc X64BinaryEncoder::encodeMovRI
 void X64BinaryEncoder::encodeMovRI(PhysReg dst, int64_t imm, objfile::CodeSection &cs) {
     if (!isGPR(dst))
         throw std::runtime_error("x86-64 binary encoder: MOVri destination must be a GPR");
@@ -1408,6 +1523,7 @@ void X64BinaryEncoder::encodeMovRI(PhysReg dst, int64_t imm, objfile::CodeSectio
 
 // === Memory operand encoding ===
 
+/// @copydoc X64BinaryEncoder::emitWithMemOperand
 void X64BinaryEncoder::emitWithMemOperand(uint8_t reg3,
                                           uint8_t regRex,
                                           const OpMem &mem,
@@ -1478,6 +1594,7 @@ void X64BinaryEncoder::emitWithMemOperand(uint8_t reg3,
 
 // === Memory store/load ===
 
+/// @copydoc X64BinaryEncoder::encodeMemOp
 void X64BinaryEncoder::encodeMemOp(MOpcode op,
                                    PhysReg reg,
                                    const OpMem &mem,
@@ -1538,6 +1655,7 @@ void X64BinaryEncoder::encodeMemOp(MOpcode op,
 
 // === LEA ===
 
+/// @copydoc X64BinaryEncoder::encodeLEA
 void X64BinaryEncoder::encodeLEA(PhysReg dst, const OpMem &mem, objfile::CodeSection &cs) {
     if (!isGPR(dst))
         throw std::runtime_error("x86-64 binary encoder: LEA destination must be a GPR");
@@ -1552,6 +1670,7 @@ void X64BinaryEncoder::encodeLEA(PhysReg dst, const OpMem &mem, objfile::CodeSec
                        0);
 }
 
+/// @copydoc X64BinaryEncoder::encodeLEARip
 void X64BinaryEncoder::encodeLEARip(PhysReg dst,
                                     const OpRipLabel &rip,
                                     objfile::CodeSection &text,
@@ -1594,6 +1713,7 @@ void X64BinaryEncoder::encodeLEARip(PhysReg dst,
     text.addRelocationAt(dispOffset, objfile::RelocKind::PCRel32, symIdx, -4);
 }
 
+/// @copydoc X64BinaryEncoder::encodeSseRipLoad
 void X64BinaryEncoder::encodeSseRipLoad(PhysReg dst,
                                         const OpRipLabel &rip,
                                         objfile::CodeSection &text,
@@ -1637,6 +1757,7 @@ void X64BinaryEncoder::encodeSseRipLoad(PhysReg dst,
 
 // === SSE reg-reg ===
 
+/// @copydoc X64BinaryEncoder::encodeSseRegReg
 void X64BinaryEncoder::encodeSseRegReg(MOpcode op,
                                        PhysReg dst,
                                        PhysReg src,
@@ -1691,6 +1812,7 @@ void X64BinaryEncoder::encodeSseRegReg(MOpcode op,
 
 // === SSE memory operations ===
 
+/// @copydoc X64BinaryEncoder::encodeSseMem
 void X64BinaryEncoder::encodeSseMem(MOpcode op,
                                     PhysReg reg,
                                     const OpMem &mem,
@@ -1707,6 +1829,7 @@ void X64BinaryEncoder::encodeSseMem(MOpcode op,
 
 // === SETcc ===
 
+/// @copydoc X64BinaryEncoder::encodeSETcc
 void X64BinaryEncoder::encodeSETcc(int condCode, PhysReg dst, objfile::CodeSection &cs) {
     if (!isGPR(dst))
         throw std::runtime_error("x86-64 binary encoder: SETcc destination must be a GPR");
@@ -1731,6 +1854,7 @@ void X64BinaryEncoder::encodeSETcc(int condCode, PhysReg dst, objfile::CodeSecti
 
 // === MOVZXrr8 (movzbq) ===
 
+/// @copydoc X64BinaryEncoder::encodeMOVZX
 void X64BinaryEncoder::encodeMOVZX(PhysReg dst, PhysReg src, objfile::CodeSection &cs) {
     if (!isGPR(dst) || !isGPR(src))
         throw std::runtime_error("x86-64 binary encoder: MOVZX operands must be GPRs");
@@ -1752,6 +1876,7 @@ void X64BinaryEncoder::encodeMOVZX(PhysReg dst, PhysReg src, objfile::CodeSectio
 
 // === Branch/Jump/Call with label ===
 
+/// @copydoc X64BinaryEncoder::encodeBranchLabel
 void X64BinaryEncoder::encodeBranchLabel(MOpcode op,
                                          const std::string &label,
                                          int condCode,
@@ -1824,6 +1949,7 @@ void X64BinaryEncoder::encodeBranchLabel(MOpcode op,
 
 // === Branch/Call indirect via register ===
 
+/// @copydoc X64BinaryEncoder::encodeBranchReg
 void X64BinaryEncoder::encodeBranchReg(MOpcode op, PhysReg target, objfile::CodeSection &cs) {
     if (!isGPR(target))
         throw std::runtime_error("x86-64 binary encoder: indirect branch target must be a GPR");
@@ -1841,6 +1967,7 @@ void X64BinaryEncoder::encodeBranchReg(MOpcode op, PhysReg target, objfile::Code
 
 // === Branch/Call indirect via memory ===
 
+/// @copydoc X64BinaryEncoder::encodeBranchMem
 void X64BinaryEncoder::encodeBranchMem(MOpcode op, const OpMem &mem, objfile::CodeSection &cs) {
     uint8_t ext = (op == MOpcode::CALL) ? 2 : 4; // /2 for CALL, /4 for JMP
     emitWithMemOperand(ext,
@@ -1855,6 +1982,7 @@ void X64BinaryEncoder::encodeBranchMem(MOpcode op, const OpMem &mem, objfile::Co
 
 // === Branch/Call indirect via RIP-relative memory ===
 
+/// @copydoc X64BinaryEncoder::encodeBranchRip
 void X64BinaryEncoder::encodeBranchRip(MOpcode op,
                                        const OpRipLabel &rip,
                                        objfile::CodeSection &text,
@@ -1890,9 +2018,7 @@ void X64BinaryEncoder::encodeBranchRip(MOpcode op,
 
 // === Branch / call operand-kind dispatcher ===
 
-/// @brief Dispatch JMP/CALL target by operand variant kind.
-/// @details Centralises the label/reg/mem switch shared by JMP and CALL so the
-///          giant @ref encodeInstructionImpl dispatcher stays a thin glue layer.
+/// @copydoc X64BinaryEncoder::encodeBranchOperand
 void X64BinaryEncoder::encodeBranchOperand(MOpcode op,
                                            const Operand &target,
                                            int condCode,
@@ -1911,7 +2037,7 @@ void X64BinaryEncoder::encodeBranchOperand(MOpcode op,
 
 // === External CALL (generates relocation) ===
 
-/// @brief Emit a CALL to an external symbol via a relocation (linker resolves at link time).
+/// @copydoc X64BinaryEncoder::encodeCallExternal
 void X64BinaryEncoder::encodeCallExternal(const std::string &name,
                                           objfile::CodeSection &cs,
                                           bool isDarwin) {

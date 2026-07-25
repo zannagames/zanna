@@ -4,16 +4,30 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: examples/embedding/combined.cpp
+// Purpose: Demonstrate VM extern calls, tail-call optimization, opcode
+//          accounting, and cooperative polling in one embedded program.
+// Key invariants:
+//   - The native times2 signature must match the IL extern declaration.
+//   - A paused Runner retains enough state for continueRun() to resume it.
+// Ownership/Lifetime:
+//   - The IL module and RunConfig outlive the Runner that references them.
+//   - Extern argument and result storage is borrowed for each native call.
+// Links: docs/tools/vm-profiling.md, examples/embedding/register_times2.cpp
+//
+//===----------------------------------------------------------------------===//
+
 /**
  * @file combined.cpp
- * @brief Smoke test combining TCO (tail-calls), externs, opcode counters, and polling pause/resume.
+ * @brief Combines tail calls, a native extern, opcode counters, and polling.
  *
  * @details
- * This example demonstrates several VM features working together:
- * - Tail-call optimization (TCO)
- * - External function registration and invocation
- * - Opcode counting
- * - Polling pause/resume execution model
+ * The example constructs a four-function IL call chain whose leaf invokes the
+ * native `times2` handler. The intermediate calls are deliberately in tail
+ * position so the VM may apply tail-call optimization. A polling callback
+ * pauses the first execution attempt; a second call to `continueRun()` resumes
+ * the retained VM state. Opcode counters remain enabled throughout.
  */
 
 #include "il/build/IRBuilder.hpp"
@@ -22,11 +36,41 @@
 #include <cstdint>
 #include <iostream>
 
+/**
+ * @brief Multiply the first signed 64-bit extern argument by two.
+ *
+ * This function implements the erased native-call ABI expected by
+ * `il::vm::ExternDesc`. The caller supplies an array containing one pointer to
+ * an `int64_t` argument and writable storage for one `int64_t` result.
+ *
+ * @param args Borrowed array whose first element points to the input value.
+ * @param result Borrowed, writable storage for the signed 64-bit result.
+ *
+ * @pre `args`, `args[0]`, and `result` are non-null and suitably aligned.
+ * @pre The registered runtime signature is `(i64) -> i64`.
+ *
+ * @note Signed overflow follows the constraints of the host C++ expression;
+ *       this example calls the handler only with the safe value 21.
+ */
 static void times2_handler(void **args, void *result) {
   const auto x = *reinterpret_cast<const int64_t *>(args[0]);
   *reinterpret_cast<int64_t *>(result) = x * 2;
 }
 
+/**
+ * @brief Build and execute the combined VM embedding demonstration.
+ *
+ * The generated IL module has the call chain `main -> f1 -> f2 -> f3`, with
+ * `f3` invoking the registered `times2(21)` extern. Polling is requested after
+ * every VM interrupt interval; the callback pauses after its fifth invocation,
+ * and the subsequent `continueRun()` resumes execution. Status values and a
+ * completion message are written to standard output for manual inspection.
+ *
+ * @return Zero after the demonstration has issued both execution attempts.
+ *
+ * @note This example reports VM statuses rather than converting them into the
+ *       process exit code.
+ */
 int main() {
   using namespace il::core;
   using il::runtime::signatures::SigParam;

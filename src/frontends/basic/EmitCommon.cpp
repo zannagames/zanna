@@ -11,7 +11,9 @@
 // Key invariants: Helpers update the Lowerer source location before emitting
 //                 instructions, preserving diagnostic fidelity.
 // Ownership/Lifetime: Emit borrows the Lowerer and never owns IR objects.
-// Links: docs/internals/codemap.md, docs/internals/architecture.md#cpp-overview
+// Links: src/frontends/basic/EmitCommon.hpp,
+//        src/frontends/basic/Lowerer.hpp,
+//        src/frontends/basic/lower/Emitter.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -39,7 +41,8 @@ Emit::Emit(Lowerer &lowerer) noexcept : lowerer_(&lowerer) {}
 /// @brief Set the source location applied to the next emitted instruction.
 /// @details Caches @p loc so subsequent calls to @ref emitUnary or
 ///          @ref emitBinary update the Lowerer's current location before
-///          delegating.  The helper returns @c *this to allow fluent chaining.
+///          delegating. The location remains staged after emission. The helper
+///          returns @c *this to allow fluent chaining.
 /// @param loc Source location to apply.
 /// @return Reference to the helper for fluent chaining.
 Emit &Emit::at(il::support::SourceLoc loc) noexcept {
@@ -130,7 +133,7 @@ Emit::Value Emit::narrow_to(Value value, int fromBits, int toBits) const {
 }
 
 /// @brief Emit an addition with optional overflow trapping.
-/// @details Chooses between the saturated @c iadd.ovf opcode and the plain add
+/// @details Chooses between the checked @c iadd.ovf opcode and the plain add
 ///          instruction based on @p policy, producing an integer of the supplied
 ///          width.  Callers use this to share the overflow policy logic across
 ///          the lowering pipeline.

@@ -4,7 +4,7 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-/// @file
+/// @file OopLoweringContext.cpp
 /// @brief Implements OOP lowering context helpers.
 /// @details Provides the out-of-line definitions for
 ///          @ref OopLoweringContext. The context caches class metadata lookups
@@ -25,7 +25,8 @@ namespace il::frontends::basic {
 
 /// @brief Look up class metadata for a given class name.
 /// @details Checks the local cache first, then queries the OOP index and caches
-///          the result for subsequent lookups.
+///          the result, including @c nullptr, for subsequent lookups under the
+///          exact input key.
 /// @param className Name of the class to resolve.
 /// @return Pointer to class metadata, or nullptr if not found.
 const ClassInfo *OopLoweringContext::findClassInfo(const std::string &className) {
@@ -42,7 +43,8 @@ const ClassInfo *OopLoweringContext::findClassInfo(const std::string &className)
 
 /// @brief Look up the field layout for a class.
 /// @details Checks the local layout cache and falls back to the lowerer's class
-///          layout query, caching the result for reuse.
+///          layout query, caching the result, including @c nullptr, under the
+///          exact input key.
 /// @param className Name of the class to resolve.
 /// @return Pointer to class layout, or nullptr if not found.
 const ClassLayout *OopLoweringContext::findClassLayout(const std::string &className) {
@@ -106,9 +108,9 @@ std::string OopLoweringContext::getMethodName(const std::string &className,
 // =============================================================================
 
 /// @brief Qualify a class name with the current namespace.
-/// @details Delegates to the lowerer's namespace qualification helper.
-/// @param className Unqualified class name.
-/// @return Fully-qualified class name.
+/// @details Delegates unchanged to the lowerer's namespace qualification helper.
+/// @param className Class name to qualify relative to the current namespace.
+/// @return The lowerer's resolved qualified spelling.
 std::string OopLoweringContext::qualify(const std::string &className) const {
     return lowerer.qualify(className);
 }

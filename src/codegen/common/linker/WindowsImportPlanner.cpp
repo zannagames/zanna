@@ -22,6 +22,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file WindowsImportPlanner.cpp
+ * @brief Implements deterministic PE/COFF import mapping and thunk synthesis.
+ *
+ * The planner maps each permitted unresolved Windows symbol to a known DLL,
+ * normalizes exported CRT spellings, and constructs a synthetic COFF object
+ * containing IAT slots and architecture-specific jump thunks. No host DLL
+ * probing is performed; the mapping is an explicit part of the linker policy.
+ */
+
 #include "codegen/common/linker/PlatformImportPlanner.hpp"
 
 #include "codegen/common/linker/RelocConstants.hpp"
@@ -39,6 +49,8 @@ namespace {
 /// @brief Strip the COFF __imp_ prefix used for Windows IAT-thunk references.
 /// @details Windows compilers prefix indirect imports with __imp_; the planner
 ///          looks up the underlying function by its bare name.
+/// @param name Symbol spelling to normalize.
+/// @return @p name without a leading `__imp_`, or unchanged when not indirect.
 std::string stripImpPrefix(const std::string &name) {
     if (name.rfind("__imp_", 0) == 0)
         return name.substr(6);
@@ -50,6 +62,8 @@ std::string stripImpPrefix(const std::string &name) {
 ///          runtime and Windows API references. Import planning compares both the
 ///          raw and stripped spellings so decorated input still maps to the right
 ///          DLL or static-runtime bucket.
+/// @param name Symbol spelling to normalize.
+/// @return The suffix following all leading underscores.
 std::string stripLeadingUnderscores(const std::string &name) {
     size_t i = 0;
     while (i < name.size() && name[i] == '_')
@@ -60,6 +74,8 @@ std::string stripLeadingUnderscores(const std::string &name) {
 /// @brief Identify libm-style symbols exported by the Windows Universal CRT.
 /// @details The same names resolve through libm on Unix, but Windows native
 ///          binaries must place them in the UCRT import table.
+/// @param name Bare or decorated function name to classify.
+/// @return `true` when @p name belongs to the maintained UCRT math set.
 bool isUcrtMathSymbol(const std::string &name) {
     static const std::unordered_set<std::string> kMath = {
         "acos",      "acosf",      "asin", "asinf", "atan",     "atan2",     "atan2f", "atanf",
@@ -78,7 +94,7 @@ bool isUcrtMathSymbol(const std::string &name) {
 /// @param name     Original symbol spelling.
 /// @param stripped Same symbol after leading underscore decoration is removed.
 /// @param prefix   Prefix to test.
-/// @return true when either spelling begins with @p prefix.
+/// @return `true` when either spelling begins with @p prefix.
 bool hasPrefixEither(const std::string &name, const std::string &stripped, const char *prefix) {
     return name.rfind(prefix, 0) == 0 || stripped.rfind(prefix, 0) == 0;
 }
@@ -87,6 +103,9 @@ bool hasPrefixEither(const std::string &name, const std::string &stripped, const
 /// @details These helper names are satisfied by generated linker support objects
 ///          or local runtime archives. Treating them as DLL imports would emit an
 ///          invalid import table entry and leave the actual static helper unused.
+/// @param name Original symbol spelling.
+/// @param stripped Same symbol with leading underscores removed.
+/// @return `true` when the symbol must be resolved from static support code.
 bool isWindowsStaticCompilerRuntimeSymbol(const std::string &name, const std::string &stripped) {
     return name == "__RTC_memset" || stripped == "RTC_memset" || name == "__security_pop_cookie" ||
            stripped == "security_pop_cookie" || name == "__security_push_cookie" ||
@@ -94,6 +113,14 @@ bool isWindowsStaticCompilerRuntimeSymbol(const std::string &name, const std::st
            hasPrefixEither(name, stripped, "Interlocked");
 }
 
+/// @brief Map a Windows import symbol to the DLL that exports it.
+/// @details Checks explicit Win32 API sets, compiler/CRT helper families, C++
+///          decorated names, UCRT functions, and legacy MSVCRT exports. Debug
+///          mode selects the corresponding debug CRT DLL where one exists.
+/// @param name Function name after removing any `__imp_` indirection prefix.
+/// @param debugRuntime Whether debug CRT variants should be selected.
+/// @param dllName Receives the canonical DLL filename on success.
+/// @return `true` when @p name has a maintained DLL mapping.
 bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllName) {
     const std::string stripped = stripLeadingUnderscores(name);
 
@@ -821,6 +848,9 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
     return false;
 }
 
+/// @brief Translate a source-level CRT spelling to its exported import name.
+/// @param name Resolved symbol spelling used by input objects and linker thunks.
+/// @return The DLL export spelling, or @p name when no remapping is required.
 std::string importNameForSymbol(const std::string &name) {
     static const std::unordered_map<std::string, std::string> remap = {
         {"atexit", "_crt_atexit"},
@@ -844,6 +874,10 @@ std::string importNameForSymbol(const std::string &name) {
 /// @details The Windows import planner emits an in-memory COFF object. Its
 ///          section offsets are later consumed as relocation patch sites, so
 ///          offset arithmetic is validated before resizing the backing vectors.
+/// @param lhs Current byte offset or section size.
+/// @param rhs Number of bytes to append.
+/// @param out Receives the sum on success.
+/// @return `true` when the addition fits in `size_t`.
 bool checkedImportSizeAdd(size_t lhs, size_t rhs, size_t &out) {
     if (lhs > std::numeric_limits<size_t>::max() - rhs)
         return false;
@@ -855,6 +889,11 @@ bool checkedImportSizeAdd(size_t lhs, size_t rhs, size_t &out) {
 /// @details Returns false with a diagnostic instead of truncating if an
 ///          unexpectedly large import plan would exceed the object format's
 ///          symbol-index capacity.
+/// @param index Native-size index to narrow.
+/// @param name Symbol being added, used in any diagnostic.
+/// @param err Stream that receives an overflow diagnostic.
+/// @param out Receives the COFF-width index on success.
+/// @return `true` when @p index is representable by `uint32_t`.
 bool checkedImportSymbolIndex(size_t index,
                               const std::string &name,
                               std::ostream &err,
@@ -869,6 +908,7 @@ bool checkedImportSymbolIndex(size_t index,
 
 } // namespace
 
+/// @copydoc zanna::codegen::linker::generateWindowsImports
 bool generateWindowsImports(LinkArch arch,
                             const std::unordered_set<std::string> &dynamicSyms,
                             bool debugRuntime,

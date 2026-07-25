@@ -1,0 +1,77 @@
+// =============================================================================
+// action_name_probe.zia — Verifies named-action bindings agree with their
+//                          string literals
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — A SUSPICIOUS REGRESSION TURNED INTO A PROBE
+// ------------------------------------------------------
+// At one point during development the `ACT_*` constants
+// (defined in `config.zia` as `final ACT_LEFT = "move_left";`)
+// drifted from the literal strings that
+// `Action.LoadPreset("platformer")` registered.  The bug was
+// silent — input just stopped working — because Action lookups
+// silently return "no binding".
+//
+// This probe ensures it never happens again.  It:
+//
+//   1. Loads the platformer preset.
+//   2. Prints the value and length of each `ACT_*` constant.
+//   3. Asks the runtime whether each is registered (both the
+//      constant and the literal string).
+//   4. Prints the bindings the runtime has for each.
+//   5. Compares the constant against the literal string.
+//
+// Diff this probe's output across builds and any drift
+// jumps out immediately.
+//
+// More broadly: when a hard-to-test bug bites you, write a
+// probe.  Probes are cheap and they keep paying you back.
+//
+// =============================================================================
+
+module action_name_probe;
+
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.String as String;
+bind Zanna.Input.Action as Action;
+bind "./config";
+
+func sayBool(name: String, value: Boolean) {
+    if value {
+        Terminal.Say(name + "=1");
+    } else {
+        Terminal.Say(name + "=0");
+    }
+}
+
+func sayInt(name: String, value: Integer) {
+    Terminal.Say(name + "=" + Fmt.Int(value));
+}
+
+func main() {
+    Action.LoadPreset("platformer");
+
+    Terminal.Say("VALUES");
+    Terminal.Say("ACT_LEFT=" + ACT_LEFT);
+    Terminal.Say("ACT_RIGHT=" + ACT_RIGHT);
+    sayInt("ACT_LEFT_LEN", Zanna.String.get_Length(ACT_LEFT));
+    sayInt("ACT_RIGHT_LEN", Zanna.String.get_Length(ACT_RIGHT));
+
+    Terminal.Say("EXISTS");
+    sayBool("exists_ACT_LEFT", Action.Exists(ACT_LEFT));
+    sayBool("exists_literal_left", Action.Exists("move_left"));
+    sayBool("exists_ACT_RIGHT", Action.Exists(ACT_RIGHT));
+    sayBool("exists_literal_right", Action.Exists("move_right"));
+
+    Terminal.Say("BINDINGS");
+    Terminal.Say("bindings_ACT_LEFT=" + Action.BindingsStr(ACT_LEFT));
+    Terminal.Say("bindings_literal_left=" + Action.BindingsStr("move_left"));
+    Terminal.Say("bindings_ACT_RIGHT=" + Action.BindingsStr(ACT_RIGHT));
+    Terminal.Say("bindings_literal_right=" + Action.BindingsStr("move_right"));
+
+    Terminal.Say("COMPARE");
+    sayBool("ACT_LEFT_eq_literal", ACT_LEFT == "move_left");
+    sayBool("ACT_RIGHT_eq_literal", ACT_RIGHT == "move_right");
+}

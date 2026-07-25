@@ -22,6 +22,18 @@
 // The VM uses a stack-based evaluation model with local variable slots
 // and supports basic control flow, arithmetic, and function calls.
 
+/**
+ * @file
+ * @brief Declares the validated stack-based bytecode interpreter and its
+ *        callback/runtime integration contracts.
+ *
+ * `BytecodeVM` owns execution stacks, globals, cached runtime strings, trap
+ * snapshots, and debugger state while borrowing the loaded `BytecodeModule`.
+ * The module therefore must remain alive until the VM is reloaded or destroyed.
+ * Re-entrant APIs execute synchronous runtime callbacks on the suspended VM;
+ * asynchronous bridges copy only `ExecutionEnvironment` and module snapshots.
+ */
+
 #pragma once
 
 #include "bytecode/Bytecode.hpp"
@@ -145,12 +157,19 @@ using DebugCallback =
 ///          - Native function integration (via RuntimeBridge or registered handlers)
 ///          - Debug support (breakpoints, single-stepping, variable inspection)
 ///          - Optional threaded dispatch for higher throughput on GCC/Clang
+///
+/// @invariant `sp_` and every frame pointer refer into `valueStack_`.
+/// @invariant String ownership flags mirror live value/global slots.
+/// @invariant Trusted dispatch is active only after module validation succeeds.
+/// @note Instances are mutable execution engines and are not thread-safe.
 class BytecodeVM {
   public:
     /// @brief Construct a new BytecodeVM in the Ready state.
+    /// @post Execution buffers are preallocated and no module is loaded.
     BytecodeVM();
 
     /// @brief Destroy the VM and release all internal resources.
+    /// @details Releases owned stack/global strings and cached literal handles.
     ~BytecodeVM();
 
     /// @brief Load a bytecode module for execution.
@@ -224,17 +243,20 @@ class BytecodeVM {
     }
 
     /// @brief Reset the instruction counter to zero.
+    /// @post @ref instrCount returns zero until another instruction is dispatched.
     void resetInstrCount() {
         instrCount_ = 0;
     }
 
     /// @brief Set the maximum number of instructions this VM may dispatch.
     /// @details A value of 0 disables the limit.
+    /// @param maxInstructions Dispatch budget, or zero for unlimited execution.
     void setMaxInstructions(uint64_t maxInstructions) {
         maxInstrCount_ = maxInstructions;
     }
 
     /// @brief Get the configured instruction dispatch limit.
+    /// @return Dispatch budget, or zero when unlimited.
     uint64_t maxInstructions() const {
         return maxInstrCount_;
     }
@@ -258,12 +280,15 @@ class BytecodeVM {
     /// @details Trusted dispatch skips per-instruction PC and stack-shape
     ///          validation in the interpreter loop. Use only for modules
     ///          produced by BytecodeCompiler::compileChecked after IL verification.
+    /// @param enabled Requested trusted-dispatch state. It takes effect only
+    ///        after the loaded module passes VM structural validation.
     void setTrustedDispatch(bool enabled) {
         trustedDispatchRequested_ = enabled;
         trustedDispatch_ = enabled && moduleDispatchValidated_;
     }
 
     /// @brief Check whether trusted dispatch is enabled.
+    /// @return `true` only when requested and safe for the loaded module.
     bool trustedDispatch() const {
         return trustedDispatch_;
     }
@@ -280,23 +305,31 @@ class BytecodeVM {
     ///          callbacks must copy this state instead of borrowing the parent
     ///          VM object, which may be destroyed before the worker finishes.
     struct ExecutionEnvironment {
+        /// Route native calls through RuntimeBridge.
         bool runtimeBridgeEnabled = false;
+        /// Prefer computed-goto dispatch where available.
         bool useThreadedDispatch = true;
+        /// Request validated fast-path dispatch.
         bool trustedDispatch = false;
+        /// Worker dispatch budget; zero is unlimited.
         uint64_t maxInstructions = 0;
+        /// Worker-owned copy of direct native handlers.
         std::unordered_map<std::string, NativeHandler> nativeHandlers;
     };
 
     /// @brief Capture the current worker-relevant execution settings.
+    /// @return Independent settings snapshot that does not retain this VM.
     [[nodiscard]] ExecutionEnvironment captureExecutionEnvironment() const;
 
     /// @brief Apply a previously captured worker execution environment.
+    /// @param env Snapshot whose settings and handlers are copied.
     void applyExecutionEnvironment(const ExecutionEnvironment &env);
 
     /// @brief Copy worker-relevant execution settings from another BytecodeVM.
     /// @details Used by worker VMs spawned from Thread.Start/Async.Run so they
     ///          inherit the parent VM's runtime bridge toggle, dispatch mode,
     ///          and direct native handler registrations.
+    /// @param other Source VM; module and transient execution state are not copied.
     void copyExecutionEnvironmentFrom(const BytecodeVM &other);
 
     /// @brief Enable or disable threaded dispatch (computed goto).
@@ -478,24 +511,39 @@ class BytecodeVM {
     void initStringCache();
 
     /// @brief Return a cached runtime string for a string-pool entry.
+    /// @param idx Zero-based string-pool index.
+    /// @return Borrowed cached handle, or null for an invalid index.
     [[nodiscard]] rt_string getStringLiteral(uint16_t idx);
 
     /// @brief Compute the backing-array index for a stack/local slot.
+    /// @param slot Address within the fixed value stack.
+    /// @return Zero-based index used by the parallel ownership bitmap.
     [[nodiscard]] size_t slotIndex(const BCSlot *slot) const;
 
     /// @brief Check whether a stack/local slot currently owns a string reference.
+    /// @param slot Address within the fixed value stack.
+    /// @return Ownership bit associated with @p slot.
     [[nodiscard]] bool slotOwnsString(const BCSlot *slot) const;
 
     /// @brief Update the ownership flag for a stack/local slot.
+    /// @param slot Address within the fixed value stack.
+    /// @param owns New ownership state.
     void setSlotOwnsString(const BCSlot *slot, bool owns);
 
     /// @brief Return whether a bytecode local stores runtime string handles.
+    /// @param frame Frame whose local-type metadata is consulted.
+    /// @param idx Zero-based local index.
+    /// @return `true` when the local is string-typed.
     [[nodiscard]] bool localIsString(const BCFrame &frame, uint32_t idx) const;
 
     /// @brief Validate that a pointer is a live runtime string handle.
+    /// @param ptr Candidate handle; null is accepted.
+    /// @param site Operation name included in a trap.
+    /// @return `true` for null or a registered live handle.
     [[nodiscard]] bool validateStringHandle(const void *ptr, const char *site);
 
     /// @brief Release an owned string slot and clear its ownership flag.
+    /// @param slot Mutable value-stack slot.
     void releaseOwnedString(BCSlot *slot);
 
     /// @brief Retain a string slot and mark it as owning the retained handle.
@@ -570,6 +618,8 @@ class BytecodeVM {
     bool storeGlobal(uint16_t idx, const char *site);
 
     /// @brief Release owned string arguments about to be popped after a native call.
+    /// @param args First call-argument slot.
+    /// @param argCount Number of consecutive slots to release.
     void releaseCallArgs(BCSlot *args, uint8_t argCount);
 
     /// @brief Clear ownership for string arguments consumed directly by a callee.
@@ -577,9 +627,13 @@ class BytecodeVM {
     ///          ownership of their incoming string handles. Those slots must be
     ///          detached before @ref releaseCallArgs runs to avoid a second
     ///          release on the same handle.
+    /// @param ref Native-call descriptor identifying consumed string parameters.
+    /// @param args First call-argument slot.
+    /// @param argCount Number of consecutive argument slots.
     void dismissConsumedStringArgs(const NativeFuncRef &ref, BCSlot *args, uint8_t argCount);
 
     /// @brief Release string-owning locals in a frame before unwinding it.
+    /// @param frame Frame whose local slots are being destroyed.
     void releaseFrameLocals(const BCFrame &frame);
 
     /// @brief Release any string-owning values left on the stack before reuse.
@@ -589,18 +643,28 @@ class BytecodeVM {
     void releaseOwnedGlobals();
 
     /// @brief Return the global index for an exact pointer to a global slot, or SIZE_MAX.
+    /// @param ptr Candidate exact slot address.
+    /// @return Global index or `SIZE_MAX`.
     [[nodiscard]] size_t globalIndexForAddress(const void *ptr) const;
 
     /// @brief Return the global index overlapped by an address range, or SIZE_MAX.
+    /// @param ptr First byte of the candidate range.
+    /// @param bytes Range width.
+    /// @return First overlapped global index or `SIZE_MAX`.
     [[nodiscard]] size_t globalIndexForAddressRange(const void *ptr, size_t bytes) const;
 
     /// @brief Release a string owned by a single global slot.
+    /// @param idx Global-table index.
     void releaseOwnedGlobalString(size_t idx);
 
     /// @brief Clear global string ownership before writing raw non-string data through a pointer.
+    /// @param ptr First byte of the raw store.
+    /// @param bytes Store width.
     void clearGlobalStringOwnershipForRawStore(void *ptr, size_t bytes);
 
     /// @brief Record string ownership when STORE_STR_MEM writes directly to a global slot.
+    /// @param ptr Exact global slot address.
+    /// @param owns New ownership state.
     void setGlobalStringOwnershipForAddress(void *ptr, bool owns);
 
     /// @brief Release any retained string handles held by the active trap record.
@@ -610,9 +674,16 @@ class BytecodeVM {
     void resetExecutionState();
 
     /// @brief Return the current operand depth above @p frame.stackBase.
+    /// @param frame Frame defining the operand-stack base.
+    /// @param sp Current stack pointer.
+    /// @return Number of live operand slots.
     [[nodiscard]] uint32_t operandDepth(const BCFrame &frame, const BCSlot *sp) const;
 
     /// @brief Validate that @p pc is a valid instruction fetch location.
+    /// @param func Function whose code bounds apply.
+    /// @param pc Candidate program counter.
+    /// @param site Dispatch path included in a trap.
+    /// @return `true` when @p pc is in range.
     bool ensurePcInRange(const BytecodeFunction &func, uint32_t pc, const char *site);
 
     /// @brief Detailed reason for rejecting a bytecode module during load().
@@ -643,30 +714,55 @@ class BytecodeVM {
     /// @brief Return whether @p func is one of the loaded module's functions.
     /// @details Protects the pointer-based exec overload from being handed a
     ///          stale or foreign function pointer.
+    /// @param func Candidate function address.
+    /// @return `true` when @p func belongs to the loaded function table.
     [[nodiscard]] bool functionBelongsToModule(const BytecodeFunction *func) const;
 
     /// @brief Validate that @p words extra code words can be read from @p pc.
+    /// @param func Function whose code bounds apply.
+    /// @param pc First word to read.
+    /// @param words Required contiguous word count.
+    /// @param site Dispatch path included in a trap.
+    /// @return `true` when the full range is available.
     bool ensureWordsAvailable(const BytecodeFunction &func,
                               uint32_t pc,
                               uint32_t words,
                               const char *site);
 
     /// @brief Validate that a computed branch target lands inside @p func.
+    /// @param func Function whose code bounds apply.
+    /// @param target Absolute target program counter.
+    /// @param site Operation name included in a trap.
+    /// @return `true` when @p target is within the code stream.
     bool ensureBranchTarget(const BytecodeFunction &func, uint32_t target, const char *site);
 
     /// @brief Validate stack depth and capacity requirements for @p instr.
+    /// @param frame Current call frame.
+    /// @param sp Current operand stack pointer.
+    /// @param instr Encoded instruction whose stack effect is checked.
+    /// @param site Dispatch path included in a trap.
+    /// @return `true` when execution cannot underflow or overflow the frame stack.
     bool ensureStackForInstruction(const BCFrame &frame,
                                    const BCSlot *sp,
                                    uint32_t instr,
                                    const char *site);
 
     /// @brief Validate that the active operand stack matches the callee arity exactly.
+    /// @param func Candidate callee.
+    /// @param caller Current frame, or null for an entry call.
+    /// @param sp Stack pointer after arguments are pushed.
+    /// @param site Call path included in a trap.
+    /// @return `true` when operand depth equals the declared parameter count.
     bool ensureCallArity(const BytecodeFunction *func,
                          const BCFrame *caller,
                          const BCSlot *sp,
                          const char *site);
 
     /// @brief Validate frame-local and operand-stack footprint for a callee.
+    /// @param func Candidate callee.
+    /// @param sp Stack pointer after arguments are pushed.
+    /// @param site Call path included in a trap.
+    /// @return `true` when the frame fits in `valueStack_`.
     bool ensureFrameFootprint(const BytecodeFunction *func, const BCSlot *sp, const char *site);
 
     /// @brief Clone runtime-call arguments for helpers that consume strings.
@@ -692,15 +788,24 @@ class BytecodeVM {
     /// @details Returns false when execution was diverted into bytecode trap
     ///          handling, either because a handler caught the trap or because
     ///          the trap became terminal.
+    /// @param ref Native helper descriptor and signature metadata.
+    /// @param args Borrowed argument slots.
+    /// @param argCount Number of argument slots.
+    /// @param result Receives return bits on success.
+    /// @return `true` on normal return; `false` when the call traps.
     bool invokeRuntimeBridgeNative(const NativeFuncRef &ref,
                                    BCSlot *args,
                                    uint8_t argCount,
                                    BCSlot &result);
 
     /// @brief Return whether a runtime helper consumes retained clones of string args.
+    /// @param name Runtime registry name.
+    /// @return `true` when string arguments must be retained before dispatch.
     [[nodiscard]] static bool runtimeCallConsumesClonedStringArgs(std::string_view name);
 
     /// @brief Return whether a runtime helper consumes the original string arguments.
+    /// @param name Runtime registry name.
+    /// @return `true` when ownership transfers from the VM's argument slots.
     [[nodiscard]] static bool runtimeCallConsumesOwnedStringArgs(std::string_view name);
 
     /// @brief Main interpreter loop using switch-based dispatch.
@@ -742,18 +847,29 @@ class BytecodeVM {
     void trap(TrapKind kind, const char *message);
 
     /// @brief Format the current execution location and trap payload for users.
+    /// @param kind Trap category.
+    /// @param errorCode Runtime-compatible numeric code.
+    /// @param message Optional diagnostic detail.
+    /// @return Source-aware human-readable trap report.
     [[nodiscard]] std::string formatTrapMessage(TrapKind kind,
                                                 int32_t errorCode,
                                                 const char *message) const;
 
     /// @brief Return the instruction PC responsible for the current trap.
+    /// @return Faulting PC, or zero when no frame is active.
     [[nodiscard]] uint32_t currentFaultPc() const;
 
     /// @brief Resolve the basic block label associated with a function PC.
+    /// @param func Function containing @p pc.
+    /// @param pc Program counter to resolve.
+    /// @return Block label, or an empty string.
     [[nodiscard]] std::string currentBlockLabelForPc(const BytecodeFunction *func,
                                                      uint32_t pc) const;
 
     /// @brief Resolve the source file path associated with a function PC.
+    /// @param func Function containing @p pc.
+    /// @param pc Program counter to resolve.
+    /// @return Source path, or an empty string.
     [[nodiscard]] std::string currentSourcePathForPc(const BytecodeFunction *func,
                                                      uint32_t pc) const;
 
@@ -779,40 +895,120 @@ class BytecodeVM {
     bool mulOverflow(int64_t a, int64_t b, int64_t &result);
 
     /// @brief Execute signed division without invoking host-language UB.
+    /// @param a Dividend.
+    /// @param b Divisor.
+    /// @param result Receives the quotient on success.
+    /// @param fault Receives the failure category or `None`.
+    /// @return `true` when division succeeds.
     bool safeSignedDiv(int64_t a, int64_t b, int64_t &result, TrapKind &fault) const;
 
     /// @brief Execute unsigned division without invoking host-language UB.
+    /// @param a Dividend bit pattern.
+    /// @param b Divisor bit pattern.
+    /// @param result Receives the quotient bit pattern on success.
+    /// @param fault Receives `DivideByZero` or `None`.
+    /// @return `true` when division succeeds.
     bool safeUnsignedDiv(int64_t a, int64_t b, int64_t &result, TrapKind &fault) const;
 
     /// @brief Execute signed remainder without invoking host-language UB.
+    /// @param a Dividend.
+    /// @param b Divisor.
+    /// @param result Receives the remainder on success.
+    /// @param fault Receives `DivideByZero` or `None`.
+    /// @return `true` when remainder succeeds.
     bool safeSignedRem(int64_t a, int64_t b, int64_t &result, TrapKind &fault) const;
 
     /// @brief Execute unsigned remainder without invoking host-language UB.
+    /// @param a Dividend bit pattern.
+    /// @param b Divisor bit pattern.
+    /// @param result Receives the remainder bit pattern on success.
+    /// @param fault Receives `DivideByZero` or `None`.
+    /// @return `true` when remainder succeeds.
     bool safeUnsignedRem(int64_t a, int64_t b, int64_t &result, TrapKind &fault) const;
 
     /// @brief Execute signed negation without invoking host-language UB.
+    /// @param value Operand to negate.
+    /// @param result Receives the negated value on success.
+    /// @param fault Receives `Overflow` or `None`.
+    /// @return `true` when negation succeeds.
     bool safeNegate(int64_t value, int64_t &result, TrapKind &fault) const;
 
-    /// @brief Execute two's-complement wrapping arithmetic without C++ signed-overflow UB.
+    /// @brief Add with defined two's-complement wrapping.
+    /// @param a Left operand.
+    /// @param b Right operand.
+    /// @return Wrapped sum.
     static int64_t wrappingAdd(int64_t a, int64_t b) noexcept;
+
+    /// @brief Subtract with defined two's-complement wrapping.
+    /// @param a Left operand.
+    /// @param b Right operand.
+    /// @return Wrapped difference.
     static int64_t wrappingSub(int64_t a, int64_t b) noexcept;
+
+    /// @brief Multiply with defined two's-complement wrapping.
+    /// @param a Left operand.
+    /// @param b Right operand.
+    /// @return Wrapped product.
     static int64_t wrappingMul(int64_t a, int64_t b) noexcept;
+
+    /// @brief Left-shift with a masked shift count and defined bit semantics.
+    /// @param value Bit pattern to shift.
+    /// @param shift Count whose low six bits are used.
+    /// @return Shifted bit pattern.
     static int64_t wrappingShl(int64_t value, int64_t shift) noexcept;
+
+    /// @brief Arithmetic right-shift with portable sign extension.
+    /// @param value Signed bit pattern to shift.
+    /// @param shift Count whose low six bits are used.
+    /// @return Sign-extended shifted value.
     static int64_t arithmeticShr(int64_t value, int64_t shift) noexcept;
 
     /// @brief Convert f64 to i64 with truncation and defined range checks.
+    /// @param value Floating-point input.
+    /// @param result Receives the converted value on success.
+    /// @param fault Receives `InvalidCast`, `Overflow`, or `None`.
+    /// @return `true` for an in-range finite input.
     static bool truncF64ToI64(double value, int64_t &result, TrapKind &fault) noexcept;
 
-    /// @brief Convert f64 to i64/u64 using round-to-even and defined range checks.
+    /// @brief Convert f64 to i64 using round-to-even and defined range checks.
+    /// @param value Floating-point input.
+    /// @param result Receives the rounded value on success.
+    /// @param fault Receives `InvalidCast`, `Overflow`, or `None`.
+    /// @return `true` for an in-range finite input.
     static bool roundF64ToI64(double value, int64_t &result, TrapKind &fault) noexcept;
+
+    /// @brief Convert f64 to a u64 bit pattern using round-to-even.
+    /// @param value Floating-point input.
+    /// @param result Receives the unsigned result bits on success.
+    /// @param fault Receives `InvalidCast`, `Overflow`, or `None`.
+    /// @return `true` for a nonnegative in-range finite input.
     static bool roundF64ToU64Bits(double value, int64_t &result, TrapKind &fault) noexcept;
 
     /// @brief Dispatch a resumable trap, or make it terminal when no handler exists.
+    /// @param kind Trap category.
+    /// @param message Diagnostic detail.
+    /// @param errorCode Explicit code, or -1 for the kind's default.
+    /// @return `true` when an exception handler receives control.
     bool trapOrDispatch(TrapKind kind, const char *message, int32_t errorCode = -1);
 
-    /// @brief Validate bytecode metadata and unsafe operands before touching host memory.
+    /// @brief Validate a current-frame local index.
+    /// @param idx Candidate local index.
+    /// @param site Operation name included in a trap.
+    /// @return `true` when @p idx exists.
     bool ensureLocalIndex(uint32_t idx, const char *site);
+
+    /// @brief Validate a host-memory access before dereferencing it.
+    /// @param ptr First byte to access.
+    /// @param bytes Access width.
+    /// @param site Operation name included in a trap.
+    /// @return `true` when the range is permitted.
     bool ensureMemoryAccess(const void *ptr, size_t bytes, const char *site);
+
+    /// @brief Allocate zeroed, function-lifetime storage in the VM alloca arena.
+    /// @param requestedSize Unaligned byte count.
+    /// @param ptr Receives the allocation on success.
+    /// @param site Operation name included in a trap.
+    /// @return `true` when allocation succeeds.
     bool allocateAlloca(int64_t requestedSize, void *&ptr, const char *site);
 
     /// @brief Compute and validate a relative branch target without unsigned wraparound.
@@ -885,11 +1081,15 @@ class BytecodeVM {
     ///          or an enclosing frame. If found, unwinds the call and operand
     ///          stacks and transfers control to the handler.
     /// @param kind The trap kind to dispatch.
+    /// @param errorCode Explicit runtime code, or -1 for the kind's default.
+    /// @param message Optional diagnostic text retained in the trap record.
     /// @return True if a handler was found and control was transferred; false
     ///         if the trap is unhandled.
     bool dispatchTrap(TrapKind kind, int32_t errorCode = -1, const char *message = nullptr);
 
     /// @brief Restore execution state for resume.same or resume.next.
+    /// @param useNextPc Resume after the fault when true; retry it when false.
+    /// @return `true` when the operand token matches a live trap snapshot.
     bool resumeTrap(bool useNextPc);
 
     /// @brief Check whether the current PC matches a breakpoint.
@@ -925,7 +1125,11 @@ struct ActiveBytecodeVMGuard {
     /// @brief Restore the previous active VM.
     ~ActiveBytecodeVMGuard();
 
+    /// @brief Guards are unique scope owners and cannot be copied.
     ActiveBytecodeVMGuard(const ActiveBytecodeVMGuard &) = delete;
+
+    /// @brief Guards are unique scope owners and cannot be copy-assigned.
+    /// @return This guard; declaration is deleted and cannot be called.
     ActiveBytecodeVMGuard &operator=(const ActiveBytecodeVMGuard &) = delete;
 
   private:

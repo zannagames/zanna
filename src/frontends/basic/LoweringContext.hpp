@@ -5,13 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/LoweringContext.hpp
+// File: src/frontends/basic/LoweringContext.hpp
 // Purpose: Declares state container used in BASIC-to-IL lowering.
 // Key invariants: None.
 // Ownership/Lifetime: Does not own referenced module.
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file LoweringContext.hpp
+/// @brief Declares the legacy per-function BASIC lowering name cache.
+/// @details LoweringContext associates source variable names and string values
+///          with deterministic IL identifiers while retaining borrowed access
+///          to the active builder and function. Name lookup alone emits no IR.
 
 #pragma once
 
@@ -31,41 +37,47 @@ class IRBuilder;
 
 namespace il::frontends::basic {
 
-/// @brief Tracks mappings needed during BASIC lowering.
-/// @invariant Each variable, line, and string literal is unique in its map.
-/// @ownership Holds references to IR structures owned elsewhere.
+/// @brief Tracks deterministic identifier mappings during BASIC lowering.
+/// @details The object owns its maps and generated strings but only borrows the
+///          builder and function supplied at construction.
+/// @invariant Each variable name and each distinct string value has at most one
+///            associated generated identifier per context.
 class LoweringContext {
   public:
     /// @brief Create a context to lower into @p builder and populate @p func.
-    /// @ownership References are non-owning; caller must keep builder and
-    /// function alive for the lifetime of this context.
-    /// @notes Initializes name mangling and lookup tables used during lowering.
+    /// @param builder Builder borrowed by the context.
+    /// @param func Destination function borrowed by the context.
+    /// @pre @p builder and @p func remain alive for this object's lifetime.
     LoweringContext(build::IRBuilder &builder, core::Function &func);
 
-    /// @brief Get or create stack slot name for BASIC variable @p name.
+    /// @brief Get or assign the slot identifier for BASIC variable @p name.
+    /// @details New entries use `%<name>_slot`; this operation does not emit a
+    ///          stack allocation.
+    /// @param name Source variable name used as the cache key.
+    /// @return Stable slot identifier for @p name.
     std::string getOrCreateSlot(const std::string &name);
 
-    /// @brief Get deterministic name for string literal @p value.
+    /// @brief Get or assign the generated symbol for string @p value.
+    /// @details New distinct values receive `.L0`, `.L1`, and so on; this
+    ///          operation does not materialize a module global.
+    /// @param value String contents used as the cache key.
+    /// @return Stable generated symbol for @p value.
     std::string getOrAddString(const std::string &value);
 
   private:
-    /// IR builder used to emit instructions and blocks. Non-owning reference.
+    /// Borrowed IR builder associated with this context.
     build::IRBuilder &builder;
 
-    /// Function currently being lowered. Non-owning reference to caller-owned
-    /// function; builder appends new blocks and instructions to it.
+    /// Borrowed function associated with this context.
     core::Function &function;
 
-    /// Mapping from BASIC variable names to their stack slot identifiers. Owns
-    /// the strings it stores but not the variables they represent.
+    /// Owned mapping from BASIC variable names to textual slot identifiers.
     std::unordered_map<std::string, std::string> varSlots;
 
-    /// Deduplicated string literals mapped to generated symbol names. Owns
-    /// copies of the literal values.
+    /// Owned mapping from distinct string values to generated symbol names.
     std::unordered_map<std::string, std::string> strings;
 
-    /// Monotonic counter used to create unique names for string literals.
-    /// Lifetime tied to this context instance.
+    /// Next numeric suffix assigned to a previously unseen string value.
     unsigned nextStringId{0};
 };
 

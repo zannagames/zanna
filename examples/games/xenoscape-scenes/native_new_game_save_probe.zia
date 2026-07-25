@@ -1,0 +1,101 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/native_new_game_save_probe.zia
+// Purpose: Verify the native new-game snapshot can be saved and reopened.
+// Key invariants:
+//   - Uses an isolated SaveData name and never touches player profiles.
+//   - Exercises the same schema-v4 release writer used by Game.saveProgress().
+// Ownership/Lifetime: Probe-local managers and lists die at process exit; the
+//                     isolated persistent store is cleared on every path.
+// Links: game.zia, save.zia, src/tests/e2e/test_xenoscape_native_start.sh
+//
+//===----------------------------------------------------------------------===//
+
+module native_new_game_save_probe;
+
+bind Zanna.IO;
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind "./config";
+bind "./save";
+
+final NATIVE_NEW_GAME_STORE = "xenoscape_native_new_game_probe";
+
+/// @brief Reset the isolated persistent store used by this probe.
+func clearProbeStore() {
+    var raw = SaveData.New(NATIVE_NEW_GAME_STORE);
+    raw.Clear();
+    raw.Save();
+}
+
+/// @brief Save and reopen the exact baseline campaign shape used by New Game.
+func main() {
+    clearProbeStore();
+
+    var saves = new SaveManager();
+    saves.initSaveWithName(NATIVE_NEW_GAME_STORE);
+    var saved = saves.saveSlotRelease(
+        0, 1, XENOSCAPE_BASELINE_ABILITY_MASK, 5, 0, 0,
+        0, 0, 0, 0, 0,
+        0, 0, 0, 0, 1,
+        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        0, 1, 0, 0, 0, 0,
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        0, 0);
+    if saved == false {
+        clearProbeStore();
+        Terminal.Say("SAVE_FAILED");
+        return;
+    }
+
+    var loaded = new SaveManager();
+    loaded.initSaveWithName(NATIVE_NEW_GAME_STORE);
+    if loaded.didRecoverCorruptSave() {
+        clearProbeStore();
+        Terminal.Say("RELOAD_RECOVERED_CORRUPT");
+        return;
+    }
+    if loaded.isSlotUsed(0) == false {
+        clearProbeStore();
+        Terminal.Say("RELOAD_UNUSED");
+        return;
+    }
+    if loaded.getSlotLevel(0) != 1 {
+        clearProbeStore();
+        Terminal.Say("RELOAD_LEVEL");
+        return;
+    }
+    if loaded.getSlotAbilities(0) != XENOSCAPE_BASELINE_ABILITY_MASK {
+        var actualAbilities = loaded.getSlotAbilities(0);
+        clearProbeStore();
+        Terminal.Say("RELOAD_ABILITIES=" + Fmt.Int(actualAbilities));
+        return;
+    }
+    if loaded.getSlotMaxHp(0) != 5 {
+        clearProbeStore();
+        Terminal.Say("RELOAD_HP");
+        return;
+    }
+    if loaded.getSlotSchema(0) != XENOSCAPE_SAVE_SCHEMA {
+        clearProbeStore();
+        Terminal.Say("RELOAD_SCHEMA");
+        return;
+    }
+    if loaded.getSlotTeleporterMask(0) != 1 {
+        clearProbeStore();
+        Terminal.Say("RELOAD_TELEPORTER");
+        return;
+    }
+    if loaded.getSlotRoomMask(0, 0) != 1 {
+        clearProbeStore();
+        Terminal.Say("RELOAD_ROOM");
+        return;
+    }
+    clearProbeStore();
+    Terminal.Say("SAVE_OK");
+}

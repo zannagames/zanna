@@ -1,0 +1,428 @@
+// =============================================================================
+// palette.zia — The game's colour vocabulary, one name per swatch
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — CENTRALISING COLOURS IS WORTH IT
+// -------------------------------------------
+// Scattering `Color.RGB(r,g,b)` calls through renderer.zia,
+// sprites.zia, enemy.zia, menu.zia, hud.zia etc. means that
+// when you want to "make the game darker / warmer / more teal"
+// you are auditing a thousand magic triples.  Don't.
+//
+// Instead: every colour the game draws with is named here.
+// Code that needs "the grass colour" reads `palette.grass`
+// instead of repeating `Color.RGB(107, 184, 54)`.  Benefits:
+//
+//   * One-line retheme: change `grass` in `init()` and every
+//     tile, UI element, particle, and shader-style effect
+//     that reads it picks up the new colour.
+//   * Legibility: `canvas.Box(x, y, w, h, palette.grassDark)`
+//     tells you what you're drawing.  The RGB triple doesn't.
+//   * Biome variants: we can swap whole palette objects per
+//     biome (fungal vs crystal vs frozen) and the draw code
+//     doesn't change at all.
+//
+// WHERE THIS FITS
+// ---------------
+//     All draw-path files hold a `Palette` reference:
+//     renderer, sprites, enemy, menu, hud, particles,
+//     lighting, worldmap, pickups.
+//
+// HOW TO READ THIS FILE
+// ---------------------
+// One class with many `expose Integer` fields.  `init()`
+// populates every field with `Color.RGB(r, g, b)`.  Scroll
+// through the `init()` body to see every colour the game
+// uses, grouped roughly by theme (sky, terrain, vegetation,
+// player, enemies, UI).
+//
+// To re-theme for a new biome, create a new Palette instance
+// and run an alternate init (`initFrozen`, etc.) — not used
+// yet but the structure is ready for it.
+//
+// =============================================================================
+
+module palette;
+
+bind Zanna.Graphics.Color;
+
+/// @brief The named-colour vocabulary.  One field per swatch
+///        the game ever draws with.  All fields are populated
+///        from `init()` and never mutated again — treat the
+///        instance as effectively immutable after construction.
+///
+/// Fields are grouped by purpose: `outline` for sprite ink,
+/// `sky*`/`cave*`/`grass*`/`stone*`/`brick*`/`platform*` for
+/// terrain layers, `player*` for the protagonist, `slime/bat/
+/// turret/boss*` for enemy archetypes, `coin*/health/speed/
+/// shield/rapidfire` for pickups, `hud*/menu*/title*` for UI,
+/// plus a handful of effect colours (`shadow`, `dust`,
+/// `spark*`, `bullet*`, ...).
+class Palette {
+    expose Integer outline;
+    expose Integer skyTop;
+    expose Integer skyBot;
+    expose Integer caveBg;
+    expose Integer caveMid;
+    expose Integer grass;
+    expose Integer grassDark;
+    expose Integer dirt;
+    expose Integer dirtDark;
+    expose Integer stone;
+    expose Integer stoneDark;
+    expose Integer stoneLight;
+    expose Integer brick;
+    expose Integer brickDark;
+    expose Integer platform;
+    expose Integer platformDark;
+    expose Integer caveRock;
+    expose Integer caveRockDark;
+    expose Integer crystalBlue;
+    expose Integer crystalPink;
+    expose Integer lava;
+    expose Integer lavaBright;
+    expose Integer bridge;
+    expose Integer playerHelmet;
+    expose Integer playerVisor;
+    expose Integer playerBody;
+    expose Integer playerBodyDark;
+    expose Integer playerBoots;
+    expose Integer playerJetpack;
+    expose Integer slime;
+    expose Integer slimeDark;
+    expose Integer slimeEye;
+    expose Integer slimePupil;
+    expose Integer batBody;
+    expose Integer batWing;
+    expose Integer batEye;
+    expose Integer turretBase;
+    expose Integer turretBarrel;
+    expose Integer turretLight;
+    expose Integer bossArmor;
+    expose Integer bossDark;
+    expose Integer bossEye;
+    expose Integer bossMetal;
+    expose Integer coinGold;
+    expose Integer coinDark;
+    expose Integer health;
+    expose Integer speed;
+    expose Integer shield;
+    expose Integer rapidfire;
+    expose Integer white;
+    expose Integer black;
+    expose Integer hudBg;
+    expose Integer hudRed;
+    expose Integer hudGreen;
+    expose Integer hudBlue;
+    expose Integer hudGray;
+    expose Integer menuBg;
+    expose Integer menuHighlight;
+    expose Integer menuText;
+    expose Integer titleOrange;
+    expose Integer titleYellow;
+    expose Integer shadow;
+    expose Integer dust;
+    expose Integer sparkYellow;
+    expose Integer sparkWhite;
+    expose Integer deathRed;
+    expose Integer bullet;
+    expose Integer bulletGlow;
+    expose Integer enemyBullet;
+    expose Integer checkpoint;
+    expose Integer sign;
+    expose Integer magma;
+    expose Integer magmaDark;
+    expose Integer magmaGlow;
+    expose Integer obsidian;
+    expose Integer obsidianLight;
+    expose Integer skyBright;
+    expose Integer skyPale;
+    expose Integer cloudWhite;
+    expose Integer skyStone;
+    expose Integer skyStoneDark;
+    expose Integer ruin;
+    expose Integer ruinDark;
+    expose Integer ruinMoss;
+    expose Integer vineGreen;
+    expose Integer vineDark;
+    expose Integer jungleSkyTop;
+    expose Integer jungleSkyBot;
+    expose Integer jungleGround;
+    expose Integer jungleGroundTop;
+    expose Integer jungleRoots;
+    expose Integer jungleMoss;
+    expose Integer jungleSap;
+    expose Integer jungleThorn;
+    expose Integer jungleThornTip;
+    expose Integer mushroomCap;
+    expose Integer mushroomStem;
+    expose Integer mushroomGlow;
+    expose Integer spore;
+    expose Integer cavernTop;
+    expose Integer cavernBot;
+    expose Integer cavernStone;
+    expose Integer cavernStoneDk;
+    expose Integer crystalCyan;
+    expose Integer crystalMagenta;
+    expose Integer crystalPurple;
+    expose Integer crystalGlow;
+    expose Integer drip;
+    expose Integer thermalTop;
+    expose Integer thermalBot;
+    expose Integer thermalLava;
+    expose Integer thermalLavaBright;
+    expose Integer thermalRock;
+    expose Integer thermalGrate;
+    expose Integer thermalRust;
+    expose Integer thermalCrack;
+    expose Integer thermalSteam;
+    expose Integer reactorGlow;
+    expose Integer hullTop;
+    expose Integer hullBot;
+    expose Integer hullPlate;
+    expose Integer hullPlateDk;
+    expose Integer hullPlateLt;
+    expose Integer girder;
+    expose Integer girderLt;
+    expose Integer electricBg;
+    expose Integer electricSpark;
+    expose Integer airlock;
+    expose Integer airlockStripe;
+    expose Integer emergencyLight;
+    expose Integer reactorTop;
+    expose Integer reactorBot;
+    expose Integer pipe;
+    expose Integer pipeLt;
+    expose Integer catwalk;
+    expose Integer catwalkStripe;
+    expose Integer coolant;
+    expose Integer coolantBright;
+    expose Integer conduit;
+    expose Integer reactorGlowRed;
+    expose Integer bridgeTop;
+    expose Integer bridgeBot;
+    expose Integer console;
+    expose Integer consoleScreen;
+    expose Integer holo;
+    expose Integer holoLt;
+    expose Integer viewportBg;
+    expose Integer ariaBlue;
+    expose Integer ariaOrange;
+    expose Integer ariaRed;
+    expose Integer hpBarFull;
+    expose Integer hpBarWarn;
+    expose Integer hpBarLow;
+    expose Integer hpBarEmpty;
+    expose Integer bossBarFill;
+    expose Integer bossBarEmpty;
+    expose Integer panelBg;
+    expose Integer panelBorder;
+    expose Integer uiText;
+    expose Integer uiDim;
+
+    /// @brief Populate every colour field with a hand-picked
+    ///        RGB triple.  Long but straightforward — each line
+    ///        is one named swatch.  Edit any value to retheme
+    ///        the corresponding part of the game; nothing else
+    ///        in the codebase needs to change.
+    expose func init() {
+        outline = Color.RGB(34, 34, 51);
+        skyTop = Color.RGB(68, 136, 255);
+        skyBot = Color.RGB(136, 204, 255);
+        caveBg = Color.RGB(51, 34, 85);
+        caveMid = Color.RGB(68, 51, 102);
+        grass = Color.RGB(85, 221, 51);
+        grassDark = Color.RGB(51, 170, 34);
+        dirt = Color.RGB(204, 136, 51);
+        dirtDark = Color.RGB(170, 102, 34);
+        stone = Color.RGB(136, 153, 187);
+        stoneDark = Color.RGB(102, 119, 153);
+        stoneLight = Color.RGB(170, 187, 221);
+        brick = Color.RGB(221, 102, 68);
+        brickDark = Color.RGB(187, 68, 34);
+        platform = Color.RGB(204, 153, 68);
+        platformDark = Color.RGB(170, 119, 34);
+        caveRock = Color.RGB(102, 85, 170);
+        caveRockDark = Color.RGB(68, 51, 136);
+        crystalBlue = Color.RGB(68, 221, 255);
+        crystalPink = Color.RGB(255, 102, 204);
+        lava = Color.RGB(255, 136, 34);
+        lavaBright = Color.RGB(255, 204, 68);
+        bridge = Color.RGB(187, 136, 68);
+        playerHelmet = Color.RGB(255, 153, 68);
+        playerVisor = Color.RGB(68, 255, 221);
+        playerBody = Color.RGB(255, 187, 102);
+        playerBodyDark = Color.RGB(221, 119, 34);
+        playerBoots = Color.RGB(255, 153, 68);
+        playerJetpack = Color.RGB(102, 102, 170);
+        slime = Color.RGB(102, 255, 68);
+        slimeDark = Color.RGB(68, 204, 34);
+        slimeEye = Color.RGB(255, 255, 255);
+        slimePupil = Color.RGB(34, 34, 51);
+        batBody = Color.RGB(187, 102, 238);
+        batWing = Color.RGB(153, 68, 221);
+        batEye = Color.RGB(255, 68, 68);
+        turretBase = Color.RGB(136, 153, 170);
+        turretBarrel = Color.RGB(102, 119, 136);
+        turretLight = Color.RGB(255, 51, 51);
+        bossArmor = Color.RGB(221, 51, 51);
+        bossDark = Color.RGB(170, 17, 17);
+        bossEye = Color.RGB(255, 102, 68);
+        bossMetal = Color.RGB(85, 102, 119);
+        coinGold = Color.RGB(255, 221, 34);
+        coinDark = Color.RGB(221, 170, 17);
+        health = Color.RGB(255, 68, 102);
+        speed = Color.RGB(68, 170, 255);
+        shield = Color.RGB(255, 238, 51);
+        rapidfire = Color.RGB(255, 136, 51);
+        white = Color.RGB(255, 255, 255);
+        black = Color.RGB(0, 0, 0);
+        hudBg = Color.RGB(34, 34, 68);
+        hudRed = Color.RGB(255, 68, 68);
+        hudGreen = Color.RGB(68, 255, 68);
+        hudBlue = Color.RGB(68, 136, 255);
+        hudGray = Color.RGB(136, 136, 170);
+        menuBg = Color.RGB(34, 34, 68);
+        menuHighlight = Color.RGB(85, 119, 238);
+        menuText = Color.RGB(238, 238, 255);
+        titleOrange = Color.RGB(255, 136, 68);
+        titleYellow = Color.RGB(255, 221, 68);
+        shadow = Color.RGB(51, 51, 68);
+        dust = Color.RGB(221, 204, 153);
+        sparkYellow = Color.RGB(255, 238, 68);
+        sparkWhite = Color.RGB(255, 255, 238);
+        deathRed = Color.RGB(255, 68, 102);
+        bullet = Color.RGB(68, 238, 255);
+        bulletGlow = Color.RGB(136, 255, 255);
+        enemyBullet = Color.RGB(255, 85, 68);
+        checkpoint = Color.RGB(68, 255, 102);
+        sign = Color.RGB(221, 170, 85);
+        magma = Color.RGB(102, 51, 34);
+        magmaDark = Color.RGB(68, 34, 17);
+        magmaGlow = Color.RGB(255, 102, 34);
+        obsidian = Color.RGB(42, 34, 51);
+        obsidianLight = Color.RGB(68, 51, 85);
+        skyBright = Color.RGB(102, 204, 255);
+        skyPale = Color.RGB(187, 238, 255);
+        cloudWhite = Color.RGB(255, 255, 255);
+        skyStone = Color.RGB(170, 187, 221);
+        skyStoneDark = Color.RGB(136, 153, 187);
+        ruin = Color.RGB(136, 119, 102);
+        ruinDark = Color.RGB(102, 85, 68);
+        ruinMoss = Color.RGB(85, 170, 51);
+        vineGreen = Color.RGB(68, 187, 68);
+        vineDark = Color.RGB(51, 136, 51);
+        jungleSkyTop = Color.RGB(17, 85, 68);
+        jungleSkyBot = Color.RGB(34, 136, 102);
+        jungleGround = Color.RGB(102, 68, 34);
+        jungleGroundTop = Color.RGB(68, 170, 85);
+        jungleRoots = Color.RGB(68, 221, 170);
+        jungleMoss = Color.RGB(51, 187, 68);
+        jungleSap = Color.RGB(68, 255, 204);
+        jungleThorn = Color.RGB(136, 85, 51);
+        jungleThornTip = Color.RGB(170, 68, 136);
+        mushroomCap = Color.RGB(221, 102, 170);
+        mushroomStem = Color.RGB(204, 187, 153);
+        mushroomGlow = Color.RGB(255, 136, 204);
+        spore = Color.RGB(136, 255, 170);
+        cavernTop = Color.RGB(10, 10, 26);
+        cavernBot = Color.RGB(34, 17, 68);
+        cavernStone = Color.RGB(85, 68, 102);
+        cavernStoneDk = Color.RGB(51, 34, 68);
+        crystalCyan = Color.RGB(68, 238, 255);
+        crystalMagenta = Color.RGB(255, 68, 204);
+        crystalPurple = Color.RGB(170, 68, 255);
+        crystalGlow = Color.RGB(102, 136, 255);
+        drip = Color.RGB(68, 136, 204);
+        thermalTop = Color.RGB(26, 10, 10);
+        thermalBot = Color.RGB(68, 34, 17);
+        thermalLava = Color.RGB(255, 102, 34);
+        thermalLavaBright = Color.RGB(255, 170, 51);
+        thermalRock = Color.RGB(51, 34, 34);
+        thermalGrate = Color.RGB(102, 119, 136);
+        thermalRust = Color.RGB(136, 85, 68);
+        thermalCrack = Color.RGB(255, 68, 17);
+        thermalSteam = Color.RGB(221, 221, 238);
+        reactorGlow = Color.RGB(68, 170, 255);
+        hullTop = Color.RGB(10, 10, 20);
+        hullBot = Color.RGB(26, 26, 42);
+        hullPlate = Color.RGB(119, 136, 153);
+        hullPlateDk = Color.RGB(85, 102, 119);
+        hullPlateLt = Color.RGB(153, 170, 187);
+        girder = Color.RGB(136, 119, 68);
+        girderLt = Color.RGB(170, 153, 102);
+        electricBg = Color.RGB(17, 34, 51);
+        electricSpark = Color.RGB(68, 170, 255);
+        airlock = Color.RGB(102, 119, 136);
+        airlockStripe = Color.RGB(221, 204, 34);
+        emergencyLight = Color.RGB(255, 255, 255);
+        reactorTop = Color.RGB(26, 8, 8);
+        reactorBot = Color.RGB(51, 17, 17);
+        pipe = Color.RGB(85, 102, 85);
+        pipeLt = Color.RGB(119, 136, 119);
+        catwalk = Color.RGB(102, 119, 136);
+        catwalkStripe = Color.RGB(204, 51, 51);
+        coolant = Color.RGB(34, 204, 68);
+        coolantBright = Color.RGB(68, 255, 102);
+        conduit = Color.RGB(51, 68, 68);
+        reactorGlowRed = Color.RGB(255, 68, 34);
+        bridgeTop = Color.RGB(10, 10, 26);
+        bridgeBot = Color.RGB(17, 17, 51);
+        console = Color.RGB(34, 51, 68);
+        consoleScreen = Color.RGB(51, 136, 204);
+        holo = Color.RGB(68, 136, 255);
+        holoLt = Color.RGB(136, 187, 255);
+        viewportBg = Color.RGB(5, 5, 16);
+        ariaBlue = Color.RGB(68, 136, 255);
+        ariaOrange = Color.RGB(255, 136, 68);
+        ariaRed = Color.RGB(255, 68, 68);
+        hpBarFull = Color.RGB(51, 238, 51);
+        hpBarWarn = Color.RGB(238, 204, 51);
+        hpBarLow = Color.RGB(238, 51, 51);
+        hpBarEmpty = Color.RGB(51, 17, 17);
+        bossBarFill = Color.RGB(204, 34, 34);
+        bossBarEmpty = Color.RGB(68, 17, 17);
+        panelBg = Color.RGB(17, 17, 34);
+        panelBorder = Color.RGB(51, 68, 102);
+        uiText = Color.RGB(221, 221, 221);
+        uiDim = Color.RGB(102, 102, 136);
+    }
+
+    // =========================================================================
+    // DERIVED-COLOUR HELPERS  (the #12 foundation)
+    // -------------------------------------------------------------------------
+    // The runtime `Color` math is INTEGER-PERCENTAGE based: the blend/amount
+    // argument is an i64 in 0..100, NOT a 0.0-1.0 float.  These thin wrappers
+    // give draw code one named, documented way to derive a colour from a
+    // palette swatch instead of hand-coding a fresh `Color.RGB(...)` triple.
+    // =========================================================================
+
+    /// @brief Linear blend between two packed colours.  `pct` is an
+    ///        integer 0..100 (0 = a, 100 = b).
+    expose func mix(a: Integer, b: Integer, pct: Integer) -> Integer {
+        return Color.Lerp(a, b, pct);
+    }
+
+    /// @brief Brighten a colour toward white by `pct` percent (0..100).
+    expose func brighten(c: Integer, pct: Integer) -> Integer {
+        return Color.Brighten(c, pct);
+    }
+
+    /// @brief Darken a colour toward black by `pct` percent (0..100).
+    expose func darken(c: Integer, pct: Integer) -> Integer {
+        return Color.Darken(c, pct);
+    }
+
+    /// @brief Selected/hovered UI tint — one brighten amount shared by
+    ///        every menu and HUD highlight so selection reads consistently.
+    expose func highlight(c: Integer) -> Integer {
+        return Color.Brighten(c, 35);
+    }
+
+    /// @brief Inactive/disabled UI tint — one darken amount shared across
+    ///        the UI so dimmed widgets read consistently.
+    expose func dim(c: Integer) -> Integer {
+        return Color.Darken(c, 40);
+    }
+}

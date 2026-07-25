@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/FpCompareLowering.hpp
+// File: src/codegen/aarch64/FpCompareLowering.hpp
 // Purpose: Shared AArch64 FCMP result-materialization helpers. Maps each IL
 //          floating-point compare opcode to an AArch64 condition code and
 //          emits the instruction sequence that lands a 0/1 boolean in a GPR.
@@ -18,16 +18,26 @@
 //     semantics; FCmpOrd/FCmpUno map directly to `vc`/`vs`.
 //   - Helpers are pure with respect to control flow: they only append MInstrs
 //     to the supplied MBasicBlock; they never remove or reorder instructions.
-//   - Temporary booleans are allocated through the caller-owned vreg counter
-//     (nextVRegId) so ids stay unique within the function being lowered.
+//   - The caller supplies the destination vreg. The retained nextVRegId
+//     parameter is compatibility state and is not modified.
 // Ownership/Lifetime:
 //   - Stateless inline free functions; no heap allocation and no retained
 //     state. The MBasicBlock and vreg counter are caller-owned.
-// Links: codegen/aarch64/LoweringContext.hpp (allocateNextVReg),
-//        codegen/aarch64/MachineIR.hpp, il/core/Opcode.hpp,
-//        codegen/aarch64/InstrLowering.cpp (primary caller)
+// Links: src/codegen/aarch64/LoweringContext.hpp,
+//        src/codegen/aarch64/MachineIR.hpp, src/il/core/Opcode.hpp,
+//        src/codegen/aarch64/InstrLowering.cpp (primary caller)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Defines the canonical AArch64 condition-code mapping for IL
+ *        floating-point comparisons.
+ *
+ * AArch64 `FCMP` encodes unordered operands in NZCV. The selected primitive
+ * conditions already reproduce each IL ordered/unordered predicate, so result
+ * materialization requires one `CSET` into the caller-selected GPR vreg.
+ */
 
 #pragma once
 
@@ -38,8 +48,12 @@
 namespace zanna::codegen::aarch64 {
 
 /// @brief Return the primitive AArch64 condition used by an FCMP opcode.
-/// @details Ordered comparisons still need the boolean helpers below to mask
-///          unordered NaN cases with `vc`.
+/// @details Ordered predicates map to conditions that are false for FCMP's
+///          unordered NZCV state. `FCmpNE` is intentionally unordered-true,
+///          while `FCmpOrd` and `FCmpUno` test the V flag directly.
+/// @param op IL floating-point comparison opcode.
+/// @return Pointer to a static AArch64 condition-code spelling. Unsupported
+///         opcodes conservatively map to `eq`.
 inline const char *fpCondCode(il::core::Opcode op) {
     switch (op) {
         case il::core::Opcode::FCmpEQ:
@@ -72,6 +86,12 @@ inline const char *fpCondCode(il::core::Opcode op) {
 ///          needed. `ne` is unordered-true by construction (Z=0), which is
 ///          the documented IL FCmpNE behaviour, and `vc`/`vs` directly encode
 ///          FCmpOrd/FCmpUno.
+/// @param out Machine block receiving the `Cset` instruction.
+/// @param op IL floating-point comparison opcode.
+/// @param dst Caller-allocated destination GPR virtual-register id.
+/// @param nextVRegId Compatibility reference retained by the lowering API;
+///        this helper does not read or modify it.
+/// @post Exactly one instruction is appended to @p out.
 inline void emitFpCompareResult(MBasicBlock &out,
                                 il::core::Opcode op,
                                 uint16_t dst,

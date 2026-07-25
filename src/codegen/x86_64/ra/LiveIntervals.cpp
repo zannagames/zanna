@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/ra/LiveIntervals.cpp
+// File: src/codegen/x86_64/ra/LiveIntervals.cpp
 // Purpose: Implement the lightweight live interval analysis that feeds the
 //          linear-scan allocator. The analysis walks each machine instruction
 //          in program order and records first/last touch positions for virtual
@@ -15,13 +15,16 @@
 //   - Repeated invocations rebuild the analysis state deterministically.
 // Ownership/Lifetime:
 //   - Operates on a const MIR reference; results stored in value-owned containers.
-// Links: codegen/x86_64/ra/LiveIntervals.hpp
+// Links: src/codegen/x86_64/ra/LiveIntervals.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "LiveIntervals.hpp"
 
 #include <limits>
+
+/// @file
+/// @brief Implements deterministic function-wide virtual-register touch ranges.
 
 namespace zanna::codegen::x64::ra {
 
@@ -110,7 +113,8 @@ void LiveIntervals::run(const MFunction &func) {
 /// @details Performs a dictionary lookup against the cached analysis state and
 ///          returns @c nullptr when the register was never observed. The method
 ///          avoids inserting new entries so callers can cheaply probe for
-///          optional intervals during allocation.
+///          optional intervals during allocation. Returned storage remains
+///          owned by this analysis and is invalidated when @ref run clears it.
 /// @param vreg Identifier of the virtual register to query.
 /// @return Pointer to the interval owned by the analysis, or @c nullptr when no
 ///         interval exists.

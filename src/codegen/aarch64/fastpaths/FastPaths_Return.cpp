@@ -5,25 +5,45 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/fastpaths/FastPaths_Return.cpp
+// File: src/codegen/aarch64/fastpaths/FastPaths_Return.cpp
 // Purpose: Fast-path pattern matching for return-related patterns.
 //          Handles ret %paramN, ret const i64, ret const f64, ret const_str,
 //          and ret addr_of — all single-block functions with no computation.
 // Key invariants:
-//   - Single-block functions with no side effects.
+//   - Only single-block functions are matched.
+//   - Direct parameter returns additionally reject side-effecting blocks.
 //   - Return value must be directly available (no computation needed).
 // Ownership/Lifetime:
 //   - Stateless free functions; FastPathContext is borrowed for the call duration.
-// Links: codegen/aarch64/fastpaths/FastPathsInternal.hpp
+// Links: src/codegen/aarch64/fastpaths/FastPathsInternal.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "FastPathsInternal.hpp"
 
+/**
+ * @file
+ * @brief Implements direct-value AArch64 return fast paths.
+ *
+ * Recognized values include entry parameters, integer/FP constants, pooled
+ * string globals, and raw global addresses. Results are placed in the
+ * appropriate ABI return register before emitting `Ret`.
+ */
+
 namespace zanna::codegen::aarch64::fastpaths {
 
 using il::core::Opcode;
 
+/**
+ * @brief Attempts to lower a directly available return value without generic lowering.
+ *
+ * Boolean returns stay on the generic path. String constants select the
+ * length-aware runtime constructor when literal metadata is available and
+ * fall back to the C-string bridge otherwise; raw addresses skip construction.
+ *
+ * @param[in,out] ctx Fast-path state and output MIR.
+ * @return Completed MIR function on a match, otherwise `std::nullopt`.
+ */
 std::optional<MFunction> tryReturnFastPaths(FastPathContext &ctx) {
     if (ctx.fn.blocks.empty())
         return std::nullopt;
@@ -80,6 +100,7 @@ std::optional<MFunction> tryReturnFastPaths(FastPathContext &ctx) {
             const auto &rv = retI.operands[0];
             if (rv.kind == il::core::Value::Kind::Temp) {
                 const unsigned rid = rv.id;
+                /// @brief Finds the instruction defining the returned temporary.
                 auto prodIt = std::find_if(
                     bb.instructions.begin(), bb.instructions.end(), [&](const il::core::Instr &I) {
                         return I.result && *I.result == rid;
@@ -151,7 +172,7 @@ std::optional<MFunction> tryReturnFastPaths(FastPathContext &ctx) {
     // ret const f64 fast-path
     // =========================================================================
     // Pattern: Single-block with exactly one ret-const-float instruction.
-    // Emits: ldr d0, =imm (via literal pool); ret
+    // Emits: fmovri v0, <exact binary64 bits>; ret
     if (ctx.fn.blocks.size() == 1) {
         const auto &only = ctx.fn.blocks.front();
         if (only.instructions.size() == 1) {

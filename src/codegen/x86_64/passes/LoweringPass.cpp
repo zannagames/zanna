@@ -5,15 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/passes/LoweringPass.cpp
+// File: src/codegen/x86_64/passes/LoweringPass.cpp
 // Purpose: Implement the IL lowering pass that adapts front-end IL into the
 //          backend's intermediate representation.
 // Key invariants:
 //   - Value kinds are inferred deterministically and stored alongside SSA IDs.
 // Ownership/Lifetime:
 //   - Pass mutates the supplied Module in place without owning external state.
-// Links: codegen/x86_64/passes/LoweringPass.hpp,
-//        codegen/x86_64/LowerILToMIR.hpp
+// Links: src/codegen/x86_64/passes/LoweringPass.hpp,
+//        src/codegen/x86_64/LowerILToMIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,10 +40,15 @@
 #include <unordered_map>
 #include <utility>
 
+/// @file
+/// @brief Implements parallel canonical-IL to x86-64 adapter-IL conversion.
+
 namespace zanna::codegen::x64::passes {
 namespace {
 
 /// @brief Emit a backend-unsupported diagnostic and terminate lowering.
+/// @param detail Specific unsupported or malformed form to report.
+/// @throws std::runtime_error Always, through @ref phaseAUnsupported.
 [[noreturn]] void reportUnsupported(std::string detail) {
     zanna::codegen::x64::phaseAUnsupported(detail.c_str());
 }
@@ -53,6 +58,7 @@ namespace {
 ///          and providing helper methods for different instruction categories.
 class ModuleAdapter {
   public:
+    /// @brief Constructs an adapter with no active module, function, or block.
     explicit ModuleAdapter() = default;
 
     /// @brief Convert an IL module to the backend adapter representation.
@@ -62,6 +68,7 @@ class ModuleAdapter {
     ///          thread to preserve the existing diagnostic behavior.
     /// @param module Canonical IL module to adapt without mutation.
     /// @return Deterministically ordered x86-64 adapter module.
+    /// @throws std::exception Re-throws the first worker failure on the caller thread.
     ILModule adapt(const il::core::Module &module) {
         ILModule result{};
         result.funcs.resize(module.functions.size());
@@ -69,6 +76,10 @@ class ModuleAdapter {
         std::atomic_size_t nextIndex{0};
         std::exception_ptr firstException;
         std::mutex exceptionMutex;
+        /// @brief Claims function indices and adapts them until work is exhausted.
+        /// @details Each invocation owns a private @ref ModuleAdapter for function
+        ///          state. The first exception is captured under a mutex for
+        ///          deterministic propagation after every worker joins.
         auto adaptNext = [&]() {
             for (;;) {
                 const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);
@@ -122,6 +133,9 @@ class ModuleAdapter {
     const il::core::Module *currentModule_{nullptr};
 
     /// @brief Look up a global by name.
+    /// @param name Exact module-scope global identifier.
+    /// @return Pointer into the current module, or @c nullptr when no module is
+    ///         active or no declaration matches.
     const il::core::Global *findGlobal(const std::string &name) const {
         if (!currentModule_)
             return nullptr;
@@ -137,6 +151,10 @@ class ModuleAdapter {
     //-------------------------------------------------------------------------
 
     /// @brief Map an IL type to the backend adapter value classification.
+    /// @param type Canonical IL type to classify.
+    /// @return Adapter register/value kind used by x86-64 lowering.
+    /// @throws std::runtime_error Through @ref reportUnsupported for void,
+    ///         resume-token, or unknown kinds.
     static ILValue::Kind typeToKind(const il::core::Type &type) {
         using il::core::Type;
         switch (type.kind) {
@@ -163,6 +181,8 @@ class ModuleAdapter {
     }
 
     /// @brief Reconstruct an IL integer type from the adapter's stored bit width.
+    /// @param bits Stored source width.
+    /// @return @c i16 for 16, @c i32 for 32, and @c i64 for every other value.
     static il::core::Type integerTypeFromBits(std::uint8_t bits) noexcept {
         using Kind = il::core::Type::Kind;
         switch (bits) {
@@ -176,6 +196,9 @@ class ModuleAdapter {
     }
 
     /// @brief Return true for opcodes whose omitted textual type has to be inferred.
+    /// @param op Canonical IL opcode to inspect.
+    /// @return @c true for checked integer arithmetic/division, remainder, and
+    ///         index-check opcodes; otherwise @c false.
     static bool hasImplicitIntegerResultWhenVoid(il::core::Opcode op) noexcept {
         using il::core::Opcode;
         switch (op) {
@@ -194,6 +217,9 @@ class ModuleAdapter {
     }
 
     /// @brief Return whether @p value fits in a signed integer of @p bits.
+    /// @param value Signed constant to test.
+    /// @param bits Candidate width: 16, 32, or 64.
+    /// @return @c true when representable; unsupported widths return @c false.
     static bool constantFitsInIntegerBits(std::int64_t value, std::uint8_t bits) noexcept {
         switch (bits) {
             case 16:
@@ -210,6 +236,8 @@ class ModuleAdapter {
     }
 
     /// @brief Pick the verifier's default integer width for an untyped constant.
+    /// @param value Signed constant to classify.
+    /// @return Smallest of 16, 32, or 64 bits that represents @p value.
     static std::uint8_t smallestIntegerBitsForConstant(std::int64_t value) noexcept {
         if (constantFitsInIntegerBits(value, 16))
             return 16;
@@ -219,6 +247,11 @@ class ModuleAdapter {
     }
 
     /// @brief Infer the verifier's result type for an unannotated checked arithmetic op.
+    /// @details Uses a common valid width from all temporary operands. Missing
+    ///          metadata, non-integer temporaries, mixed widths, or no usable
+    ///          operand evidence fall back to @c i64.
+    /// @param instr Checked arithmetic or division instruction to inspect.
+    /// @return Inferred @c i16, @c i32, or @c i64 type.
     il::core::Type inferCheckedIntegerResultType(const il::core::Instr &instr) const {
         using Kind = il::core::Type::Kind;
 
@@ -248,6 +281,11 @@ class ModuleAdapter {
     }
 
     /// @brief Infer the verifier's result type for an unannotated idx.chk.
+    /// @details Reconciles temporary widths with the smallest representable
+    ///          widths of integer constants. Any incompatible or unsupported
+    ///          operand shape falls back to @c i64.
+    /// @param instr Index-check instruction to inspect.
+    /// @return Inferred @c i16, @c i32, or @c i64 type.
     il::core::Type inferIdxChkResultType(const il::core::Instr &instr) const {
         using Kind = il::core::Type::Kind;
 
@@ -285,6 +323,9 @@ class ModuleAdapter {
     }
 
     /// @brief Return the type x86-64 lowering should use for @p instr.
+    /// @param instr Canonical instruction, possibly carrying a void placeholder type.
+    /// @return Explicit source type, an inferred integer type for selected
+    ///         unannotated opcodes, or the unchanged void type.
     il::core::Type effectiveInstructionType(const il::core::Instr &instr) const {
         if (instr.type.kind != il::core::Type::Kind::Void)
             return instr.type;
@@ -302,6 +343,8 @@ class ModuleAdapter {
     ///          considered programmer errors and trap via @ref reportUnsupported.
     /// @param type Source IL type.
     /// @return Bit width of the type (1, 16, 32, or 64).
+    /// @throws std::runtime_error Through @ref reportUnsupported for void,
+    ///         resume-token, or unknown kinds.
     static std::uint8_t typeBitWidth(const il::core::Type &type) {
         using il::core::Type;
         switch (type.kind) {
@@ -331,6 +374,8 @@ class ModuleAdapter {
     //-------------------------------------------------------------------------
 
     /// @brief Construct an adapter value representing a block label.
+    /// @param name Label spelling transferred into the result.
+    /// @return Non-SSA label value with sentinel id -1.
     static ILValue makeLabelValue(std::string name) {
         ILValue label{};
         label.kind = ILValue::Kind::LABEL;
@@ -342,11 +387,16 @@ class ModuleAdapter {
     /// @brief Construct an adapter value representing a local block label.
     /// @details Prefixes the label with ".L" to make it assembly-local, avoiding
     ///          symbol collisions between functions.
+    /// @param funcName Enclosing function name used to qualify the label.
+    /// @param name Canonical block label.
+    /// @return Local label value spelling @c ".L_<function>_<block>".
     static ILValue makeBlockLabelValue(const std::string &funcName, std::string name) {
         return makeLabelValue(".L_" + funcName + "_" + name);
     }
 
     /// @brief Create an immediate adapter value storing a condition code.
+    /// @param code Backend condition-code integer.
+    /// @return Non-SSA I64 immediate containing the wrapped 64-bit value.
     static ILValue makeCondImmediate(int code) {
         ILValue imm{};
         imm.kind = ILValue::Kind::I64;
@@ -357,6 +407,9 @@ class ModuleAdapter {
     }
 
     /// @brief Translate IL comparison opcodes into backend condition codes.
+    /// @param op Supported integer or ordered floating-point comparison opcode.
+    /// @return Backend condition code in the inclusive range 0 through 9.
+    /// @throws std::runtime_error If @p op is not one of the mapped predicates.
     static int condCodeFor(il::core::Opcode op) {
         using il::core::Opcode;
         switch (op) {
@@ -396,6 +449,15 @@ class ModuleAdapter {
     //-------------------------------------------------------------------------
 
     /// @brief Convert an IL operand into the backend adapter value.
+    /// @details Resolves temporary kinds and widths from the current function's
+    ///          SSA maps, copies literal payloads, and represents global
+    ///          addresses as labels. A hint overrides the class of non-temp,
+    ///          non-label values so overloaded operands enter the intended
+    ///          register bank.
+    /// @param value Canonical operand to convert.
+    /// @param hint Optional expected adapter kind.
+    /// @return Fully populated adapter operand, using id -1 for non-SSA values.
+    /// @throws std::runtime_error If a temporary lacks registered kind metadata.
     ILValue convertValue(const il::core::Value &value, std::optional<ILValue::Kind> hint) {
         ILValue converted{};
         converted.id = -1;
@@ -455,6 +517,12 @@ class ModuleAdapter {
     }
 
     /// @brief Append converted operands to an adapter instruction.
+    /// @details Applies hints positionally; operands beyond @p hints are
+    ///          converted without a hint.
+    /// @param instr Source instruction supplying operands.
+    /// @param hints Expected kinds in source-operand order.
+    /// @param out Destination adapter instruction whose operand list is extended.
+    /// @throws std::runtime_error If operand conversion encounters invalid SSA metadata.
     void convertOperands(const il::core::Instr &instr,
                          std::initializer_list<std::optional<ILValue::Kind>> hints,
                          ILInstr &out) {
@@ -473,6 +541,14 @@ class ModuleAdapter {
     //-------------------------------------------------------------------------
 
     /// @brief Record the kind associated with the instruction result.
+    /// @details Updates both @p out and the adapter's SSA kind/width maps when
+    ///          the source has a result id. A result-less instruction still
+    ///          receives result metadata for later opcode selection.
+    /// @param out Adapter instruction receiving result metadata.
+    /// @param instr Source instruction supplying the optional SSA id.
+    /// @param type Effective result type.
+    /// @return Adapter kind corresponding to @p type.
+    /// @throws std::runtime_error If @p type has no scalar adapter representation.
     ILValue::Kind setResultKind(ILInstr &out,
                                 const il::core::Instr &instr,
                                 const il::core::Type &type) {
@@ -492,6 +568,10 @@ class ModuleAdapter {
     }
 
     /// @brief Set result kind to a fixed type (for bitwise ops that always produce I64).
+    /// @param out Adapter instruction receiving result metadata.
+    /// @param instr Source instruction supplying the optional SSA id.
+    /// @param kind Backend-defined result kind; I1 records one bit and all
+    ///        other kinds record 64 bits.
     void setFixedResultKind(ILInstr &out, const il::core::Instr &instr, ILValue::Kind kind) {
         if (instr.result) {
             out.resultId = static_cast<int>(*instr.result);
@@ -510,6 +590,12 @@ class ModuleAdapter {
     //-------------------------------------------------------------------------
 
     /// @brief Adapt an entire IL function.
+    /// @details Resets per-function metadata, pre-registers parameter and result
+    ///          kinds so textual block order does not affect SSA resolution,
+    ///          then adapts blocks in source order.
+    /// @param func Canonical function to convert.
+    /// @return Adapter function preserving name, variadic flag, and block order.
+    /// @throws std::runtime_error If any type, value, or instruction is unsupported.
     ILFunction adaptFunction(const il::core::Function &func) {
         currentFunc_ = &func;
         valueKinds_.clear();
@@ -562,6 +648,11 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt an IL block.
+    /// @details Copies block-parameter ids and classes, converts instructions
+    ///          in order, and temporarily installs the block for diagnostics.
+    /// @param block Canonical basic block to convert.
+    /// @return Adapter block with instructions and terminator-edge metadata.
+    /// @throws std::runtime_error If a contained value or instruction is unsupported.
     ILBlock adaptBlock(const il::core::BasicBlock &block) {
         currentBlock_ = &block;
         ILBlock adapted{};
@@ -595,6 +686,11 @@ class ModuleAdapter {
     /// @details Each homogeneous cluster maps Opcode → fixed suffix string and
     ///          uses one of three adapter calls. Returning false leaves @p out
     ///          untouched and tells the dispatcher to keep matching.
+    /// @param source Source instruction to classify.
+    /// @param out Adapter instruction populated when a table matches.
+    /// @return @c true for arithmetic, integer division/remainder, shift, or
+    ///         bitwise opcodes; otherwise @c false.
+    /// @throws std::runtime_error If matched-instruction operands or types are invalid.
     bool tryAdaptArithLike(const il::core::Instr &source, ILInstr &out) {
         struct Entry {
             il::core::Opcode op{};
@@ -660,6 +756,10 @@ class ModuleAdapter {
     }
 
     /// @brief Table-driven adapter for integer and float comparison clusters.
+    /// @param source Source instruction to classify.
+    /// @param out Adapter instruction populated when a table matches.
+    /// @return @c true for a supported comparison opcode; otherwise @c false.
+    /// @throws std::runtime_error If matched-instruction operands or metadata are invalid.
     bool tryAdaptCompare(const il::core::Instr &source, ILInstr &out) {
         static constexpr std::array<il::core::Opcode, 10> kIntCmp = {
             il::core::Opcode::ICmpEq,
@@ -705,8 +805,12 @@ class ModuleAdapter {
 
     /// @brief Table-driven adapter for runtime-trampoline IL opcodes.
     /// @details Most error-handling intrinsics lower to a simple call into a
-    ///          runtime helper. The optional @p paramKinds drives operand
-    ///          conversion hints when the helper expects typed arguments.
+    ///          runtime helper. Opcode-specific hint lists drive operand
+    ///          conversion when the helper expects typed arguments.
+    /// @param source Source instruction to classify.
+    /// @param out Adapter call populated when a runtime mapping matches.
+    /// @return @c true for a mapped trap/error opcode; otherwise @c false.
+    /// @throws std::runtime_error If matched-instruction operands or metadata are invalid.
     bool tryAdaptRuntimeCall(const il::core::Instr &source, ILInstr &out) {
         using HintList = std::initializer_list<std::optional<ILValue::Kind>>;
         switch (source.op) {
@@ -741,6 +845,12 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt a single instruction and append to block.
+    /// @details Replaces an eligible void placeholder type with its inferred
+    ///          integer type, dispatches the opcode to a family adapter, and
+    ///          appends exactly one adapter instruction on success.
+    /// @param instr Canonical instruction to convert.
+    /// @param block Destination adapter block.
+    /// @throws std::runtime_error If the opcode is unsupported or malformed.
     void adaptInstruction(const il::core::Instr &instr, ILBlock &block) {
         il::core::Instr typedInstr = instr;
         typedInstr.type = effectiveInstructionType(instr);
@@ -904,6 +1014,7 @@ class ModuleAdapter {
     /// @param instr Source IL instruction.
     /// @param out Adapter instruction being populated.
     /// @param opcode Adapter opcode string (e.g. "add", "iadd.ovf").
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptBinaryArithmetic(const il::core::Instr &instr, ILInstr &out, const char *opcode) {
         const ILValue::Kind kind = setResultKind(out, instr, instr.type);
         out.opcode = opcode;
@@ -913,6 +1024,8 @@ class ModuleAdapter {
     /// @brief Adapt the floating-point division IL instruction.
     /// @details Hard-codes the F64 result kind because @c fdiv is exclusively
     ///          a floating-point operation in IL.
+    /// @param instr Source floating-point division instruction.
+    /// @param out Adapter instruction receiving result and F64 operands.
     void adaptFDiv(const il::core::Instr &instr, ILInstr &out) {
         out.opcode = "fdiv";
         out.resultKind = ILValue::Kind::F64;
@@ -927,6 +1040,10 @@ class ModuleAdapter {
     /// @details Both operands are forced to I64 because IDIV/DIV consume the
     ///          full 64-bit register pair. Variant selection (signed vs.
     ///          unsigned, checked vs. plain) is encoded in @p opcode.
+    /// @param instr Source integer division or remainder instruction.
+    /// @param out Adapter instruction being populated.
+    /// @param opcode Adapter opcode spelling identifying signedness and checks.
+    /// @throws std::runtime_error If result type or operands are unsupported.
     void adaptIntDiv(const il::core::Instr &instr, ILInstr &out, const char *opcode) {
         setResultKind(out, instr, instr.type);
         out.opcode = opcode;
@@ -936,6 +1053,10 @@ class ModuleAdapter {
     /// @brief Adapt a shift IL instruction.
     /// @details The shifted value follows the result kind so 32-bit shifts
     ///          do not silently widen; the shift count is always I64.
+    /// @param instr Source shift instruction.
+    /// @param out Adapter instruction being populated.
+    /// @param opcode Adapter shift opcode spelling.
+    /// @throws std::runtime_error If result type or operands are unsupported.
     void adaptShift(const il::core::Instr &instr, ILInstr &out, const char *opcode) {
         const ILValue::Kind kind = setResultKind(out, instr, instr.type);
         out.opcode = opcode;
@@ -946,6 +1067,10 @@ class ModuleAdapter {
     /// @details Result is always pinned to I64 because IL bitwise ops are
     ///          defined over the full 64-bit register width regardless of
     ///          declared type.
+    /// @param instr Source bitwise instruction.
+    /// @param out Adapter instruction being populated.
+    /// @param opcode Adapter opcode spelling.
+    /// @throws std::runtime_error If operand SSA metadata is invalid.
     void adaptBitwise(const il::core::Instr &instr, ILInstr &out, const char *opcode) {
         setFixedResultKind(out, instr, ILValue::Kind::I64);
         out.opcode = opcode;
@@ -960,6 +1085,9 @@ class ModuleAdapter {
     /// @details Emits a "cmp" opcode with an extra trailing immediate that
     ///          encodes the SETcc condition code derived from the IL opcode.
     ///          The result is always I1.
+    /// @param instr Source integer comparison.
+    /// @param out Adapter instruction receiving two I64 operands and condition code.
+    /// @throws std::runtime_error If the predicate or operand metadata is unsupported.
     void adaptIntCompare(const il::core::Instr &instr, ILInstr &out) {
         out.opcode = "cmp";
         setFixedResultKind(out, instr, ILValue::Kind::I1);
@@ -971,6 +1099,10 @@ class ModuleAdapter {
     /// @details The adapter opcode (@p opcode) carries the specific
     ///          predicate suffix (e.g. "fcmp_lt") so the rule table can
     ///          select the right NaN-safe sequence.
+    /// @param instr Source floating-point comparison.
+    /// @param out Adapter instruction receiving two F64 operands.
+    /// @param opcode Predicate-specific adapter opcode spelling.
+    /// @throws std::runtime_error If operand SSA metadata is invalid.
     void adaptFloatCompareAs(const il::core::Instr &instr, ILInstr &out, const char *opcode) {
         out.opcode = opcode;
         setFixedResultKind(out, instr, ILValue::Kind::I1);
@@ -985,6 +1117,10 @@ class ModuleAdapter {
     /// @details The callee name is materialised as the first operand (a label
     ///          @c ILValue) and the IL arg list follows. Void-returning calls
     ///          that nevertheless carry a result id are rejected as malformed.
+    /// @param instr Source direct call with callee name and arguments.
+    /// @param out Adapter call instruction being populated.
+    /// @throws std::runtime_error For a void call carrying an SSA result or an
+    ///         argument with invalid metadata.
     void adaptCall(const il::core::Instr &instr, ILInstr &out) {
         if (instr.type.kind != il::core::Type::Kind::Void) {
             setResultKind(out, instr, instr.type);
@@ -1003,6 +1139,10 @@ class ModuleAdapter {
     /// @details Unlike @ref adaptCall the first operand is a runtime
     ///          pointer (not a label). The backend's @c emitCallIndirect
     ///          materialises it into a register before issuing CALL.
+    /// @param instr Source indirect call whose first operand is the target.
+    /// @param out Adapter call instruction being populated.
+    /// @throws std::runtime_error For a void call carrying an SSA result or an
+    ///         operand with invalid metadata.
     void adaptCallIndirect(const il::core::Instr &instr, ILInstr &out) {
         if (instr.type.kind != il::core::Type::Kind::Void) {
             setResultKind(out, instr, instr.type);
@@ -1023,6 +1163,7 @@ class ModuleAdapter {
     /// @param out Adapter instruction being populated.
     /// @param callee Fully qualified runtime symbol to dispatch to.
     /// @param hints Per-argument kind hints used to coerce operand classes.
+    /// @throws std::runtime_error If result or operand metadata is unsupported.
     void adaptRuntimeCall(const il::core::Instr &instr,
                           ILInstr &out,
                           const char *callee,
@@ -1047,12 +1188,17 @@ class ModuleAdapter {
     //-------------------------------------------------------------------------
 
     /// @brief Adapt the IL `const_null` opcode (null pointer literal).
+    /// @param instr Source instruction supplying the optional result id.
+    /// @param out Adapter pointer-producing instruction being populated.
     void adaptConstNull(const il::core::Instr &instr, ILInstr &out) {
         setFixedResultKind(out, instr, ILValue::Kind::PTR);
         out.opcode = "const_null";
     }
 
     /// @brief Adapt the IL `const_f64` opcode (double literal).
+    /// @param instr Source instruction supplying result and literal operand.
+    /// @param out Adapter F64-producing instruction being populated.
+    /// @throws std::runtime_error If operand SSA metadata is invalid.
     void adaptConstF64(const il::core::Instr &instr, ILInstr &out) {
         setFixedResultKind(out, instr, ILValue::Kind::F64);
         out.opcode = "const_f64";
@@ -1060,6 +1206,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `gaddr` opcode (global address materialisation).
+    /// @param instr Source global-address instruction.
+    /// @param out Adapter pointer-producing instruction being populated.
+    /// @throws std::runtime_error If operand SSA metadata is invalid.
     void adaptGAddr(const il::core::Instr &instr, ILInstr &out) {
         setFixedResultKind(out, instr, ILValue::Kind::PTR);
         out.opcode = "gaddr";
@@ -1067,6 +1216,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `addr_of` opcode (address of an alloca slot).
+    /// @param instr Source address-of instruction.
+    /// @param out Adapter pointer-producing instruction being populated.
+    /// @throws std::runtime_error If operand SSA metadata is invalid.
     void adaptAddrOf(const il::core::Instr &instr, ILInstr &out) {
         setFixedResultKind(out, instr, ILValue::Kind::PTR);
         out.opcode = "addr_of";
@@ -1079,6 +1231,9 @@ class ModuleAdapter {
 
     /// @brief Adapt the IL `idx_chk` opcode (index bounds check + normalise).
     /// @details Three I64 operands: index, lower bound, upper bound.
+    /// @param instr Source index-check instruction.
+    /// @param out Adapter instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptIdxChk(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "idx_chk";
@@ -1086,9 +1241,12 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `select` opcode (ternary value choice).
-    /// @details Operand 0 is the i1 condition; operands 1-2 are the arms in
-    ///          the instruction's own type, which also fixes GPR vs XMM
-    ///          lowering downstream.
+    /// @details The first operand is the condition and the remaining operands
+    ///          are hinted with the instruction's result kind, which fixes GPR
+    ///          versus XMM lowering downstream.
+    /// @param instr Source ternary select.
+    /// @param out Adapter instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptSelect(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "select";
@@ -1101,6 +1259,11 @@ class ModuleAdapter {
     ///          (case-value, case-label) pairs followed by the default
     ///          label. Also records terminator edges so block-parameter
     ///          copies route correctly per arm.
+    /// @param instr Source switch instruction and successor tables.
+    /// @param out Adapter switch instruction being populated.
+    /// @param block Destination block receiving edge-argument records.
+    /// @pre A current function is active for block-label qualification.
+    /// @throws std::runtime_error If a case value or edge argument is unsupported.
     void adaptSwitchI32(const il::core::Instr &instr, ILInstr &out, ILBlock &block) {
         using namespace il::core;
         out.opcode = "switch_i32";
@@ -1132,6 +1295,9 @@ class ModuleAdapter {
     /// @details Trimmed to a single operand because @c NativeEHLowering
     ///          rewrites the structured marker before MIR lowering; the
     ///          fallback only needs to preserve the handler label.
+    /// @param instr Residual handler-frame marker.
+    /// @param out Adapter marker being populated.
+    /// @throws std::runtime_error If operand metadata is invalid.
     void adaptEhPush(const il::core::Instr &instr, ILInstr &out) {
         out.opcode = "eh.push";
         convertOperands(instr, {std::nullopt}, out);
@@ -1143,6 +1309,7 @@ class ModuleAdapter {
     /// @brief Adapt the IL `eh.pop` opcode.
     /// @details Inert in the MIR pipeline; NativeEHLowering will have
     ///          rewritten it before lowering.
+    /// @param out Adapter marker receiving the inert opcode and placeholder kind.
     void adaptEhPop(ILInstr &out) {
         out.opcode = "eh.pop";
         out.resultKind = ILValue::Kind::I64; // unused
@@ -1150,6 +1317,7 @@ class ModuleAdapter {
 
     /// @brief Adapt the IL `eh.entry` handler-block marker.
     /// @details Inert fallback like @ref adaptEhPop.
+    /// @param out Adapter marker receiving the inert opcode and placeholder kind.
     void adaptEhEntry(ILInstr &out) {
         out.opcode = "eh.entry";
         out.resultKind = ILValue::Kind::I64; // unused
@@ -1163,6 +1331,9 @@ class ModuleAdapter {
     /// @details Operands: pointer (PTR) + optional displacement (I64).
     ///          Any extra operands are trimmed because the MIR `load`
     ///          shape is fixed at two arguments.
+    /// @param instr Source load and effective result type.
+    /// @param out Adapter load instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptLoad(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "load";
@@ -1176,6 +1347,9 @@ class ModuleAdapter {
     /// @details Operands: pointer, value (typed to match the stored width),
     ///          optional displacement. The third operand is dropped when
     ///          absent so MIR opcode validators see a uniform shape.
+    /// @param instr Source store whose type describes the stored value.
+    /// @param out Adapter store instruction being populated.
+    /// @throws std::runtime_error If stored type or operand metadata is unsupported.
     void adaptStore(const il::core::Instr &instr, ILInstr &out) {
         out.opcode = "store";
         out.resultBits = typeBitWidth(instr.type);
@@ -1187,6 +1361,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt alloca instruction for stack allocation.
+    /// @param instr Source allocation with a byte-count operand.
+    /// @param out Adapter pointer-producing allocation instruction.
+    /// @throws std::runtime_error If operand metadata is invalid.
     void adaptAlloca(const il::core::Instr &instr, ILInstr &out) {
         setFixedResultKind(out, instr, ILValue::Kind::PTR);
         out.opcode = "alloca";
@@ -1195,6 +1372,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt GEP (get element pointer) instruction.
+    /// @param instr Source pointer-plus-byte-offset instruction.
+    /// @param out Adapter pointer-producing address instruction.
+    /// @throws std::runtime_error If operand metadata is invalid.
     void adaptGEP(const il::core::Instr &instr, ILInstr &out) {
         setFixedResultKind(out, instr, ILValue::Kind::PTR);
         out.opcode = "gep";
@@ -1207,6 +1387,9 @@ class ModuleAdapter {
     //-------------------------------------------------------------------------
 
     /// @brief Adapt the IL `zext` opcode (boolean to integer extension).
+    /// @param instr Source extension and destination type.
+    /// @param out Adapter cast instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptZext(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "zext";
@@ -1214,6 +1397,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `trunc` opcode (integer width narrowing).
+    /// @param instr Source truncation and destination type.
+    /// @param out Adapter cast instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptTrunc(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "trunc";
@@ -1221,6 +1407,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `sitofp` opcode (signed int to double).
+    /// @param instr Source conversion and destination type.
+    /// @param out Adapter cast instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptSiToFp(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "sitofp";
@@ -1228,6 +1417,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `fptosi` opcode (truncating fp-to-signed-int).
+    /// @param instr Source conversion and destination type.
+    /// @param out Adapter cast instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptFpToSi(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "fptosi";
@@ -1235,6 +1427,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `fptosi.chk` opcode (rounded, range-checked).
+    /// @param instr Source checked conversion and destination type.
+    /// @param out Adapter cast instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptFpToSiChecked(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "fptosi_chk";
@@ -1242,6 +1437,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `fptoui` opcode (fp-to-unsigned-int with checks).
+    /// @param instr Source conversion and destination type.
+    /// @param out Adapter cast instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptFpToUi(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "fptoui";
@@ -1249,6 +1447,9 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `uitofp` opcode (unsigned int to double).
+    /// @param instr Source conversion and destination type.
+    /// @param out Adapter cast instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptUiToFp(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode = "uitofp";
@@ -1256,6 +1457,11 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt narrowing cast (i64 -> i32 etc).
+    /// @details Chooses the signed or unsigned checked adapter opcode from the
+    ///          canonical source opcode.
+    /// @param instr Source narrowing conversion and destination type.
+    /// @param out Adapter cast instruction being populated.
+    /// @throws std::runtime_error If result type or operand metadata is unsupported.
     void adaptNarrowCast(const il::core::Instr &instr, ILInstr &out) {
         setResultKind(out, instr, instr.type);
         out.opcode =
@@ -1271,6 +1477,10 @@ class ModuleAdapter {
     /// @details Uses the enclosing function's declared return type to hint
     ///          the operand kind so I1 returns survive without surprise
     ///          widening.
+    /// @param instr Source return with zero or one value operand.
+    /// @param out Adapter return instruction being populated.
+    /// @pre A current function is active.
+    /// @throws std::runtime_error If return type or operand metadata is unsupported.
     void adaptRet(const il::core::Instr &instr, ILInstr &out) {
         out.opcode = "ret";
         if (!instr.operands.empty()) {
@@ -1283,6 +1493,11 @@ class ModuleAdapter {
     }
 
     /// @brief Adapt the IL `br` (unconditional branch) opcode.
+    /// @param instr Source branch, target label, and optional edge arguments.
+    /// @param out Adapter branch instruction being populated.
+    /// @param block Destination block receiving edge-argument records.
+    /// @pre A current function is active when a target label is present.
+    /// @throws std::runtime_error If an edge argument is unsupported.
     void adaptBr(const il::core::Instr &instr, ILInstr &out, ILBlock &block) {
         out.opcode = "br";
         if (!instr.labels.empty()) {
@@ -1293,6 +1508,11 @@ class ModuleAdapter {
 
     /// @brief Adapt the IL `cbr` (conditional branch) opcode.
     /// @details Operands: I1 condition, true-target label, false-target label.
+    /// @param instr Source conditional branch and successor arguments.
+    /// @param out Adapter branch instruction being populated.
+    /// @param block Destination block receiving edge-argument records.
+    /// @pre A current function is active for block-label qualification.
+    /// @throws std::runtime_error If the condition is missing or an operand is unsupported.
     void adaptCBr(const il::core::Instr &instr, ILInstr &out, ILBlock &block) {
         out.opcode = "cbr";
         if (instr.operands.empty()) {
@@ -1310,6 +1530,13 @@ class ModuleAdapter {
     //-------------------------------------------------------------------------
 
     /// @brief Adapt const_str instruction to produce a string value.
+    /// @details Resolves the global-address operand against the current module
+    ///          and embeds the referenced initializer bytes and length.
+    /// @param instr Source string-constant instruction.
+    /// @param out Adapter string-producing instruction being populated.
+    /// @pre A current module is active.
+    /// @throws std::runtime_error If the operand is absent, is not a global
+    ///         address, or names an unknown global.
     void adaptConstStr(const il::core::Instr &instr, ILInstr &out) {
         setFixedResultKind(out, instr, ILValue::Kind::STR);
         out.opcode = "const_str";
@@ -1343,6 +1570,9 @@ class ModuleAdapter {
     /// @details Handles both SSA temps (via SSA id) and constants (via ILValue
     ///          materialization in emitEdgeCopies). For constants, a sentinel -1
     ///          is stored in argIds and the full ILValue is stored in argValues.
+    /// @param instr Terminator supplying labels and per-successor argument lists.
+    /// @param block Adapter block whose edge vector is extended.
+    /// @throws std::runtime_error If an edge argument has invalid SSA metadata.
     void addTerminatorEdges(const il::core::Instr &instr, ILBlock &block) {
         const std::size_t succCount = instr.labels.size();
         block.terminatorEdges.reserve(block.terminatorEdges.size() + succCount);
@@ -1380,6 +1610,13 @@ class ModuleAdapter {
 /// @brief Execute Phase A lowering for the provided pipeline module.
 /// @details Catches unsupported-feature exceptions thrown by the adapter and
 ///          reports them through the diagnostics sink rather than propagating.
+///          On success it replaces the adapter module, clears downstream MIR,
+///          frame, text, read-only-data, and debug artifacts, resets stage
+///          flags, and selects an ABI target if one is not already installed.
+/// @param module Shared pipeline state whose lowered representation is replaced.
+/// @param diags Diagnostic sink receiving caught adaptation failures.
+/// @return @c true after complete adaptation and invalidation; @c false after
+///         recording an exception message.
 bool LoweringPass::run(Module &module, Diagnostics &diags) {
     try {
         ModuleAdapter adapter{};

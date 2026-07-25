@@ -5,19 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/peephole/DCE.cpp
-// Purpose: Dead code elimination peephole sub-pass for the x86-64 backend.
-//          Defines x86-64 specific traits for the shared DCE template in
-//          PeepholeDCE.hpp.
+// File: src/codegen/x86_64/peephole/DCE.cpp
+// Purpose: Implement conservative block-local physical-register and EFLAGS
+//          dead code elimination for the x86-64 backend.
 // Key invariants:
 //   - RSP modifications are never eliminated (stack frame changes).
-//   - Iterates to a fixed point within each basic block.
+//   - Uses a conservative backward sweep within each basic block.
 //   - Division instructions (IDIV/DIV) are treated as side-effecting.
 // Ownership/Lifetime:
-//   - Stateless; delegates to the shared DCE template.
-// Links: codegen/x86_64/peephole/DCE.hpp,
-//        codegen/x86_64/peephole/PeepholeCommon.hpp,
-//        codegen/common/PeepholeDCE.hpp
+//   - Stateless; mutates caller-owned instruction vectors.
+// Links: src/codegen/x86_64/peephole/DCE.hpp,
+//        src/codegen/x86_64/peephole/PeepholeCommon.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,24 +26,42 @@
 #include <cstdint>
 #include <optional>
 
+/// @file
+/// @brief Implements physical-register and EFLAGS liveness-based block DCE.
+
 namespace zanna::codegen::x64::peephole {
 namespace {
 
+/// @brief Bit set used to track the backend's physical-register identifiers.
 using RegMask = uint64_t;
 
+/// @brief Returns the liveness bit corresponding to a register identifier.
+/// @param reg Physical-register numeric identifier.
+/// @return One-bit mask, or zero when @p reg is 64 or greater.
 [[nodiscard]] RegMask regBit(uint16_t reg) noexcept {
     return reg < 64 ? (RegMask{1} << reg) : RegMask{0};
 }
 
+/// @brief Adds a physical register to a liveness mask.
+/// @param mask Mask updated in place.
+/// @param reg Physical-register identifier; out-of-range values have no effect.
 void addReg(RegMask &mask, uint16_t reg) noexcept {
     mask |= regBit(reg);
 }
 
+/// @brief Tests whether a physical register is present in a liveness mask.
+/// @param mask Mask to query.
+/// @param reg Physical-register identifier.
+/// @return @c true when the corresponding in-range bit is set.
 [[nodiscard]] bool containsReg(RegMask mask, uint16_t reg) noexcept {
     return (mask & regBit(reg)) != 0;
 }
 
 /// @brief Check if an instruction modifies RSP (the stack pointer).
+/// @details Examines only a physical register in operand zero, matching the
+///          destination convention of instructions accepted by this DCE pass.
+/// @param instr Machine instruction to inspect.
+/// @return @c true when operand zero names physical @c RSP.
 [[nodiscard]] bool modifiesRSP(const MInstr &instr) noexcept {
     if (instr.operands.empty())
         return false;
@@ -59,6 +75,8 @@ void addReg(RegMask &mask, uint16_t reg) noexcept {
 }
 
 /// @brief Check if an instruction has observable side effects.
+/// @param instr Machine instruction to classify.
+/// @return @c true for an explicit side-effect opcode or an RSP destination.
 [[nodiscard]] bool dceHasSideEffects(const MInstr &instr) noexcept {
     // RSP modifications are always significant - they affect the stack frame
     if (modifiesRSP(instr))
@@ -67,6 +85,10 @@ void addReg(RegMask &mask, uint16_t reg) noexcept {
 }
 
 /// @brief Get the destination register from an instruction, if it defines one.
+/// @details Consults target operand-role metadata and returns the first
+///          physical register in a defining role.
+/// @param instr Machine instruction to inspect.
+/// @return Defined physical-register id, or @c std::nullopt.
 [[nodiscard]] std::optional<uint16_t> getDefReg(const MInstr &instr) noexcept {
     if (instr.operands.empty())
         return std::nullopt;
@@ -84,10 +106,16 @@ void addReg(RegMask &mask, uint16_t reg) noexcept {
 }
 
 /// @brief Collect all physical registers used by an instruction.
+/// @details Includes physical register operands in use roles plus the physical
+///          base and optional index of used memory operands.
+/// @param instr Machine instruction to inspect.
+/// @return Bit mask of explicit physical-register uses.
 [[nodiscard]] RegMask collectUsedRegs(const MInstr &instr) {
     RegMask usedRegs = 0;
 
     // Helper to add a register if it's physical
+    /// @brief Adds @p op when it contains a physical register.
+    /// @param op Operand variant to inspect.
     auto addIfPhysReg = [&usedRegs](const Operand &op) {
         const auto *reg = std::get_if<OpReg>(&op);
         if (reg && reg->isPhys)
@@ -95,6 +123,8 @@ void addReg(RegMask &mask, uint16_t reg) noexcept {
     };
 
     // Helper to add registers from memory operand
+    /// @brief Adds a memory operand's physical base and active index.
+    /// @param op Operand variant to inspect.
     auto addMemRegs = [&usedRegs](const Operand &op) {
         const auto *mem = std::get_if<OpMem>(&op);
         if (mem) {
@@ -123,6 +153,8 @@ void addReg(RegMask &mask, uint16_t reg) noexcept {
 /// @details Argument registers, plus RAX (vararg vector-arg count for SysV),
 ///          plus RSP must stay live across CALL points so DCE cannot drop
 ///          the instructions that populate them.
+/// @param target ABI argument-register and count metadata.
+/// @param usedRegs Liveness mask extended in place.
 void addCallUsedRegs(const TargetInfo &target, RegMask &usedRegs) {
     for (std::size_t i = 0; i < target.maxGPRArgs && i < target.intArgOrder.size(); ++i)
         addReg(usedRegs, static_cast<uint16_t>(target.intArgOrder[i]));
@@ -137,6 +169,8 @@ void addCallUsedRegs(const TargetInfo &target, RegMask &usedRegs) {
 /// @brief Mark RET-implicit registers as live.
 /// @details Return value registers (int + fp), the stack pointer, and all
 ///          callee-saved registers must survive to the function epilogue.
+/// @param target ABI return and callee-saved register metadata.
+/// @param usedRegs Liveness mask extended in place.
 void addReturnUsedRegs(const TargetInfo &target, RegMask &usedRegs) {
     addReg(usedRegs, static_cast<uint16_t>(target.intReturnReg));
     addReg(usedRegs, static_cast<uint16_t>(target.f64ReturnReg));
@@ -148,14 +182,17 @@ void addReturnUsedRegs(const TargetInfo &target, RegMask &usedRegs) {
 }
 
 /// @brief Seed @p liveRegs with the registers conservatively live at block exit.
-/// @details Equivalent to @ref addReturnUsedRegs but also explicitly
-///          re-adds @c RSP so frame-manipulating blocks always keep stack
-///          accounting alive.
+/// @details Delegates to @ref addReturnUsedRegs and explicitly reinforces the
+///          RSP invariant used by frame-manipulating blocks.
+/// @param target ABI return and callee-saved register metadata.
+/// @param liveRegs Liveness mask extended in place.
 void addExitLiveRegs(const TargetInfo &target, RegMask &liveRegs) {
     addReturnUsedRegs(target, liveRegs);
     addReg(liveRegs, static_cast<uint16_t>(PhysReg::RSP));
 }
 
+/// @brief Marks every allocator-visible physical register live.
+/// @param liveRegs Liveness mask extended in place.
 void addAllAllocatableRegs(RegMask &liveRegs) {
     for (uint16_t reg : getAllAllocatableRegs())
         addReg(liveRegs, reg);
@@ -166,6 +203,10 @@ void addAllAllocatableRegs(RegMask &liveRegs) {
 ///          list — CALL implicitly reads arg registers, RET reads the return
 ///          regs, CQO and IDIV/DIV read the RAX/RDX pair, and any opcode in
 ///          the EFLAGS-using set marks flags as live.
+/// @param instr Machine instruction whose implicit behavior is inspected.
+/// @param target ABI metadata used for calls and returns.
+/// @param liveRegs Register liveness mask extended in place.
+/// @param flagsLive EFLAGS liveness flag set when @p instr consumes flags.
 void collectImplicitUses(const MInstr &instr,
                          const TargetInfo &target,
                          RegMask &liveRegs,
@@ -203,15 +244,14 @@ void collectImplicitUses(const MInstr &instr,
 /// @details Performs a backward sweep maintaining a live-register set and a
 ///          flags-live flag. Instructions that define only dead registers
 ///          (and lack observable side effects) are marked for removal. The
-///          loop iterates to a fixed point because removing one instruction
-///          can make another dead. @p preservePhysRegsAtExit seeds the
-///          initial live set with every allocatable register — used for
-///          blocks whose successors aren't visible in this analysis (e.g.
-///          when the function has no terminator yet).
+///          single backward pass naturally propagates uses across earlier
+///          definitions. @p preservePhysRegsAtExit seeds the initial live set
+///          with every allocatable register for blocks whose successor
+///          liveness is unavailable.
 /// @param instrs Block instructions, mutated in place.
 /// @param stats Pass-wide statistics accumulator.
 /// @param target Calling-convention metadata for implicit-use computation.
-/// @param preservePhysRegsAtExit If true, keep every physical reg live.
+/// @param preservePhysRegsAtExit Whether to seed every allocatable register live.
 /// @return Number of instructions eliminated.
 std::size_t runBlockDCE(std::vector<MInstr> &instrs,
                         PeepholeStats &stats,

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/ra/OperandRoles.cpp
+// File: src/codegen/aarch64/ra/OperandRoles.cpp
 // Purpose: Implementation of operand role classification for every MOpcode
 //          that carries register operands.
 //
@@ -27,8 +27,12 @@
 #include <stdexcept>
 #include <string>
 
+/// @file
+/// @brief Implements exhaustive AArch64 MIR use/definition classification.
+
 namespace zanna::codegen::aarch64::ra {
 
+/// @copydoc operandRoles
 std::pair<bool, bool> operandRoles(const MInstr &ins, std::size_t idx) {
     // Returns {isUse, isDef}
     switch (ins.opc) {
@@ -148,7 +152,8 @@ std::pair<bool, bool> operandRoles(const MInstr &ins, std::size_t idx) {
     if (ins.opc == MOpcode::AdrPage)
         return {false, idx == 0};
 
-    // AddPageOff: dst is def+use (same reg for src and dst), label operand is not a register
+    // AddPageOff: operand 0 is the destination, operand 1 is the source, and
+    // the label operand is not a register.
     if (ins.opc == MOpcode::AddPageOff) {
         if (idx == 0)
             return {false, true}; // dst is def-only

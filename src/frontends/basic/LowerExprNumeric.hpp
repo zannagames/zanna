@@ -29,13 +29,12 @@ namespace il::frontends::basic {
 ///          (such as exponentiation or string concatenation).
 struct NumericExprLowering {
     /// @brief Bind the numeric lowering helper to a lowerer instance.
-    /// @param lowerer Active lowering engine used to emit IL.
+    /// @param lowerer Borrowed lowering engine; it must outlive this helper.
     explicit NumericExprLowering(Lowerer &lowerer) noexcept;
 
     /// @brief Lower integer division or modulus operations.
-    /// @details Coerces operands to the supported integer type and emits the
-    ///          checked divide/mod instructions to preserve BASIC's divide-by-zero
-    ///          behavior.
+    /// @details Coerces both operands to `i64` and emits SDivChk0 or SRemChk0
+    ///          to preserve BASIC's divide-by-zero behavior.
     /// @param expr Binary expression representing IDIV or MOD.
     /// @return Lowered r-value carrying the operation result.
     [[nodiscard]] Lowerer::RVal lowerDivOrMod(const BinaryExpr &expr);
@@ -57,7 +56,8 @@ struct NumericExprLowering {
     /// @param expr Binary expression representing a string operator.
     /// @param lhs Normalized left operand.
     /// @param rhs Normalized right operand.
-    /// @return Lowered r-value representing the string result.
+    /// @return String result for concatenation or an `i64` logical result for
+    ///         a comparison.
     [[nodiscard]] Lowerer::RVal lowerStringBinary(const BinaryExpr &expr,
                                                   Lowerer::RVal lhs,
                                                   Lowerer::RVal rhs);
@@ -128,6 +128,7 @@ struct NumericExprLowering {
                                                       const NumericOpConfig &config);
 
     /// @brief Borrowed lowering engine used for emission and diagnostics.
+    /// @invariant Non-null throughout the helper's lifetime.
     Lowerer *lowerer_{nullptr};
 };
 

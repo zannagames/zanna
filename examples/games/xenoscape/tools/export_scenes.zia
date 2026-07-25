@@ -1,0 +1,229 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape/tools/export_scenes.zia
+// Purpose: Export every authored campaign region as a canonical .scene file
+//          plus a Studio-aligned tile atlas for the scene-driven recreation.
+// Key invariants:
+//   - Regions are built by the exact production loadLevel path, so exported
+//     content includes gateways, release interactions, and campaign layers.
+//   - Tile behavior is read back from the built Tilemap registry, never
+//     duplicated from constants, so exports cannot drift from the game.
+//   - Object record order matches the level's spawn-list order exactly.
+// Ownership/Lifetime:
+//   - The process owns each Level and SceneDocument for one export pass.
+// Links: ../level.zia, tools/scene_parity_probe.zia,
+//        ../../xenoscape-scenes/level.zia
+//
+//===----------------------------------------------------------------------===//
+
+module export_scenes;
+
+bind "../config";
+bind "../level";
+bind "../palette";
+bind "../sprites";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Box = Zanna.Core.Box;
+bind Dir = Zanna.IO.Dir;
+bind Fmt = Zanna.Text.Fmt;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Seq = Zanna.Collections.Seq;
+bind Terminal = Zanna.Terminal;
+
+final OUTPUT_ROOT: String = "../xenoscape-scenes/assets";
+
+/// @brief Tile-property keys the game registers on every regional Tilemap.
+func BehaviorPropertyKeys() -> List[String] {
+    return ["hazard", "surface", "quicksand", "conveyor", "steam",
+            "save", "lore", "crumble", "grapple"];
+}
+
+/// @brief Append one uniform-duration animation as explicit per-frame data.
+func ExportLavaAnimation(scene: SceneDocument) {
+    var frames = Seq.New();
+    Seq.Push(frames, Box.I64(TILE_LAVA));
+    Seq.Push(frames, Box.I64(TILE_LAVA + 1));
+    var durations = Seq.New();
+    Seq.Push(durations, Box.I64(LAVA_ANIM_MS));
+    Seq.Push(durations, Box.I64(LAVA_ANIM_MS));
+    scene.SetTileAnim(TILE_LAVA, frames, durations);
+}
+
+/// @brief Export one built region as canonical scene JSON.
+func ExportRegion(num: Integer, path: String) -> Boolean {
+    var region = new Level();
+    region.loadLevel(num);
+    var scene = SceneDocument.New(
+        region.levelWidth, region.levelHeight, TILE_SIZE, TILE_SIZE);
+    scene.SetLayerName(0, "terrain");
+    scene.SetLayerAsset(0, "../tiles/scene-tile-atlas.png");
+
+    var y = 0;
+    while y < region.levelHeight {
+        var x = 0;
+        while x < region.levelWidth {
+            var tile = region.getTile(x, y);
+            if tile != TILE_EMPTY { scene.SetTile(0, x, y, tile); }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+
+    // Tile behavior comes from the game's own registry on the built Tilemap.
+    var tileId = 1;
+    while tileId <= TILE_GRAPPLE_ANCHOR {
+        if region.tilemap.GetCollision(tileId) == 1 {
+            scene.SetTileCollision(tileId, 1);
+        }
+        var keys = BehaviorPropertyKeys();
+        var keyIndex = 0;
+        while keyIndex < keys.count() {
+            var key = keys.get(keyIndex);
+            var value = region.tilemap.GetTileProperty(tileId, key, -424242);
+            if value != -424242 {
+                scene.SetTilePropertyInt(tileId, key, value);
+            }
+            keyIndex = keyIndex + 1;
+        }
+        tileId = tileId + 1;
+    }
+    ExportLavaAnimation(scene);
+
+    scene.SetInt("theme", region.levelTheme);
+    scene.SetInt("playerStartX", region.playerStartX);
+    scene.SetInt("playerStartY", region.playerStartY);
+
+    var i = 0;
+    while i < region.enemyTypes.count() {
+        var enemyIndex = scene.AddObject(
+            "enemy", "enemy-" + i, region.enemyX.get(i), region.enemyY.get(i));
+        scene.ObjectSetInt(enemyIndex, "enemy.type", region.enemyTypes.get(i));
+        i = i + 1;
+    }
+    i = 0;
+    while i < region.pickupTypes.count() {
+        var pickupIndex = scene.AddObject(
+            "pickup", "pickup-" + i,
+            region.pickupX.get(i), region.pickupY.get(i));
+        scene.ObjectSetInt(
+            pickupIndex, "pickup.type", region.pickupTypes.get(i));
+        i = i + 1;
+    }
+    i = 0;
+    while i < region.interactionTypes.count() {
+        var interactionIndex = scene.AddObject(
+            "interaction",
+            "interaction-" + region.interactionIds.get(i),
+            region.interactionCols.get(i) * TILE_SIZE,
+            region.interactionRows.get(i) * TILE_SIZE);
+        scene.ObjectSetInt(
+            interactionIndex, "interaction.type",
+            region.interactionTypes.get(i));
+        scene.ObjectSetInt(
+            interactionIndex, "interaction.id", region.interactionIds.get(i));
+        scene.ObjectSetInt(
+            interactionIndex, "interaction.channel",
+            region.interactionChannels.get(i));
+        scene.ObjectSetInt(
+            interactionIndex, "interaction.payload",
+            region.interactionPayloads.get(i));
+        i = i + 1;
+    }
+    if region.hasBoss {
+        var bossIndex = scene.AddObject(
+            "boss", "boss", region.bossX, region.bossY);
+        scene.ObjectSetInt(bossIndex, "boss.type", region.bossType);
+    }
+    scene.AddObject(
+        "player-start", "player-start",
+        region.playerStartX, region.playerStartY);
+    if region.hasCheckpoint {
+        scene.AddObject(
+            "checkpoint", "checkpoint",
+            region.checkpointX, region.checkpointY);
+    }
+    ExportMarker(scene, "landmark", region.landmarkCol);
+    ExportMarker(scene, "tutorial", region.tutorialStartCol);
+    ExportMarker(scene, "mastery", region.masteryStartCol);
+    ExportMarker(scene, "setpiece", region.setPieceCol);
+    i = 0;
+    while i < region.secretCols.count() {
+        var secretIndex = scene.AddObject(
+            "marker", "secret-" + i,
+            region.secretCols.get(i) * TILE_SIZE, 0);
+        scene.ObjectSetStr(secretIndex, "marker.kind", "secret");
+        i = i + 1;
+    }
+
+    if scene.HasErrors() {
+        Terminal.Say("EXPORT FAILED: region " + num + " had diagnostics");
+        return false;
+    }
+    if scene.Save(path) == false {
+        Terminal.Say("EXPORT FAILED: could not save " + path);
+        return false;
+    }
+    Terminal.Say("Exported region " + num + " -> " + path);
+    return true;
+}
+
+/// @brief Add one structural column anchor as an enum-carrying marker object.
+func ExportMarker(scene: SceneDocument, kind: String, col: Integer) {
+    if col < 0 { return; }
+    var markerIndex = scene.AddObject(
+        "marker", kind, col * TILE_SIZE, 0);
+    scene.ObjectSetStr(markerIndex, "marker.kind", kind);
+}
+
+/// @brief Bake a Studio-aligned atlas: cell k holds tile id k + 1.
+/// @details SceneDocument renders tile id N with atlas frame N - 1, while the
+///          release inspection atlas stores tile id N at cell N. This variant
+///          removes that off-by-one so Studio shows exact tiles.
+func ExportSceneAtlas() -> Boolean {
+    var paletteData = new Palette();
+    var sprites = new SpriteFactory(paletteData);
+    var columns = 8;
+    var rows = (TILE_GRAPPLE_ANCHOR + columns - 1) / columns;
+    var atlas = Pixels.New(columns * TILE_SIZE, rows * TILE_SIZE);
+    var tile = 1;
+    while tile <= TILE_GRAPPLE_ANCHOR {
+        var cell = tile - 1;
+        atlas.Copy((cell % columns) * TILE_SIZE,
+                   (cell / columns) * TILE_SIZE,
+                   sprites.getTile(tile), 0, 0,
+                   TILE_SIZE, TILE_SIZE);
+        tile = tile + 1;
+    }
+    var path = OUTPUT_ROOT + "/tiles/scene-tile-atlas.png";
+    if atlas.SavePng(path) != 1 {
+        Terminal.Say("EXPORT FAILED: could not write " + path);
+        return false;
+    }
+    Terminal.Say("Baked Studio tile atlas -> " + path);
+    return true;
+}
+
+func main() {
+    Dir.MakeAll(OUTPUT_ROOT + "/scenes");
+    Dir.MakeAll(OUTPUT_ROOT + "/tiles");
+    if ExportSceneAtlas() == false { return; }
+    var num = 1;
+    while num <= 10 {
+        var suffix = "" + num;
+        if num < 10 { suffix = "0" + num; }
+        if ExportRegion(
+               num, OUTPUT_ROOT + "/scenes/region-" + suffix + ".scene")
+           == false {
+            Terminal.Say("RESULT: fail");
+            return;
+        }
+        num = num + 1;
+    }
+    Terminal.Say("RESULT: ok");
+}

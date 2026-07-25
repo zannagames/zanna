@@ -14,9 +14,9 @@
 // type checking and casting without RTTI overhead.
 //
 // Key Utilities:
-// - isa<T>(node): Check if a node is of type T (O(1) discriminator check)
-// - cast<T>(node): Cast a node to type T (debug assertion on type)
-// - dyn_cast<T>(node): Attempt to cast, returning nullptr on failure
+// - is<T>(node): Check if a node is of type T (O(1) discriminator check)
+// - cast<T>(node): Unchecked cast to T when the caller already knows the kind
+// - as<T>(node): Attempt to cast, returning nullptr on mismatch
 //
 // These utilities mirror LLVM's casting infrastructure and provide:
 // - Type safety: Compile-time type checking for AST traversal code
@@ -47,6 +47,16 @@
 // - Compatible with std::unique_ptr and raw pointer access patterns
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ASTUtils.hpp
+ * @brief Defines discriminator-based BASIC AST casts and construction helpers.
+ *
+ * Expression and statement traits map concrete node types to their enum
+ * discriminators. The header also provides lightweight literal factories and
+ * qualified-name extraction used when recognizing runtime classes.
+ */
+
 #pragma once
 
 #include "frontends/basic/StringUtils.hpp"
@@ -66,9 +76,12 @@ namespace il::frontends::basic {
 //===----------------------------------------------------------------------===//
 
 /// @brief Type-to-Kind mapping for expression nodes.
-/// @details Provides compile-time mapping from AST node types to their Kind enum.
+/// @details Specialized below for each expression type accepted by is() and
+///          as(). Instantiating the unspecialized primary template is invalid.
+/// @tparam T Concrete expression node type.
 template <typename T> struct ExprKindTraits;
 
+/// Generate one expression type-to-discriminator trait specialization.
 #define EXPR_KIND_TRAIT(Type, KindValue)                                                           \
     template <> struct ExprKindTraits<Type> {                                                      \
         static constexpr Expr::Kind kind = Expr::Kind::KindValue;                                  \
@@ -117,7 +130,7 @@ template <typename T> [[nodiscard]] constexpr bool is(const Expr &expr) noexcept
 /// @brief Safely cast an expression to a specific type.
 /// @details Returns a pointer to the derived type if the kind matches, nullptr otherwise.
 ///          Performs O(1) kind check instead of RTTI-based dynamic_cast.
-/// @tparam T Target expression type (must be const-qualified).
+/// @tparam T Const-qualified target expression type.
 /// @param expr Expression to cast.
 /// @return Pointer to T if kind matches, nullptr otherwise.
 ///
@@ -175,6 +188,11 @@ template <typename T> [[nodiscard]] constexpr T &cast(Expr &expr) noexcept {
 }
 
 /// @brief Unchecked cast to a specific expression type (const version).
+/// @tparam T Concrete expression type.
+/// @param expr Expression known to have `ExprKindTraits<T>::kind`.
+/// @return Const reference to @p expr viewed as T.
+/// @warning A mismatched dynamic type causes undefined behavior; verify with
+///          is<T>() or equivalent control flow first.
 template <typename T> [[nodiscard]] constexpr const T &cast(const Expr &expr) noexcept {
     static_assert(std::is_base_of_v<Expr, T>, "T must be derived from Expr");
     return static_cast<const T &>(expr);
@@ -185,8 +203,12 @@ template <typename T> [[nodiscard]] constexpr const T &cast(const Expr &expr) no
 //===----------------------------------------------------------------------===//
 
 /// @brief Type-to-Kind mapping for statement nodes.
+/// @details Specialized below for each statement type accepted by is() and
+///          as(). Instantiating the unspecialized primary template is invalid.
+/// @tparam T Concrete statement node type.
 template <typename T> struct StmtKindTraits;
 
+/// Generate one statement type-to-discriminator trait specialization.
 #define STMT_KIND_TRAIT(Type, KindValue)                                                           \
     template <> struct StmtKindTraits<Type> {                                                      \
         static constexpr Stmt::Kind kind = Stmt::Kind::KindValue;                                  \
@@ -294,6 +316,7 @@ STMT_KIND_TRAIT(NamespaceDecl, NamespaceDecl)
 #undef STMT_KIND_TRAIT
 
 /// @brief Check if a statement is of a specific type.
+/// @details Compares the node's stored statement discriminator in constant time.
 /// @tparam T Target statement type.
 /// @param stmt Statement to check.
 /// @return True if stmt is of type T.
@@ -303,6 +326,13 @@ template <typename T> [[nodiscard]] constexpr bool is(const Stmt &stmt) noexcept
 }
 
 /// @brief Safely cast a statement to a specific type (const version).
+/// @tparam T Target statement type; callers should use a const-qualified type
+///           to preserve @p stmt's constness.
+/// @param stmt Statement whose discriminator is checked.
+/// @return Pointer to @p stmt as T when its kind matches, otherwise `nullptr`.
+/// @warning The implementation permits a non-const T and internally removes
+///          constness. Passing such a T and mutating through the result is
+///          invalid when the original object is const.
 template <typename T> [[nodiscard]] constexpr T *as(const Stmt &stmt) noexcept {
     using BaseT = std::remove_cv_t<std::remove_pointer_t<T>>;
     static_assert(std::is_base_of_v<Stmt, BaseT>, "T must be derived from Stmt");
@@ -314,6 +344,9 @@ template <typename T> [[nodiscard]] constexpr T *as(const Stmt &stmt) noexcept {
 }
 
 /// @brief Safely cast a statement to a specific type (non-const version).
+/// @tparam T Target concrete statement type.
+/// @param stmt Mutable statement whose discriminator is checked.
+/// @return Pointer to @p stmt as T when its kind matches, otherwise `nullptr`.
 template <typename T> [[nodiscard]] constexpr T *as(Stmt &stmt) noexcept {
     using BaseT = std::remove_cv_t<std::remove_pointer_t<T>>;
     static_assert(std::is_base_of_v<Stmt, BaseT>, "T must be derived from Stmt");
@@ -325,12 +358,22 @@ template <typename T> [[nodiscard]] constexpr T *as(Stmt &stmt) noexcept {
 }
 
 /// @brief Unchecked cast to a specific statement type.
+/// @tparam T Concrete statement type.
+/// @param stmt Mutable statement known to have `StmtKindTraits<T>::kind`.
+/// @return Mutable reference to @p stmt viewed as T.
+/// @warning A mismatched dynamic type causes undefined behavior; verify with
+///          is<T>() or equivalent control flow first.
 template <typename T> [[nodiscard]] constexpr T &cast(Stmt &stmt) noexcept {
     static_assert(std::is_base_of_v<Stmt, T>, "T must be derived from Stmt");
     return static_cast<T &>(stmt);
 }
 
 /// @brief Unchecked cast to a specific statement type (const version).
+/// @tparam T Concrete statement type.
+/// @param stmt Statement known to have `StmtKindTraits<T>::kind`.
+/// @return Const reference to @p stmt viewed as T.
+/// @warning A mismatched dynamic type causes undefined behavior; verify with
+///          is<T>() or equivalent control flow first.
 template <typename T> [[nodiscard]] constexpr const T &cast(const Stmt &stmt) noexcept {
     static_assert(std::is_base_of_v<Stmt, T>, "T must be derived from Stmt");
     return static_cast<const T &>(stmt);
@@ -406,7 +449,8 @@ template <typename T> [[nodiscard]] constexpr const T &cast(const Stmt &stmt) no
 /// @brief Recursively collects qualified name segments from an expression.
 /// @details Walks a chain of VarExpr or MemberAccessExpr nodes to build a list
 ///          of name segments. For example, `Zanna.String.get_Length` produces
-///          ["Zanna", "String", "get_Length"].
+///          ["Zanna", "String", "get_Length"]. Existing elements in @p out
+///          are preserved; successful segments are appended in source order.
 /// @param expr Expression to traverse.
 /// @param out Vector to accumulate name segments.
 /// @return True if the expression forms a valid qualified name, false otherwise.
@@ -429,7 +473,8 @@ inline bool collectQualifiedSegments(const Expr &expr, std::vector<std::string> 
 /// @brief Extracts a runtime class qualified name from an expression.
 /// @details Attempts to interpret the expression as a qualified name chain
 ///          (e.g., `Zanna.String`). Returns the qualified name if the chain
-///          starts with "Zanna" (case-insensitive), nullopt otherwise.
+///          starts with "Zanna" (case-insensitive), nullopt otherwise. Original
+///          segment spelling is preserved in the returned dotted name.
 /// @param expr Expression to analyze.
 /// @return Qualified class name (e.g., "Zanna.String") or nullopt.
 [[nodiscard]] inline std::optional<std::string> runtimeClassQNameFrom(const Expr &expr) {

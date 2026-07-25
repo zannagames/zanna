@@ -5,31 +5,52 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/fastpaths/FastPaths_Cast.cpp
+// File: src/codegen/aarch64/fastpaths/FastPaths_Cast.cpp
 // Purpose: Fast-path pattern matching for type conversion operations.
 //          Handles zext1/trunc1 (boolean masking), cast.si_narrow.chk (signed
-//          narrowing with a trap on overflow), and cast.fp_to_si.rte.chk (FP→int
-//          with a trap on out-of-range or NaN).
+//          narrowing with a trap on overflow).
 // Key invariants:
-//   - Operand must be an entry parameter or the result of a supported producer.
 //   - Result must flow directly to a ret instruction.
-//   - Trap blocks are emitted for range/conversion failures.
+//   - Checked signed narrowing preserves the original value until the
+//     sign-extended truncated result has been compared against it.
 // Ownership/Lifetime:
 //   - Stateless free functions; FastPathContext is borrowed for the call duration.
-// Links: codegen/aarch64/fastpaths/FastPathsInternal.hpp
+// Links: src/codegen/aarch64/fastpaths/FastPathsInternal.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "FastPathsInternal.hpp"
 
+/**
+ * @file
+ * @brief Implements boolean and checked signed-narrowing AArch64 fast paths.
+ *
+ * Boolean conversions mask an entry parameter to one bit. Checked narrowing
+ * performs a shift-based sign extension, compares it with the preserved input,
+ * and branches to a uniquely named no-return trap block on mismatch.
+ */
+
 namespace zanna::codegen::aarch64::fastpaths {
 
 using il::core::Opcode;
 
-/// Thread-local counter used to generate unique trap block label names (e.g. ".Ltrap_cast_0").
-/// Thread-local because fast-path lowering may be invoked from parallel compilation threads.
+/**
+ * @brief Per-thread suffix source for checked-cast trap block labels.
+ *
+ * Thread-local storage prevents collisions caused by concurrent lowering
+ * threads sharing a process-wide counter.
+ */
 thread_local unsigned trapLabelCounter = 0;
 
+/**
+ * @brief Attempts a supported conversion whose result is returned immediately.
+ *
+ * `Zext1`/`Trunc1` require a parameter source and return its low bit.
+ * `CastSiNarrowChk` emits signed truncation validation and appends a trap block.
+ *
+ * @param[in,out] ctx Fast-path state and output MIR.
+ * @return Completed MIR function on a match, otherwise `std::nullopt`.
+ */
 std::optional<MFunction> tryCastFastPaths(FastPathContext &ctx) {
     if (ctx.fn.blocks.empty())
         return std::nullopt;

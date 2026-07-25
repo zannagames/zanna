@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/LowerILToMIR.hpp
+// File: src/codegen/x86_64/LowerILToMIR.hpp
 // Purpose: Declare a bridge that adapts front-end IL to Machine IR.
 // Key invariants:
 //   - SSA identities are preserved during lowering.
@@ -14,9 +14,9 @@
 // Ownership/Lifetime:
 //   - The adapter borrows IL inputs, constructs fresh MIR graphs by value,
 //     and records call plans for later frame lowering.
-// Links: codegen/x86_64/LowerILToMIR.cpp,
-//        codegen/x86_64/MachineIR.hpp,
-//        codegen/x86_64/LoweringRules.hpp
+// Links: src/codegen/x86_64/LowerILToMIR.cpp,
+//        src/codegen/x86_64/MachineIR.hpp,
+//        src/codegen/x86_64/LoweringRules.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,10 +36,26 @@
 #include <utility>
 #include <vector>
 
+/**
+ * @file
+ * @brief Declares the x86-64 adapter from compiler IL records to Machine IR.
+ *
+ * The adapter owns per-function SSA-to-vreg, block, call-plan, label, and stack
+ * placeholder state while borrowing the target and literal pool. MIRBuilder is
+ * the restricted facade passed to declarative lowering rules so rule code can
+ * emit located instructions without directly manipulating adapter internals.
+ */
+
 namespace zanna::codegen::x64 {
 
-/// \brief Minimal IL value placeholder until the canonical IL headers are wired.
+/**
+ * @brief Backend-facing, self-contained representation of an IL operand.
+ *
+ * Nonnegative @c id values identify SSA definitions; negative ids select the
+ * appropriate inline payload. Only fields relevant to @c kind are meaningful.
+ */
 struct ILValue {
+    /// @brief Value categories understood by the x86-64 lowering rules.
     enum class Kind { I64, F64, I1, PTR, LABEL, STR };
 
     Kind kind{Kind::I64};    ///< Static type of the value.
@@ -52,7 +68,9 @@ struct ILValue {
     std::uint64_t strLen{0}; ///< Length in bytes for string literals.
 };
 
-/// \brief IL instruction placeholder containing opcode, operands, and result info.
+/**
+ * @brief Backend-facing IL instruction with result type and source location.
+ */
 struct ILInstr {
     std::string opcode{};                         ///< Mnemonic name of the IL opcode.
     std::vector<ILValue> ops{};                   ///< Ordered operands.
@@ -62,8 +80,16 @@ struct ILInstr {
     il::support::SourceLoc loc{};                 ///< Source location (for debug info).
 };
 
-/// \brief IL basic block placeholder with parameters and outgoing edges.
+/**
+ * @brief Ordered IL block plus explicit block-parameter edge metadata.
+ */
 struct ILBlock {
+    /**
+     * @brief Arguments transferred along one terminator successor edge.
+     *
+     * @c argIds provides fast SSA lookup; @c argValues retains full constant
+     * payloads for arguments that must be materialized in an edge-copy block.
+     */
     struct EdgeArg {
         std::string to{};          ///< Destination block label.
         std::vector<int> argIds{}; ///< SSA ids mapped onto destination params (-1 for constants).
@@ -78,19 +104,19 @@ struct ILBlock {
     std::vector<EdgeArg> terminatorEdges{};  ///< Successor edges for block terminators.
 };
 
-/// \brief IL function placeholder containing blocks.
+/// @brief Backend-facing IL function, including variadic ABI metadata.
 struct ILFunction {
     std::string name{};            ///< Function symbol.
     std::vector<ILBlock> blocks{}; ///< Ordered blocks.
     bool isVarArg{false};          ///< True when the function uses a C-style variadic ABI.
 };
 
-/// \brief IL module placeholder containing multiple functions.
+/// @brief Ordered collection of backend-facing IL functions.
 struct ILModule {
     std::vector<ILFunction> funcs{}; ///< Module-level functions.
 };
 
-/// \brief Adapter that lowers temporary IL structures into Machine IR.
+/// @brief Stateful adapter that lowers backend-facing IL into Machine IR.
 class LowerILToMIR;
 
 /// \brief Thin façade that exposes MIR construction helpers to lowering rules.
@@ -190,16 +216,22 @@ class MIRBuilder {
     /// @details Call plans describe argument passing, return handling, and callee info.
     ///          They are collected during lowering and consumed by the frame builder.
     /// @param plan The call lowering plan to record.
+    /// @return Stable index stored on the corresponding CALL instruction.
     [[nodiscard]] uint32_t recordCallPlan(CallLoweringPlan plan);
 
     /// @brief Reserve placeholder stack slots for a fixed-size alloca.
     /// @details Returns the negative %rbp-relative displacement placeholder that
     ///          FrameLowering will later shift below any callee-saved area.
+    /// @param sizeBytes Requested allocation size in bytes.
+    /// @param alignBytes Requested byte alignment, defaulting to one backend slot.
+    /// @return Negative RBP-relative symbolic displacement.
     [[nodiscard]] int32_t reserveStackLocalPlaceholder(int sizeBytes,
                                                        int alignBytes = kSlotSizeBytes);
 
   private:
+    /// Borrowed lowering adapter that outlives the builder.
     LowerILToMIR *lower_{nullptr};
+    /// Borrowed destination block that outlives the builder.
     MBasicBlock *block_{nullptr};
     il::support::SourceLoc currentLoc_{}; ///< Loc stamped onto emitted MInstrs.
 };
@@ -217,16 +249,29 @@ class LowerILToMIR {
     /// @param roData The read-only data pool for string literals and constants.
     explicit LowerILToMIR(const TargetInfo &target, AsmEmitter::RoDataPool &roData) noexcept;
 
-    /// \brief Lower a single IL function into Machine IR.
+    /**
+     * @brief Lower one IL function into a fresh Machine IR function.
+     * @param func Source function borrowed for the duration of lowering.
+     * @return Fully populated MIR blocks in deterministic IL order, followed by
+     *         any synthetic edge-copy blocks.
+     * @throws std::runtime_error Through @c phaseAUnsupported for malformed or
+     *         unsupported IL.
+     */
     [[nodiscard]] MFunction lower(const ILFunction &func);
 
-    /// \brief Retrieve the collected call lowering plans emitted during lowering.
+    /**
+     * @brief Retrieve call plans collected during the most recent lowering.
+     * @return Borrowed plan vector whose indices match CALL plan identifiers.
+     */
     [[nodiscard]] const std::vector<CallLoweringPlan> &callPlans() const noexcept;
 
     /// @brief Replace the set of direct-call targets that must use vararg call lowering.
+    /// @param callees Symbol names moved into module-level lookup state.
     void setKnownVarArgCallees(std::unordered_set<std::string> callees);
 
     /// @brief Query whether @p callee is a user-defined variadic function in the current module.
+    /// @param callee Direct-call symbol name.
+    /// @return @c true when the symbol was registered as variadic.
     [[nodiscard]] bool isKnownVarArgCallee(std::string_view callee) const;
 
     /// @brief True when the string load producing @p resultId may skip its
@@ -253,33 +298,51 @@ class LowerILToMIR {
     friend class MIRBuilder;
 
   private:
+    /// @brief MIR block index and destination registers for its IL parameters.
     struct BlockInfo {
         std::size_t index{0};           ///< Index within the MIR function.
         std::vector<VReg> paramVRegs{}; ///< Destination vregs for block params.
     };
 
+    /// Borrowed target descriptor.
     const TargetInfo *target_{nullptr};
+    /// Next per-function virtual-register identifier.
     uint16_t nextVReg_{1};
+    /// IL SSA identifier to MIR virtual-register mapping.
     std::unordered_map<int, VReg> valueToVReg_{};
+    /// IL block name to pre-created MIR block metadata.
     std::unordered_map<std::string, BlockInfo> blockInfo_{};
+    /// Plans consumed later by target call lowering.
     std::vector<CallLoweringPlan> callPlans_{};
+    /// Borrowed module-level literal pool.
     AsmEmitter::RoDataPool *roDataPool_{nullptr};
+    /// Module-wide counter used to keep internal assembly labels unique.
     uint32_t nextLocalLabel_{0};
+    /// Next symbolic fixed-size alloca slot within the current function.
     int nextStackLocalSlot_{0};
+    /// Direct-call symbols declared variadic in the current module.
     std::unordered_set<std::string> knownVarArgCallees_{};
+    /// String load results whose defensive retain may be omitted.
     std::unordered_set<int> strLoadRetainElidable_{};
+    /// Transferring string call results whose defensive retain may be omitted.
     std::unordered_set<int> strCallRetainElidable_{};
 
     /// @brief Populate strLoadRetainElidable_ for @p func (see StringRetainPolicy.hpp).
+    /// @param func Function whose string ownership uses are analyzed.
     void computeStrLoadRetainElidable(const ILFunction &func);
 
     /// @brief Reset all per-function lowering state (vreg counter, maps, call plans).
     void resetFunctionState();
 
     /// @brief Record a call plan and return the stable plan identifier.
+    /// @param plan Plan moved into the per-function plan table.
+    /// @return Zero-based plan index.
     [[nodiscard]] uint32_t recordCallPlan(CallLoweringPlan plan);
 
     /// @brief Reserve placeholder stack slots for a fixed-size alloca.
+    /// @param sizeBytes Requested allocation size.
+    /// @param alignBytes Required byte alignment.
+    /// @return Negative RBP-relative symbolic displacement.
     [[nodiscard]] int32_t reserveStackLocalPlaceholder(int sizeBytes, int alignBytes);
 
     /// @brief Map an IL value kind to the appropriate machine register class.

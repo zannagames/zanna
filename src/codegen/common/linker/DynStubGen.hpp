@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/DynStubGen.hpp
+// File: src/codegen/common/linker/DynStubGen.hpp
 // Purpose: Generate synthetic object files containing AArch64 stub trampolines
 //          for dynamic symbols and ObjC selector stubs.
 // Key invariants:
@@ -17,6 +17,12 @@
 // Links: codegen/common/linker/NativeLinker.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file DynStubGen.hpp
+ * @brief Declares synthetic object generation for loader-backed calls and
+ *        Objective-C selector dispatch.
+ */
 
 #pragma once
 
@@ -37,6 +43,8 @@ namespace zanna::codegen::linker {
 ///
 /// @param dynamicSyms Mutable set of dynamic symbols; matched entries are removed.
 /// @return Synthetic ObjFile with stub text, selector references, and relocations.
+/// @throws std::runtime_error If a generated size or symbol index exceeds the
+///         linker's representable range.
 ObjFile generateObjcSelectorStubsAArch64(std::unordered_set<std::string> &dynamicSyms);
 
 /// @brief Generate dynamic symbol stub trampolines and GOT entries for AArch64.
@@ -47,6 +55,8 @@ ObjFile generateObjcSelectorStubsAArch64(std::unordered_set<std::string> &dynami
 ///
 /// @param dynamicSyms Set of dynamic symbols requiring stubs.
 /// @return Synthetic ObjFile with stub text, GOT data, and relocations.
+/// @throws std::runtime_error If a generated size or symbol index exceeds the
+///         linker's representable range.
 ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSyms);
 
 /// @brief Generate dynamic symbol jump stubs and GOT entries for Linux x86_64.
@@ -58,6 +68,8 @@ ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSy
 ///
 /// @param dynamicSyms Set of dynamic symbols requiring loader-backed GOT slots.
 /// @return Synthetic ObjFile with stub text, GOT data, and relocations.
+/// @throws std::runtime_error If a generated size or symbol index exceeds the
+///         linker's representable range.
 ObjFile generateDynStubsX8664(const std::unordered_set<std::string> &dynamicSyms);
 
 } // namespace zanna::codegen::linker

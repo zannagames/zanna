@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/StringTable.hpp
+// File: src/codegen/common/objfile/StringTable.hpp
 // Purpose: Interned NUL-terminated string table for object file serialization.
 //          Used for ELF .strtab/.shstrtab and COFF string tables.
 // Key invariants:
@@ -17,6 +17,11 @@
 // Links: codegen/common/objfile/SymbolTable.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file StringTable.hpp
+ * @brief Declares a deduplicating NUL-terminated object-file string table.
+ */
 
 #pragma once
 
@@ -30,27 +35,34 @@
 
 namespace zanna::codegen::objfile {
 
-/// A serializable string table for object file formats.
-///
-/// Accumulates NUL-terminated strings and returns byte offsets.
-/// ELF convention: offset 0 is the empty string (single NUL byte).
+/// @brief Serializable intern table of NUL-terminated strings.
+/// @details Offset zero always names the empty string. Values are deduplicated
+///          by exact bytes and constrained to 32-bit object-format offsets.
 class StringTable {
   public:
-    /// Initialize with a single NUL byte at offset 0 (empty string).
+    /// @brief Initialize the table with the empty string at offset zero.
     StringTable();
 
-    /// Add a string to the table. Returns offset. Deduplicates.
+    /// @brief Intern a string and return its byte offset.
+    /// @param str String bytes excluding the required NUL terminator.
+    /// @return Existing or newly appended 32-bit table offset.
+    /// @throws std::length_error when the table would exceed native or 32-bit limits.
     uint32_t add(std::string_view str);
 
-    /// Find an existing string. Returns offset or UINT32_MAX if not found.
+    /// @brief Find an already interned string.
+    /// @param str Exact string bytes to look up.
+    /// @return Table offset, or `UINT32_MAX` when absent.
     uint32_t find(std::string_view str) const;
 
-    /// Raw table bytes (NUL-separated strings).
+    /// @brief Access the raw NUL-separated table payload.
+    /// @return Immutable serialized bytes.
     const std::vector<char> &data() const {
         return data_;
     }
 
-    /// Total byte size of the table.
+    /// @brief Return the total serialized byte count.
+    /// @return Table size including every terminator.
+    /// @throws std::length_error if the backing vector exceeds 32-bit range.
     uint32_t size() const {
         if (data_.size() > std::numeric_limits<uint32_t>::max())
             throw std::length_error("StringTable size exceeds 32-bit object-file field range");

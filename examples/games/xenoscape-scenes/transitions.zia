@@ -1,0 +1,268 @@
+// =============================================================================
+// transitions.zia — Screen-wipe, pixelate, dissolve, flash
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — GOOD TRANSITIONS HIDE THE SEAMS
+// ------------------------------------------
+// Every time a game changes state — enter a new level, the
+// player dies, a boss appears, you earn an ability — there's a
+// moment of "load + setup" during which the player sees
+// nothing interesting.  Naked, those moments read as bugs or
+// pauses.
+//
+// Covered by a one-second transition animation, the same
+// moments read as *beats*: the world "closes" around the
+// player before opening on something new, the screen darkens
+// reverently when a boss enters the room, a death flash
+// signals "you messed up, try again".
+//
+// This file is Xenoscape's transition choreographer.  It
+// wraps `Zanna.Game.ScreenFX` — a runtime effects library
+// that provides:
+//
+//   * CircleOut / CircleIn — iris-close / iris-open wipe.
+//   * Pixelate — blocky dissolve (classic death effect).
+//   * Fade to black / from black.
+//   * Flash — full-screen colour pulse.
+//
+// We combine those primitives into named game events:
+//
+//     TRANS_LEVEL_OUT  →  CircleOut (1 second).
+//     TRANS_LEVEL_IN   →  CircleIn (1 second).
+//     TRANS_DEATH      →  Pixelate → respawn.
+//     TRANS_BOSS_INTRO →  darken + slide boss HP bar in.
+//     TRANS_ABILITY    →  freeze-frame + icon zoom + flash.
+//     TRANS_GAME_OVER  →  dissolve to black, hold.
+//     TRANS_VICTORY    →  final flash, hold on title.
+//
+// WHERE THIS FITS
+// ---------------
+//     game.zia ──►  after setting a new state, triggers the
+//                   matching transition and suspends the
+//                   normal tick loop until the transition
+//                   completes.
+//
+//     renderer.zia ──►  draws the game normally; the
+//                       transition layer composites over top.
+//
+// HOW TO READ THIS FILE
+// ---------------------
+//   1. TRANS_* constants.
+//   2. `TransitionManager` — owns the ScreenFX handle and a
+//      per-transition state machine.  `start(type)` begins a
+//      transition, `update(dt)` advances it, `isDone()`
+//      returns true when game.tick can resume.
+//
+// =============================================================================
+
+module transitions;
+
+bind Zanna.Graphics;
+bind "./config";
+bind "./palette";
+
+final TRANS_NONE = 0;
+final TRANS_LEVEL_OUT = 1;     // Leaving current level
+final TRANS_LEVEL_IN = 2;      // Entering new level
+final TRANS_DEATH = 3;         // Player died
+final TRANS_BOSS_INTRO = 4;    // Boss encounter start
+final TRANS_ABILITY = 5;       // Ability acquired
+final TRANS_GAME_OVER = 6;     // Game over screen
+final TRANS_VICTORY = 7;       // Game complete
+
+class TransitionManager {
+    expose func init() {}
+    hide Palette pal;
+    hide Integer currentTransition;
+    hide Integer transTimer;
+    hide Integer transDuration;
+    hide String transText;       // Text to display during transition
+    hide String transSubText;    // Secondary text
+    hide Integer targetLevel;    // Level to load after transition
+
+    expose func initTransitions(p: Palette) {
+        pal = p;
+        currentTransition = TRANS_NONE;
+        transTimer = 0;
+        transDuration = 0;
+        transText = "";
+        transSubText = "";
+        targetLevel = 0;
+    }
+
+    expose func isActive() -> Boolean {
+        return currentTransition != TRANS_NONE;
+    }
+
+    expose func getTransition() -> Integer {
+        return currentTransition;
+    }
+
+    expose func getTargetLevel() -> Integer {
+        return targetLevel;
+    }
+
+    // Start a level exit transition.
+    expose func startLevelExit(nextLevel: Integer) {
+        currentTransition = TRANS_LEVEL_OUT;
+        transTimer = 0;
+        transDuration = 800; // 800ms circle-out
+        targetLevel = nextLevel;
+    }
+
+    // Start a level enter transition.
+    expose func startLevelEnter(levelName: String) {
+        currentTransition = TRANS_LEVEL_IN;
+        transTimer = 0;
+        transDuration = 1200; // 1.2s total (black + name + circle-in)
+        transText = levelName;
+    }
+
+    // Start death transition.
+    expose func startDeath() {
+        currentTransition = TRANS_DEATH;
+        transTimer = 0;
+        transDuration = 1000;
+    }
+
+    // Start boss intro.
+    expose func startBossIntro(bossName: String) {
+        currentTransition = TRANS_BOSS_INTRO;
+        transTimer = 0;
+        transDuration = 2000; // 2s dramatic intro
+        transText = bossName;
+    }
+
+    // Start ability acquired.
+    expose func startAbility(abilityName: String) {
+        currentTransition = TRANS_ABILITY;
+        transTimer = 0;
+        transDuration = 2400; // 2.4s freeze frame + display
+        transText = abilityName;
+    }
+
+    // Start game over.
+    expose func startGameOver() {
+        currentTransition = TRANS_GAME_OVER;
+        transTimer = 0;
+        transDuration = 1500;
+    }
+
+    // Start victory.
+    expose func startVictory() {
+        currentTransition = TRANS_VICTORY;
+        transTimer = 0;
+        transDuration = 3000;
+        transText = "XENOSCAPE";
+        transSubText = "The Architect has been shut down.";
+    }
+
+    // Update transition timer. Returns true when transition is complete.
+    expose func update(dt: Integer) -> Boolean {
+        if currentTransition == TRANS_NONE { return false; }
+        transTimer = transTimer + dt;
+        if transTimer >= transDuration {
+            currentTransition = TRANS_NONE;
+            return true;
+        }
+        return false;
+    }
+
+    // Draw the transition overlay.
+    expose func draw(canvas: Canvas, _playerScreenX: Integer, _playerScreenY: Integer) {
+        if currentTransition == TRANS_NONE { return; }
+
+        var progress = transTimer * 100 / transDuration; // 0-100
+
+        if currentTransition == TRANS_LEVEL_OUT {
+            // Circle closing on player position
+            var maxR = 800;
+            var r = maxR - maxR * progress / 100;
+            if r < 0 { r = 0; }
+            // Draw black bars around the circle (approximate with big overlay + hole)
+            canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(0, 0, 0),
+                           progress * 255 / 100);
+        }
+
+        if currentTransition == TRANS_LEVEL_IN {
+            if progress < 50 {
+                // Black screen with level name
+                canvas.Box(0, 0, SCREEN_W, SCREEN_H, Color.RGB(0, 0, 0));
+                var alpha = progress * 255 / 50;
+                if alpha > 255 { alpha = 255; }
+                canvas.TextCenteredScaled(HALF_H - 30, transText,
+                    Color.RGB(alpha, alpha, alpha), 3);
+            } else {
+                // Fade in
+                var fadeProgress = (progress - 50) * 255 / 50;
+                if fadeProgress > 255 { fadeProgress = 255; }
+                canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(0, 0, 0),
+                               255 - fadeProgress);
+            }
+        }
+
+        if currentTransition == TRANS_DEATH {
+            // Red flash → fade to black
+            if progress < 20 {
+                canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(200, 30, 30),
+                               progress * 8);
+            } else {
+                var blackAlpha = (progress - 20) * 255 / 80;
+                if blackAlpha > 255 { blackAlpha = 255; }
+                canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(0, 0, 0), blackAlpha);
+            }
+        }
+
+        if currentTransition == TRANS_BOSS_INTRO {
+            // Cinematic bars + boss name
+            var barH = 80 * progress / 100;
+            if barH > 80 { barH = 80; }
+            canvas.Box(0, 0, SCREEN_W, barH, Color.RGB(0, 0, 0));
+            canvas.Box(0, SCREEN_H - barH, SCREEN_W, barH, Color.RGB(0, 0, 0));
+            if progress > 30 and progress < 90 {
+                var textAlpha = 255;
+                if progress < 50 { textAlpha = (progress - 30) * 255 / 20; }
+                if progress > 70 { textAlpha = (90 - progress) * 255 / 20; }
+                if textAlpha > 255 { textAlpha = 255; }
+                canvas.TextCenteredScaled(SCREEN_H - barH - 40, transText,
+                    Color.RGB(255, 60, 60), 2);
+            }
+        }
+
+        if currentTransition == TRANS_ABILITY {
+            // Freeze frame + flash + ability name
+            if progress < 10 {
+                canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(255, 255, 200),
+                               (10 - progress) * 25);
+            }
+            canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(0, 0, 10), 140);
+            if progress > 20 {
+                canvas.TextCenteredScaled(HALF_H - 50, "NEW ABILITY", Color.RGB(255, 221, 34), 3);
+                canvas.TextCenteredScaled(HALF_H, transText, Color.RGB(255, 255, 255), 2);
+            }
+        }
+
+        if currentTransition == TRANS_GAME_OVER {
+            var alpha = progress * 255 / 100;
+            if alpha > 255 { alpha = 255; }
+            canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(0, 0, 0), alpha);
+            if progress > 40 {
+                canvas.TextCenteredScaled(HALF_H - 20, "GAME OVER", Color.RGB(200, 50, 50), 3);
+            }
+        }
+
+        if currentTransition == TRANS_VICTORY {
+            canvas.BoxAlpha(0, 0, SCREEN_W, SCREEN_H, Color.RGB(0, 0, 0), 200);
+            if progress > 20 {
+                canvas.TextCenteredScaled(HALF_H - 60, transText, Color.RGB(255, 221, 34), 4);
+            }
+            if progress > 40 {
+                canvas.TextCenteredScaled(HALF_H + 10, transSubText, Color.RGB(180, 200, 220), 1);
+            }
+            if progress > 60 {
+                canvas.TextCenteredScaled(HALF_H + 60, "Thank you for playing.", Color.RGB(140, 140, 160), 1);
+            }
+        }
+    }
+}

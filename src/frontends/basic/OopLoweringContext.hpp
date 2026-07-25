@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/OopLoweringContext.hpp
+// File: src/frontends/basic/OopLoweringContext.hpp
 // Purpose: Context object for OOP lowering pipeline providing cached metadata
 //          lookups and name-mangling helpers.
 // Key invariants: Provides consistent access to OOP metadata and lowering state.
@@ -14,6 +14,12 @@
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file OopLoweringContext.hpp
+/// @brief Declares cached OOP metadata and naming services for BASIC lowering.
+/// @details The context borrows the active Lowerer and OopIndex, while owning
+///          lookup caches keyed by the spellings supplied by callers. Both
+///          successful and failed metadata lookups are cached.
 
 #pragma once
 
@@ -68,6 +74,7 @@ struct OopLoweringContext {
     /// @brief Create a context for OOP lowering.
     /// @param lowerer Reference to the active lowering state.
     /// @param oopIndex Reference to the OOP metadata index.
+    /// @pre @p lowerer and @p oopIndex outlive the constructed context.
     OopLoweringContext(Lowerer &lowerer, OopIndex &oopIndex)
         : lowerer(lowerer), oopIndex(oopIndex) {}
 
@@ -76,12 +83,15 @@ struct OopLoweringContext {
     // =========================================================================
 
     /// @brief Look up class info with caching.
+    /// @details Caches index-owned pointers, including @c nullptr, under the
+    ///          exact @p className key.
     /// @param className Qualified class name.
     /// @return Pointer to class info or nullptr if not found.
     const ClassInfo *findClassInfo(const std::string &className);
 
     /// @brief Look up class layout with caching.
-    /// @details Delegates to Lowerer::findClassLayout but caches results locally.
+    /// @details Delegates to Lowerer::findClassLayout and caches its pointer,
+    ///          including @c nullptr, under the exact @p className key.
     /// @param className Class name (may be qualified or different casing).
     /// @return Pointer to layout when found; nullptr otherwise.
     const ClassLayout *findClassLayout(const std::string &className);
@@ -121,9 +131,9 @@ struct OopLoweringContext {
     // =========================================================================
 
     /// @brief Qualify an unqualified class name with the current namespace.
-    /// @details Delegates to Lowerer::qualify.
-    /// @param className Unqualified class name.
-    /// @return Qualified class name.
+    /// @details Delegates unchanged to Lowerer::qualify.
+    /// @param className Class spelling to resolve relative to the current namespace.
+    /// @return The lowerer's resolved qualified spelling.
     std::string qualify(const std::string &className) const;
 };
 

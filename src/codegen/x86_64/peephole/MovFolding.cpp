@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/peephole/MovFolding.cpp
+// File: src/codegen/x86_64/peephole/MovFolding.cpp
 // Purpose: Move folding peephole sub-pass for the x86-64 backend.
 //          Folds consecutive register-to-register moves when the intermediate
 //          register is dead.
@@ -14,8 +14,8 @@
 //   - Argument registers near calls are not folded to avoid ABI violations.
 // Ownership/Lifetime:
 //   - Stateless; all state is owned by the caller.
-// Links: codegen/x86_64/peephole/MovFolding.hpp,
-//        codegen/x86_64/peephole/PeepholeCommon.hpp
+// Links: src/codegen/x86_64/peephole/MovFolding.hpp,
+//        src/codegen/x86_64/peephole/PeepholeCommon.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,22 +26,35 @@
 #include <cstdint>
 #include <vector>
 
+/// @file
+/// @brief Implements adjacent move folding with physical-register suffix liveness.
+
 namespace zanna::codegen::x64::peephole {
 
 namespace {
 
+/// @brief Bit set for the backend's physical-register identifiers.
 using RegMask = uint64_t;
 
+/// @brief Returns the one-bit mask for a physical-register identifier.
+/// @param reg Numeric register identifier.
+/// @return Corresponding bit, or zero when @p reg is 64 or greater.
 [[nodiscard]] RegMask regBit(uint16_t reg) noexcept {
     return reg < 64 ? (RegMask{1} << reg) : RegMask{0};
 }
 
+/// @brief Adds a physical register operand to @p mask.
+/// @param mask Register mask updated in place.
+/// @param op Operand variant to inspect.
 void addOperandReg(RegMask &mask, const Operand &op) noexcept {
     const auto *reg = std::get_if<OpReg>(&op);
     if (reg && reg->isPhys)
         mask |= regBit(reg->idOrPhys);
 }
 
+/// @brief Adds a memory operand's physical base and active index to @p mask.
+/// @param mask Register mask updated in place.
+/// @param op Operand variant to inspect.
 void addOperandMemRegs(RegMask &mask, const Operand &op) noexcept {
     const auto *mem = std::get_if<OpMem>(&op);
     if (!mem)
@@ -52,6 +65,12 @@ void addOperandMemRegs(RegMask &mask, const Operand &op) noexcept {
         mask |= regBit(mem->index.idOrPhys);
 }
 
+/// @brief Collects explicit and selected implicit physical-register uses.
+/// @details Operand-role metadata covers normal operands and addresses; return,
+///          divide, multiply, and sign-extension opcodes contribute their
+///          implicit architectural inputs.
+/// @param instr Machine instruction to inspect.
+/// @return Bit mask of registers whose current values the instruction consumes.
 [[nodiscard]] RegMask usedRegMask(const MInstr &instr) {
     RegMask mask = 0;
     for (std::size_t idx = 0; idx < instr.operands.size(); ++idx) {
@@ -88,6 +107,9 @@ void addOperandMemRegs(RegMask &mask, const Operand &op) noexcept {
     return mask;
 }
 
+/// @brief Collects explicit and selected implicit physical-register definitions.
+/// @param instr Machine instruction to inspect.
+/// @return Bit mask of registers whose previous values are killed.
 [[nodiscard]] RegMask defRegMask(const MInstr &instr) {
     RegMask mask = 0;
     for (std::size_t idx = 0; idx < instr.operands.size(); ++idx) {
@@ -116,6 +138,10 @@ void addOperandMemRegs(RegMask &mask, const Operand &op) noexcept {
     return mask;
 }
 
+/// @brief Builds a conservative mask of integer argument registers.
+/// @details The SysV six-register set is a superset of the Win64 integer
+///          argument set, so it safely protects either supported ABI.
+/// @return Mask containing RDI, RSI, RDX, RCX, R8, and R9.
 [[nodiscard]] RegMask allArgRegMask() noexcept {
     return regBit(static_cast<uint16_t>(PhysReg::RDI)) |
            regBit(static_cast<uint16_t>(PhysReg::RSI)) |
@@ -124,6 +150,8 @@ void addOperandMemRegs(RegMask &mask, const Operand &op) noexcept {
            regBit(static_cast<uint16_t>(PhysReg::R8)) | regBit(static_cast<uint16_t>(PhysReg::R9));
 }
 
+/// @brief Builds a mask containing every allocatable physical register.
+/// @return Bit mask used to conservatively model live values at block exits.
 [[nodiscard]] RegMask allPhysicalRegMask() noexcept {
     RegMask mask = 0;
     for (const uint16_t reg : getAllAllocatableRegs())
@@ -153,6 +181,9 @@ void addOperandMemRegs(RegMask &mask, const Operand &op) noexcept {
     return true;
 }
 
+/// @brief Returns the liveness bit for a physical register operand.
+/// @param op Operand variant to inspect.
+/// @return One-bit mask, or zero for non-register or virtual-register operands.
 [[nodiscard]] RegMask regOperandBit(const Operand &op) noexcept {
     const auto *reg = std::get_if<OpReg>(&op);
     if (!reg || !reg->isPhys)
@@ -171,7 +202,7 @@ void addOperandMemRegs(RegMask &mask, const Operand &op) noexcept {
 /// @param instrs Block instructions, mutated in place.
 /// @param idx Index of the candidate first move.
 /// @param stats Pass-wide statistics accumulator.
-/// @return True when a fold was applied.
+/// @return @c true when a fold was applied; otherwise @c false.
 bool tryFoldConsecutiveMoves(std::vector<MInstr> &instrs, std::size_t idx, PeepholeStats &stats) {
     if (idx + 1 >= instrs.size())
         return false;
@@ -227,6 +258,14 @@ bool tryFoldConsecutiveMoves(std::vector<MInstr> &instrs, std::size_t idx, Peeph
     return true;
 }
 
+/// @brief Folds all safe adjacent move chains using precomputed suffix masks.
+/// @details A backward pass records registers used before their next
+///          definition and argument registers reaching a call. A forward pass
+///          then applies the same rewrite as @ref tryFoldConsecutiveMoves
+///          without repeatedly scanning suffixes.
+/// @param instrs Block instruction vector mutated in place.
+/// @param stats Statistics incremented once for each folded pair.
+/// @return Number of adjacent pairs folded.
 std::size_t foldConsecutiveMoves(std::vector<MInstr> &instrs, PeepholeStats &stats) {
     if (instrs.size() < 2)
         return 0;

@@ -1,0 +1,213 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/progression_probe.zia
+// Purpose: Verifies schema-v4 save integrity, migration, and progression round trips.
+// Key invariants:
+//   - Probe stores never touch the production Xenoscape save-data name.
+//   - Reopened caches match every staged permanent progression mask.
+// Ownership/Lifetime:
+//   - Probe-local managers own and delete all three isolated slots before exit.
+// Links: save.zia, lore.zia, world_state.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+//
+// Lightweight targeted probe for release-shell persistence: lore bitmasks,
+// bestiary bitmasks, rich save-slot metadata, and Continue-slot selection.
+// Uses an isolated SaveData store so it does not modify real player saves.
+//
+// =============================================================================
+
+module progression_probe;
+
+bind Zanna.Terminal as Terminal;
+bind Zanna.IO;
+bind "./config";
+bind "./palette";
+bind "./save";
+bind "./lore";
+
+/// @brief Emit one deterministic progression-probe failure.
+///
+/// @param message Stable failure suffix for CTest diagnostics.
+/// @return Nothing. Omits the `RESULT: ok` success marker.
+func fail(message: String) {
+    Terminal.Say("RESULT: " + message);
+}
+
+/// @brief Verify schema-v4 round-trip, migration, integrity, and corrupt backup.
+///
+/// @return Nothing. Prints `RESULT: ok` only after every assertion and cleanup.
+func main() {
+    var pal = new Palette();
+
+    var lore = new LoreSystem();
+    lore.initLore(pal);
+    lore.showEntry(0);
+    lore.showEntry(0);
+    lore.showEntry(2);
+    if lore.getCollectedCount() != 2 {
+        fail("lore_count_bad");
+        return;
+    }
+    if lore.getCollectedMask() != 5 {
+        fail("lore_mask_bad");
+        return;
+    }
+
+    lore.unlockBestiaryEntry(ENEMY_SPOREWALKER);
+    lore.unlockBestiaryEntry(ENEMY_SPOREWALKER);
+    lore.unlockBestiaryEntry(ENEMY_GLOWMOTH);
+    if lore.getBestiaryCount() != 2 {
+        fail("bestiary_count_bad");
+        return;
+    }
+
+    var saves = new SaveManager();
+    saves.initSaveWithName("xenoscape_progression_probe");
+    saves.deleteSlot(0);
+    saves.deleteSlot(1);
+    saves.deleteSlot(2);
+
+    saves.saveSlotFull(0, 2, 3, 6, 4, 90, 1,
+                       lore.getCollectedMask(), lore.getBestiaryMask(),
+                       1, 1);
+    if saves.saveSlotRelease(1, 5, 7, 8, 11, 120, 3,
+                             lore.getCollectedMask(), lore.getBestiaryMask(),
+                             7, 2, 5, 3, 1, 1, 7,
+                             [3, 1, 0, 0, 7, 0, 0, 0, 0, 0],
+                             57, 2, 5, 640, 384, 2047,
+                             [420000, 510000, 0, 0, 0, 0, 0, 0, 0, 0],
+                             5, 1) == false {
+        fail("release_save_write_bad");
+        return;
+    }
+
+    var loaded = new SaveManager();
+    loaded.initSaveWithName("xenoscape_progression_probe");
+    if loaded.getContinueSlot() != 1 {
+        fail("continue_slot_bad");
+        return;
+    }
+    if loaded.getSlotLevel(1) != 5 {
+        fail("slot_level_bad");
+        return;
+    }
+    if loaded.getSlotLoreMask(1) != lore.getCollectedMask() {
+        fail("slot_lore_bad");
+        return;
+    }
+    if loaded.getSlotBestiaryMask(1) != lore.getBestiaryMask() {
+        fail("slot_bestiary_bad");
+        return;
+    }
+    if loaded.getSlotCompletionMask(1) != 7 {
+        fail("slot_completion_bad");
+        return;
+    }
+    if loaded.getSlotDeaths(1) != 2 {
+        fail("slot_deaths_bad");
+        return;
+    }
+    if loaded.getSlotSchema(1) != XENOSCAPE_SAVE_SCHEMA {
+        fail("slot_schema_bad");
+        return;
+    }
+    if loaded.getSlotLastWrite(0) <= 0 or
+       loaded.getSlotLastWrite(1) <= loaded.getSlotLastWrite(0) {
+        fail("slot_write_timestamp_bad");
+        return;
+    }
+    if loaded.getSlotKeyMask(1) != 5 or
+       loaded.getSlotSwitchMask(1) != 3 or
+       loaded.getSlotDoorMask(1) != 1 or
+       loaded.getSlotShrineMask(1) != 1 or
+       loaded.getSlotTeleporterMask(1) != 7 or
+       loaded.getSlotRoomMask(1, 0) != 3 or
+       loaded.getSlotRoomMask(1, 4) != 7 or
+       loaded.getSlotUpgradeTiers(1) != 57 or
+       loaded.getSlotDifficulty(1) != 2 or
+       loaded.getSlotCheckpointLevel(1) != 5 or
+       loaded.getSlotCheckpointX(1) != 640 or
+       loaded.getSlotCheckpointY(1) != 384 or
+       loaded.getSlotTutorialMask(1) != 2047 or
+       loaded.getSlotBestTimes(1).get(0) != 420000 or
+       loaded.getSlotBestTimes(1).get(1) != 510000 or
+       loaded.getSlotPackedRanks(1) != 5 or
+       loaded.getSlotNewGamePlusActive(1) == false {
+        fail("slot_world_state_bad");
+        return;
+    }
+
+    // A schema-3 profile with only Wall Jump must migrate to the repaired
+    // baseline and receive a schema-4 checksum without losing its core state.
+    var legacyRaw = SaveData.New("xenoscape_legacy_save_probe");
+    legacyRaw.Clear();
+    legacyRaw.SetInt("s0lv", 1);
+    legacyRaw.SetInt("s0ab", 1);
+    legacyRaw.SetInt("s0hp", 5);
+    legacyRaw.SetInt("s0sv", 3);
+    legacyRaw.Save();
+    var migrated = new SaveManager();
+    migrated.initSaveWithName("xenoscape_legacy_save_probe");
+    if migrated.getSlotAbilities(0) != XENOSCAPE_BASELINE_ABILITY_MASK or
+       migrated.getSlotSchema(0) != XENOSCAPE_SAVE_SCHEMA {
+        fail("legacy_migration_bad");
+        return;
+    }
+    legacyRaw.Load();
+    if legacyRaw.GetInt("s0ck", 0) == 0 or
+       legacyRaw.GetInt("s0sv", 0) != XENOSCAPE_SAVE_SCHEMA {
+        fail("legacy_checksum_bad");
+        return;
+    }
+    migrated.deleteSlot(0);
+
+    // A syntactically valid store with one changed field must fail the full-slot
+    // checksum, preserve a backup, and retire only the damaged slot.
+    var tamperedRaw = SaveData.New("xenoscape_progression_probe");
+    tamperedRaw.Load();
+    var tamperedPath = tamperedRaw.get_Path();
+    var tamperedBackup = tamperedPath + ".corrupt.bak";
+    if File.Exists(tamperedBackup) { File.Delete(tamperedBackup); }
+    tamperedRaw.SetInt("s1gm", 12);
+    tamperedRaw.Save();
+    var integrityRecovered = new SaveManager();
+    integrityRecovered.initSaveWithName("xenoscape_progression_probe");
+    if integrityRecovered.didRecoverCorruptSave() == false or
+       integrityRecovered.isSlotUsed(1) or
+       integrityRecovered.isSlotUsed(0) == false or
+       File.Exists(tamperedBackup) == false {
+        fail("checksum_recovery_bad");
+        return;
+    }
+    if File.Exists(tamperedBackup) { File.Delete(tamperedBackup); }
+
+    var corruptRaw = SaveData.New("xenoscape_corrupt_save_probe");
+    corruptRaw.Clear();
+    corruptRaw.Save();
+    var corruptPath = corruptRaw.get_Path();
+    var corruptBackup = corruptPath + ".corrupt.bak";
+    if File.Exists(corruptBackup) { File.Delete(corruptBackup); }
+    File.WriteAllText(corruptPath, "{ malformed xenoscape save");
+
+    var recovered = new SaveManager();
+    recovered.initSaveWithName("xenoscape_corrupt_save_probe");
+    if recovered.didRecoverCorruptSave() == false or
+       recovered.getContinueSlot() != -1 or
+       File.Exists(corruptBackup) == false {
+        fail("corrupt_backup_recovery_bad");
+        return;
+    }
+    if File.Exists(corruptBackup) { File.Delete(corruptBackup); }
+
+    integrityRecovered.deleteSlot(0);
+    integrityRecovered.deleteSlot(1);
+    integrityRecovered.deleteSlot(2);
+    Terminal.Say("RESULT: ok");
+}

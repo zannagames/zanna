@@ -6,12 +6,13 @@
 //===----------------------------------------------------------------------===//
 ///
 /// @file SemanticAnalyzer.cpp
-/// @brief Core implementation of the BASIC semantic analyzer.
+/// @brief Implements core BASIC semantic-analyzer state and shared utilities.
 ///
 /// @details This file contains the main implementation of the BASIC semantic
-/// analyzer, including constructor, accessors, and shared utility functions.
-/// The semantic analyzer performs type checking, name resolution, and other
-/// validation on the BASIC AST before code generation.
+/// analyzer, including construction, read-only query surfaces, symbol
+/// resolution/default typing, and utility functions shared by the split
+/// semantic-analysis translation units. Statement, expression, procedure, and
+/// OOP passes are implemented in neighboring files.
 ///
 /// ## Semantic Analysis Overview
 ///
@@ -45,7 +46,7 @@
 ///
 /// The analyzer maintains several symbol tables:
 /// - **symbols_**: Global set of all declared symbols
-/// - **varTable_**: Local/global variable mappings
+/// - **varTypes_**: Inferred types keyed by resolved symbol name
 /// - **procReg_**: Procedure (SUB/FUNCTION) registry
 ///
 /// ## Error Reporting
@@ -58,13 +59,16 @@
 /// ```cpp
 /// DiagnosticEmitter emitter;
 /// SemanticAnalyzer analyzer(emitter);
-/// bool success = analyzer.analyze(program);
+/// analyzer.analyze(program);
 /// // Check emitter for any errors
 /// ```
 ///
-/// @invariant Symbol tables are consistent with analyzed AST.
-/// @invariant DiagnosticEmitter is never null during analysis.
-/// @invariant AST nodes are not modified during analysis.
+/// @invariant The diagnostic adapter and procedure registry remain associated
+///            with the emitter supplied at construction.
+/// @invariant Query accessors expose analyzer-owned state and do not transfer
+///            ownership.
+/// @note Semantic analysis may resolve names and record conversion/type
+///       information on or alongside mutable AST nodes.
 ///
 /// @see SemanticAnalyzer.hpp - Public interface
 /// @see SemanticAnalyzer_Internal.hpp - Internal helpers
@@ -86,48 +90,57 @@
 
 namespace il::frontends::basic {
 
-/// @brief Construct a semantic analyzer bound to a diagnostic emitter.
-///
-/// @param emitter Diagnostic sink used for reporting semantic errors and warnings.
+/// @brief Constructs an analyzer bound to a diagnostic emitter.
+/// @details Initializes both the semantic-diagnostic adapter and procedure
+///          registry from @p emitter. Analysis state remains empty until
+///          @ref SemanticAnalyzer::analyze is called.
+/// @param emitter Diagnostic sink borrowed for the analyzer's lifetime.
 SemanticAnalyzer::SemanticAnalyzer(DiagnosticEmitter &emitter) : de(emitter), procReg_(de) {}
 
-/// @brief Access the set of symbols tracked during the last analysis run.
-///
-/// @return Reference to the internal symbol table.
+/// @brief Returns all symbol names currently tracked by the analyzer.
+/// @return Const reference to analyzer-owned storage, valid until this analyzer
+///         mutates or is destroyed.
 const std::unordered_set<std::string> &SemanticAnalyzer::symbols() const {
     return symbols_;
 }
 
-/// @brief Access the set of labels declared in the analyzed program.
-///
-/// @return Reference to the label set.
+/// @brief Returns numeric labels declared during analysis.
+/// @return Const reference to analyzer-owned label storage.
 const std::unordered_set<int> &SemanticAnalyzer::labels() const {
     return labels_;
 }
 
-/// @brief Access the set of labels referenced by control-flow statements.
-///
-/// @return Reference to the label reference set.
+/// @brief Returns numeric labels referenced by control-flow statements.
+/// @return Const reference to analyzer-owned reference storage. Entries may
+///         include targets that were subsequently diagnosed as undefined.
 const std::unordered_set<int> &SemanticAnalyzer::labelRefs() const {
     return labelRefs_;
 }
 
-/// @brief Expose the registered procedure table.
-///
-/// @return Reference to the registry of procedure signatures.
+/// @brief Returns the current procedure-signature table.
+/// @return Const reference owned by the analyzer's @ref ProcRegistry.
 const ProcTable &SemanticAnalyzer::procs() const {
     return procReg_.procs();
 }
 
+/// @brief Reports the class that supplies the active implicit instance.
+/// @details A qualified class name is returned only while analysis is inside a
+///          member that has an implicit `ME` receiver and the active class name
+///          is non-empty.
+/// @return Active qualified class name by value, or @c std::nullopt when no
+///         implicit instance receiver is available.
 std::optional<std::string> SemanticAnalyzer::activeInstanceClassQName() const {
     if (activeMemberHasMe_ && !activeClassQName_.empty())
         return activeClassQName_;
     return std::nullopt;
 }
 
-/// @brief Get canonical lowercase USING import namespaces from file scope.
-///
-/// @return Vector of imported namespace paths (e.g., "zanna.terminal").
+/// @brief Copies imports from the innermost active USING scope.
+/// @details Reads the last @ref usingStack_ entry and copies its canonical
+///          namespace strings. Because the source is an unordered set, result
+///          order is unspecified. Aliases are not included.
+/// @return Imported namespace paths, or an empty vector when no USING scope is
+///         active.
 std::vector<std::string> SemanticAnalyzer::getUsingImports() const {
     std::vector<std::string> result;
     if (!usingStack_.empty()) {
@@ -140,20 +153,22 @@ std::vector<std::string> SemanticAnalyzer::getUsingImports() const {
     return result;
 }
 
-/// @brief Lookup array metadata for a given array name.
-///
-/// @param name Array identifier to look up.
-/// @return Pointer to ArrayMetadata if found, nullptr otherwise.
+/// @brief Looks up array metadata by its exact stored key.
+/// @param name Resolved array identifier; this function does not canonicalize it.
+/// @return Pointer into analyzer-owned map storage, or @c nullptr when absent.
+/// @warning The pointer may be invalidated by later mutation of @ref arrays_.
 const ArrayMetadata *SemanticAnalyzer::lookupArrayMetadata(const std::string &name) const {
     if (auto it = arrays_.find(name); it != arrays_.end())
         return &it->second;
     return nullptr;
 }
 
-/// @brief Query the inferred type for a variable by canonical name.
-///
-/// @param name Variable name after scope resolution.
-/// @return Inferred type when known; std::nullopt otherwise.
+/// @brief Looks up the inferred type of a variable.
+/// @details Tries @p name exactly first, then retries with
+///          @ref CanonicalizeIdent when canonicalization produces a non-empty
+///          name. The lookup does not resolve lexical aliases.
+/// @param name Variable spelling to query.
+/// @return Recorded semantic type, or @c std::nullopt when neither key exists.
 std::optional<SemanticAnalyzer::Type> SemanticAnalyzer::lookupVarType(
     const std::string &name) const {
     if (auto it = varTypes_.find(name); it != varTypes_.end())
@@ -166,10 +181,11 @@ std::optional<SemanticAnalyzer::Type> SemanticAnalyzer::lookupVarType(
     return std::nullopt;
 }
 
-/// @brief Query the declared runtime class name for an object variable.
-///
-/// @param name Variable name after scope resolution.
-/// @return Qualified class name when known; std::nullopt otherwise.
+/// @brief Looks up the qualified class associated with an object variable.
+/// @details Tries the supplied spelling and then its canonical identifier. The
+///          stored qualified class string is copied into the return value.
+/// @param name Variable spelling to query.
+/// @return Qualified class name, or @c std::nullopt when no mapping exists.
 std::optional<std::string> SemanticAnalyzer::lookupObjectClassQName(const std::string &name) const {
     if (auto it = objectClassTypes_.find(name); it != objectClassTypes_.end())
         return it->second;
@@ -181,15 +197,12 @@ std::optional<std::string> SemanticAnalyzer::lookupObjectClassQName(const std::s
     return std::nullopt;
 }
 
-/// @brief Check if a symbol is registered at module level.
-///
-/// @details Returns true if the symbol exists in the module-level symbol table.
-///          This helps the lowerer distinguish between module-level globals
-///          (which should not get procedure-local slots) and procedure-local
-///          variables (which need local allocation).
-///
-/// @param name Symbol identifier to check.
-/// @return True when the symbol is registered at module scope.
+/// @brief Tests whether a name appears in the analyzer's symbol set.
+/// @details Checks the exact spelling first and then a non-empty canonicalized
+///          spelling. The method relies on procedure-scope cleanup having
+///          removed locals before clients use this as a module-level query.
+/// @param name Symbol spelling to test.
+/// @return @c true when either spelling is present.
 bool SemanticAnalyzer::isModuleLevelSymbol(const std::string &name) const {
     if (symbols_.contains(name))
         return true;
@@ -197,15 +210,12 @@ bool SemanticAnalyzer::isModuleLevelSymbol(const std::string &name) const {
     return !canon.empty() && symbols_.contains(canon);
 }
 
-/// @brief Check if a symbol is a module-level CONST.
-///
-/// @details Returns true if the symbol was declared with CONST at module level.
-///          This is used by the lowerer to distinguish between CONST references
-///          (which should always read from rt_modvar) and local variables
-///          (which may shadow CONSTs but use local storage for writes).
-///
-/// @param name Symbol identifier to check.
-/// @return True when the symbol is a module-level CONST.
+/// @brief Tests whether a name is recorded as a module-level constant.
+/// @details Checks exact and canonicalized spellings. Lowering uses this result
+///          to retain module-storage semantics even when local variable rules
+///          would otherwise apply.
+/// @param name Symbol spelling to test.
+/// @return @c true when either spelling occurs in @ref constants_.
 bool SemanticAnalyzer::isConstSymbol(const std::string &name) const {
     if (constants_.contains(name))
         return true;
@@ -213,15 +223,19 @@ bool SemanticAnalyzer::isConstSymbol(const std::string &name) const {
     return !canon.empty() && constants_.contains(canon);
 }
 
-/// @brief Resolve a symbol through the scope stack and update default type tracking.
-///
-/// @details First searches local scopes via the scope tracker. If not found locally
-///          and we're in a procedure scope, checks if the name exists at module level.
-///          This enables procedures to access module-level globals without explicit
-///          parameters. Local declarations shadow module globals.
-///
-/// @param name Symbol name, updated in-place when aliasing occurs.
-/// @param kind Classification describing how the symbol is being used.
+/// @brief Resolves a scoped alias and records definition/default-type state.
+/// @details Replaces @p name when @ref ScopeTracker resolves it. References
+///          stop after resolution and do not alter symbol/type tables. Both
+///          definition kinds insert the resolved name into @ref symbols_; a
+///          procedure scope records newly inserted names for later rollback.
+///          If no type exists, `$` defaults to string, `#` and `!` to float,
+///          and every other spelling to integer. Existing explicit types are
+///          never overwritten.
+/// @param name Identifier updated in place when a scoped mapping exists.
+/// @param kind Reference or definition behavior requested by the caller.
+/// @post For non-reference kinds, @p name has a tracked type unless one already
+///       existed; mutations made inside a procedure are registered with its
+///       rollback scope.
 void SemanticAnalyzer::resolveAndTrackSymbol(std::string &name, SymbolKind kind) {
     if (auto mapped = scopes_.resolve(name)) {
         name = *mapped;
@@ -263,11 +277,14 @@ void SemanticAnalyzer::resolveAndTrackSymbol(std::string &name, SymbolKind kind)
 
 namespace il::frontends::basic::semantic_analyzer_detail {
 
-/// @brief Compute the Levenshtein edit distance between two strings.
-///
-/// @param a First string.
-/// @param b Second string.
-/// @return Minimum number of single-character edits required to transform @p a into @p b.
+/// @brief Computes case-sensitive Levenshtein edit distance.
+/// @details Uses two rows of dynamic-programming state, requiring O(|@p b|)
+///          auxiliary memory and O(|@p a|*|@p b|) time. Insertions, deletions,
+///          and substitutions each cost one.
+/// @param a Source byte string.
+/// @param b Destination byte string.
+/// @return Minimum number of single-byte edits needed to transform @p a into
+///         @p b.
 size_t levenshtein(const std::string &a, const std::string &b) {
     const size_t m = a.size();
     const size_t n = b.size();
@@ -285,10 +302,10 @@ size_t levenshtein(const std::string &a, const std::string &b) {
     return prev[n];
 }
 
-/// @brief Translate an AST numeric type into the analyzer's semantic type enum.
-///
-/// @param ty BASIC AST type enumerator.
-/// @return Equivalent semantic type classification.
+/// @brief Maps the compact AST value type to semantic-analysis type space.
+/// @param ty AST type to translate.
+/// @return Integer, float, string, or boolean as appropriate. A defensive
+///         fall-through returns integer.
 SemanticAnalyzer::Type astToSemanticType(::il::frontends::basic::Type ty) {
     switch (ty) {
         case ::il::frontends::basic::Type::I64:
@@ -303,18 +320,18 @@ SemanticAnalyzer::Type astToSemanticType(::il::frontends::basic::Type ty) {
     return SemanticAnalyzer::Type::Int;
 }
 
-/// @brief Retrieve the textual name associated with a builtin call expression.
-///
-/// @param b Builtin enumerator identifying the runtime routine.
-/// @return Null-terminated string naming the builtin.
+/// @brief Retrieves a builtin's registry name.
+/// @param b Builtin identifier accepted by @ref getBuiltinInfo.
+/// @return Non-owning pointer to the registry entry's null-terminated name.
 const char *builtinName(BuiltinCallExpr::Builtin b) {
     return getBuiltinInfo(b).name;
 }
 
-/// @brief Convert a semantic type enumerator into a human-readable string.
-///
-/// @param type Semantic type to render.
-/// @return Uppercase string describing the type.
+/// @brief Maps a semantic type to diagnostic text.
+/// @param type Type category to render.
+/// @return Static null-terminated uppercase text. Array categories include
+///         their element category in parentheses; unknown and defensive
+///         fall-through both return `"UNKNOWN"`.
 const char *semanticTypeName(SemanticAnalyzer::Type type) {
     using Type = SemanticAnalyzer::Type;
     switch (type) {
@@ -340,10 +357,10 @@ const char *semanticTypeName(SemanticAnalyzer::Type type) {
     return "UNKNOWN";
 }
 
-/// @brief Map a logical operator to the keyword used in diagnostics.
-///
-/// @param op Logical operator enumerator.
-/// @return Keyword name or a placeholder when the operator is not logical.
+/// @brief Maps a binary logical operator to its BASIC keyword.
+/// @param op Operator to inspect.
+/// @return Static keyword text for short-circuit and eager AND/OR operations,
+///         or `"<logical>"` for every other operator.
 const char *logicalOpName(BinaryExpr::Op op) {
     switch (op) {
         case BinaryExpr::Op::LogicalAndShort:
@@ -360,10 +377,13 @@ const char *logicalOpName(BinaryExpr::Op op) {
     return "<logical>";
 }
 
-/// @brief Render a condition expression into a concise textual form.
-///
-/// @param expr Expression to render.
-/// @return String approximating the expression for diagnostics.
+/// @brief Renders simple condition expressions for diagnostics.
+/// @details Recognizes variables and integer, floating, boolean, and string
+///          literals. String text is enclosed in quotes without additional
+///          escaping; floating values use stream formatting.
+/// @param expr Expression to inspect without mutation.
+/// @return Rendered source-like text for a recognized node, otherwise an empty
+///         string.
 std::string conditionExprText(const Expr &expr) {
     if (auto *var = as<const VarExpr>(expr))
         return var->name;
@@ -385,10 +405,10 @@ std::string conditionExprText(const Expr &expr) {
     return {};
 }
 
-/// @brief Derive the BASIC return type implied by the trailing name suffix.
-///
-/// @param name Procedure name potentially ending in a BASIC type sigil.
-/// @return The matching @ref BasicType when the suffix is recognised.
+/// @brief Decodes the supported BASIC type suffix on a name.
+/// @param name Name whose final byte is inspected.
+/// @return String for `$`, float for `#`, integer for `%`, or
+///         @c std::nullopt for an empty name or any other suffix.
 std::optional<BasicType> suffixBasicType(std::string_view name) {
     if (name.empty())
         return std::nullopt;
@@ -405,10 +425,10 @@ std::optional<BasicType> suffixBasicType(std::string_view name) {
     return std::nullopt;
 }
 
-/// @brief Translate a BASIC return annotation into the analyzer's semantic type.
-///
-/// @param type BASIC-level return type (from an AS clause).
-/// @return The corresponding semantic type when one exists; otherwise nullopt.
+/// @brief Maps an explicit BASIC scalar type into semantic type space.
+/// @param type BASIC type to translate.
+/// @return Integer, float, or string for those three scalar types;
+///         @c std::nullopt for all other values.
 std::optional<SemanticAnalyzer::Type> semanticTypeFromBasic(BasicType type) {
     using Type = SemanticAnalyzer::Type;
     switch (type) {
@@ -424,22 +444,24 @@ std::optional<SemanticAnalyzer::Type> semanticTypeFromBasic(BasicType type) {
     return std::nullopt;
 }
 
-/// @brief Uppercase helper for printing BASIC type names in diagnostics.
-///
-/// @param type BASIC type whose name should be formatted.
-/// @return Uppercase representation of @p type suitable for user output.
+/// @brief Formats a BASIC type name in uppercase for diagnostics.
+/// @details Obtains the canonical text from @ref toString and applies
+///          @c std::toupper to each unsigned byte.
+/// @param type BASIC type to format.
+/// @return Uppercase copy of the type text.
 std::string uppercaseBasicTypeName(BasicType type) {
     std::string text{toString(type)};
+    /// Converts one unsigned input byte to its uppercase character value.
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
         return static_cast<char>(std::toupper(c));
     });
     return text;
 }
 
-/// @brief Identify whether a semantic type should be treated as numeric.
-///
-/// @param type Semantic analyzer type to classify.
-/// @return True when @p type denotes a numeric category.
+/// @brief Tests whether semantic rules treat a type as numeric.
+/// @param type Type category to classify.
+/// @return @c true for integer, float, or boolean; @c false for strings,
+///         arrays, objects, and unknown values.
 bool isNumericSemanticType(SemanticAnalyzer::Type type) noexcept {
     using Type = SemanticAnalyzer::Type;
     return type == Type::Int || type == Type::Float || type == Type::Bool;

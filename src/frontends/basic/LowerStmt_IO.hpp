@@ -15,6 +15,8 @@
 ///          Each helper evaluates statement operands, performs required
 ///          coercions (such as channel normalization), and emits the runtime
 ///          calls or control-flow needed to implement BASIC I/O semantics.
+/// @note This is a class-body declaration fragment rather than a standalone
+///       namespace-level interface.
 //
 //===----------------------------------------------------------------------===//
 
@@ -66,9 +68,9 @@ void lowerPrintCh(const PrintChStmt &stmt);
 void lowerInput(const InputStmt &stmt);
 
 /// @brief Lower an INPUT# statement that reads from a file channel.
-/// @details Evaluates the channel, emits runtime reads, and assigns the results
-///          into the target variables. Implemented as a delegating wrapper to
-///          @ref IoStatementLowerer.
+/// @details Evaluates the channel and reads one line for each target, then
+///          parses or assigns that line according to the target's scalar type.
+///          Implemented as a delegating wrapper to @ref IoStatementLowerer.
 /// @param stmt Parsed INPUT# statement.
 void lowerInputCh(const InputChStmt &stmt);
 

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/LegalizePass.hpp
+// File: src/codegen/aarch64/passes/LegalizePass.hpp
 // Purpose: Declare the AArch64 MIR legalization pass.
 // Key invariants: Runs after LoweringPass and before RegAllocPass. All
 //                 overflow pseudos and backend-required entry sequences must
@@ -19,16 +19,24 @@
 
 #include "codegen/aarch64/passes/PassManager.hpp"
 
+/**
+ * @file
+ * @brief Declares pre-register-allocation AArch64 MIR legalization.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
-/// @brief Normalize lowered AArch64 MIR before register allocation.
+/**
+ * @brief Expands required pseudos/entry setup and recomputes call metadata.
+ */
 class LegalizePass final : public Pass {
   public:
-    /// @brief Expand pseudos, insert required runtime entry calls, and refresh
-    ///        function call/leaf metadata.
-    /// @param module Module state; mir and ti must be populated.
-    /// @param diags  Diagnostic sink for legalization errors.
-    /// @return True when legalization succeeds.
+    /**
+     * @brief Legalizes every MIR function before register allocation.
+     * @param[in,out] module Module whose MIR is expanded in place.
+     * @param[in,out] diags Sink receiving missing-target or expansion errors.
+     * @return `true` when all functions legalize successfully.
+     */
     bool run(AArch64Module &module, Diagnostics &diags) override;
 };
 

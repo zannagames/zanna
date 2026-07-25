@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/TerminatorLowering.cpp
+// File: src/codegen/aarch64/TerminatorLowering.cpp
 // Purpose: Control-flow terminator lowering for IL→MIR conversion.
 //          Handles br, cbr, trap, TrapFromErr, switch, and resume.label.
 //
@@ -20,9 +20,9 @@
 // Ownership/Lifetime:
 //   - Modifies mf in place; all map/builder arguments are borrowed.
 //
-// Links: codegen/aarch64/TerminatorLowering.hpp,
-//        codegen/aarch64/InstrLowering.hpp,
-//        codegen/aarch64/OpcodeMappings.hpp
+// Links: src/codegen/aarch64/TerminatorLowering.hpp,
+//        src/codegen/aarch64/InstrLowering.hpp,
+//        src/codegen/aarch64/OpcodeMappings.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,22 +37,39 @@
 #include <limits>
 #include <stdexcept>
 
+/**
+ * @file
+ * @brief Implements AArch64 branch, switch, trap, and resume terminator lowering.
+ *
+ * This late lowering phase uses block-local temporary snapshots to avoid
+ * resolving operands through mappings overwritten by later blocks. Phi
+ * arguments are transferred through canonical frame slots, and switches choose
+ * among linear, dense jump-table, and sparse binary-tree representations.
+ */
+
 namespace zanna::codegen::aarch64 {
 
 using il::core::Opcode;
 
-/// @brief Return the AArch64 condition code string for a comparison opcode, or nullptr.
+/**
+ * @brief Looks up the condition code for an integer or FP comparison opcode.
+ * @param op IL opcode to classify.
+ * @return Static AArch64 condition spelling, or `nullptr` for a non-comparison.
+ */
 static const char *condForOpcode(Opcode op) {
     return lookupAnyCondition(op);
 }
 
-/// @brief Emit a rt_trap_string call with a null (0) message payload into @p bb.
+/**
+ * @brief Emits a null trap-message argument followed by `rt_trap_string`.
+ * @param[in,out] bb Block that receives the `x0 = 0` setup and no-returning call.
+ */
 static void emitNullTrapCall(MBasicBlock &bb) {
     bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X0), MOperand::immOp(0)}});
     bb.instrs.push_back(MInstr{MOpcode::Bl, {MOperand::labelOp("rt_trap_string")}});
 }
 
-/// @brief One case arm in a switch/select table: the integer value and the MIR branch target.
+/// @brief Owns one validated switch key and its final MIR branch label.
 struct SwitchCase {
     long long value{0};      ///< Integer constant matched by this case.
     std::string branchLabel; ///< MIR block label to branch to when matched.
@@ -98,9 +115,18 @@ static uint32_t switchSpillKeyForBlock(std::size_t blockIndex) {
     return kSwitchSpillBase + static_cast<uint32_t>(blockIndex);
 }
 
-/// @brief Emit a compare of @p scrutineeVReg against @p imm into @p bb.
-/// @details Uses CmpRI for small non-negative immediates; falls back to
-///          MovRI + CmpRR for larger values.
+/**
+ * @brief Emits a comparison between a switch scrutinee and an integer key.
+ *
+ * Encodable unsigned 12-bit keys use `CmpRI`; all other values are
+ * materialized in a new GPR and compared with `CmpRR`.
+ *
+ * @param[in,out] bb Dispatch block that receives the comparison sequence.
+ * @param scrutineeVReg GPR virtual register holding the switch value.
+ * @param imm Signed case key.
+ * @param[in,out] nextVRegId Virtual-register allocator used by the fallback.
+ * @throws std::runtime_error If a fallback temporary cannot be allocated.
+ */
 static void emitSwitchCompare(MBasicBlock &bb,
                               uint16_t scrutineeVReg,
                               long long imm,
@@ -120,10 +146,15 @@ static void emitSwitchCompare(MBasicBlock &bb,
                                 MOperand::vregOp(RegClass::GPR, caseVReg)}});
 }
 
-/// @brief Emit a reload of the switch scrutinee from its spill slot into a fresh vreg.
-/// @details Used in binary search auxiliary blocks that need the scrutinee after
-///          the original vreg's live range has ended.
-/// @return The new vreg holding the reloaded scrutinee value.
+/**
+ * @brief Reloads a switch scrutinee into a fresh virtual register.
+ *
+ * @param[in,out] bb Auxiliary dispatch block receiving the reload.
+ * @param spillOffset Frame-pointer-relative scrutinee spill offset.
+ * @param[in,out] nextVRegId Virtual-register allocator state.
+ * @return New GPR virtual-register ID holding the reloaded scrutinee.
+ * @throws std::runtime_error If the virtual-register range is exhausted.
+ */
 static uint16_t reloadSwitchScrutinee(MBasicBlock &bb, int spillOffset, uint16_t &nextVRegId) {
     const uint16_t reloaded = allocateNextVReg(nextVRegId);
     bb.instrs.push_back(
@@ -132,9 +163,21 @@ static uint16_t reloadSwitchScrutinee(MBasicBlock &bb, int spillOffset, uint16_t
     return reloaded;
 }
 
-/// @brief Emit a linear scan of @p cases[begin..end) against @p scrutineeVReg.
-/// @details Used for small case counts (≤3). Emits a CmpRI/CmpRR + BCond pair
-///          per case, followed by an unconditional branch to @p defaultBranchLabel.
+/**
+ * @brief Emits a linear comparison chain for a switch-case subrange.
+ *
+ * Each case emits a compare followed by `b.eq`; a non-empty default label is
+ * emitted as the final unconditional branch.
+ *
+ * @param[in,out] bb Dispatch block to extend.
+ * @param scrutineeVReg GPR virtual register containing the switch value.
+ * @param cases Sorted or unsorted case table.
+ * @param begin Inclusive first case index.
+ * @param end Exclusive last case index.
+ * @param defaultBranchLabel Default target, or empty to omit the final branch.
+ * @param[in,out] nextVRegId Allocator for comparison temporaries.
+ * @pre `begin <= end && end <= cases.size()`.
+ */
 static void emitLinearSwitch(MBasicBlock &bb,
                              uint16_t scrutineeVReg,
                              const std::vector<SwitchCase> &cases,
@@ -152,22 +195,27 @@ static void emitLinearSwitch(MBasicBlock &bb,
         bb.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp(defaultBranchLabel)}});
 }
 
-/// @brief Recursively emit a binary search tree for @p cases[begin..end) into @p mf.
-/// @details Picks a pivot at the midpoint, emits a compare + branch-on-equal, then
-///          creates two new MIR blocks for the left and right sub-ranges. The scrutinee
-///          is reloaded from @p spillOffset in each auxiliary block. Falls back to
-///          `emitLinearSwitch` when the sub-range has ≤3 entries.
-/// @param mf             Output MIR function (new auxiliary blocks are appended).
-/// @param bb             Current dispatch block to emit the compare/branches into.
-/// @param scrutineeVReg  Virtual register holding the switch value in @p bb.
-/// @param cases          Sorted case table for the entire switch.
-/// @param begin          Start index of the current sub-range (inclusive).
-/// @param end            End index of the current sub-range (exclusive).
-/// @param defaultBranchLabel Label of the default target block.
-/// @param spillOffset    FP-relative spill slot for the scrutinee (used in sub-blocks).
-/// @param labelPrefix    Prefix for generated auxiliary block label names.
-/// @param auxCounter     Counter for unique auxiliary block name suffixes.
-/// @param nextVRegId     Counter for fresh virtual register allocation.
+/**
+ * @brief Recursively emits a binary-search dispatch tree for a switch subrange.
+ *
+ * The midpoint is tested for equality, then less-than selects a newly appended
+ * left block while the fallthrough branch selects a new right block. Each child
+ * reloads the scrutinee from its frame slot. Ranges of at most three cases use
+ * `emitLinearSwitch()`.
+ *
+ * @param[in,out] mf Output function that owns generated auxiliary blocks.
+ * @param[in,out] bb Current dispatch block receiving pivot branches.
+ * @param scrutineeVReg GPR virtual register valid in @p bb.
+ * @param cases Case table sorted by ascending unique key.
+ * @param begin Inclusive subrange start.
+ * @param end Exclusive subrange end.
+ * @param defaultBranchLabel Default switch target.
+ * @param spillOffset Stable FP-relative scrutinee spill slot.
+ * @param labelPrefix Prefix used to derive child labels.
+ * @param[in,out] auxCounter Function-wide unique child-label counter.
+ * @param[in,out] nextVRegId Virtual-register allocator state.
+ * @pre `begin <= end && end <= cases.size()`.
+ */
 static void emitSwitchTree(MFunction &mf,
                            MBasicBlock &bb,
                            uint16_t scrutineeVReg,
@@ -230,22 +278,27 @@ static void emitSwitchTree(MFunction &mf,
                    nextVRegId);
 }
 
-/// @brief Emit PhiStoreGPR/PhiStoreFPR instructions into @p edgeBB for the phi
-///        parameters of block @p dst, materializing each argument from @p args.
-/// @details Called when a branch to @p dst carries arguments. Each argument is
-///          materialized to a vreg and then stored to the corresponding phi spill
-///          slot. Throws if an argument cannot be materialized or has a class mismatch.
-/// @param edgeBB         The MIR block (edge or source) that receives the phi stores.
-/// @param dst            IL block name whose phi slots receive the copies.
-/// @param args           IL branch argument values (one per phi parameter in dst).
-/// @param inBB           IL basic block containing the branch instruction.
-/// @param ti             Target info for register class resolution.
-/// @param fb             Frame builder for phi spill slot allocation.
-/// @param blockTempVReg  Block-local temp-ID → vreg mapping snapshot.
-/// @param tempRegClass   Global temp-ID → register class map.
-/// @param nextVRegId     Counter for fresh virtual register allocation.
-/// @param phiRegClass    Block label → per-parameter register class list.
-/// @param phiSpillOffset Block label → per-parameter FP-relative spill offsets.
+/**
+ * @brief Materializes branch arguments into a destination block's phi spill slots.
+ *
+ * One `PhiStoreGPR` or `PhiStoreFPR` is appended per argument. Empty argument
+ * lists are a no-op; non-empty lists require exact class and count agreement
+ * with both metadata tables.
+ *
+ * @param[in,out] edgeBB Source or split-edge MIR block receiving stores.
+ * @param dst Destination IL block label.
+ * @param args Branch arguments in destination parameter order.
+ * @param inBB Source IL block used for producer lookup.
+ * @param ti Target metadata for materialization.
+ * @param[in,out] fb Frame builder used by nested materialization.
+ * @param[in,out] blockTempVReg Source block's temporary mapping snapshot.
+ * @param[in,out] tempRegClass Function-wide temporary class map.
+ * @param[in,out] nextVRegId Virtual-register allocator state.
+ * @param phiRegClass Expected destination parameter classes.
+ * @param phiSpillOffset Destination parameter frame offsets.
+ * @throws std::runtime_error If metadata is absent/inconsistent, an argument
+ *         cannot be materialized, or its register class differs.
+ */
 static void emitPhiEdgeCopies(
     MBasicBlock &edgeBB,
     const std::string &dst,
@@ -319,12 +372,30 @@ static void emitPhiEdgeCopies(
     }
 }
 
-/// @brief Lower a conditional branch (Opcode::CBr) into AArch64 compare+branch.
-/// @details Tries hard to fuse the condition's compare producer with the branch
-///          when the producer is a same-block comparison; falls back to a
-///          materialize + cmp #0 + b.ne sequence otherwise. Always emits explicit
-///          edge blocks for the true/false targets so phi-argument spills can be
-///          inserted on the precise edge.
+/**
+ * @brief Lowers an IL conditional branch to comparisons, branches, and optional edge blocks.
+ *
+ * A same-block comparison producer is folded into integer compare/condition
+ * branches or an FP compare result. Otherwise the boolean value is
+ * materialized and tested against zero. Separate true/false edge blocks are
+ * appended when phi arguments or identical destinations require distinct
+ * transfers.
+ *
+ * @param term Candidate `CBr` terminator.
+ * @param inBB Source IL block containing @p term and possible compare producer.
+ * @param[in,out] outBB Corresponding MIR block receiving the branch sequence.
+ * @param blockIndex Original block index used in unique edge labels.
+ * @param[in,out] mf Output function that owns appended edge blocks.
+ * @param ti Target metadata for value materialization.
+ * @param[in,out] fb Frame allocator for nested spill materialization.
+ * @param phiRegClass Destination phi register classes.
+ * @param phiSpillOffset Destination phi frame offsets.
+ * @param[in,out] blockTempVReg Source block temporary snapshot.
+ * @param[in,out] tempRegClass Function-wide temporary class map.
+ * @param[in,out] nextVRegId Virtual-register allocator state.
+ * @throws std::runtime_error If a required condition or phi argument cannot be
+ *         materialized or its metadata is inconsistent.
+ */
 static void lowerCBr(const il::core::Instr &term,
                      const il::core::BasicBlock &inBB,
                      MBasicBlock &outBB,
@@ -499,11 +570,30 @@ static void lowerCBr(const il::core::Instr &term,
     }
 }
 
-/// @brief Lower an Opcode::SwitchI32 terminator.
-/// @details Small switches (<= 3 cases) lower to a linear chain of cmp+b.eq;
-///          larger switches build a binary-search tree over the sorted case
-///          values. Each case with phi-args gets its own edge block so the
-///          target block sees a canonical, arg-free predecessor.
+/**
+ * @brief Lowers an `Opcode::SwitchI32` terminator.
+ *
+ * Cases are validated, assigned optional phi-edge blocks, sorted, and checked
+ * for duplicate keys. Small sets use comparisons, suitable dense non-negative
+ * sets use a jump table unless disabled by `ZANNA_NO_JUMP_TABLES`, and remaining
+ * sets spill the scrutinee for a recursive binary-search tree.
+ *
+ * @param term Switch terminator to validate and lower.
+ * @param inBB Containing IL block for operand materialization.
+ * @param[in,out] outBB Original MIR dispatch block.
+ * @param blockIndex Original block index used for spill keys and labels.
+ * @param[in,out] mf Output function receiving edge/tree blocks.
+ * @param ti Target metadata for materialization.
+ * @param[in,out] fb Frame allocator for phi and scrutinee spills.
+ * @param phiRegClass Destination phi register classes.
+ * @param phiSpillOffset Destination phi frame offsets.
+ * @param[in,out] blockTempVReg Source block temporary snapshot.
+ * @param[in,out] tempRegClass Function-wide temporary class map.
+ * @param[in,out] nextVRegId Virtual-register allocator state.
+ * @param[in,out] switchAuxCounter Unique binary-tree label counter.
+ * @throws std::runtime_error If switch structure, keys, metadata, or
+ *         materialized operand classes are invalid.
+ */
 static void lowerSwitchI32(
     const il::core::Instr &term,
     const il::core::BasicBlock &inBB,
@@ -702,6 +792,21 @@ static void lowerSwitchI32(
     }
 }
 
+/**
+ * @brief Lowers supported terminators for every original block in an IL function.
+ *
+ * @param fn Source IL function.
+ * @param[in,out] mf Parallel MIR function, plus any appended auxiliary blocks.
+ * @param ti Target ABI/register metadata.
+ * @param[in,out] fb Frame allocator.
+ * @param phiVregId Currently unused phi-vreg compatibility input.
+ * @param phiRegClass Phi parameter classes by target label.
+ * @param phiSpillOffset Phi parameter offsets by target label.
+ * @param[in,out] blockTempVRegSnapshot Temporary mappings by original block.
+ * @param[in,out] tempRegClass Function-wide temporary class map.
+ * @param[in,out] nextVRegId Virtual-register allocator state.
+ * @throws std::runtime_error If terminator validation or materialization fails.
+ */
 void lowerTerminators(const il::core::Function &fn,
                       MFunction &mf,
                       const TargetInfo &ti,

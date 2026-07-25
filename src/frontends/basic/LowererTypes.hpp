@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/LowererTypes.hpp
+// File: src/frontends/basic/LowererTypes.hpp
 // Purpose: Core type definitions shared across Lowerer components.
 // Key invariants: Types are POD or simple structs; no methods beyond trivial
 //                 accessors.
@@ -13,6 +13,16 @@
 // Links: docs/internals/architecture.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file LowererTypes.hpp
+ * @brief Defines value, symbol, storage, layout, and control-flow metadata.
+ *
+ * These structures are lightweight records shared by modular BASIC lowering
+ * components. Pointer and Value members refer to IL objects owned by the module
+ * or active function; AST-derived names and vectors are owned by the records.
+ */
+
 #pragma once
 
 #include "frontends/basic/BasicTypes.hpp"
@@ -105,9 +115,13 @@ struct ProcedureSignature {
 struct ClassLayout {
     /// @brief Metadata describing a single field within the class layout.
     struct Field {
+        /// Source-level field name.
         std::string name;
+        /// BASIC semantic field type.
         Type type{Type::I64};
+        /// Byte offset from the object base.
         std::size_t offset{0};
+        /// Field storage width in bytes.
         std::size_t size{0};
         /// @brief True when this field is declared as an array.
         /// @details Preserves array metadata from the AST so lowering can

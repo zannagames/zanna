@@ -5,13 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/BasicDiagnosticMessages.hpp
+// File: src/frontends/basic/BasicDiagnosticMessages.hpp
 // Purpose: Defines reusable diagnostic message identifiers for the BASIC front end.
 // Key invariants: Message identifiers are stable and uniquely map to human-readable text.
 // Ownership/Lifetime: Header-only constants; no dynamic ownership.
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file BasicDiagnosticMessages.hpp
+ * @brief Defines stable identifiers and default text for BASIC diagnostics.
+ *
+ * Each inline constant contains string views into static string literals and
+ * can be shared across parser and semantic-analysis translation units without
+ * allocation or initialization-order dependencies.
+ */
 
 #pragma once
 
@@ -20,12 +29,13 @@
 namespace il::frontends::basic::diag {
 
 /// @brief Compile-time description of a diagnostic message.
+/// @invariant Both views refer to static storage for every declaration below.
 struct Message {
     std::string_view id;   ///< Stable identifier printed by the diagnostic emitter.
     std::string_view text; ///< Primary human-readable message text.
 };
 
-/// @brief SELECT CASE selector must be integer-compatible.
+/// @brief SELECT CASE selector must be numeric or string-compatible.
 inline constexpr Message ERR_SelectCase_NonIntegerSelector{
     "ERR_SelectCase_NonIntegerSelector", "SELECT CASE selector must be numeric or string"};
 

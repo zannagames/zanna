@@ -18,9 +18,19 @@
 // Ownership/Lifetime:
 //   - AsmEmitter holds a non-owning pointer to TargetInfo; caller keeps it alive.
 //   - currentPlan_ is only valid during a single emitFunction() call.
-// Links: codegen/aarch64/AsmEmitter.hpp, codegen/aarch64/FrameCodegen.hpp
+// Links: src/codegen/aarch64/AsmEmitter.hpp, src/codegen/aarch64/FrameCodegen.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Implements AArch64 GAS text emission and target-specific symbol syntax.
+ *
+ * Public instruction methods serialize already allocated MIR. File-local
+ * helpers validate register views, legalize immediate/address forms, and
+ * normalize symbols. Full-function emission binds a temporary `FramePlan`
+ * while return instructions are expanded, then clears that borrowed state.
+ */
 
 #include "AsmEmitter.hpp"
 
@@ -61,7 +71,9 @@ inline void printDReg(std::ostream &os, PhysReg r) {
     os << 'd' << (name + 1);
 }
 
-/// Print a GPR through its 32-bit W-register view.
+/// @brief Print a GPR through its 32-bit W-register view.
+/// @param os Output stream receiving the register name.
+/// @param r Physical GPR, stack pointer, or already-compatible register spelling.
 inline void printWReg(std::ostream &os, PhysReg r) {
     const char *name = regName(r);
     if (name[0] == 'x')
@@ -72,25 +84,45 @@ inline void printWReg(std::ostream &os, PhysReg r) {
         os << name;
 }
 
-/// Emit a 3-register GPR instruction: "  mnem xd, xn, xm\n"
+/// @brief Emit a three-register GPR instruction.
+/// @param os Output assembly stream.
+/// @param mnem Instruction mnemonic.
+/// @param d Destination register.
+/// @param a First source register.
+/// @param b Second source register.
 inline void emit3R(std::ostream &os, const char *mnem, PhysReg d, PhysReg a, PhysReg b) {
     os << "  " << mnem << " " << regName(d) << ", " << regName(a) << ", " << regName(b) << "\n";
 }
 
-/// Emit a 2-register + immediate GPR instruction: "  mnem xd, xn, #imm\n"
+/// @brief Emit a two-register plus immediate GPR instruction.
+/// @param os Output assembly stream.
+/// @param mnem Instruction mnemonic.
+/// @param d Destination register.
+/// @param s Source register.
+/// @param imm Immediate rendered after `#`.
 inline void emit2RI(std::ostream &os, const char *mnem, PhysReg d, PhysReg s, long long imm) {
     os << "  " << mnem << " " << regName(d) << ", " << regName(s) << ", #" << imm << "\n";
 }
 
-/// Emit a 2-register + shifted-12-bit immediate: "  mnem xd, xn, #imm12, lsl #12\n"
-/// Used for add/sub immediates that don't fit in 12 bits unshifted (imm12 << 12).
+/// @brief Emit a two-register plus shifted-12-bit immediate instruction.
+/// @details Used for add/sub immediates that fit only as `imm12 << 12`.
+/// @param os Output assembly stream.
+/// @param mnem Instruction mnemonic.
+/// @param d Destination register.
+/// @param s Source register.
+/// @param imm12 Unshifted 12-bit payload.
 inline void emit2RIShift12(
     std::ostream &os, const char *mnem, PhysReg d, PhysReg s, uint32_t imm12) {
     os << "  " << mnem << " " << regName(d) << ", " << regName(s) << ", #" << imm12
        << ", lsl #12\n";
 }
 
-/// Emit a 3-register FPR instruction: "  mnem dd, dn, dm\n"
+/// @brief Emit a three-register scalar-double instruction.
+/// @param os Output assembly stream.
+/// @param mnem Instruction mnemonic.
+/// @param d Destination FPR.
+/// @param a First source FPR.
+/// @param b Second source FPR.
 inline void emit3D(std::ostream &os, const char *mnem, PhysReg d, PhysReg a, PhysReg b) {
     os << "  " << mnem << " ";
     printDReg(os, d);
@@ -112,8 +144,11 @@ inline void emit3D(std::ostream &os, const char *mnem, PhysReg d, PhysReg a, Phy
 namespace zanna::codegen::aarch64 {
 
 /// @brief Map IL extern names to C runtime symbol names.
-/// The IL uses namespaced names like "Zanna.Console.PrintI64" but the runtime
-/// exports C-style names like "rt_print_i64".
+/// @details The IL uses namespaced names like `Zanna.Console.PrintI64` but the
+///          runtime exports C-style names like `rt_print_i64`. Unknown names
+///          pass through unchanged.
+/// @param name Canonical IL or already-native symbol.
+/// @return Runtime symbol spelling.
 static std::string mapRuntimeSymbol(const std::string &name) {
     if (auto mapped = il::runtime::mapCanonicalRuntimeName(name))
         return std::string(*mapped);
@@ -154,7 +189,11 @@ static std::string mangleSymbolImpl(const std::string &name, bool isDarwin) {
 }
 
 /// @brief Mangle a call target symbol for emission.
-/// This first maps IL runtime names to C runtime names, then applies platform mangling.
+/// @details First maps IL runtime names to C runtime names, then applies
+///          platform mangling.
+/// @param name Raw IL, runtime, or user symbol.
+/// @param isDarwin Whether Mach-O underscore conventions apply.
+/// @return Assembly-safe call-target spelling.
 static std::string mangleCallTargetImpl(const std::string &name, bool isDarwin) {
     return mangleSymbolImpl(mapRuntimeSymbol(name), isDarwin);
 }
@@ -227,30 +266,43 @@ void AsmEmitter::emitPrologue(std::ostream &os, const FramePlan &plan) const {
         /// @param emitter Emitter that owns register formatting helpers.
         Steps(std::ostream &out, const AsmEmitter &emitter) : os(out), self(emitter) {}
 
+        /// @brief Emit return-address signing at prologue entry.
         void paciasp() const {
             os << "  paciasp\n";
         }
 
+        /// @brief Push frame pointer and link register as a pair.
         void stpFpLrPre() const {
             os << "  stp x29, x30, [sp, #-16]!\n";
         }
 
+        /// @brief Establish `x29` as the current frame pointer.
         void movFpSp() const {
             os << "  mov x29, sp\n";
         }
 
+        /// @brief Allocate @p n bytes of local stack storage.
+        /// @param n Positive byte count supplied by frame iteration.
         void subSp(int32_t n) const {
             self.emitSubSp(os, n);
         }
 
+        /// @brief Push a pair of callee-saved GPRs.
+        /// @param r0 First register.
+        /// @param r1 Second register.
         void stpGprPair(PhysReg r0, PhysReg r1) const {
             os << "  stp " << rn(r0) << ", " << rn(r1) << ", [sp, #-16]!\n";
         }
 
+        /// @brief Push one callee-saved GPR in a 16-byte stack slot.
+        /// @param r0 Register to save.
         void strGprSingle(PhysReg r0) const {
             os << "  str " << rn(r0) << ", [sp, #-16]!\n";
         }
 
+        /// @brief Push a pair of callee-saved scalar-double FPRs.
+        /// @param r0 First register.
+        /// @param r1 Second register.
         void stpFprPair(PhysReg r0, PhysReg r1) const {
             os << "  stp ";
             self.printD(os, r0);
@@ -259,6 +311,8 @@ void AsmEmitter::emitPrologue(std::ostream &os, const FramePlan &plan) const {
             os << ", [sp, #-16]!\n";
         }
 
+        /// @brief Push one callee-saved FPR in a 16-byte stack slot.
+        /// @param r0 Register to save.
         void strFprSingle(PhysReg r0) const {
             os << "  str ";
             self.printD(os, r0);
@@ -283,6 +337,9 @@ void AsmEmitter::emitEpilogue(std::ostream &os, const FramePlan &plan) const {
         /// @param emitter Emitter that owns register formatting helpers.
         Steps(std::ostream &out, const AsmEmitter &emitter) : os(out), self(emitter) {}
 
+        /// @brief Pop a pair of callee-saved scalar-double FPRs.
+        /// @param r0 First register.
+        /// @param r1 Second register.
         void ldpFprPair(PhysReg r0, PhysReg r1) const {
             os << "  ldp ";
             self.printD(os, r0);
@@ -291,32 +348,44 @@ void AsmEmitter::emitEpilogue(std::ostream &os, const FramePlan &plan) const {
             os << ", [sp], #16\n";
         }
 
+        /// @brief Pop one callee-saved FPR from a 16-byte stack slot.
+        /// @param r0 Register to restore.
         void ldrFprSingle(PhysReg r0) const {
             os << "  ldr ";
             self.printD(os, r0);
             os << ", [sp], #16\n";
         }
 
+        /// @brief Pop a pair of callee-saved GPRs.
+        /// @param r0 First register.
+        /// @param r1 Second register.
         void ldpGprPair(PhysReg r0, PhysReg r1) const {
             os << "  ldp " << rn(r0) << ", " << rn(r1) << ", [sp], #16\n";
         }
 
+        /// @brief Pop one callee-saved GPR from a 16-byte stack slot.
+        /// @param r0 Register to restore.
         void ldrGprSingle(PhysReg r0) const {
             os << "  ldr " << rn(r0) << ", [sp], #16\n";
         }
 
+        /// @brief Deallocate @p n bytes of local stack storage.
+        /// @param n Positive byte count supplied by frame iteration.
         void addSp(int32_t n) const {
             self.emitAddSp(os, n);
         }
 
+        /// @brief Restore frame pointer and link register as a pair.
         void ldpFpLrPost() const {
             os << "  ldp x29, x30, [sp], #16\n";
         }
 
+        /// @brief Authenticate the saved return address.
         void autiasp() const {
             os << "  autiasp\n";
         }
 
+        /// @brief Emit the final return instruction.
         void ret() const {
             os << "  ret\n";
         }
@@ -572,6 +641,7 @@ void AsmEmitter::emitAddSp(std::ostream &os, long long bytes) const {
 ///          particular operand shape being emitted.
 /// @param blocked Physical GPRs that cannot be used as scratch registers.
 /// @return Reserved scratch register not present in @p blocked.
+/// @throws std::runtime_error when all reserved scratch registers are blocked.
 static PhysReg chooseGprScratch(std::initializer_list<PhysReg> blocked) {
     const PhysReg candidates[] = {kScratchGPR, kScratchGPR2, kScratchGPR3};
     for (PhysReg candidate : candidates) {
@@ -620,12 +690,16 @@ void AsmEmitter::emitStrFprToSp(std::ostream &os, PhysReg src, long long offset)
 }
 
 /// @brief Check if offset is in ARM64 signed immediate range for str/ldr instructions.
-/// The signed unscaled immediate for str/ldr is [-256, 255].
+/// @details The signed unscaled immediate for str/ldr is [-256, 255].
+/// @param offset Byte displacement to classify.
+/// @return `true` when @p offset fits signed imm9.
 static bool isInSignedImmRange(long long offset) {
     return offset >= -256 && offset <= 255;
 }
 
 /// @brief Check if offset fits the signed scaled pair form used by LDP/STP.
+/// @param offset Byte displacement, which must be eight-byte aligned.
+/// @return `true` when the scaled displacement fits signed imm7.
 static bool isPairImm7Offset(long long offset) {
     if ((offset % 8) != 0)
         return false;
@@ -641,6 +715,7 @@ static bool isPairImm7Offset(long long offset) {
 /// @param rhs Delta in bytes.
 /// @param context Diagnostic context for any overflow exception.
 /// @return Sum of @p lhs and @p rhs.
+/// @throws std::overflow_error when the mathematical sum is not representable.
 static long long checkedOffsetAdd(long long lhs, long long rhs, const char *context) {
     if ((rhs > 0 && lhs > std::numeric_limits<long long>::max() - rhs) ||
         (rhs < 0 && lhs < std::numeric_limits<long long>::min() - rhs)) {
@@ -652,6 +727,8 @@ static long long checkedOffsetAdd(long long lhs, long long rhs, const char *cont
 /// @brief GAS mnemonic for an unscaled narrow load of @p bytes (1/2/4).
 /// @details Returns ldurb/ldurh/ldur. The unscaled (ldur*) forms are used so any
 ///          signed 9-bit FP-relative offset works without scaling constraints.
+/// @param bytes Access width: one, two, or four.
+/// @return Pointer to a static GAS mnemonic.
 /// @throws std::runtime_error if @p bytes is not 1, 2, or 4.
 static const char *narrowLoadMnemonic(unsigned bytes) {
     switch (bytes) {
@@ -669,6 +746,8 @@ static const char *narrowLoadMnemonic(unsigned bytes) {
 /// @brief GAS mnemonic for an unscaled narrow store of @p bytes (1/2/4).
 /// @details Returns sturb/sturh/stur — the unscaled counterparts of
 ///          narrowLoadMnemonic(), chosen for the same offset-flexibility reason.
+/// @param bytes Access width: one, two, or four.
+/// @return Pointer to a static GAS mnemonic.
 /// @throws std::runtime_error if @p bytes is not 1, 2, or 4.
 static const char *narrowStoreMnemonic(unsigned bytes) {
     switch (bytes) {

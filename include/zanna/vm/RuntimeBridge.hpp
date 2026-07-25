@@ -9,16 +9,31 @@
 // Purpose: Public-facing extern registration surface for the VM runtime bridge.
 //          Supports process-global and per-VM extern registries with optional
 //          strict mode for signature mismatch detection.
-// Key invariants: The process-global registry is mutex-protected. Per-VM
-//                 registries rely on the VM's single-threaded execution model.
+// Key invariants: Registry lookup and mutation are mutex-protected.
 //                 In strict mode, re-registration with a different signature
 //                 returns SignatureMismatch instead of silently overwriting.
 // Ownership/Lifetime: ExternRegistryPtr owns an initial registry reference via
 //                     custom deleter. VMs and worker payloads retain additional
 //                     references while they hold raw registry pointers.
-// Links: src/vm/RuntimeBridge.cpp, docs/codemap/vm-runtime.md
+// Links: src/vm/RuntimeBridge.cpp, docs/internals/codemap/vm-runtime.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file include/zanna/vm/RuntimeBridge.hpp
+ * @brief Declares the public registry used to connect VM extern calls to native
+ *        handlers.
+ *
+ * @details
+ * Embedders describe a native callback with `ExternDesc`, register it in the
+ * process-global registry or an isolated registry, and attach isolated
+ * registries to individual VMs. Names are matched case-insensitively for ASCII
+ * letters by canonicalizing them to lowercase.
+ *
+ * Registry operations synchronize their internal state. Registry handles use
+ * intrusive reference counting behind an opaque type so VMs and worker
+ * payloads can safely extend the lifetime established by `ExternRegistryPtr`.
+ */
 
 #pragma once
 
@@ -31,10 +46,20 @@
 namespace il::vm
 {
 
-// Re-export signature type expected for extern declarations.
+/// @brief Public signature description used by VM extern declarations.
 using Signature = il::runtime::signatures::Signature;
 
-/// @brief Describe an externally provided runtime helper.
+/**
+ * @brief Describes one native function exposed to IL execution.
+ *
+ * The descriptor owns its symbolic name and signature metadata. `fn` remains an
+ * opaque pointer until registration converts it to the runtime handler ABI
+ * `void(void **args, void *result)`.
+ *
+ * @ownership The descriptor does not own the native function. The code
+ *            containing that function must remain loaded while it is registered
+ *            or callable by a VM.
+ */
 struct ExternDesc
 {
     std::string name;    ///< Symbolic name used in IL (e.g., "rt_abs_i64").
@@ -42,81 +67,122 @@ struct ExternDesc
     void *fn = nullptr;  ///< Function pointer matching the runtime handler ABI.
 };
 
-/// @brief Canonicalize a runtime helper name for registry lookups.
-/// @details Lowercases ASCII letters and leaves other characters intact.
+/**
+ * @brief Canonicalize an extern name for case-insensitive registry matching.
+ * @param n Borrowed name bytes to transform.
+ * @return An owning copy with each ASCII letter lowercased and every non-ASCII
+ *         or non-alphabetic byte preserved.
+ */
 std::string canonicalizeExternName(std::string_view n);
 
 //===----------------------------------------------------------------------===//
 // ExternRegistry API
 //===----------------------------------------------------------------------===//
 
-/// @brief Result codes for extern registration operations.
+/// @brief Outcomes produced by `registerExternIn`.
 enum class ExternRegisterResult
 {
-    Success,          ///< Registration succeeded.
-    SignatureMismatch ///< Strict mode: name exists with different signature.
+    Success,          ///< The new descriptor was inserted or replaced the old one.
+    SignatureMismatch ///< Strict mode preserved an existing incompatible entry.
 };
 
-/// @brief Opaque handle to an extern function registry.
-/// @details Holds registered external functions for resolution during IL execution.
-///          The struct definition is in RuntimeBridge.cpp to keep internals private.
+/**
+ * @brief Opaque, reference-counted registry of native extern descriptions.
+ *
+ * The concrete mapping, synchronization primitive, strict-mode flag, and
+ * intrusive reference count are private to `RuntimeBridge.cpp`.
+ */
 struct ExternRegistry;
 
-/// @brief Custom deleter for ExternRegistry unique_ptr.
+/// @brief Releases the owning reference held by `ExternRegistryPtr`.
 struct ExternRegistryDeleter
 {
+    /**
+     * @brief Release one intrusive registry reference.
+     * @param reg Registry to release, or null for a no-op.
+     */
     void operator()(ExternRegistry *reg) const noexcept;
 };
 
-/// @brief Owning handle to an extern registry.
-/// @details The pointed-to registry uses intrusive lifetime references so it
-///          can safely be shared across parent/worker VM boundaries even when
-///          only raw pointers are stored internally.
+/**
+ * @brief Movable owner of one intrusive registry reference.
+ *
+ * VMs that retain the registry maintain their own references even though their
+ * public attachment APIs may expose raw pointers.
+ */
 using ExternRegistryPtr = std::unique_ptr<ExternRegistry, ExternRegistryDeleter>;
 
-/// @brief Create a new empty extern registry.
-/// @details The returned registry is independent of the process-global registry
-///          and can be assigned to a VM for isolated extern resolution.
-/// @return Owning pointer to the newly created registry.
+/**
+ * @brief Create an empty registry independent of the global singleton.
+ * @return A non-null owning handle with strict mode disabled and an initial
+ *         intrusive reference count of one.
+ *
+ * @throws std::bad_alloc If registry allocation fails.
+ */
 [[nodiscard]] ExternRegistryPtr createExternRegistry();
 
-/// @brief Access the process-global extern registry singleton.
-/// @return Reference to the global registry shared by all VMs without a per-VM registry.
+/**
+ * @brief Access the lazily initialized process-global registry.
+ * @return A reference that remains valid until process shutdown.
+ *
+ * @note The caller must not attempt to delete the returned singleton.
+ */
 ExternRegistry &processGlobalExternRegistry();
 
-/// @brief Register an external function in a specific registry.
-/// @param registry Target registry (per-VM or global).
-/// @param ext Descriptor for the external function.
-/// @return Success on successful registration. SignatureMismatch if strict mode
-///         is enabled and a function with the same name but different signature
-///         is already registered.
-/// @note In non-strict mode (default), this always succeeds and overwrites any
-///       existing registration with the same name.
+/**
+ * @brief Insert or replace an extern descriptor in a registry.
+ *
+ * The key is obtained with `canonicalizeExternName(ext.name)`. Re-registration
+ * with structurally equal parameter and return kinds replaces the descriptor
+ * even in strict mode. Signature attributes and signature names do not
+ * participate in that structural comparison.
+ *
+ * @param registry Registry to mutate.
+ * @param ext Descriptor copied into registry-owned storage.
+ * @return `Success` after insertion or replacement. Returns
+ *         `SignatureMismatch` only when strict mode rejects an existing key
+ *         with different parameter or return kinds.
+ *
+ * @note Non-strict mode always replaces an existing canonical-name match.
+ */
 ExternRegisterResult registerExternIn(ExternRegistry &registry, const ExternDesc &ext);
 
-/// @brief Enable or disable strict mode for an extern registry.
-/// @details In strict mode, re-registering an extern name with a different
-///          signature returns SignatureMismatch instead of silently overwriting.
-///          Strict mode is disabled by default for backward compatibility.
-/// @param registry Target registry.
-/// @param enabled True to enable strict mode, false to disable.
+/**
+ * @brief Configure incompatible re-registration handling.
+ * @param registry Registry whose synchronized strict-mode flag is updated.
+ * @param enabled `true` to preserve an existing entry when a replacement has
+ *                different parameter or return kinds; `false` to overwrite it.
+ *
+ * @note Strict mode is disabled for newly created registries.
+ */
 void setExternRegistryStrictMode(ExternRegistry &registry, bool enabled);
 
-/// @brief Query whether strict mode is enabled for a registry.
-/// @param registry Target registry.
-/// @return True if strict mode is enabled, false otherwise.
+/**
+ * @brief Query the synchronized strict-mode setting.
+ * @param registry Registry to inspect.
+ * @return `true` when incompatible replacements are rejected.
+ */
 bool isExternRegistryStrictMode(const ExternRegistry &registry);
 
-/// @brief Unregister an external function from a specific registry.
-/// @param registry Target registry.
-/// @param name Canonical name of the function to remove.
-/// @return True if a function was removed, false if not found.
+/**
+ * @brief Remove an extern by case-insensitive name.
+ * @param registry Registry to mutate.
+ * @param name Borrowed name; canonicalization is performed by the function.
+ * @return `true` when an entry was erased; `false` when no key matched.
+ */
 bool unregisterExternIn(ExternRegistry &registry, std::string_view name);
 
-/// @brief Look up an external function in a specific registry.
-/// @param registry Target registry.
-/// @param name Canonical name of the function.
-/// @return Pointer to the descriptor if found, nullptr otherwise.
+/**
+ * @brief Look up an extern by case-insensitive name.
+ * @param registry Registry to inspect.
+ * @param name Borrowed name; canonicalization is performed by the function.
+ * @return Pointer to a thread-local descriptor copy, or null when no key
+ *         matches.
+ *
+ * @warning The returned pointer is valid only on the calling thread and may be
+ *          overwritten after eight later successful `findExternIn` lookups on
+ *          that thread. Copy the descriptor when a longer lifetime is needed.
+ */
 const ExternDesc *findExternIn(ExternRegistry &registry, std::string_view name);
 
 class RuntimeBridge;

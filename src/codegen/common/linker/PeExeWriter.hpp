@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/PeExeWriter.hpp
+// File: src/codegen/common/linker/PeExeWriter.hpp
 // Purpose: Write PE executables from linked sections.
 // Key invariants:
 //   - DOS stub + PE signature + COFF header + Optional Header (PE32+)
@@ -17,6 +17,11 @@
 // Links: codegen/common/linker/LinkTypes.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file PeExeWriter.hpp
+ * @brief Declares direct Windows PE32+ executable serialization.
+ */
 
 #pragma once
 
@@ -30,7 +35,7 @@
 
 namespace zanna::codegen::linker {
 
-/// DLL import for PE linking.
+/// @brief Groups linker-visible imports supplied by one Windows DLL.
 struct DllImport {
     std::string dllName;                ///< DLL name (e.g., "kernel32.dll").
     std::vector<std::string> functions; ///< Linker-visible symbol names.
@@ -42,6 +47,15 @@ struct DllImport {
 /// @details Produces a valid Windows .exe with DOS stub, PE headers, section data,
 ///          and an .idata import directory. Optionally emits an x64 startup shim
 ///          that calls main() and terminates via ExitProcess.
+/// @param path UTF-8 destination path.
+/// @param layout Final merged sections, addresses, symbols, and rebase entries.
+/// @param arch Target AMD64 or AArch64 architecture.
+/// @param imports Ordered DLL import groups.
+/// @param slotRvas Optional preallocated IAT slot RVAs keyed by linker symbol.
+/// @param emitStartupStub Whether to synthesize a `main`/`ExitProcess` entry shim.
+/// @param stackSize Requested stack reserve; zero selects the PE default.
+/// @param err Diagnostic output stream.
+/// @return `true` when the executable is serialized and installed.
 bool writePeExe(const std::string &path,
                 const LinkLayout &layout,
                 LinkArch arch,
@@ -52,6 +66,12 @@ bool writePeExe(const std::string &path,
                 std::ostream &err);
 
 /// @brief Convenience overload — emits the startup stub, no IAT slot overrides, default stack.
+/// @param path UTF-8 destination path.
+/// @param layout Final merged layout.
+/// @param arch Target architecture.
+/// @param imports Ordered DLL import groups.
+/// @param err Diagnostic output stream.
+/// @return `true` on successful serialization and installation.
 inline bool writePeExe(const std::string &path,
                        const LinkLayout &layout,
                        LinkArch arch,

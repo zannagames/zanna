@@ -15,10 +15,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
+/// @file SemanticAnalyzer_Stmts_Runtime.cpp
 /// @brief Implements semantic validation for BASIC statements that manipulate runtime state.
-/// @details These helpers cover assignments, array declarations, random seeds, and
-///          procedure calls while maintaining the analyzer's bookkeeping.
+/// @details These helpers cover statement calls, scalar/member/array assignment,
+///          RANDOMIZE, DIM/CONST/STATIC/SHARED declarations, REDIM metadata, and
+///          SWAP traversal while maintaining scoped symbol, type, object-class,
+///          array, channel, and implicit-conversion bookkeeping.
 
 #include "frontends/basic/SemanticAnalyzer_Stmts_Runtime.hpp"
 #include "frontends/basic/ASTUtils.hpp"
@@ -34,9 +36,9 @@
 
 namespace il::frontends::basic::semantic_analyzer_detail {
 
-/// @brief Bind runtime statement helpers to the active semantic analyzer state.
-///
-/// @param analyzer Analyzer that supplies shared context such as loop tracking.
+/// @brief Binds runtime statement helpers to shared analyzer state.
+/// @param analyzer Analyzer borrowed by @ref StmtShared.
+/// @post No analyzer stack is modified.
 RuntimeStmtContext::RuntimeStmtContext(SemanticAnalyzer &analyzer) noexcept
     : StmtShared(analyzer) {}
 
@@ -48,9 +50,17 @@ using semantic_analyzer_detail::astToSemanticType;
 using semantic_analyzer_detail::RuntimeStmtContext;
 using semantic_analyzer_detail::semanticTypeName;
 
-/// @brief Validate a CALL statement against registered procedure signatures.
-///
-/// @param stmt Statement node describing the call.
+/// @brief Validates a statement-level invocation node.
+/// @details A null call is ignored. Plain calls resolve with SUB expectation,
+///          though FUNCTION signatures are accepted as statements, then visit
+///          and validate all arguments. Method calls perform a best-effort
+///          receiver precheck: an unbound variable spelling that is indexed as
+///          a class is diagnosed as an unknown qualified procedure; other
+///          unresolved receivers are deferred. The full method expression is
+///          then visited for runtime/OOP resolution and argument checks. Other
+///          expression node kinds are ignored defensively.
+/// @param stmt Mutable call statement; runtime method aliases may rewrite its
+///             contained call expression.
 void SemanticAnalyzer::analyzeCallStmt(CallStmt &stmt) {
     if (!stmt.call)
         return;
@@ -113,10 +123,22 @@ void SemanticAnalyzer::analyzeCallStmt(CallStmt &stmt) {
     // Unknown invocation node: nothing to analyze (defensive).
 }
 
-/// @brief Check type rules and loop-variable restrictions for scalar assignments.
+/// @brief Validates assignment to a simple variable or implicit-instance field.
+/// @details Constants are rejected first. Assignment to the active FUNCTION
+///          name records VB-style result flow. An unshadowed implicit field is
+///          type-checked directly, including float-to-int warning/conversion,
+///          int-to-bool conversion, and scalar/object mismatch rules.
 ///
-/// @param v Variable expression receiving the assignment.
-/// @param l LET statement providing the assigned expression and location.
+///          For normal variables, the RHS is evaluated before symbol resolution
+///          so a new unsuffixed variable may adopt string, boolean, float, or
+///          object type. Concrete object-class provenance is tracked and stale
+///          mappings removed. Active FOR variables are diagnosed. Whole-array
+///          versus scalar assignment is rejected. An integer variable assigned
+///          a float-producing arithmetic binary expression is promoted to float
+///          unless its name has `%` or `&`; other float-to-int assignments
+///          record narrowing and warning `B2002`.
+/// @param v Mutable destination name that may be scope-resolved.
+/// @param l LET statement supplying RHS and diagnostic location.
 void SemanticAnalyzer::analyzeVarAssignment(VarExpr &v, const LetStmt &l) {
     RuntimeStmtContext ctx(*this);
 
@@ -194,6 +216,8 @@ void SemanticAnalyzer::analyzeVarAssignment(VarExpr &v, const LetStmt &l) {
     if (ctx.isLoopVariable(v.name))
         ctx.reportLoopVariableMutation(v.name, l.loc, static_cast<uint32_t>(v.name.size()));
 
+    /// Replaces or removes the destination's concrete class mapping while
+    /// recording the procedure-scope baseline.
     auto updateTrackedObjectClass = [&](std::optional<std::string> nextClass) {
         auto itClass = objectClassTypes_.find(v.name);
         if (activeProcScope_) {
@@ -220,6 +244,7 @@ void SemanticAnalyzer::analyzeVarAssignment(VarExpr &v, const LetStmt &l) {
     if (auto itType = varTypes_.find(v.name); itType != varTypes_.end())
         varTy = itType->second;
 
+    /// Tests the three whole-array semantic categories.
     auto isArrayType = [](Type ty) {
         return ty == Type::ArrayInt || ty == Type::ArrayString || ty == Type::ArrayObject;
     };
@@ -282,10 +307,19 @@ void SemanticAnalyzer::analyzeVarAssignment(VarExpr &v, const LetStmt &l) {
     }
 }
 
-/// @brief Validate assignments targeting array elements.
-///
-/// @param a Array expression identifying the element being written.
-/// @param l LET statement describing the overall assignment.
+/// @brief Validates assignment to a named array element.
+/// @details Non-dotted names are scope-resolved and checked against array/type
+///          maps; dotted field names defer field existence/type validation to
+///          lowering. The legacy single index or each multidimensional index is
+///          visited: float literals receive integer conversion plus `B2002`,
+///          while nonliteral floats and other known non-integers emit `B2001`.
+///          RHS checking defaults to integer elements unless the tracked array
+///          is string/object. A constant legacy index for one known extent warns
+///          when negative or greater than or equal to the stored extent value.
+///          Known extents are copied into the AST for later lowering.
+/// @param a Mutable array access whose name, indices, conversions, and resolved
+///          extents may be updated.
+/// @param l Assignment supplying RHS and location.
 void SemanticAnalyzer::analyzeArrayAssignment(ArrayExpr &a, const LetStmt &l) {
     // BUG-056 fix: Check if this is an array field access (e.g., "B.CELLS")
     // If the name contains a dot, it's accessing an array field on an object
@@ -413,6 +447,13 @@ void SemanticAnalyzer::analyzeArrayAssignment(ArrayExpr &a, const LetStmt &l) {
     }
 }
 
+/// @brief Validates assignment to a resolved member/property expression.
+/// @details Visits target and optional RHS. Unknown/missing values stop
+///          compatibility checks. Float-to-int records narrowing/warning,
+///          int-to-bool records conversion, and incompatible string, boolean,
+///          integer, or object assignments emit `B2001`.
+/// @param m Mutable member target.
+/// @param l Assignment supplying RHS and diagnostic location.
 void SemanticAnalyzer::analyzeMemberAssignment(MemberAccessExpr &m, const LetStmt &l) {
     Type targetTy = visitExpr(m);
     Type exprTy = Type::Unknown;
@@ -444,9 +485,10 @@ void SemanticAnalyzer::analyzeMemberAssignment(MemberAccessExpr &m, const LetStm
     }
 }
 
-/// @brief Emit diagnostics when the left-hand side of a LET is not assignable.
-///
-/// @param l LET statement with a non-variable target.
+/// @brief Diagnoses a LET target unsupported as an lvalue.
+/// @details Visits target and RHS first to retain nested diagnostics, then emits
+///          `B2007` unconditionally.
+/// @param l LET statement with a non-assignable target form.
 void SemanticAnalyzer::analyzeConstExpr(const LetStmt &l) {
     if (l.target)
         visitExpr(*l.target);
@@ -456,9 +498,15 @@ void SemanticAnalyzer::analyzeConstExpr(const LetStmt &l) {
     de.emit(il::support::Severity::Error, "B2007", l.loc, 1, std::move(msg));
 }
 
-/// @brief Dispatch LET statement analysis based on target form.
-///
-/// @param l LET statement being validated.
+/// @brief Dispatches LET validation by the target expression's shape.
+/// @details Null targets are ignored. Variables, arrays, and member accesses
+///          use dedicated validators. Method-call syntax is treated as an
+///          object array-field target: its base and index arguments are visited,
+///          while RHS element typing is deferred to lowering. An unshadowed
+///          call-expression target may denote an implicit-instance array field
+///          and receives index plus element checks; other call/unknown forms
+///          emit `B2007`.
+/// @param l Mutable assignment and target AST.
 void SemanticAnalyzer::analyzeLet(LetStmt &l) {
     if (!l.target)
         return;
@@ -565,9 +613,10 @@ void SemanticAnalyzer::analyzeLet(LetStmt &l) {
     }
 }
 
-/// @brief Validate RANDOMIZE statements and seed expressions.
-///
-/// @param r RANDOMIZE statement node.
+/// @brief Validates an optional RANDOMIZE seed.
+/// @details Visits a present seed and accepts integer, float, or unknown
+///          recovery type; every other known type emits `B2001`.
+/// @param r RANDOMIZE statement to inspect.
 void SemanticAnalyzer::analyzeRandomize(const RandomizeStmt &r) {
     if (r.seed) {
         auto ty = visitExpr(*r.seed);
@@ -578,9 +627,23 @@ void SemanticAnalyzer::analyzeRandomize(const RandomizeStmt &r) {
     }
 }
 
-/// @brief Validate DIM statements and update analyzer state.
+/// @brief Validates DIM and records scalar or array declaration metadata.
+/// @details For arrays, uses the legacy `size` expression when present,
+///          otherwise non-null `dimensions`. Integer sizes and integer-valued
+///          CONST variables become stored inclusive upper bounds; nonnegative
+///          float literals are truncated with conversion/warning. Negative
+///          bounds emit `B2003`. When all bounds are known, total element count
+///          multiplies `(bound + 1)` with overflow diagnostic `B2004`; partial
+///          constants retain only known extents with unknown total.
 ///
-/// @param d DIM statement describing variable or array declarations.
+///          Local declarations receive unique scoped names and duplicate-local
+///          `B1006`; module declarations use their existing spelling. Array
+///          shape/type state and scalar/object-class state are logged for
+///          procedure rollback. Explicit class arrays are object arrays; `$` or
+///          string type produces string arrays. Scalar `Zanna.System.String` or
+///          `Zanna.String` class names map to string and other explicit classes
+///          to object. Known extents are copied to the AST.
+/// @param d Mutable declaration whose name and resolved extents may be updated.
 void SemanticAnalyzer::analyzeDim(DimStmt &d) {
     ArrayMetadata metadata;
 
@@ -789,9 +852,14 @@ void SemanticAnalyzer::analyzeDim(DimStmt &d) {
     }
 }
 
-/// @brief Validate CONST statements and track constant names.
-///
-/// @param c CONST statement declaring a constant.
+/// @brief Evaluates and records a CONST declaration.
+/// @details Visits the optional initializer, inserts the exact name into
+///          constant and symbol sets, and caches integer literals verbatim or
+///          floating literals truncated to `long long` for DIM lookup. Final
+///          type normally comes from the AST declaration; an unsuffixed
+///          I64-default constant with float initializer is inferred as float.
+///          Type/symbol mutations are logged when a procedure scope is active.
+/// @param c Mutable constant declaration and initializer.
 void SemanticAnalyzer::analyzeConst(ConstStmt &c) {
     // Evaluate the initializer expression to determine its type
     Type initializerTy = Type::Unknown;
@@ -842,7 +910,8 @@ void SemanticAnalyzer::analyzeConst(ConstStmt &c) {
 
 /// @brief Analyze a STATIC statement declaring procedure-local persistent variables.
 /// @details STATIC variables are procedure-scoped like DIM, but their storage persists
-///          between calls. This analyzer registers the variable name in the current scope.
+///          between calls. This routine only declares/uniquifies and records the
+///          symbol; it does not infer a type or visit an initializer here.
 /// @param s STATIC statement to validate and register.
 void SemanticAnalyzer::analyzeStatic(StaticStmt &s) {
     if (scopes_.hasScope()) {
@@ -869,8 +938,9 @@ void SemanticAnalyzer::analyzeStatic(StaticStmt &s) {
 
 /// @brief Analyze a SHARED statement listing names that refer to module-level state.
 /// @details For compatibility: procedures can already access module-level globals without SHARED.
-///          This handler resolves each name to ensure diagnostics include the correct symbol,
-///          and records a reference so later passes materialize storage as needed.
+///          This handler resolves each name as a reference, then inserts it into
+///          the known-symbol set without allocating a local binding. Newly
+///          inserted names inside a procedure are logged for rollback.
 /// @param s SHARED statement being analyzed.
 void SemanticAnalyzer::analyzeShared(SharedStmt &s) {
     for (auto &name : s.names) {
@@ -882,9 +952,18 @@ void SemanticAnalyzer::analyzeShared(SharedStmt &s) {
     }
 }
 
-/// @brief Validate REDIM statements for previously declared arrays.
-///
-/// @param d REDIM statement describing the new array bounds.
+/// @brief Validates REDIM bounds and replaces tracked array metadata.
+/// @details Visits the legacy `size` or each non-null dimension. Float literals
+///          receive integer conversion/warning but are not added to the
+///          compile-time extent vector; nonliteral floats and other known
+///          non-integers emit mismatch diagnostics. Integer literals, including
+///          diagnosed negatives, are collected; other expressions make the
+///          shape dynamic. The target is scope-resolved and must exist as an
+///          array. Fully constant integer bounds compute `(bound + 1)` products;
+///          overflow silently falls back to unknown metadata. Dynamic/empty
+///          bounds also replace metadata with unknown shape.
+/// @param d Mutable REDIM statement whose name and bound expressions may be
+///          resolved/annotated.
 void SemanticAnalyzer::analyzeReDim(ReDimStmt &d) {
     long long sz = -1;
     std::vector<long long> extents;
@@ -971,9 +1050,10 @@ void SemanticAnalyzer::analyzeReDim(ReDimStmt &d) {
     }
 }
 
-/// @brief Validate SWAP statements for compatible types.
-///
-/// @param s SWAP statement describing the two lvalues to exchange.
+/// @brief Visits both SWAP operands for nested semantic diagnostics.
+/// @details This routine does not verify lvalue form or mutual type
+///          compatibility; absent operands are skipped.
+/// @param s Mutable SWAP statement.
 void SemanticAnalyzer::analyzeSwap(SwapStmt &s) {
     if (s.lhs) {
         visitExpr(*s.lhs);

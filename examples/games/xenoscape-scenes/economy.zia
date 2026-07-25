@@ -1,0 +1,192 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/economy.zia
+// Purpose: Defines the shipwreck workbench's four permanent upgrade branches.
+// Key invariants:
+//   - Branch tiers remain in 0..3 and costs match the release design table.
+//   - Failed purchases never mutate tiers or spend the caller's gem balance.
+// Ownership/Lifetime:
+//   - Game owns one UpgradeSystem for the active save-slot lifetime.
+//   - PurchaseResult values are short-lived immutable-style outcome objects.
+// Links: hub.zia, game.zia, save.zia, meta_probe.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module economy;
+
+bind "./config";
+
+final UPGRADE_SUIT_INTEGRITY = 0;
+final UPGRADE_BLASTER_CAPACITOR = 1;
+final UPGRADE_THRUSTER_CONTROL = 2;
+final UPGRADE_SCANNER_RANGE = 3;
+final UPGRADE_BRANCH_COUNT = 4;
+final UPGRADE_MAX_TIER = 3;
+
+final PURCHASE_SUCCESS = 1;
+final PURCHASE_INVALID_BRANCH = -1;
+final PURCHASE_MAX_TIER = -2;
+final PURCHASE_INSUFFICIENT_GEMS = -3;
+
+/// @brief Map an upgrade branch to its player-facing name.
+///
+/// @param branch One `UPGRADE_*` branch id.
+/// @return Stable display name, or `Unknown Upgrade` for invalid input.
+func upgradeBranchName(branch: Integer) -> String {
+    if branch == UPGRADE_SUIT_INTEGRITY { return "Suit Integrity"; }
+    if branch == UPGRADE_BLASTER_CAPACITOR { return "Blaster Capacitor"; }
+    if branch == UPGRADE_THRUSTER_CONTROL { return "Thruster Control"; }
+    if branch == UPGRADE_SCANNER_RANGE { return "Scanner Range"; }
+    return "Unknown Upgrade";
+}
+
+/// @brief Return the exact price for purchasing the next branch tier.
+///
+/// @param branch One `UPGRADE_*` branch id.
+/// @param currentTier Current owned tier in 0..3.
+/// @return Positive gem price for tiers 0..2, or -1 for invalid/maxed input.
+func upgradeNextCost(branch: Integer, currentTier: Integer) -> Integer {
+    if branch < 0 or branch >= UPGRADE_BRANCH_COUNT or
+       currentTier < 0 or currentTier >= UPGRADE_MAX_TIER { return -1; }
+    if branch == UPGRADE_SUIT_INTEGRITY {
+        if currentTier == 0 { return 8; }
+        if currentTier == 1 { return 16; }
+        return 28;
+    }
+    if branch == UPGRADE_BLASTER_CAPACITOR or
+       branch == UPGRADE_THRUSTER_CONTROL {
+        if currentTier == 0 { return 10; }
+        if currentTier == 1 { return 20; }
+        return 32;
+    }
+    if currentTier == 0 { return 6; }
+    if currentTier == 1 { return 14; }
+    return 24;
+}
+
+/// @brief Purchase outcome carrying status, new tier, and unspent balance.
+class PurchaseResult {
+    expose Integer status;
+    expose Integer branch;
+    expose Integer newTier;
+    expose Integer remainingGems;
+
+    /// @brief Construct one complete immutable-style purchase outcome.
+    ///
+    /// @param resultStatus One `PURCHASE_*` status code.
+    /// @param resultBranch Requested branch id.
+    /// @param resultTier Tier after the attempt.
+    /// @param resultGems Gem balance after the attempt.
+    /// @return Nothing. Stores all fields for the caller.
+    expose func init(resultStatus: Integer, resultBranch: Integer,
+                     resultTier: Integer, resultGems: Integer) {
+        status = resultStatus;
+        branch = resultBranch;
+        newTier = resultTier;
+        remainingGems = resultGems;
+    }
+}
+
+/// @brief Persistent workbench upgrade tiers for one expedition slot.
+class UpgradeSystem {
+    hide List[Integer] tiers;
+
+    /// @brief Construct four zero-tier branches for a new expedition.
+    ///
+    /// @return Nothing. Allocates the fixed four-element tier list.
+    expose func init() { reset(); }
+
+    /// @brief Reset every permanent branch to tier zero.
+    ///
+    /// @return Nothing. Replaces all prior tier state.
+    expose func reset() { tiers = [0, 0, 0, 0]; }
+
+    /// @brief Attempt one permanent workbench purchase.
+    ///
+    /// Invalid, maxed, and unaffordable attempts return explicit status codes and
+    /// preserve both system state and the supplied balance. Success increments
+    /// exactly one tier and subtracts exactly the configured next-tier cost.
+    ///
+    /// @param branch Requested `UPGRADE_*` branch.
+    /// @param availableGems Current nonnegative banked salvage balance.
+    /// @return Newly allocated outcome describing mutation and remaining gems.
+    expose func purchase(branch: Integer,
+                         availableGems: Integer) -> PurchaseResult {
+        if branch < 0 or branch >= UPGRADE_BRANCH_COUNT {
+            return new PurchaseResult(PURCHASE_INVALID_BRANCH, branch, 0,
+                                      availableGems);
+        }
+        var tier = tiers.get(branch);
+        var cost = upgradeNextCost(branch, tier);
+        if cost < 0 {
+            return new PurchaseResult(PURCHASE_MAX_TIER, branch, tier,
+                                      availableGems);
+        }
+        if availableGems < cost {
+            return new PurchaseResult(PURCHASE_INSUFFICIENT_GEMS, branch, tier,
+                                      availableGems);
+        }
+        tier = tier + 1;
+        tiers.set(branch, tier);
+        return new PurchaseResult(PURCHASE_SUCCESS, branch, tier,
+                                  availableGems - cost);
+    }
+
+    /// @brief Read one permanent branch tier.
+    ///
+    /// @param branch One `UPGRADE_*` branch id.
+    /// @return Tier 0..3, or zero for invalid input.
+    expose func getTier(branch: Integer) -> Integer {
+        if branch < 0 or branch >= UPGRADE_BRANCH_COUNT { return 0; }
+        return tiers.get(branch);
+    }
+
+    /// @brief Encode four two-bit tiers into one save-compatible integer.
+    ///
+    /// @return Base-four packed tier value in 0..255.
+    expose func getEncodedTiers() -> Integer {
+        return tiers.get(0) + tiers.get(1) * 4 +
+               tiers.get(2) * 16 + tiers.get(3) * 64;
+    }
+
+    /// @brief Restore four tiers from a packed save integer.
+    ///
+    /// @param encoded Base-four packed value; clamped to 0..255.
+    /// @return Nothing. Replaces every branch tier deterministically.
+    expose func setEncodedTiers(encoded: Integer) {
+        var value = encoded;
+        if value < 0 { value = 0; }
+        if value > 255 { value = 255; }
+        tiers.set(0, value % 4);
+        tiers.set(1, (value / 4) % 4);
+        tiers.set(2, (value / 16) % 4);
+        tiers.set(3, (value / 64) % 4);
+    }
+
+    /// @brief Compute Blaster charge-time percentage after permanent upgrades.
+    ///
+    /// @return 100, 92, 84, or 76 percent for capacitor tiers 0..3.
+    expose func getChargeTimePercent() -> Integer {
+        return 100 - getTier(UPGRADE_BLASTER_CAPACITOR) * 8;
+    }
+
+    /// @brief Compute Dash cooldown percentage after permanent upgrades.
+    ///
+    /// @return 100, 92, 84, or 76 percent for thruster tiers 0..3.
+    expose func getDashCooldownPercent() -> Integer {
+        return 100 - getTier(UPGRADE_THRUSTER_CONTROL) * 8;
+    }
+
+    /// @brief Compute interaction/secret scan range after upgrades.
+    ///
+    /// @return Base interaction radius plus 64 pixels per scanner tier.
+    expose func getScannerRange() -> Integer {
+        return INTERACTION_RADIUS + getTier(UPGRADE_SCANNER_RANGE) * 64;
+    }
+}

@@ -28,7 +28,7 @@
 #include <string_view>
 #include <utility>
 
-/// @file
+/// @file Parser_Stmt_Core.cpp
 /// @brief Core BASIC statement parsing entry points.
 /// @details Provides the shared helpers that recognise procedure declarations,
 ///          LET assignments, and CALL statements.  The routines maintain the
@@ -43,7 +43,7 @@ namespace il::frontends::basic {
 ///          parenthesis-free CALL statements can be interpreted correctly.  This
 ///          helper inserts the identifier into that set, guaranteeing idempotent
 ///          behaviour across multiple declarations.
-/// @param name Canonical procedure name encountered in the source program.
+/// @param name Procedure spelling; any BASIC type suffix is removed before canonicalization.
 void Parser::noteProcedureName(std::string_view name) {
     std::string canon = CanonicalizeIdent(StripTypeSuffix(name));
     knownProcedures_.emplace(canon.empty() ? std::string(name) : std::move(canon));
@@ -52,8 +52,7 @@ void Parser::noteProcedureName(std::string_view name) {
 /// @brief Query whether @p name is tracked as a known procedure.
 /// @details Procedure references without parentheses rely on this lookup to
 ///          disambiguate between variable access and an implicit CALL.  The
-///          check performs an @c O(log n) probe against the tracked identifier
-///          set.
+///          suffix-stripped canonical key is probed in the unordered set.
 /// @param name Identifier token spelling to probe.
 /// @return True when the parser has previously recorded the name as a
 ///         procedure.
@@ -62,6 +61,12 @@ bool Parser::isKnownProcedureName(const std::string &name) const {
     return knownProcedures_.find(canon.empty() ? name : canon) != knownProcedures_.end();
 }
 
+/// @brief Parse an assignment that omits the optional LET keyword.
+/// @details First probes the token sequence without consuming it; when an
+///          assignment is recognized, parses the lvalue, `=`, and initializer
+///          into a LetStmt.
+/// @return Disengaged when the token sequence is not an implicit assignment;
+///         otherwise an engaged owned LET node.
 Parser::StmtResult Parser::parseImplicitLet() {
     if (!isImplicitAssignmentStart())
         return std::nullopt;
@@ -78,6 +83,12 @@ Parser::StmtResult Parser::parseImplicitLet() {
     return StmtResult(std::move(stmt));
 }
 
+/// @brief Probe whether the current tokens form an implicit assignment target.
+/// @details Accepts a soft identifier or `ME`, walks parenthesized subscripts
+///          and top-level dotted members, and succeeds only on a top-level `=`.
+///          The bounded 512-token lookahead prevents malformed input from
+///          growing the token buffer indefinitely.
+/// @return `true` when a top-level assignment operator follows a supported lvalue shape.
 bool Parser::isImplicitAssignmentStart() const {
     // BUG-OOP-021: Allow soft keywords (COLOR, FLOOR, etc.) as variable names.
     if (!isSoftIdentToken(peek().kind) && !at(TokenKind::KeywordMe))
@@ -85,6 +96,7 @@ bool Parser::isImplicitAssignmentStart() const {
 
     int depth = 0;
     int offset = 1;
+    /// Maximum number of buffered tokens examined by the non-consuming probe.
     constexpr int kMaxImplicitAssignmentProbe = 512;
     while (offset <= kMaxImplicitAssignmentProbe) {
         const Token &tok = peek(offset);
@@ -135,9 +147,8 @@ bool Parser::isImplicitAssignmentStart() const {
 ///          call expression or, when the name is known to refer to a procedure,
 ///          emits a diagnostic if the parentheses are missing.  Any malformed
 ///          sequence triggers an error report and synchronisation so parsing can
-///          continue.
-/// @param unused Historical parameter used to disambiguate overload sets;
-///        retained to preserve the call signature used by the parser dispatch.
+///          continue. The integer argument required by the dispatch-facing
+///          signature is intentionally ignored.
 /// @return Parsed call statement on success, an empty optional when no call is
 ///         present, or a null statement pointer when an error was reported.
 Parser::StmtResult Parser::parseCall(int) {
@@ -343,7 +354,7 @@ void Parser::reportInvalidCallExpression(const Token &identTok) {
 
 /// @brief Parse a BASIC `LET` assignment statement.
 /// @details Consumes the `LET` keyword, parses the left-hand side using
-///          @ref parsePrimary, and then expects an `=` followed by a general
+///          @ref parseLetTarget, and then expects an `=` followed by a general
 ///          expression.  The resulting @ref LetStmt adopts the source location
 ///          of the keyword so diagnostics can report accurate spans.
 /// @return Newly constructed LET statement node.
@@ -360,6 +371,11 @@ StmtPtr Parser::parseLetStatement() {
     return stmt;
 }
 
+/// @brief Parse an assignment target including array and member postfixes.
+/// @details Soft identifiers use array-or-variable disambiguation; other
+///          primary forms are accepted for recovery. Dotted postfix operations
+///          are then attached to the base expression.
+/// @return Parsed lvalue-shaped expression, possibly partial after diagnostics.
 ExprPtr Parser::parseLetTarget() {
     ExprPtr base;
     // BUG-OOP-021: Allow soft keywords (COLOR, FLOOR, etc.) as assignment targets.
@@ -376,7 +392,10 @@ ExprPtr Parser::parseLetTarget() {
 /// @details Consumes the `CONST` keyword, parses an identifier, expects `=`,
 ///          and then parses an initializer expression. The type is inferred from
 ///          the identifier suffix or can be explicitly specified with AS.
-/// @return Newly constructed CONST statement node.
+///          Literal and foldable integer/string initializers are cached under a
+///          canonical name for SELECT CASE parsing.
+/// @return Newly constructed CONST node, or a dummy LET recovery node when the
+///         required identifier is missing.
 StmtPtr Parser::parseConstStatement() {
     auto loc = peek().loc;
     consume(); // CONST keyword
@@ -460,10 +479,10 @@ Type Parser::typeFromSuffix(std::string_view name) {
 
 /// @brief Parse a BASIC type keyword that follows an `AS` clause.
 /// @details Recognises both reserved keywords (e.g. `BOOLEAN`) and legacy
-///          identifiers such as `INTEGER` or `STRING`.  When no recognised
-///          keyword is present the default integer type is returned so the
-///          caller can flag the failure separately if desired.
-/// @return Semantic type parsed from the token stream.
+///          identifiers such as `INTEGER` or `STRING`. An identifier token is
+///          consumed even when its spelling is unrecognized.
+/// @return Recognized semantic type, or I64 as the default for absent or
+///         unrecognized type spellings.
 Type Parser::parseTypeKeyword() {
     if (at(TokenKind::KeywordBoolean)) {
         consume();
@@ -487,10 +506,10 @@ Type Parser::parseTypeKeyword() {
 
 /// @brief Parse an optional parenthesised parameter list.
 /// @details If the current token is an opening parenthesis the parser
-///          repeatedly consumes identifiers, array markers, and commas until the
-///          closing parenthesis is reached.  Each parameter inherits its type
-///          from the identifier suffix and records whether array brackets were
-///          present.
+///          repeatedly consumes optional BYREF/BYVAL modes, soft identifiers,
+///          empty array markers, AS annotations, and commas until the closing
+///          parenthesis. Primitive AS types override suffix inference; qualified
+///          object types are canonicalized and stored in `objectClass`.
 /// @return Sequence of parameter descriptors discovered in the token stream.
 std::vector<Param> Parser::parseParamList() {
     std::vector<Param> params;
@@ -582,7 +601,9 @@ std::vector<Param> Parser::parseParamList() {
 ///          scaffold, infers the return type from either an explicit suffix or
 ///          the `AS` clause, records the procedure name for later disambiguation
 ///          of CALL statements, and finally parses the body until the matching
-///          `END FUNCTION` terminator is reached.
+///          `END FUNCTION` terminator is reached. Array parameters are
+///          temporarily registered for expression disambiguation and the
+///          parser's previous array-name state is restored afterward.
 /// @return Newly constructed function declaration statement.
 StmtPtr Parser::parseFunctionStatement() {
     auto func = parseFunctionHeader();
@@ -642,8 +663,10 @@ StmtPtr Parser::parseFunctionStatement() {
 /// @brief Parse a complete BASIC `SUB` declaration.
 /// @details Consumes the `SUB` keyword and identifier, parses the optional
 ///          parameter list, and rejects any stray `AS <type>` clause (which is
-///          illegal for subroutines).  After recording the procedure name the
-///          body is parsed until the closing `END SUB` token pair is found.
+///          illegal for subroutines). Qualified declaration names split into a
+///          namespace path and unqualified name. After recording the procedure
+///          name, array-parameter classification is scoped around body parsing
+///          through the closing `END SUB` token pair.
 /// @return Newly constructed subroutine declaration statement.
 StmtPtr Parser::parseSubStatement() {
     auto loc = peek().loc;

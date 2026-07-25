@@ -23,7 +23,9 @@
 //   docs/adr/0174-scene-object-authoring-metadata-and-duplication.md,
 //   docs/adr/0158-scene-level-property-authoring.md,
 //   docs/adr/0164-backward-compatible-2d-scene-object-hierarchy.md,
-//   docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md
+//   docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md,
+//   docs/adr/0176-typed-tile-behavior-sections.md,
+//   docs/adr/0177-scene-camera-and-lighting-sections.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,8 +44,10 @@
 #include "rt_scene_editor.h"
 #include "rt_tilemap.h"
 
+#include "rt_box.h"
 #include "rt_internal.h"
 #include "rt_map.h"
+#include "rt_object.h"
 #include "rt_result.h"
 #include "rt_seq.h"
 #include "rt_string.h"
@@ -278,6 +282,220 @@ int main() {
         void *large = rt_game_scene_new(1024, 1024, 16, 16);
         assert(rt_game_scene_flood_fill_tiles(large, 0, 0, 0, 5) == 1024 * 1024);
         assert(rt_game_scene_get_tile(large, 0, 1023, 1023) == 5);
+    }
+
+    // ADR 0176: typed tile-behavior authoring, canonical serialization, legacy
+    // section loads, retained unknown members, and BuildTilemap equivalence.
+    {
+        auto make_int_seq = [](std::initializer_list<int64_t> values) {
+            void *seq = rt_seq_new_owned();
+            for (int64_t value : values) {
+                void *boxed = rt_box_i64(value);
+                rt_seq_push(seq, boxed);
+                if (boxed && rt_obj_release_check0(boxed))
+                    rt_obj_free(boxed);
+            }
+            return seq;
+        };
+
+        void *typed = rt_game_scene_new(4, 4, 16, 16);
+        rt_game_scene_set_tile_collision(typed, 7, 1);
+        rt_game_scene_set_tile_collision(typed, 3, 2);
+        rt_game_scene_set_collision_layer(typed, 0);
+        assert(rt_game_scene_tile_collision(typed, 7) == 1);
+        assert(rt_game_scene_tile_collision(typed, 3) == 2);
+        assert(rt_game_scene_tile_collision(typed, 99) == 0);
+        void *collision_tiles = rt_game_scene_collision_tiles(typed);
+        assert(rt_seq_len(collision_tiles) == 2);
+        assert(rt_unbox_i64(rt_seq_get(collision_tiles, 0)) == 3);
+        assert(rt_unbox_i64(rt_seq_get(collision_tiles, 1)) == 7);
+
+        rt_game_scene_set_tile_property_int(typed, 7, rt_const_cstr("damage"), 3);
+        rt_game_scene_set_tile_property_bool(typed, 7, rt_const_cstr("slippery"), 1);
+        assert(to_std(rt_game_scene_tile_property_kind(typed, 7, rt_const_cstr("damage"))) ==
+               "int");
+        assert(to_std(rt_game_scene_tile_property_kind(typed, 7, rt_const_cstr("slippery"))) ==
+               "bool");
+        assert(rt_game_scene_tile_property_int(typed, 7, rt_const_cstr("damage"), -1) == 3);
+        assert(rt_game_scene_tile_property_bool(typed, 7, rt_const_cstr("slippery"), 0) == 1);
+        assert(rt_game_scene_tile_property_int(typed, 7, rt_const_cstr("slippery"), -1) == -1);
+        void *prop_tiles = rt_game_scene_tile_property_tiles(typed);
+        assert(rt_seq_len(prop_tiles) == 1);
+        void *prop_keys = rt_game_scene_tile_property_keys(typed, 7);
+        assert(rt_seq_len(prop_keys) == 2);
+        assert(to_std(rt_seq_get_str(prop_keys, 0)) == "damage");
+
+        void *anim_frames = make_int_seq({5, 6, 7});
+        void *anim_durations = make_int_seq({120, 90, 120});
+        rt_game_scene_set_tile_anim(typed, 5, anim_frames, anim_durations);
+        void *frames_out = rt_game_scene_tile_anim_frames(typed, 5);
+        void *durations_out = rt_game_scene_tile_anim_durations(typed, 5);
+        assert(rt_seq_len(frames_out) == 3);
+        assert(rt_unbox_i64(rt_seq_get(frames_out, 2)) == 7);
+        assert(rt_unbox_i64(rt_seq_get(durations_out, 1)) == 90);
+
+        void *variants = make_int_seq({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+        rt_game_scene_set_autotile_rule(typed, 9, variants);
+        void *variants_out = rt_game_scene_autotile_variants(typed, 9);
+        assert(rt_seq_len(variants_out) == 16);
+        assert(rt_unbox_i64(rt_seq_get(variants_out, 15)) == 16);
+
+        // Setter rejections are warning no-ops (ADR 0176).
+        int64_t before = rt_seq_len(rt_game_scene_diagnostic_records(typed));
+        rt_game_scene_set_tile_collision(typed, 0, 1);
+        rt_game_scene_set_tile_collision(typed, 4096, 1);
+        rt_game_scene_set_tile_collision(typed, 7, 3);
+        rt_game_scene_set_collision_layer(typed, 16);
+        void *short_variants = make_int_seq({1, 2, 3});
+        rt_game_scene_set_autotile_rule(typed, 9, short_variants);
+        void *bad_durations = make_int_seq({120, 0, 120});
+        rt_game_scene_set_tile_anim(typed, 5, anim_frames, bad_durations);
+        void *mismatched = make_int_seq({120});
+        rt_game_scene_set_tile_anim(typed, 5, anim_frames, mismatched);
+        assert(rt_seq_len(rt_game_scene_diagnostic_records(typed)) == before + 7);
+        assert(rt_game_scene_tile_collision(typed, 7) == 1);
+        assert(rt_seq_len(rt_game_scene_autotile_variants(typed, 9)) == 16);
+        assert(rt_unbox_i64(rt_seq_get(rt_game_scene_tile_anim_durations(typed, 5), 1)) == 90);
+
+        // Canonical serialization and reload.
+        std::string typed_json = scene_json(typed);
+        assert(typed_json.find("\"collision\"") != std::string::npos);
+        assert(typed_json.find("\"solid\":[7]") != std::string::npos);
+        assert(typed_json.find("\"oneWayUp\":[3]") != std::string::npos);
+        assert(typed_json.find("\"layer\":0") != std::string::npos);
+        assert(typed_json.find("\"durations\":[120,90,120]") != std::string::npos);
+        assert(typed_json.find("msPerFrame") == std::string::npos);
+        void *reloaded = load_text(typed_json);
+        assert(rt_game_scene_tile_collision(reloaded, 3) == 2);
+        assert(rt_game_scene_tile_property_int(reloaded, 7, rt_const_cstr("damage"), -1) == 3);
+        assert(rt_game_scene_tile_property_bool(reloaded, 7, rt_const_cstr("slippery"), 0) == 1);
+        assert(rt_seq_len(rt_game_scene_tile_anim_frames(reloaded, 5)) == 3);
+        assert(rt_seq_len(rt_game_scene_autotile_variants(reloaded, 9)) == 16);
+        // Reload → save is byte-stable.
+        assert(scene_json(reloaded) == typed_json);
+
+        // BuildTilemap applies typed state exactly as the legacy JSON path did.
+        void *tilemap = rt_game_scene_build_tilemap(typed);
+        assert(rt_tilemap_get_collision(tilemap, 7) == 1);
+        assert(rt_tilemap_get_collision(tilemap, 3) == 2);
+        assert(rt_tilemap_get_tile_property(tilemap, 7, rt_const_cstr("damage"), -1) == 3);
+        assert(rt_tilemap_get_tile_property(tilemap, 7, rt_const_cstr("slippery"), -1) == 1);
+        assert(rt_tilemap_resolve_anim_tile(tilemap, 5) == 5);
+
+        // Removal empties the sections and drops them from JSON entirely.
+        rt_game_scene_set_tile_collision(typed, 7, 0);
+        rt_game_scene_set_tile_collision(typed, 3, 0);
+        rt_game_scene_remove_tile_property(typed, 7, rt_const_cstr("damage"));
+        rt_game_scene_remove_tile_property(typed, 7, rt_const_cstr("slippery"));
+        rt_game_scene_remove_tile_anim(typed, 5);
+        rt_game_scene_remove_autotile_rule(typed, 9);
+        std::string cleared_json = scene_json(typed);
+        assert(cleared_json.find("\"tileProperties\"") == std::string::npos);
+        assert(cleared_json.find("\"animations\"") == std::string::npos);
+        assert(cleared_json.find("\"autotiles\"") == std::string::npos);
+        // The authored collision layer keeps the collision section alive.
+        assert(cleared_json.find("\"collision\": {\"layer\":0}") != std::string::npos);
+
+        // Legacy uniform-duration animations, unknown members, non-numeric
+        // tileProperties keys, and out-of-range ids survive loading.
+        void *legacy =
+            load_text("{\"version\":1,\"name\":\"legacy\",\"width\":2,\"height\":2,"
+                      "\"tileWidth\":16,\"tileHeight\":16,\"tilesetAsset\":\"\","
+                      "\"properties\":{},"
+                      "\"layers\":[{\"name\":\"base\",\"visible\":true,\"asset\":\"\","
+                      "\"tiles\":[0,0,0,0]},{\"name\":\"walls\",\"visible\":true,\"asset\":\"\","
+                      "\"tiles\":[0,0,0,0]}],\"objects\":[],"
+                      "\"collision\":{\"layer\":1,\"solid\":[9,70000],\"future\":true},"
+                      "\"tileProperties\":{\"4\":{\"hp\":2,\"note\":\"soft\"},\"x\":{\"a\":1}},"
+                      "\"animations\":[{\"baseTile\":6,\"frames\":[6,7],\"frameCount\":2,"
+                      "\"msPerFrame\":150,\"tag\":\"lava\"}],"
+                      "\"autotiles\":[{\"baseTile\":8,\"variants\":"
+                      "[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]}]}");
+        assert(rt_game_scene_tile_collision(legacy, 9) == 1);
+        assert(rt_game_scene_tile_collision(legacy, 70000) == 1);
+        assert(rt_game_scene_collision_layer(legacy) == 1);
+        assert(rt_game_scene_tile_property_int(legacy, 4, rt_const_cstr("hp"), -1) == 2);
+        void *legacy_durations = rt_game_scene_tile_anim_durations(legacy, 6);
+        assert(rt_seq_len(legacy_durations) == 2);
+        assert(rt_unbox_i64(rt_seq_get(legacy_durations, 0)) == 150);
+        assert(rt_seq_len(rt_game_scene_autotile_variants(legacy, 8)) == 16);
+        std::string legacy_json = scene_json(legacy);
+        assert(legacy_json.find("\"future\":true") != std::string::npos);
+        assert(legacy_json.find("\"note\":\"soft\"") != std::string::npos);
+        assert(legacy_json.find("\"x\":{\"a\":1}") != std::string::npos);
+        assert(legacy_json.find("\"tag\":\"lava\"") != std::string::npos);
+        assert(legacy_json.find("70000") != std::string::npos);
+        assert(legacy_json.find("\"durations\":[150,150]") != std::string::npos);
+        assert(legacy_json.find("msPerFrame") == std::string::npos);
+        void *legacy_reload = load_text(legacy_json);
+        assert(scene_json(legacy_reload) == legacy_json);
+        void *legacy_map = rt_game_scene_build_tilemap(legacy);
+        assert(rt_tilemap_get_collision(legacy_map, 9) == 1);
+        assert(rt_tilemap_get_collision_layer(legacy_map) == 1);
+        assert(rt_tilemap_get_tile_property(legacy_map, 4, rt_const_cstr("hp"), -1) == 2);
+    }
+
+    // ADR 0177: camera/lighting typed fields, validation, unknown retention.
+    {
+        void *scenic = rt_game_scene_new(4, 4, 16, 16);
+        rt_game_scene_camera_set_str(scenic, rt_const_cstr("mode"), rt_const_cstr("follow"));
+        rt_game_scene_camera_set_int(scenic, rt_const_cstr("minX"), 0);
+        rt_game_scene_camera_set_int(scenic, rt_const_cstr("maxX"), 9600);
+        rt_game_scene_camera_set_int(scenic, rt_const_cstr("zoomPct"), 150);
+        rt_game_scene_lighting_set_int(scenic, rt_const_cstr("darkness"), 160);
+        rt_game_scene_lighting_set_int(scenic, rt_const_cstr("playerLightRadius"), 220);
+        assert(to_std(rt_game_scene_camera_get_str(
+                   scenic, rt_const_cstr("mode"), rt_const_cstr(""))) == "follow");
+        assert(rt_game_scene_camera_get_int(scenic, rt_const_cstr("maxX"), -1) == 9600);
+        assert(to_std(rt_game_scene_camera_field_kind(scenic, rt_const_cstr("mode"))) == "string");
+        assert(to_std(rt_game_scene_camera_field_kind(scenic, rt_const_cstr("absent"))) == "");
+        assert(rt_game_scene_lighting_get_int(scenic, rt_const_cstr("darkness"), -1) == 160);
+        assert(rt_seq_len(rt_game_scene_camera_keys(scenic)) == 4);
+        assert(rt_seq_len(rt_game_scene_lighting_keys(scenic)) == 2);
+
+        // Known-field validation rejects out-of-range values as warning no-ops.
+        int64_t before = rt_seq_len(rt_game_scene_diagnostic_records(scenic));
+        rt_game_scene_camera_set_str(scenic, rt_const_cstr("mode"), rt_const_cstr("chase"));
+        rt_game_scene_camera_set_int(scenic, rt_const_cstr("zoomPct"), 5000);
+        rt_game_scene_lighting_set_int(scenic, rt_const_cstr("darkness"), 300);
+        assert(rt_seq_len(rt_game_scene_diagnostic_records(scenic)) == before + 3);
+        assert(to_std(rt_game_scene_camera_get_str(
+                   scenic, rt_const_cstr("mode"), rt_const_cstr(""))) == "follow");
+        assert(rt_game_scene_camera_get_int(scenic, rt_const_cstr("zoomPct"), -1) == 150);
+        assert(rt_game_scene_lighting_get_int(scenic, rt_const_cstr("darkness"), -1) == 160);
+
+        std::string scenic_json = scene_json(scenic);
+        assert(scenic_json.find("\"camera\"") != std::string::npos);
+        assert(scenic_json.find("\"mode\":\"follow\"") != std::string::npos);
+        assert(scenic_json.find("\"darkness\":160") != std::string::npos);
+        void *scenic_reload = load_text(scenic_json);
+        assert(rt_game_scene_camera_get_int(scenic_reload, rt_const_cstr("minX"), -1) == 0);
+        assert(scene_json(scenic_reload) == scenic_json);
+
+        // Non-int/string members of loaded sections are retained verbatim.
+        void *odd = load_text(
+            "{\"version\":1,\"name\":\"odd\",\"width\":1,\"height\":1,"
+            "\"tileWidth\":16,\"tileHeight\":16,\"tilesetAsset\":\"\","
+            "\"properties\":{},"
+            "\"layers\":[{\"name\":\"base\",\"visible\":true,\"asset\":\"\",\"tiles\":[0]}],"
+            "\"objects\":[],"
+            "\"camera\":{\"mode\":\"fixed\",\"weights\":[1,2]},"
+            "\"lighting\":{\"darkness\":40,\"curve\":0.5}}");
+        assert(to_std(rt_game_scene_camera_get_str(
+                   odd, rt_const_cstr("mode"), rt_const_cstr(""))) == "fixed");
+        assert(rt_game_scene_lighting_get_int(odd, rt_const_cstr("darkness"), -1) == 40);
+        std::string odd_json = scene_json(odd);
+        assert(odd_json.find("\"weights\":[1,2]") != std::string::npos);
+        assert(odd_json.find("\"curve\":0.5") != std::string::npos);
+        assert(scene_json(load_text(odd_json)) == odd_json);
+
+        // Removing every field drops the sections from JSON.
+        rt_game_scene_camera_remove(odd, rt_const_cstr("mode"));
+        rt_game_scene_lighting_remove(odd, rt_const_cstr("darkness"));
+        std::string trimmed = scene_json(odd);
+        assert(trimmed.find("\"weights\"") != std::string::npos);
+        assert(trimmed.find("\"mode\"") == std::string::npos);
+        assert(trimmed.find("\"darkness\"") == std::string::npos);
     }
 
     int64_t obj =

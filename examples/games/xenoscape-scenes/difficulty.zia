@@ -1,0 +1,166 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/difficulty.zia
+// Purpose: Defines Explorer, Standard, and Veteran gameplay scaling profiles.
+// Key invariants:
+//   - Scaling uses deterministic integer percentages with positive HP/damage floors.
+//   - Lowering applies at save stations; raising waits for a room transition.
+// Ownership/Lifetime:
+//   - Game owns one DifficultySystem for the active expedition slot.
+// Links: game.zia, enemy.zia, save.zia, meta_probe.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module difficulty;
+
+final DIFFICULTY_EXPLORER = 0;
+final DIFFICULTY_STANDARD = 1;
+final DIFFICULTY_VETERAN = 2;
+final DIFFICULTY_COUNT = 3;
+
+/// @brief Map a difficulty profile id to its player-facing name.
+///
+/// @param profile One `DIFFICULTY_*` id.
+/// @return Profile name, or `Unknown` for invalid input.
+func difficultyName(profile: Integer) -> String {
+    if profile == DIFFICULTY_EXPLORER { return "Explorer"; }
+    if profile == DIFFICULTY_STANDARD { return "Standard"; }
+    if profile == DIFFICULTY_VETERAN { return "Veteran"; }
+    return "Unknown";
+}
+
+/// @brief Return incoming-damage percentage for one profile.
+///
+/// @param profile One `DIFFICULTY_*` id.
+/// @return 50, 100, or 150; invalid input safely uses Standard's 100.
+func difficultyIncomingPercent(profile: Integer) -> Integer {
+    if profile == DIFFICULTY_EXPLORER { return 50; }
+    if profile == DIFFICULTY_VETERAN { return 150; }
+    return 100;
+}
+
+/// @brief Return enemy-HP percentage for one profile.
+///
+/// @param profile One `DIFFICULTY_*` id.
+/// @return 85, 100, or 125; invalid input safely uses Standard's 100.
+func difficultyEnemyHpPercent(profile: Integer) -> Integer {
+    if profile == DIFFICULTY_EXPLORER { return 85; }
+    if profile == DIFFICULTY_VETERAN { return 125; }
+    return 100;
+}
+
+/// @brief Return enemy detection/aggression percentage for one profile.
+///
+/// @param profile One `DIFFICULTY_*` id.
+/// @return 75, 100, or 125; invalid input safely uses Standard's 100.
+func difficultyAggressionPercent(profile: Integer) -> Integer {
+    if profile == DIFFICULTY_EXPLORER { return 75; }
+    if profile == DIFFICULTY_VETERAN { return 125; }
+    return 100;
+}
+
+/// @brief Return recoverable unbanked-gem loss percentage for one profile.
+///
+/// @param profile One `DIFFICULTY_*` id.
+/// @return 0, 10, or 20; invalid input safely uses Standard's 10.
+func difficultyGemLossPercent(profile: Integer) -> Integer {
+    if profile == DIFFICULTY_EXPLORER { return 0; }
+    if profile == DIFFICULTY_VETERAN { return 20; }
+    return 10;
+}
+
+/// @brief Scale a positive damage event under one profile.
+///
+/// Fractional values round up so a real positive hit never becomes zero damage.
+///
+/// @param baseDamage Unscaled nonnegative damage units.
+/// @param profile One `DIFFICULTY_*` id.
+/// @return Scaled nonnegative damage, with minimum one for positive input.
+func difficultyScaleIncomingDamage(baseDamage: Integer,
+                                   profile: Integer) -> Integer {
+    if baseDamage <= 0 { return 0; }
+    var scaled = (baseDamage * difficultyIncomingPercent(profile) + 99) / 100;
+    if scaled < 1 { scaled = 1; }
+    return scaled;
+}
+
+/// @brief Scale positive enemy maximum HP under one profile.
+///
+/// @param baseHp Unscaled positive enemy HP.
+/// @param profile One `DIFFICULTY_*` id.
+/// @return Scaled HP rounded up, with minimum one for positive input.
+func difficultyScaleEnemyHp(baseHp: Integer, profile: Integer) -> Integer {
+    if baseHp <= 0 { return 0; }
+    var scaled = (baseHp * difficultyEnemyHpPercent(profile) + 99) / 100;
+    if scaled < 1 { scaled = 1; }
+    return scaled;
+}
+
+/// @brief Active and pending difficulty policy for one expedition.
+class DifficultySystem {
+    hide Integer currentProfile;
+    hide Integer pendingProfile;
+
+    /// @brief Construct a Standard expedition profile.
+    ///
+    /// @return Nothing. Initializes current and pending profiles to Standard.
+    expose func init() {
+        currentProfile = DIFFICULTY_STANDARD;
+        pendingProfile = DIFFICULTY_STANDARD;
+    }
+
+    /// @brief Restore a saved active profile and clear stale pending changes.
+    ///
+    /// @param profile Saved `DIFFICULTY_*` id; invalid input becomes Standard.
+    /// @return Nothing. Current and pending values become the bounded profile.
+    expose func setProfile(profile: Integer) {
+        currentProfile = profile;
+        if currentProfile < 0 or currentProfile >= DIFFICULTY_COUNT {
+            currentProfile = DIFFICULTY_STANDARD;
+        }
+        pendingProfile = currentProfile;
+    }
+
+    /// @brief Request a profile change while interacting with a save station.
+    ///
+    /// Lower/equal difficulty takes effect immediately. Raising records a pending
+    /// profile that becomes active on the next room or regional transition.
+    ///
+    /// @param profile Requested `DIFFICULTY_*` id.
+    /// @return True for a valid accepted request; false for invalid input.
+    expose func requestAtSaveStation(profile: Integer) -> Boolean {
+        if profile < 0 or profile >= DIFFICULTY_COUNT { return false; }
+        if profile <= currentProfile {
+            currentProfile = profile;
+            pendingProfile = profile;
+        } else {
+            pendingProfile = profile;
+        }
+        return true;
+    }
+
+    /// @brief Apply a queued difficulty increase at a safe transition boundary.
+    ///
+    /// @return True when the active profile changed; false when already current.
+    expose func applyPendingOnTransition() -> Boolean {
+        if pendingProfile == currentProfile { return false; }
+        currentProfile = pendingProfile;
+        return true;
+    }
+
+    /// @brief Read the currently active profile.
+    ///
+    /// @return One valid `DIFFICULTY_*` id.
+    expose func getProfile() -> Integer { return currentProfile; }
+
+    /// @brief Read the profile queued for the next transition.
+    ///
+    /// @return One valid `DIFFICULTY_*` id.
+    expose func getPendingProfile() -> Integer { return pendingProfile; }
+}

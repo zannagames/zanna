@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/ProcedureSymbolTracker.hpp
+// File: src/frontends/basic/ProcedureSymbolTracker.hpp
 // Purpose: Centralizes symbol usage tracking for procedure-level lowering.
 // Key invariants: All symbol tracking goes through this helper to avoid
 //                 duplicated logic in VarCollectWalker and RuntimeNeedsScanner.
@@ -13,6 +13,11 @@
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+/// @file ProcedureSymbolTracker.hpp
+/// @brief Declares shared scalar, array, and cross-procedure usage tracking.
+/// @details ProcedureSymbolTracker borrows a Lowerer and centralizes the symbol
+///          mutations performed by variable discovery and runtime-needs scans.
+
 #pragma once
 
 #include <string_view>
@@ -33,34 +38,15 @@ class SemanticAnalyzer;
 /// - Marking cross-procedure global usage for runtime-backed storage
 /// - Checking field scope to skip class members
 /// - Enforcing module-level symbol sharing rules
-///
-/// NOTE: Currently all referenced variables get local slots.
-///
-/// OPTIMIZATION OPPORTUNITY (IL mutable globals):
-/// Currently, module-level variables shared across procedures use runtime-backed
-/// storage via rt_modvar_addr_* calls. The IL already supports mutable globals
-/// (see il::core::Global and VM's mutableGlobalMap), which would eliminate:
-///   1. Runtime hash table lookups on each global access
-///   2. The need to track crossProcGlobals_ separately
-///   3. String allocation overhead for variable names at call sites
-///
-/// Implementation path:
-///   1. In Lowerer::lowerModule(), emit `global <type> @varname` for each
-///      module-level symbol from SemanticAnalyzer::symbols_
-///   2. In resolveVariableStorage(), use Value::global(name) instead of
-///      generating rt_modvar_addr_* calls
-///   3. Remove crossProcGlobals_ tracking (all globals become IL globals)
-///   4. Update tests to expect IL global declarations in output
-///
-/// Benefits: Eliminates runtime overhead, simplifies lowering, enables
-/// future optimizations like constant propagation for module-level constants.
+/// @invariant The borrowed Lowerer outlives this tracker.
 class ProcedureSymbolTracker {
   public:
     /// @brief Construct a tracker bound to the lowering context.
-    /// @param lowerer Owning lowering driver whose symbol tables are updated.
+    /// @param lowerer Borrowed lowering driver whose symbol tables are updated.
     /// @param trackCrossProc If true, marks module-level symbols used outside
-    ///        @main as cross-procedure globals. Should be true for variable
-    ///        collection, false for runtime needs scanning.
+    ///        @main or before a function is active as cross-procedure globals.
+    ///        Should be true for variable collection and false for runtime-needs scanning.
+    /// @pre @p lowerer outlives the tracker.
     explicit ProcedureSymbolTracker(Lowerer &lowerer, bool trackCrossProc = true) noexcept;
 
     /// @brief Check if a symbol name should be skipped (empty or field in scope).
@@ -76,7 +62,8 @@ class ProcedureSymbolTracker {
 
     /// @brief Record usage of an array variable.
     /// @details Marks the symbol as both referenced and an array, and optionally
-    ///          checks for cross-procedure global usage when outside @main.
+    ///          checks cross-procedure global usage. Module object-element
+    ///          metadata, when present, is copied to the symbol record.
     /// @param name Array name to track.
     void trackArray(std::string_view name);
 
@@ -87,16 +74,20 @@ class ProcedureSymbolTracker {
     void track(std::string_view name, bool isArray);
 
     /// @brief Check and mark cross-procedure global usage if applicable.
-    /// @details Called when a symbol is referenced outside @main to record
-    ///          that it needs runtime-backed storage for sharing.
+    /// @details When enabled and semantic analysis classifies the symbol as
+    ///          module-level, records it if the active function is non-main or
+    ///          no function is active yet.
     /// @param name Symbol name to check.
     void trackCrossProcGlobalIfNeeded(std::string_view name);
 
   private:
     /// @brief Check if currently lowering the @main function.
+    /// @return `true` only for a non-null active function named exactly `main`.
     [[nodiscard]] bool isInMain() const;
 
+    /// Borrowed lowering driver receiving all tracking mutations.
     Lowerer &lowerer_;
+    /// Whether module-level cross-procedure classification is active.
     bool trackCrossProc_;
 };
 

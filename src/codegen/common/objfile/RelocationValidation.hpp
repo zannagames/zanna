@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/RelocationValidation.hpp
+// File: src/codegen/common/objfile/RelocationValidation.hpp
 // Purpose: Shared relocation validation helpers used by every object file
 //          writer. Provides RelocKind→name lookup, an arch-compatibility test,
 //          and a single validateRelocationShape() that every writer calls so
@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file RelocationValidation.hpp
+ * @brief Defines shared architecture, bounds, and opcode checks for object fixups.
+ *
+ * Every concrete object writer calls the same validation entry point before
+ * translating a relocation. This keeps malformed encoder metadata diagnostics
+ * consistent across ELF, Mach-O, and COFF.
+ */
+
 #pragma once
 
 #include "codegen/common/AArch64RelocUtil.hpp"
@@ -30,6 +39,10 @@
 
 namespace zanna::codegen::objfile {
 
+/// @brief Read an emitted AArch64 instruction at a logical relocation offset.
+/// @param section Section supplying logical bias and physical bytes.
+/// @param logicalOffset Valid logical offset of a four-byte instruction.
+/// @return Little-endian instruction word.
 inline uint32_t readRelocLE32(const CodeSection &section, size_t logicalOffset) {
     const size_t physicalOffset = logicalOffset - section.logicalOffsetBias();
     const auto &bytes = section.bytes();
@@ -39,14 +52,25 @@ inline uint32_t readRelocLE32(const CodeSection &section, size_t logicalOffset) 
            (static_cast<uint32_t>(bytes[physicalOffset + 3]) << 24);
 }
 
+/// @brief Recognize an AArch64 ADD-immediate instruction.
+/// @param insn Instruction word to inspect.
+/// @return `true` when the instruction accepts an ADD page-offset relocation.
 inline bool isA64AddImmediate(uint32_t insn) {
     return zanna::codegen::isA64AddImmediate(insn);
 }
 
+/// @brief Decode the scale of an AArch64 unsigned-offset load/store.
+/// @param insn Instruction word to inspect.
+/// @param shift Receives the base-two byte-scale exponent.
+/// @return `true` for a supported unsigned-offset encoding.
 inline bool a64UnsignedLdStOffsetShift(uint32_t insn, uint32_t &shift) {
     return zanna::codegen::a64UnsignedLdStOffsetShift(insn, shift);
 }
 
+/// @brief Check an AArch64 unsigned-offset load/store's exact byte scale.
+/// @param insn Instruction word to inspect.
+/// @param expectedShift Required base-two scale exponent.
+/// @return `true` when @p insn is compatible with that relocation width.
 inline bool isA64UnsignedLdStOffsetWithShift(uint32_t insn, uint32_t expectedShift) {
     return zanna::codegen::isA64UnsignedLdStOffsetWithShift(insn, expectedShift);
 }
@@ -54,6 +78,8 @@ inline bool isA64UnsignedLdStOffsetWithShift(uint32_t insn, uint32_t expectedShi
 /// @brief Return the canonical short name for a RelocKind enum value.
 /// @details Used in writer diagnostics so ELF/Mach-O/COFF print the same name
 ///          for the same kind, regardless of which format-specific code emitted it.
+/// @param kind Relocation kind to name.
+/// @return Stable diagnostic string, or `"<unknown>"` for an invalid value.
 inline const char *relocKindName(RelocKind kind) {
     switch (kind) {
         case RelocKind::PCRel32:
@@ -85,6 +111,9 @@ inline const char *relocKindName(RelocKind kind) {
 /// @brief Test whether a RelocKind is legal for the target architecture.
 /// @details Catches frontend bugs that would emit (e.g.) A64Call26 into an
 ///          x86_64 object before the writer would silently encode garbage.
+/// @param kind Relocation kind recorded by the encoder.
+/// @param arch Target object architecture.
+/// @return `true` when the architecture defines @p kind.
 inline bool relocationKindMatchesArch(RelocKind kind, ObjArch arch) {
     switch (kind) {
         case RelocKind::PCRel32:
@@ -109,6 +138,8 @@ inline bool relocationKindMatchesArch(RelocKind kind, ObjArch arch) {
 /// @details All current AArch64 + x86_64 32-bit fixups return 4; Abs64 returns 8.
 ///          Used to verify that the relocation's offset doesn't overrun the
 ///          section before any writer-specific patching runs.
+/// @param kind Relocation kind to measure.
+/// @return Fixup width in bytes, or zero for an invalid value.
 inline size_t relocationFixupWidth(RelocKind kind) {
     switch (kind) {
         case RelocKind::PCRel32:
@@ -138,6 +169,7 @@ inline size_t relocationFixupWidth(RelocKind kind) {
 /// @param rel The relocation to validate.
 /// @param sectionName Human-readable section name for diagnostics (e.g. "__text").
 /// @param err Stream to receive diagnostic output on failure.
+/// @return `true` when architecture, byte range, and AArch64 opcode all match.
 inline bool validateRelocationShape(const char *writerName,
                                     ObjArch arch,
                                     const CodeSection &section,
@@ -160,6 +192,8 @@ inline bool validateRelocationShape(const char *writerName,
 
     if (arch == ObjArch::AArch64 && width == 4) {
         const uint32_t insn = readRelocLE32(section, rel.offset);
+
+        /// Emit the uniform diagnostic for an opcode/fixup mismatch.
         auto badInstruction = [&]() {
             err << writerName << ": relocation kind " << relocKindName(rel.kind) << " at offset "
                 << rel.offset << " does not match the AArch64 instruction in " << sectionName

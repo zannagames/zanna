@@ -1,0 +1,349 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_schema_migration.zia
+// Purpose: Bounded, explicit propagation of schema field renames/retypes
+//          across a workspace root's 2D scene files.
+// Key invariants:
+//   - Scans are read-only and bounded; hitting any ceiling marks truncation.
+//   - Application is per-file transactional: a file either migrates completely
+//     and saves atomically, or is reported and left byte-identical.
+//   - Files whose modification time changed after the scan are refused.
+//   - Only representation-preserving conversions apply; everything else is a
+//     reported per-file refusal, including 3D scenes.
+// Ownership/Lifetime: Callers own returned plan/result records.
+// Links: zannastudio/src/ui/scene_component_authoring_controller.zia,
+//        docs/adr/0178-scene-component-schema-v2-enum-asset-fields.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_schema_migration;
+
+bind "../services/safe_io";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Obj = Zanna.Core.Object;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Fmt = Zanna.Text.Fmt;
+
+// ============================================================================
+// MODULE: scene_schema_migration
+// PURPOSE: Keep workspace scanning and per-file rewriting outside the schema
+//          authoring controller and both scene editors.
+//
+// WHERE-THIS-FITS: The schema form performs the rename/retype; this module
+//          only propagates it when the author explicitly confirms. Open
+//          documents rely on Studio's existing external-change conflict flow.
+//
+// TEACHING-NOTE: Refusing on any changed mtime makes the apply race-safe: the
+//          scan's match counts are only trusted against the exact bytes they
+//          were computed from.
+// ============================================================================
+
+final MAX_SCAN_DIRECTORIES: Integer = 4096;
+final MAX_SCAN_FILES: Integer = 20000;
+final MAX_MATCHED_FILES: Integer = 256;
+
+/// @brief One scanned scene file and its migration outcome.
+class SchemaMigrationRecord {
+    expose String path;
+    expose Integer matches;
+    expose Integer modified;
+    expose Boolean applied;
+    expose String reason;
+
+    expose func init() {
+        path = "";
+        matches = 0;
+        modified = 0;
+        applied = false;
+        reason = "";
+    }
+}
+
+/// @brief Complete bounded result of one scan or apply pass.
+class SchemaMigrationResult {
+    expose List[SchemaMigrationRecord] records;
+    expose Integer scannedFiles;
+    expose Boolean truncated;
+    expose String error;
+
+    expose func init() {
+        records = [];
+        scannedFiles = 0;
+        truncated = false;
+        error = "";
+    }
+
+    /// @brief Count files carrying at least one migratable match.
+    expose func MatchedFiles() -> Integer {
+        var count = 0;
+        var index = 0;
+        while index < records.count() {
+            var record = records.get(index);
+            if record.matches > 0 and record.reason == "" {
+                count = count + 1;
+            }
+            index = index + 1;
+        }
+        return count;
+    }
+}
+
+/// @brief Return whether a conversion preserves the authored value exactly.
+/// @details int-to-float is deliberately unsupported: the 2D scene format
+///          serializes integral floats without a decimal point, so the kind
+///          would silently flip back to int on the next load.
+expose func ConversionSupported(oldKind: String,
+                                newKind: String) -> Boolean {
+    if oldKind == newKind { return true; }
+    if newKind == "string" { return true; }
+    return false;
+}
+
+/// @brief Scan one workspace root for scenes carrying the old field key.
+/// @details Read-only. 2D scenes are parsed and match-counted; `.vscn` files
+///          are listed as refusals because 3D migration stays manual.
+expose func Scan(root: String,
+                 oldKey: String,
+                 oldValueKind: String) -> SchemaMigrationResult {
+    var result = new SchemaMigrationResult();
+    if root == "" or Str.Trim(oldKey) == "" {
+        result.error = "A workspace root and field key are required.";
+        return result;
+    }
+    var pendingDirs: List[String] = [root];
+    var visitedDirs = 0;
+    while pendingDirs.count() > 0 {
+        if visitedDirs >= MAX_SCAN_DIRECTORIES
+           or result.scannedFiles >= MAX_SCAN_FILES
+           or result.records.count() >= MAX_MATCHED_FILES {
+            result.truncated = true;
+            return result;
+        }
+        var dir = pendingDirs.get(pendingDirs.count() - 1);
+        pendingDirs.removeAt(pendingDirs.count() - 1);
+        visitedDirs = visitedDirs + 1;
+
+        var files = safe_io.ListFiles(dir);
+        if files.ok {
+            var index = 0;
+            while index < files.items.count() {
+                var name = Obj.ToString(files.items.get(index));
+                index = index + 1;
+                result.scannedFiles = result.scannedFiles + 1;
+                if result.scannedFiles > MAX_SCAN_FILES {
+                    result.truncated = true;
+                    return result;
+                }
+                var lower = Str.ToLower(name);
+                var fullPath = Path.Join(dir, name);
+                if Str.EndsWith(lower, ".vscn") {
+                    AddRefusal(
+                        result, fullPath,
+                        "3D scenes need manual migration in the editor");
+                } else if Str.EndsWith(lower, ".scene")
+                          or Str.EndsWith(lower, ".level") {
+                    ScanSceneFile(result, fullPath, oldKey, oldValueKind);
+                }
+                if result.records.count() >= MAX_MATCHED_FILES {
+                    result.truncated = true;
+                    return result;
+                }
+            }
+        }
+        var dirs = safe_io.ListDirectories(dir);
+        if dirs.ok {
+            var dirIndex = 0;
+            while dirIndex < dirs.items.count() {
+                var child = Obj.ToString(dirs.items.get(dirIndex));
+                dirIndex = dirIndex + 1;
+                if Str.StartsWith(child, ".") { continue; }
+                pendingDirs.add(Path.Join(dir, child));
+            }
+        }
+    }
+    return result;
+}
+
+/// @brief Apply one confirmed migration to every clean matched record.
+expose func Apply(oldKey: String,
+                  oldKind: String,
+                  newKey: String,
+                  newKind: String,
+                  plan: SchemaMigrationResult) -> SchemaMigrationResult {
+    var result = new SchemaMigrationResult();
+    result.scannedFiles = plan.scannedFiles;
+    result.truncated = plan.truncated;
+    if ConversionSupported(oldKind, newKind) == false {
+        result.error = "Converting " + oldKind + " to " + newKind
+            + " would lose authored data and was refused.";
+        return result;
+    }
+    var nextKey = Str.Trim(newKey);
+    if nextKey == "" {
+        result.error = "The new field key cannot be empty.";
+        return result;
+    }
+    var index = 0;
+    while index < plan.records.count() {
+        var planned = plan.records.get(index);
+        index = index + 1;
+        var record = new SchemaMigrationRecord();
+        record.path = planned.path;
+        record.matches = planned.matches;
+        record.modified = planned.modified;
+        record.reason = planned.reason;
+        result.records.add(record);
+        if planned.matches <= 0 or planned.reason != "" { continue; }
+        MigrateSceneFile(record, oldKey, oldKind, nextKey, newKind);
+    }
+    return result;
+}
+
+/// @brief Count one 2D scene's exact-kind matches without mutating it.
+func ScanSceneFile(result: SchemaMigrationResult,
+                   path: String,
+                   oldKey: String,
+                   oldValueKind: String) {
+    var loaded = SceneDocument.LoadResult(path);
+    if loaded.IsOk == false {
+        AddRefusal(result, path, "the scene could not be loaded");
+        return;
+    }
+    var scene = loaded.Unwrap() as SceneDocument;
+    var matches = CountMatches(scene, oldKey, oldValueKind);
+    if matches <= 0 { return; }
+    var record = new SchemaMigrationRecord();
+    record.path = path;
+    record.matches = matches;
+    record.modified = safe_io.Modified(path);
+    result.records.add(record);
+}
+
+/// @brief Migrate one file transactionally against its scanned identity.
+func MigrateSceneFile(record: SchemaMigrationRecord,
+                      oldKey: String,
+                      oldKind: String,
+                      newKey: String,
+                      newKind: String) {
+    if safe_io.Modified(record.path) != record.modified {
+        record.reason = "the file changed after the scan";
+        return;
+    }
+    var loaded = SceneDocument.LoadResult(record.path);
+    if loaded.IsOk == false {
+        record.reason = "the scene could not be reloaded";
+        return;
+    }
+    var scene = loaded.Unwrap() as SceneDocument;
+    if CountMatches(scene, oldKey, oldKind) != record.matches {
+        record.reason = "the scene content changed after the scan";
+        return;
+    }
+    var objectIndex = 0;
+    while objectIndex < scene.ObjectCount() {
+        if scene.ObjectHas(objectIndex, oldKey)
+           and scene.ObjectPropertyKind(objectIndex, oldKey) == oldKind {
+            if ConvertObjectValue(
+                   scene, objectIndex, oldKey, oldKind, newKey, newKind)
+               == false {
+                record.reason = "a value could not be converted";
+                return;
+            }
+        }
+        objectIndex = objectIndex + 1;
+    }
+    if scene.Save(record.path) == false {
+        record.reason = "the migrated scene could not be saved";
+        return;
+    }
+    record.applied = true;
+}
+
+/// @brief Convert one object's value with exact-representation semantics.
+func ConvertObjectValue(scene: SceneDocument,
+                        index: Integer,
+                        oldKey: String,
+                        oldKind: String,
+                        newKey: String,
+                        newKind: String) -> Boolean {
+    if oldKind == newKind {
+        if oldKey == newKey { return true; }
+        if oldKind == "string" {
+            scene.ObjectSetStr(
+                index, newKey, scene.ObjectGetStr(index, oldKey, ""));
+        } else if oldKind == "int" {
+            scene.ObjectSetInt(
+                index, newKey, scene.ObjectGetInt(index, oldKey, 0));
+        } else if oldKind == "float" {
+            scene.ObjectSetFloat(
+                index, newKey, scene.ObjectGetFloat(index, oldKey, 0.0));
+        } else if oldKind == "bool" {
+            scene.ObjectSetBool(
+                index, newKey, scene.ObjectGetBool(index, oldKey, false));
+        } else {
+            scene.ObjectSetNull(index, newKey);
+        }
+    } else if newKind == "string" {
+        scene.ObjectSetStr(
+            index, newKey, RenderValueText(scene, index, oldKey, oldKind));
+    } else {
+        return false;
+    }
+    if oldKey != newKey { scene.ObjectRemove(index, oldKey); }
+    if oldKey == newKey and oldKind != newKind
+       and scene.ObjectPropertyKind(index, newKey) != newKind {
+        return false;
+    }
+    return true;
+}
+
+/// @brief Render one typed value as display text for string conversion.
+func RenderValueText(scene: SceneDocument,
+                     index: Integer,
+                     key: String,
+                     kind: String) -> String {
+    if kind == "string" { return scene.ObjectGetStr(index, key, ""); }
+    if kind == "int" {
+        return Fmt.Int(scene.ObjectGetInt(index, key, 0));
+    }
+    if kind == "float" {
+        return Fmt.Num(scene.ObjectGetFloat(index, key, 0.0));
+    }
+    if kind == "bool" {
+        return Fmt.Bool(scene.ObjectGetBool(index, key, false));
+    }
+    return "";
+}
+
+/// @brief Count exact-kind object matches for one field key.
+func CountMatches(scene: SceneDocument,
+                  key: String,
+                  valueKind: String) -> Integer {
+    var matches = 0;
+    var index = 0;
+    while index < scene.ObjectCount() {
+        if scene.ObjectHas(index, key)
+           and scene.ObjectPropertyKind(index, key) == valueKind {
+            matches = matches + 1;
+        }
+        index = index + 1;
+    }
+    return matches;
+}
+
+/// @brief Record one non-migratable file with its reason.
+func AddRefusal(result: SchemaMigrationResult,
+                path: String,
+                reason: String) {
+    var record = new SchemaMigrationRecord();
+    record.path = path;
+    record.reason = reason;
+    result.records.add(record);
+}

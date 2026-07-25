@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/ra/CfgExtract.hpp
+// File: src/codegen/common/ra/CfgExtract.hpp
 // Purpose: Shared MIR control-flow-graph extraction for backend register
 //          allocators. Walks each block's instructions through a
 //          backend-supplied classifier and produces per-block successor index
@@ -27,6 +27,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file CfgExtract.hpp
+ * @brief Defines backend-neutral MIR control-flow successor extraction.
+ */
+
 #pragma once
 
 #include <algorithm>
@@ -43,6 +48,7 @@ namespace zanna::codegen::ra {
 ///          becomes a successor edge; labels that do not resolve to a block
 ///          (e.g. external symbols) are ignored by the extractor.
 struct BranchDesc {
+    /// @brief Control-flow effect of one classified MIR instruction.
     enum class Kind {
         None,     ///< Not a control-flow instruction; scanning continues.
         Cond,     ///< Conditional branch: adds @c target, keeps scanning,
@@ -54,6 +60,7 @@ struct BranchDesc {
         NoReturn, ///< Trap / no-return call: no successors, ends the scan.
     };
 
+    ///< Classified control-flow effect.
     Kind kind{Kind::None};
     const std::string *target{nullptr}; ///< Branch target label, if any.
     std::vector<const std::string *> multiTargets{}; ///< Targets for Kind::Multi.

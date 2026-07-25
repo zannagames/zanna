@@ -5,17 +5,23 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/FramePlan.hpp
+// File: src/codegen/aarch64/FramePlan.hpp
 // Purpose: Describe a minimal frame save/restore plan for AArch64 functions.
 // Key invariants:
 //   - Frame sizes are always 16-byte aligned per AArch64 ABI.
 //   - saveGPRs/saveFPRs do not include X29/X30; those are handled in prologue.
 // Ownership/Lifetime:
-//   - FramePlan is a plain data aggregate; no dynamic allocation or ownership.
-// Links: codegen/aarch64/AsmEmitter.hpp,
-//        codegen/aarch64/binenc/A64BinaryEncoder.hpp
+//   - FramePlan owns its register-list storage and contains no borrowed pointers.
+// Links: src/codegen/aarch64/AsmEmitter.hpp,
+//        src/codegen/aarch64/binenc/A64BinaryEncoder.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Defines the self-contained callee-save and local-frame plan shared by
+ *        AArch64 text and binary emitters.
+ */
 
 #pragma once
 
@@ -69,12 +75,14 @@ namespace zanna::codegen::aarch64 {
 ///
 /// @see PrologueEpiloguePass for prologue/epilogue code generation
 /// @see RegAllocLinear for determining which callee-saved registers are used
+/// @invariant @ref localFrameSize is nonnegative and 16-byte aligned.
+/// @invariant Save lists exclude frame pointer `x29` and link register `x30`.
 struct FramePlan {
     /// @brief List of general-purpose registers that must be saved in the prologue.
     ///
     /// Contains only those X19-X28 registers that are actually used by the function.
     /// The prologue generator saves these in pairs using STP instructions for
-    /// efficiency. If the count is odd, X30 (LR) may be paired with the last GPR.
+    /// efficiency. An odd final register occupies its own padded stack slot.
     ///
     /// @note X29 (FP) and X30 (LR) are handled separately, not included in this list.
     std::vector<PhysReg> saveGPRs;

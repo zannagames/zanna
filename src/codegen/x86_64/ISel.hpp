@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/ISel.hpp
+// File: src/codegen/x86_64/ISel.hpp
 // Purpose: Declare the instruction selection helpers that canonicalise Machine IR.
 // Key invariants:
 //   - Transformations preserve instruction ordering while rewriting pseudo-ops
@@ -15,9 +15,9 @@
 // Ownership/Lifetime:
 //   - The selector mutates Machine IR in-place; no dynamic resources are
 //     allocated beyond temporary worklists.
-// Links: codegen/x86_64/ISel.cpp,
-//        codegen/x86_64/MachineIR.hpp,
-//        codegen/x86_64/TargetX64.hpp
+// Links: src/codegen/x86_64/ISel.cpp,
+//        src/codegen/x86_64/MachineIR.hpp,
+//        src/codegen/x86_64/TargetX64.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,33 +26,63 @@
 #include "MachineIR.hpp"
 #include "TargetX64.hpp"
 
+/**
+ * @file
+ * @brief Declares x86-64 Machine IR legalization and local instruction selection.
+ *
+ * The selector converts lowering pseudos and operand combinations into forms
+ * accepted by register allocation and the final emitters. It also performs
+ * legality-aware local folds that exploit x86-64 addressing modes without
+ * changing observable flag or virtual-register behavior.
+ */
+
 namespace zanna::codegen::x64 {
 
-/// \brief Canonicalises lowered Machine IR into concrete x86-64 forms.
-/// \details The instruction selector fixes operand modes for integer and
-///          floating point arithmetic, resolves compare+branch sequences, and
-///          materialises i1 values using byte set + zero-extend idioms.
+/**
+ * @brief Canonicalizes lowered Machine IR into concrete x86-64 forms.
+ *
+ * The selector fixes immediate/register modes for arithmetic, lowers explicit
+ * scalar and floating-point select pseudos, simplifies compare/branch chains,
+ * materializes byte booleans, and folds eligible address computations into LEA
+ * or SIB memory operands. The bound target descriptor is borrowed.
+ */
 class ISel {
   public:
-    /// \brief Construct an instruction selector bound to a target ABI.
-    /// \param target Target info supplying register sizes, ABI argument order,
-    ///        and calling-convention metadata used by the canonicalisation
-    ///        passes; @p target must outlive the ISel instance.
+    /**
+     * @brief Construct an instruction selector bound to a target ABI.
+     * @param target Borrowed target descriptor that must outlive this instance.
+     */
     explicit ISel(const TargetInfo &target) noexcept;
 
-    /// \brief Lower arithmetic instructions to concrete encodings.
+    /**
+     * @brief Legalize arithmetic operands and apply address-strength reductions.
+     * @param func Machine function rewritten in place.
+     * @throws std::exception If temporary-vreg creation or an unsupported form fails.
+     */
     void lowerArithmetic(MFunction &func) const;
 
-    /// \brief Lower compare operations and conditional branches to x86-64 forms.
+    /**
+     * @brief Legalize compares and simplify boolean conditional-branch chains.
+     * @param func Machine function rewritten in place.
+     * @throws std::exception If temporary-vreg creation fails.
+     */
     void lowerCompareAndBranch(MFunction &func) const;
 
-    /// \brief Lower select-like idioms to canonical register sequences.
+    /**
+     * @brief Expand GPR and XMM select pseudos into legal control/data-flow MIR.
+     * @param func Machine function rewritten in place.
+     */
     void lowerSelect(MFunction &func) const;
 
-    /// \brief Verify that no 3-operand select pseudos survived instruction selection.
+    /**
+     * @brief Verify that no explicit or legacy select placeholder survived.
+     * @param func Selected function to inspect without modification.
+     * @throws std::runtime_error Through @c phaseAUnsupported on a residual pseudo.
+     */
     void validateSelectLowering(const MFunction &func) const;
 
   private:
+    /// Borrowed target descriptor; never null after construction.
     const TargetInfo *target_{nullptr};
 
     /// @brief Fold LEA base addresses into memory operands.

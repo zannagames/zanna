@@ -5,18 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Lowering.EH.cpp
+// File: src/codegen/x86_64/Lowering.EH.cpp
 // Purpose: x86-64 MIR lowering for residual EH markers and trap instructions.
 //          Structured native EH is rewritten earlier by NativeEHLowering; marker
 //          emitters here are inert fallbacks for any EH that slips through.
 // Key invariants:
-//   - Trap emitters call rt_trap which performs longjmp or aborts.
+//   - Trap emitters call rt_trap_string, followed by a defensive UD2.
 //   - EH marker emitters are no-ops when structured EH has already been lowered.
 // Ownership/Lifetime:
 //   - Operates on borrowed MIR builders; no persistent state.
-// Links: codegen/x86_64/LoweringRules.hpp,
-//        codegen/x86_64/Lowering.EmitCommon.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/LoweringRules.hpp,
+//        src/codegen/x86_64/Lowering.EmitCommon.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,6 +25,16 @@
 #include "LowerILToMIR.hpp"
 #include "Lowering.EmitCommon.hpp"
 #include "MachineIR.hpp"
+
+/**
+ * @file
+ * @brief Implements residual EH-marker fallbacks and the terminal trap rule.
+ *
+ * Structured EH must be eliminated by NativeEHLowering before this rule set is
+ * reached. Marker rules are therefore intentionally inert compatibility guards,
+ * while @c trap is lowered to a planned runtime call carrying an optional
+ * managed-string payload and a defensive illegal-instruction terminator.
+ */
 
 namespace zanna::codegen::x64::lowering {
 
@@ -45,19 +55,25 @@ MInstr makePlannedCall(Operand target, uint32_t callPlanId) {
 
 } // namespace
 
-/// @brief Inert fallback for stray eh.push markers post-NativeEHLowering.
+/// @brief Ignore a residual @c eh.push marker after native EH preparation.
+/// @details Both arguments are intentionally unnamed and unused because all
+///          machine-level handler state has already been emitted upstream.
 void emitEhPush(const ILInstr &, MIRBuilder &) {
     // NativeEHLowering should have rewritten eh.push before MIR lowering.
     // Keep the fallback emitter inert so stale marker instructions do not
     // invent duplicate machine-level EH state.
 }
 
-/// @brief Inert fallback for stray eh.pop markers post-NativeEHLowering.
+/// @brief Ignore a residual @c eh.pop marker after native EH preparation.
+/// @details This fallback prevents a stale structural marker from duplicating
+///          the handler-state teardown emitted by NativeEHLowering.
 void emitEhPop(const ILInstr &, MIRBuilder &) {
     // NativeEHLowering should have rewritten eh.pop before MIR lowering.
 }
 
-/// @brief Inert fallback for stray eh.entry markers post-NativeEHLowering.
+/// @brief Ignore a residual @c eh.entry marker after native EH preparation.
+/// @details Handler entry markers carry no remaining MIR action once the
+///          structured region has been rewritten.
 void emitEhEntry(const ILInstr &, MIRBuilder &) {
     // Handler entry markers are erased by NativeEHLowering. Leave a no-op
     // fallback so residual markers remain harmless.

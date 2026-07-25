@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/LabelUtil.hpp
+// File: src/codegen/common/LabelUtil.hpp
 // Purpose: Small helpers for generating assembler-safe labels.
 // Key invariants: Output labels are always non-empty and valid for GAS/NASM;
 //                 no digit-leading labels are emitted.
@@ -18,6 +18,9 @@
 
 #include <string>
 #include <string_view>
+
+/// @file
+/// @brief Provides deterministic assembler-label sanitization helpers.
 
 /// @brief Utilities for generating assembler-compatible labels from arbitrary strings.
 ///
@@ -35,6 +38,8 @@ namespace zanna::codegen::common {
 ///          suffix.
 /// @param out Destination label buffer.
 /// @param fragment Input label fragment to sanitize and append.
+/// @post @p out retains its existing prefix and gains exactly one output
+///       character per byte in @p fragment.
 inline void appendSanitizedLabelFragment(std::string &out, std::string_view fragment) {
     for (unsigned char ch : fragment) {
         const bool isAlpha = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');

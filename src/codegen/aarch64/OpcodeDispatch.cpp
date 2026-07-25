@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/OpcodeDispatch.cpp
+// File: src/codegen/aarch64/OpcodeDispatch.cpp
 // Purpose: Central opcode dispatch switch for IL→MIR lowering. Routes each IL
 //          opcode to its InstrLowering handler; returns false for opcodes that
 //          the caller (LowerILToMIR) must handle directly.
@@ -13,14 +13,14 @@
 //   - Returns true on handled opcodes, false to fall through to caller.
 //   - Terminators (Br/CBr/SwitchI32) return true but emit no MIR here;
 //     TerminatorLowering handles them in a later pass.
-//   - All block access goes through bbOut() (index-stable lambda) because
-//     checked-cast handlers call emplace_back() on fn.blocks.
+//   - All block access goes through bbOut() so no block reference is retained
+//     across nested lowering helpers.
 // Ownership/Lifetime:
 //   - Free function; borrows ctx and its contained MFunction for the call.
-// Links: codegen/aarch64/OpcodeDispatch.hpp,
-//        codegen/aarch64/InstrLowering.cpp,
-//        codegen/aarch64/TerminatorLowering.cpp,
-//        codegen/aarch64/LowerILToMIR.cpp
+// Links: src/codegen/aarch64/OpcodeDispatch.hpp,
+//        src/codegen/aarch64/InstrLowering.cpp,
+//        src/codegen/aarch64/TerminatorLowering.cpp,
+//        src/codegen/aarch64/LowerILToMIR.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,12 +37,32 @@
 #include <stdexcept>
 #include <string_view>
 
+/**
+ * @file
+ * @brief Implements AArch64 IL instruction dispatch and checked-cast lowering.
+ *
+ * The dispatcher combines small in-place lowering cases with calls into the
+ * specialized instruction-lowering helpers. Floating-point checked casts
+ * register deferred shared trap blocks, while ordinary calls, memory
+ * operations, arithmetic, error accessors, and constants emit MIR directly
+ * into the indexed destination block.
+ */
+
 namespace zanna::codegen::aarch64 {
 
 using il::core::Opcode;
 
-/// @brief Materialize @p value into a GPR and move it into @p dstReg.
-/// @param what Human-readable name used in the error message on failure.
+/**
+ * @brief Materializes a scalar value and copies it into a physical argument register.
+ *
+ * @param value IL value to materialize.
+ * @param bbIn Source block used when resolving value producers.
+ * @param[in,out] ctx Lowering state and virtual-register allocator.
+ * @param dstReg Physical GPR that receives the value.
+ * @param[in,out] out Destination block for materialization and move instructions.
+ * @param what Non-null human-readable operand name used in failures.
+ * @throws std::runtime_error If materialization fails or produces a non-GPR value.
+ */
 static void moveValueToArg(const il::core::Value &value,
                            const il::core::BasicBlock &bbIn,
                            LoweringContext &ctx,
@@ -59,7 +79,17 @@ static void moveValueToArg(const il::core::Value &value,
         MInstr{MOpcode::MovRR, {MOperand::regOp(dstReg), MOperand::vregOp(RegClass::GPR, src)}});
 }
 
-/// @brief If @p ins has a result, copy x0 into a fresh vreg and record the mapping.
+/**
+ * @brief Captures an optional GPR call result from the AArch64 return register.
+ *
+ * Instructions without a result are left untouched. Otherwise a fresh GPR
+ * virtual register is mapped to the IL result and initialized from `x0`.
+ *
+ * @param ins Call-like IL instruction whose result is being captured.
+ * @param[in,out] ctx Lowering maps and virtual-register allocator.
+ * @param[in,out] out Block that receives the result-copy instruction.
+ * @throws std::runtime_error If the ordinary virtual-register range is exhausted.
+ */
 static void captureGprCallResult(const il::core::Instr &ins,
                                  LoweringContext &ctx,
                                  MBasicBlock &out) {
@@ -72,17 +102,31 @@ static void captureGprCallResult(const il::core::Instr &ins,
         MOpcode::MovRR, {MOperand::vregOp(RegClass::GPR, dst), MOperand::regOp(PhysReg::X0)}});
 }
 
-/// @brief Map a canonical runtime name to its concrete linker symbol, preserving user symbols.
-/// @details Returns the mapped runtime symbol when @p name is a known canonical
-///          runtime alias, otherwise returns @p name unchanged.
+/**
+ * @brief Resolves a canonical runtime name while preserving ordinary user symbols.
+ *
+ * @param name Symbol spelling to resolve.
+ * @return Owned mapped runtime linker name when known, otherwise an owned copy
+ *         of @p name.
+ */
 static std::string mapExternalSymbol(std::string_view name) {
     if (auto mapped = il::runtime::mapCanonicalRuntimeName(name))
         return std::string(*mapped);
     return std::string(name);
 }
 
-/// @brief Load a 64-bit FP constant into a fresh FPR vreg using movz+fmov.
-/// @return The vreg ID of the newly allocated FPR holding the constant.
+/**
+ * @brief Materializes a binary64 constant in a fresh FPR virtual register.
+ *
+ * The exact IEEE-754 bits are first loaded into a temporary GPR and then moved
+ * bitwise to the destination FPR.
+ *
+ * @param value Floating-point value whose representation is required.
+ * @param[in,out] ctx Virtual-register allocator and lowering state.
+ * @param[in,out] out Block that receives the `MovRI` and `FMovGR` sequence.
+ * @return Newly allocated FPR virtual-register ID.
+ * @throws std::runtime_error If either required virtual register cannot be allocated.
+ */
 static uint16_t materializeF64Constant(double value, LoweringContext &ctx, MBasicBlock &out) {
     const uint16_t dst = allocateNextVReg(ctx.nextVRegId);
     const uint16_t bitsGpr = allocateNextVReg(ctx.nextVRegId);
@@ -96,8 +140,13 @@ static uint16_t materializeF64Constant(double value, LoweringContext &ctx, MBasi
     return dst;
 }
 
-/// @brief Return the bit width for an integer type kind (I1→1, I16→16, I32→32, I64→64).
-/// @throws std::runtime_error if @p kind is not a supported integer width.
+/**
+ * @brief Maps a supported IL integer type to its checked-cast bit width.
+ *
+ * @param kind IL result-type kind.
+ * @return `1`, `16`, `32`, or `64` for the corresponding integer kind.
+ * @throws std::runtime_error If @p kind is not a supported integer type.
+ */
 static int integerTypeBits(il::core::Type::Kind kind) {
     switch (kind) {
         case il::core::Type::Kind::I1:
@@ -113,7 +162,13 @@ static int integerTypeBits(il::core::Type::Kind kind) {
     }
 }
 
-/// @brief Return the inclusive signed lower bound (e.g. -32768.0 for 16 bits).
+/**
+ * @brief Computes the inclusive floating-point lower bound for a signed width.
+ *
+ * @param bits Supported integer width (`1`, `16`, `32`, or `64`).
+ * @return `-2^(bits-1)` represented as a `double`.
+ * @throws std::runtime_error If @p bits is unsupported.
+ */
 static double signedLowerBoundForBits(int bits) {
     switch (bits) {
         case 1:
@@ -129,7 +184,13 @@ static double signedLowerBoundForBits(int bits) {
     }
 }
 
-/// @brief Return the exclusive signed upper bound (e.g. 32768.0 for 16 bits).
+/**
+ * @brief Computes the exclusive floating-point upper bound for a signed width.
+ *
+ * @param bits Supported integer width (`1`, `16`, `32`, or `64`).
+ * @return `2^(bits-1)` represented as a `double`.
+ * @throws std::runtime_error If @p bits is unsupported.
+ */
 static double signedUpperExclusiveForBits(int bits) {
     switch (bits) {
         case 1:
@@ -145,7 +206,13 @@ static double signedUpperExclusiveForBits(int bits) {
     }
 }
 
-/// @brief Return the exclusive unsigned upper bound (e.g. 65536.0 for 16 bits).
+/**
+ * @brief Computes the exclusive floating-point upper bound for an unsigned width.
+ *
+ * @param bits Supported integer width (`1`, `16`, `32`, or `64`).
+ * @return `2^bits` represented as a `double`.
+ * @throws std::runtime_error If @p bits is unsupported.
+ */
 static double unsignedUpperExclusiveForBits(int bits) {
     switch (bits) {
         case 1:
@@ -161,12 +228,28 @@ static double unsignedUpperExclusiveForBits(int bits) {
     }
 }
 
-// Handles integer/float conversion and narrowing opcodes. Returns false (so the
-// main dispatch can continue) for any opcode it does not own.
+/**
+ * @brief Lowers integer/float conversion and checked-narrowing opcodes.
+ *
+ * Checked conversions emit range or round-trip guards that branch to deferred
+ * per-function trap blocks. Plain conversions emit the corresponding AArch64
+ * conversion MIR. Opcodes outside this helper's set return `false`.
+ *
+ * @param ins Candidate conversion instruction.
+ * @param bbIn Source block used to materialize the input operand.
+ * @param[in,out] ctx Function-wide lowering state.
+ * @param bbOutIdx Index of the destination block in `ctx.mf.blocks`.
+ * @return `true` when the conversion was successfully lowered; `false` for an
+ *         unowned opcode or a missing/incompatible required operand.
+ * @pre `bbOutIdx < ctx.mf.blocks.size()`.
+ * @throws std::runtime_error For unsupported checked-cast widths or exhausted
+ *         virtual-register space.
+ */
 static bool lowerCastOpcodes(const il::core::Instr &ins,
                              const il::core::BasicBlock &bbIn,
                              LoweringContext &ctx,
                              std::size_t bbOutIdx) {
+    /// @brief Reacquires the indexed destination block after nested helper calls.
     auto bbOut = [&]() -> MBasicBlock & { return ctx.mf.blocks[bbOutIdx]; };
 
     switch (ins.op) {
@@ -377,12 +460,27 @@ static bool lowerCastOpcodes(const il::core::Instr &ins,
     }
 }
 
+/**
+ * @brief Dispatches one IL instruction to AArch64 MIR lowering.
+ *
+ * @param ins Instruction to lower or recognize for a later pass.
+ * @param bbIn Containing IL block used for operand materialization.
+ * @param[in,out] ctx Shared lowering state and output function.
+ * @param bbOutIdx Destination block index in `ctx.mf.blocks`.
+ * @return `true` when the instruction is handled or intentionally deferred;
+ *         `false` when the outer lowering loop retains responsibility.
+ * @throws std::runtime_error For invalid handled operands, unlowered structured
+ *         resume opcodes, or exhausted virtual-register space.
+ */
 bool lowerInstruction(const il::core::Instr &ins,
                       const il::core::BasicBlock &bbIn,
                       LoweringContext &ctx,
                       std::size_t bbOutIdx) {
-    // Helper lambda to access the output block by index.
-    // This ensures we always get a valid reference even after emplace_back().
+    /**
+     * @brief Reacquires the indexed output block without retaining a reference.
+     *
+     * @return Mutable destination block for the current instruction.
+     */
     auto bbOut = [&]() -> MBasicBlock & { return ctx.mf.blocks[bbOutIdx]; };
 
     // Integer/float conversion opcodes are handled by a dedicated helper.

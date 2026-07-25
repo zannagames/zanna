@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/StrengthReduce.hpp
+// File: src/codegen/aarch64/peephole/StrengthReduce.hpp
 // Purpose: Declarations for arithmetic identity elimination, strength reduction,
 //          division/modulo optimization, and immediate folding peephole sub-passes.
 //
@@ -28,20 +28,38 @@
 #include "../Peephole.hpp"
 #include "PeepholeCommon.hpp"
 
+/// @file
+/// @brief Declares integer strength-reduction and arithmetic folding rewrites.
+
 namespace zanna::codegen::aarch64::peephole {
 
-/// @brief Rewrite cmp reg, #0 to tst reg, reg.
+/// @brief Rewrite `CmpRI reg, 0` as `TstRR reg, reg`.
+/// @param[in,out] instr Candidate instruction, rewritten on success.
+/// @param[in,out] stats Statistics updated when the rewrite succeeds.
+/// @return `true` when @p instr was a well-formed comparison with zero.
 [[nodiscard]] bool tryCmpZeroToTst(MInstr &instr, PeepholeStats &stats);
 
-/// @brief Rewrite arithmetic identity operations (add #0, sub #0, shift #0).
+/// @brief Replace integer add, subtract, or shift identities with register moves.
+/// @param[in,out] instr Candidate immediate-form instruction.
+/// @param[in,out] stats Statistics updated when the rewrite succeeds.
+/// @return `true` when a supported operation had an immediate operand of zero.
 [[nodiscard]] bool tryArithmeticIdentity(MInstr &instr, PeepholeStats &stats);
 
-/// @brief Apply strength reduction: mul by power of 2 -> shift left.
+/// @brief Replace multiplication by a known positive power of two with `LslRI`.
+/// @param[in,out] instr Candidate `MulRRR`, rewritten on success.
+/// @param knownConsts Physical-GPR constants valid at @p instr.
+/// @param[in,out] stats Statistics updated when the rewrite succeeds.
+/// @return `true` when either multiply input is a known power of two with a
+///         shift in the AArch64 64-bit range.
 [[nodiscard]] bool tryStrengthReduction(MInstr &instr,
                                         const RegConstMap &knownConsts,
                                         PeepholeStats &stats);
 
-/// @brief Apply strength reduction: unsigned division by power of 2 -> logical shift right.
+/// @brief Replace unsigned division by a known power of two with `LsrRI`.
+/// @param[in,out] instr Candidate `UDivRRR`, rewritten on success.
+/// @param knownConsts Physical-GPR constants valid at @p instr.
+/// @param[in,out] stats Statistics updated when the rewrite succeeds.
+/// @return `true` when the divisor is a known positive power of two.
 [[nodiscard]] bool tryDivStrengthReduction(MInstr &instr,
                                            const RegConstMap &knownConsts,
                                            PeepholeStats &stats);
@@ -51,10 +69,17 @@ namespace zanna::codegen::aarch64::peephole {
 /// Handles unsigned division by arbitrary non-power-of-2 constants using
 /// `umulh` plus an optional correction/add sequence. Power-of-2 divisors stay
 /// on the single-instruction path above so they can collapse directly to `lsr`.
+///
+/// @param[in,out] instrs Block-local instruction sequence to expand.
+/// @param idx Index of the candidate `UDivRRR`.
+/// @param knownConsts Physical-GPR constants valid at @p idx.
+/// @param[in,out] stats Statistics updated when the rewrite succeeds.
 /// @param carriedExitRegs Optional sorted list of physical registers the
 ///        allocator carries live across the enclosing block's exit without any
 ///        in-block use (MBasicBlock::carriedExitRegs); clobber analysis treats
 ///        them as live at block end.
+/// @return `true` when the divisor was suitable, the divisor register was dead,
+///         scratch registers were available, and an expansion was installed.
 [[nodiscard]] bool tryUDivStrengthReduction(std::vector<MInstr> &instrs,
                                             std::size_t idx,
                                             const RegConstMap &knownConsts,
@@ -63,16 +88,19 @@ namespace zanna::codegen::aarch64::peephole {
 
 /// @brief Apply strength reduction: signed division by constant.
 ///
-/// Handles two cases:
-/// - SDIV by power-of-2: Replaces with ASR sign-correction sequence (4 instructions).
-/// - SDIV by arbitrary constant: Replaces with a proved-correct multiply-high
-///   magic-number sequence that preserves truncation-toward-zero semantics.
+/// Handles division by `1`, `-1`, positive powers of two, and arbitrary signed
+/// constants. General divisors use a signed multiply-high magic-number sequence
+/// with quotient and divisor-sign corrections, preserving truncation toward
+/// zero.
 ///
-/// @param instrs The instruction vector (may be modified via insertion/deletion).
-/// @param idx Index of the SDivRRR instruction.
-/// @param knownConsts Map of registers to their known constant values.
-/// @param stats Peephole statistics (strengthReductions incremented on success).
-/// @return true if the instruction was replaced.
+/// @param[in,out] instrs Block-local instruction sequence to expand.
+/// @param idx Index of the candidate `SDivRRR`.
+/// @param knownConsts Physical-GPR constants valid at @p idx.
+/// @param[in,out] stats Statistics updated when the rewrite succeeds.
+/// @param carriedExitRegs Optional sorted physical-register identifiers carried
+///        live through the block exit; such a divisor register cannot be reused.
+/// @return `true` when the instruction was replaced by an equivalent move,
+///         negate, shift/bias, or multiply-high sequence.
 [[nodiscard]] bool trySDivStrengthReduction(std::vector<MInstr> &instrs,
                                             std::size_t idx,
                                             const RegConstMap &knownConsts,
@@ -88,23 +116,34 @@ namespace zanna::codegen::aarch64::peephole {
 /// - SREM by 2^k: Replaced with sign-corrected AND+SUB sequence (5 instructions,
 ///   each 1 cycle vs ~22 cycles for SDIV + ~4 cycles for MSUB).
 ///
-/// @param instrs The instruction vector (may be modified via insertion/deletion).
-/// @param idx Index of the [SU]DivRRR instruction.
-/// @param knownConsts Map of registers to their known constant values.
-/// @param stats Peephole statistics (strengthReductions incremented on success).
-/// @return true if the pattern was replaced.
+/// @param[in,out] instrs Block-local instruction sequence to rewrite.
+/// @param idx Index of the `[SU]DivRRR` candidate.
+/// @param knownConsts Physical-GPR constants valid at @p idx.
+/// @param[in,out] stats Statistics updated when the rewrite succeeds.
+/// @param carriedExitRegs Accepted for consistency with the other division
+///        rewrites. The current remainder forms reuse the division result and
+///        do not need to consult the live-through set.
+/// @return `true` when the adjacent divide/remainder sequence was replaced.
 [[nodiscard]] bool tryRemainderFusion(std::vector<MInstr> &instrs,
                                       std::size_t idx,
                                       const RegConstMap &knownConsts,
                                       PeepholeStats &stats,
                                       const std::vector<uint16_t> *carriedExitRegs = nullptr);
 
-/// @brief Try to fold an RRR operation into RI when one operand is a known constant.
+/// @brief Fold a known right-hand operand of `AddRRR` or `SubRRR` into an immediate.
+/// @param[in,out] instr Candidate register-form instruction.
+/// @param knownConsts Physical-GPR constants valid at @p instr.
+/// @param[in,out] stats Statistics updated when the rewrite succeeds.
+/// @return `true` when the right operand is known in the unshifted 12-bit
+///         immediate range `[0, 4095]`.
 [[nodiscard]] bool tryImmediateFolding(MInstr &instr,
                                        const RegConstMap &knownConsts,
                                        PeepholeStats &stats);
 
-/// @brief Rewrite FP arithmetic identity operations (placeholder for future enhancement).
+/// @brief Placeholder for future floating-point identity rewrites.
+/// @param[in,out] instr Candidate instruction; currently never modified.
+/// @param[in,out] stats Statistics object; currently never modified.
+/// @return Always `false`.
 [[maybe_unused]] [[nodiscard]] bool tryFPArithmeticIdentity(MInstr &instr, PeepholeStats &stats);
 
 } // namespace zanna::codegen::aarch64::peephole

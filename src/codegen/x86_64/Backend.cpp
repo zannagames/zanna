@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Backend.cpp
+// File: src/codegen/x86_64/Backend.cpp
 // Purpose: Top-level x86-64 backend facade that sequences the Phase A pipeline.
 //          Orchestrates IL→MIR lowering, register allocation, frame layout,
 //          peephole optimisations, and final assembly/binary emission.
@@ -16,10 +16,10 @@
 // Ownership/Lifetime:
 //   - Borrows caller-provided IL modules and TargetInfo; all MIR state is
 //     stack-local and discarded after emission.
-// Links: codegen/x86_64/Backend.hpp,
-//        codegen/x86_64/LowerILToMIR.hpp,
-//        codegen/x86_64/AsmEmitter.hpp,
-//        codegen/x86_64/passes/PassManager.hpp
+// Links: src/codegen/x86_64/Backend.hpp,
+//        src/codegen/x86_64/LowerILToMIR.hpp,
+//        src/codegen/x86_64/AsmEmitter.hpp,
+//        src/codegen/x86_64/passes/PassManager.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -57,15 +57,28 @@
 #include <unordered_set>
 #include <vector>
 
+/**
+ * @file
+ * @brief Implements staged and convenience entry points for x86-64 code generation.
+ *
+ * This translation unit coordinates IL-to-MIR lowering, ABI call expansion,
+ * instruction legalization, register allocation, frame lowering, scheduling,
+ * peephole optimization, and assembly or direct-binary emission. Independent
+ * functions are processed concurrently where deterministic output and shared
+ * state permit it.
+ */
+
 namespace zanna::codegen::x64 {
 
-/// @brief Lower signed division pseudos into guarded IDIV sequences.
+/// @brief Lower signed division and remainder pseudos into guarded IDIV sequences.
 /// @details Declared here and implemented in @ref LowerDiv.cpp so the backend
 ///          facade can invoke the pass without introducing additional headers.
+/// @param fn Machine function to rewrite in place.
 void lowerSignedDivRem(MFunction &fn);
 
 /// @brief Lower overflow-checked arithmetic pseudos into guarded sequences.
 /// @details Declared here and implemented in @ref LowerOvf.cpp.
+/// @param fn Machine function to rewrite in place.
 void lowerOverflowOps(MFunction &fn);
 
 namespace {
@@ -73,6 +86,8 @@ namespace {
 /// @brief Map a target-platform enum to its native object-file format.
 /// @details Darwin → Mach-O, Linux → ELF, Windows → COFF; `Host` falls back to
 ///          the compile-time host-format detection.
+/// @param platform Platform policy requested by the caller.
+/// @return Object format associated with @p platform.
 [[nodiscard]] objfile::ObjFormat targetObjectFormat(CodegenOptions::TargetPlatform platform) {
     switch (platform) {
         case CodegenOptions::TargetPlatform::Darwin:
@@ -90,12 +105,15 @@ namespace {
 /// @brief Return true when `ZANNA_X64_BINARY_TRACE` is set in the environment.
 /// @details Cached once at first call; controls verbose stderr tracing during
 ///          binary emission for debug builds.
+/// @return @c true when per-function timing and size traces should be written.
 [[nodiscard]] bool traceX64BinaryEmit() {
     static const bool enabled = std::getenv("ZANNA_X64_BINARY_TRACE") != nullptr;
     return enabled;
 }
 
 /// @brief Count the total number of MIR instructions across all blocks in @p fn.
+/// @param fn Machine function to inspect.
+/// @return Sum of the instruction-vector sizes of all basic blocks.
 std::size_t mirInstructionCount(const MFunction &fn) {
     std::size_t count = 0;
     for (const auto &block : fn.blocks)
@@ -104,6 +122,9 @@ std::size_t mirInstructionCount(const MFunction &fn) {
 }
 
 /// @brief Return the label name if @p instr is a LABEL pseudo, else nullopt.
+/// @param instr Instruction whose first operand is inspected.
+/// @return A copy of the defined label, or @c std::nullopt for a non-label or
+///         malformed label pseudo.
 [[nodiscard]] std::optional<std::string> labelDefinedBy(const MInstr &instr) {
     if (instr.opcode != MOpcode::LABEL || instr.operands.empty()) {
         return std::nullopt;
@@ -117,6 +138,8 @@ std::size_t mirInstructionCount(const MFunction &fn) {
 /// @brief Return true if @p opcode ends sequential control flow within a block.
 /// @details Used by `splitInternalLabelBlocks` to start a new MBasicBlock after
 ///          any in-block JMP/JCC/RET/UD2.
+/// @param opcode Opcode to classify.
+/// @return @c true for a branch, return, jump-table dispatch, or trap terminator.
 [[nodiscard]] bool isControlTerminatorForSplit(MOpcode opcode) noexcept {
     return opcode == MOpcode::JMP || opcode == MOpcode::JCC || opcode == MOpcode::RET ||
            opcode == MOpcode::JUMPTABLE || opcode == MOpcode::UD2;
@@ -124,6 +147,8 @@ std::size_t mirInstructionCount(const MFunction &fn) {
 
 /// @brief Return true if @p label starts with the synthetic ".Lsplit" prefix
 ///        used by `splitInternalLabelBlocks` for fresh fall-through blocks.
+/// @param label Label text to inspect.
+/// @return @c true when @p label belongs to this splitter's synthetic namespace.
 [[nodiscard]] bool isSyntheticSplitLabel(std::string_view label) noexcept {
     return label.rfind(".Lsplit", 0) == 0;
 }
@@ -137,6 +162,8 @@ std::size_t mirInstructionCount(const MFunction &fn) {
 ///          Splitting here preserves layout while making those edges visible.
 ///          It also starts a fresh block after in-block control transfers so
 ///          branch-arm instructions are not hidden behind an earlier JCC.
+///
+/// @param fn Function whose blocks and instruction storage are rewritten in place.
 void splitInternalLabelBlocks(MFunction &fn) {
     bool needsSplit = false;
     std::size_t labelCount = 0;
@@ -236,6 +263,8 @@ void splitInternalLabelBlocks(MFunction &fn) {
 /// @param plans Ordered sequence of call plans captured during IL lowering.
 /// @param target Target description providing ABI register order.
 /// @param frame Mutable frame summary updated with outgoing argument usage.
+/// @throws std::runtime_error If a CALL references an invalid plan or any plan
+///         remains unmatched after traversal.
 void lowerPendingCalls(MFunction &func,
                        const std::vector<CallLoweringPlan> &plans,
                        const TargetInfo &target,
@@ -290,6 +319,9 @@ void lowerPendingCalls(MFunction &func,
 ///          the fixed ABI registers directly: rt_legacy_context returns a
 ///          context pointer, which is then passed as arg0 to
 ///          rt_set_current_context.
+///
+/// @param func Function to inspect and, when it is the entry point, mutate.
+/// @param target Target whose first integer argument and return registers are used.
 void insertMainRuntimeContextInit(MFunction &func, const TargetInfo &target) {
     if ((func.name != "main" && func.name != "@main") || func.blocks.empty() ||
         target.intArgOrder.empty()) {
@@ -297,6 +329,7 @@ void insertMainRuntimeContextInit(MFunction &func, const TargetInfo &target) {
     }
 
     auto &entry = func.blocks.front().instructions;
+    /// Recognize a direct call to the requested runtime symbol.
     auto isCallTo = [](const MInstr &instr, const char *name) {
         if (instr.opcode != MOpcode::CALL || instr.operands.empty())
             return false;
@@ -320,7 +353,13 @@ void insertMainRuntimeContextInit(MFunction &func, const TargetInfo &target) {
     entry.insert(entry.begin(), init.begin(), init.end());
 }
 
-/// @brief Lower one function to MIR and run pre-RA legalization.
+/// @brief Lower one IL function and run the complete pre-RA legalization sequence.
+/// @param ilFunc Source IL function.
+/// @param lowering Function-local lowering context and literal-pool owner.
+/// @param target ABI and register description used by call lowering and selection.
+/// @param frame Destination frame summary initialized by this helper.
+/// @param machineFunc Destination MIR function replaced with the lowered result.
+/// @throws std::exception Propagates lowering or legalization failures.
 static void legalizeFunctionPipeline(const ILFunction &ilFunc,
                                      LowerILToMIR &lowering,
                                      const TargetInfo &target,
@@ -343,7 +382,12 @@ static void legalizeFunctionPipeline(const ILFunction &ilFunc,
     insertMainRuntimeContextInit(machineFunc, target);
 }
 
-/// @brief Run register allocation and frame lowering on legalized MIR.
+/// @brief Run register allocation and frame lowering on one legalized function.
+/// @param machineFunc Function to allocate and rewrite in place.
+/// @param target ABI and physical-register description.
+/// @param options Reserved per-function backend options.
+/// @param frame Frame summary updated with spill areas and prologue requirements.
+/// @throws std::exception Propagates allocation or frame-lowering failures.
 static void allocateFunctionPipeline(MFunction &machineFunc,
                                      const TargetInfo &target,
                                      const CodegenOptions &options,
@@ -357,7 +401,13 @@ static void allocateFunctionPipeline(MFunction &machineFunc,
     insertPrologueEpilogue(machineFunc, target, frame);
 }
 
-/// @brief Seed a debug line table with enough file entries for MIR source locations.
+/// @brief Seed a debug line table with enough file entries for a MIR module.
+/// @details Every file identifier from one through the maximum identifier used
+///          by the module is mapped to the normalized @p debugSourcePath, or to
+///          the synthetic `&lt;source&gt;` name when no path was supplied.
+/// @param table Line table to extend with file slots.
+/// @param mir Functions whose instruction locations determine the slot count.
+/// @param debugSourcePath Source filename associated with each generated slot.
 static void seedDebugFiles(DebugLineTable &table,
                            const std::vector<MFunction> &mir,
                            std::string_view debugSourcePath) {
@@ -384,6 +434,9 @@ static void seedDebugFiles(DebugLineTable &table,
 /// @brief Single-function overload of seedDebugFiles for per-function emit paths.
 /// @details Same semantics as the multi-function version above but scans only
 ///          @p fn's instructions for the maximum DWARF file id.
+/// @param table Line table to extend with file slots.
+/// @param fn Function whose instruction locations determine the slot count.
+/// @param debugSourcePath Source filename associated with each generated slot.
 static void seedDebugFiles(DebugLineTable &table,
                            const MFunction &fn,
                            std::string_view debugSourcePath) {
@@ -421,6 +474,7 @@ static void seedDebugFiles(DebugLineTable &table,
 
 } // namespace
 
+/// @copydoc selectTarget
 const TargetInfo &selectTarget(CodegenOptions::TargetABI abi) noexcept {
     switch (abi) {
         case CodegenOptions::TargetABI::SysV:
@@ -433,6 +487,7 @@ const TargetInfo &selectTarget(CodegenOptions::TargetABI abi) noexcept {
     return hostTarget();
 }
 
+/// @copydoc legalizeModuleToMIR
 bool legalizeModuleToMIR(const ILModule &mod,
                          const TargetInfo &target,
                          const CodegenOptions &options,
@@ -460,9 +515,13 @@ bool legalizeModuleToMIR(const ILModule &mod,
         std::exception_ptr firstException;
         std::mutex exceptionMutex;
 
-        /// Legalize functions independently with private lowering state and
-        /// literal pools. Stable-index storage preserves deterministic function
-        /// order; literal labels are canonicalized after all workers join.
+        /**
+         * @brief Claim and legalize function indices until the work queue is empty.
+         *
+         * Each invocation uses function-private lowering and literal-pool state.
+         * Exceptions are captured once for rethrow after all workers join, while
+         * stable index slots preserve module order.
+         */
         auto legalizeNext = [&]() {
             for (;;) {
                 const std::size_t index =
@@ -542,6 +601,7 @@ bool legalizeModuleToMIR(const ILModule &mod,
     return true;
 }
 
+/// @copydoc allocateModuleMIR
 bool allocateModuleMIR(std::vector<MFunction> &mir,
                        std::vector<FrameInfo> &frames,
                        const TargetInfo &target,
@@ -555,6 +615,7 @@ bool allocateModuleMIR(std::vector<MFunction> &mir,
 
     std::string firstError;
     std::mutex errorMutex;
+    /// Allocate one indexed function and retain the first reported diagnostic.
     auto allocateOne = [&](std::size_t index) {
         try {
             allocateFunctionPipeline(mir[index], target, options, frames[index]);
@@ -574,6 +635,7 @@ bool allocateModuleMIR(std::vector<MFunction> &mir,
         std::vector<std::thread> workers;
         workers.reserve(workerCount);
         for (std::size_t worker = 0; worker < workerCount; ++worker) {
+            /// Repeatedly claim unallocated function indices for this worker.
             workers.emplace_back([&]() {
                 for (;;) {
                     const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);
@@ -601,6 +663,7 @@ bool allocateModuleMIR(std::vector<MFunction> &mir,
             auto &instrs = block.instructions;
             instrs.erase(std::remove_if(instrs.begin(),
                                         instrs.end(),
+                                        /// Identify allocator-produced no-op register copies.
                                         [](const MInstr &instr) {
                                             return peephole::isIdentityMovRR(instr) ||
                                                    peephole::isIdentityMovSDRR(instr);
@@ -612,6 +675,7 @@ bool allocateModuleMIR(std::vector<MFunction> &mir,
     return true;
 }
 
+/// @copydoc scheduleModuleMIR
 bool scheduleModuleMIR(std::vector<MFunction> &mir,
                        const CodegenOptions &options,
                        std::string &errors) {
@@ -628,6 +692,7 @@ bool scheduleModuleMIR(std::vector<MFunction> &mir,
     return true;
 }
 
+/// @copydoc optimizeModuleMIR
 bool optimizeModuleMIR(std::vector<MFunction> &mir,
                        const CodegenOptions &options,
                        std::string &errors) {
@@ -638,6 +703,7 @@ bool optimizeModuleMIR(std::vector<MFunction> &mir,
     const TargetInfo &target = selectTarget(options.targetABI);
     std::string firstError;
     std::mutex errorMutex;
+    /// Run target-aware peepholes for one function and capture its failure.
     auto optimizeOne = [&](std::size_t index) {
         try {
             runPeepholes(mir[index], target);
@@ -657,6 +723,7 @@ bool optimizeModuleMIR(std::vector<MFunction> &mir,
         std::vector<std::thread> workers;
         workers.reserve(workerCount);
         for (std::size_t worker = 0; worker < workerCount; ++worker) {
+            /// Repeatedly claim unoptimized function indices for this worker.
             workers.emplace_back([&]() {
                 for (;;) {
                     const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);
@@ -677,6 +744,7 @@ bool optimizeModuleMIR(std::vector<MFunction> &mir,
     return true;
 }
 
+/// @copydoc emitMIRToAssembly
 CodegenResult emitMIRToAssembly(const std::vector<MFunction> &mir,
                                 const AsmEmitter::RoDataPool &roData,
                                 const TargetInfo &target,
@@ -725,14 +793,7 @@ CodegenResult emitMIRToAssembly(const std::vector<MFunction> &mir,
     return result;
 }
 
-/// @brief Convenience wrapper that emits assembly for a single IL function.
-///
-/// @details Forwards to @ref emitModuleImpl after wrapping the function in a
-///          single-element vector so the main implementation can be reused.
-///
-/// @param func IL function to translate.
-/// @param opt Backend configuration to honour.
-/// @return Assembly text and diagnostics for the provided function.
+/// @copydoc emitFunctionToAssembly
 CodegenResult emitFunctionToAssembly(const ILFunction &func, const CodegenOptions &opt) {
     const TargetInfo &target = selectTarget(opt.targetABI);
     AsmEmitter::RoDataPool roData{};
@@ -752,14 +813,7 @@ CodegenResult emitFunctionToAssembly(const ILFunction &func, const CodegenOption
     return emitMIRToAssembly(mir, roData, target, opt);
 }
 
-/// @brief Emit assembly for every function in an IL module.
-///
-/// @details Delegates to @ref emitModuleImpl after copying the module's
-///          functions so they can be processed as a contiguous list.
-///
-/// @param mod IL module containing the functions to translate.
-/// @param opt Backend configuration supplied by the caller.
-/// @return Assembly text and diagnostics for the entire module.
+/// @copydoc emitModuleToAssembly
 CodegenResult emitModuleToAssembly(const ILModule &mod, const CodegenOptions &opt) {
     const TargetInfo &target = selectTarget(opt.targetABI);
     AsmEmitter::RoDataPool roData{};
@@ -777,6 +831,7 @@ CodegenResult emitModuleToAssembly(const ILModule &mod, const CodegenOptions &op
     return emitMIRToAssembly(mir, roData, target, opt);
 }
 
+/// @copydoc emitMIRToBinary
 BinaryEmitResult emitMIRToBinary(const std::vector<MFunction> &mir,
                                  const std::vector<FrameInfo> &frames,
                                  const AsmEmitter::RoDataPool &roData,
@@ -820,6 +875,14 @@ BinaryEmitResult emitMIRToBinary(const std::vector<MFunction> &mir,
         result.rodata.emit64LE(zanna::codegen::common::f64Bits(roData.f64Value(i)));
     }
 
+    /**
+     * @brief Encode one function into a caller-owned text section.
+     *
+     * @param i Stable MIR/frame index to encode.
+     * @param funcText Destination section for the function's bytes and relocations.
+     * @param funcDebugLines Optional function-local line table to populate.
+     * @return Empty string on success, otherwise a function-qualified diagnostic.
+     */
     auto encodeOne = [&](std::size_t i,
                          objfile::CodeSection &funcText,
                          DebugLineTable *funcDebugLines) -> std::string {
@@ -870,16 +933,24 @@ BinaryEmitResult emitMIRToBinary(const std::vector<MFunction> &mir,
             result.textSections.push_back(std::move(funcText));
         }
     } else {
+        /// @brief Stable worker result slot for a single encoded function.
         struct EncodedFunction {
+            /// Function-local bytes and relocations.
             objfile::CodeSection text;
+            /// Empty on success; diagnostic otherwise.
             std::string error;
         };
         std::vector<EncodedFunction> encoded(mir.size());
         std::atomic_size_t nextIndex{0};
         std::atomic_bool failed{false};
 
-        /// Encode independent functions into stable result slots. Each worker owns
-        /// its encoder and text section; the shared rodata section is read-only.
+        /**
+         * @brief Claim and encode functions into stable per-index result slots.
+         *
+         * Each worker owns its encoder and text section; the shared read-only
+         * literal section is only consulted for relocation targets. A failure
+         * asks other workers to stop claiming new functions.
+         */
         auto encodeNext = [&]() {
             while (!failed.load(std::memory_order_relaxed)) {
                 const std::size_t index =
@@ -922,6 +993,7 @@ BinaryEmitResult emitMIRToBinary(const std::vector<MFunction> &mir,
     return result;
 }
 
+/// @copydoc emitModuleToBinary
 BinaryEmitResult emitModuleToBinary(const ILModule &mod, const CodegenOptions &opt) {
     const TargetInfo &target = selectTarget(opt.targetABI);
     AsmEmitter::RoDataPool roData{};

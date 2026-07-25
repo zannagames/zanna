@@ -5,15 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/passes/PeepholePass.hpp
+// File: src/codegen/x86_64/passes/PeepholePass.hpp
 // Purpose: Declare the explicit post-RA peephole pass for the x86-64 pipeline.
 // Key invariants:
 //   - Runs after register allocation; operates on physical-register MIR.
 // Ownership/Lifetime:
 //   - Stateless pass; mutates Module::mir in place.
-// Links: codegen/x86_64/passes/PeepholePass.cpp,
-//        codegen/x86_64/passes/PassManager.hpp,
-//        codegen/x86_64/Peephole.hpp
+// Links: src/codegen/x86_64/passes/PeepholePass.cpp,
+//        src/codegen/x86_64/passes/PassManager.hpp,
+//        src/codegen/x86_64/Peephole.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,15 +21,25 @@
 
 #include "codegen/x86_64/passes/PassManager.hpp"
 
+/// @file
+/// @brief Declares the post-allocation x86-64 peephole pipeline pass.
+
 namespace zanna::codegen::x64::passes {
 
 /// @brief Post-RA peephole optimization pass for the x86-64 codegen pipeline.
+/// @details Applies local physical-register rewrites independently to each MIR
+///          function. Modules may be processed through a bounded worker pool;
+///          optional aggregate statistics are reported through diagnostics.
 class PeepholePass final : public Pass {
   public:
     /// @brief Run peephole rewrites over physical-register MIR.
+    /// @details Rejects execution before register allocation, skips rewriting
+    ///          below optimization level 1, and selects the configured target
+    ///          descriptor if the module does not already carry one.
     /// @param module Pipeline state whose @c mir vector is mutated in place.
-    /// @param diags Diagnostic sink for ordering failures.
-    /// @return True on success.
+    /// @param diags Sink for ordering failures and optional statistics.
+    /// @return @c true on success or optimization-level skip; @c false when
+    ///         register allocation has not completed.
     bool run(Module &module, Diagnostics &diags) override;
 };
 

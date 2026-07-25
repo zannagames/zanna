@@ -5,15 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Scheduler.hpp
+// File: src/codegen/x86_64/Scheduler.hpp
 // Purpose: Declare the post-RA x86-64 instruction scheduler.
 // Key invariants:
 //   - Must be called after register allocation when physical registers are known.
 //   - Reordering preserves data dependences and control-flow semantics.
 // Ownership/Lifetime:
 //   - Stateless; mutates caller-owned MFunction/MIR vectors in place.
-// Links: codegen/x86_64/Scheduler.cpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/Scheduler.cpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,6 +23,15 @@
 
 #include <cstddef>
 #include <vector>
+
+/**
+ * @file
+ * @brief Declares conservative post-allocation list scheduling for x86-64 MIR.
+ *
+ * Scheduling operates only inside straight-line segments, preserving explicit
+ * and implicit register dependencies, EFLAGS, potentially aliasing memory
+ * accesses, control-flow boundaries, and Win64 unwind-sensitive prologue saves.
+ */
 
 namespace zanna::codegen::x64 {
 
@@ -37,4 +46,3 @@ std::size_t scheduleFunction(MFunction &fn);
 std::size_t scheduleModule(std::vector<MFunction> &mir);
 
 } // namespace zanna::codegen::x64
-

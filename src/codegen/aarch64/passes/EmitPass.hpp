@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/EmitPass.hpp
+// File: src/codegen/aarch64/passes/EmitPass.hpp
 // Purpose: Declare the assembly emission pass for the AArch64 codegen pipeline.
 // Key invariants: Requires AArch64Module::mir to have physical registers assigned.
 //                 Populates AArch64Module::assembly with the final asm text.
@@ -18,15 +18,27 @@
 
 #include "codegen/aarch64/passes/PassManager.hpp"
 
+/**
+ * @file
+ * @brief Declares final AArch64 assembly-text emission.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
-/// @brief Emit AArch64 assembly text from all MIR functions.
+/**
+ * @brief Serializes globals and allocated MIR as target-specific assembly text.
+ *
+ * The pass is stateless and replaces `AArch64Module::assembly`.
+ */
 class EmitPass final : public Pass {
   public:
-    /// @brief Run the emission pass: generate assembly text into AArch64Module::assembly.
-    /// @param module Module state; mir must have physical registers assigned.
-    /// @param diags  Diagnostic sink for emission errors.
-    /// @return True if emission succeeded for all functions.
+    /**
+     * @brief Emits the complete assembly module.
+     * @param[in,out] module Module providing globals, target metadata, and
+     *        allocated MIR; receives final text in `assembly`.
+     * @param[in,out] diags Diagnostic sink used when target metadata is absent.
+     * @return `true` on complete emission, otherwise `false`.
+     */
     bool run(AArch64Module &module, Diagnostics &diags) override;
 };
 

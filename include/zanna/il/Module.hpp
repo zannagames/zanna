@@ -9,7 +9,10 @@
 // Purpose: Stable public entry point for IL core aggregates used by frontends.
 // Key invariants: Re-exports only supported IL core structures; avoid leaking internals.
 // Ownership/Lifetime: Types mirror definitions in il::core and retain their semantics.
-// Links: docs/il-guide.md#reference
+// Links: docs/il/il-guide.md#reference, src/il/core/
+//
+//===----------------------------------------------------------------------===//
+
 #pragma once
 
 #include "il/core/BasicBlock.hpp"
@@ -23,11 +26,23 @@
 #include "il/core/Type.hpp"
 #include "il/core/Value.hpp"
 
-/// @file include/zanna/il/Module.hpp
-/// @brief Public aggregation header exposing IL core types for clients such as
-///        language frontends.  Only stable surface structures are re-exported;
-///        helper utilities remain under src/il/internal.
-/// @notes See docs/il-guide.md#reference for semantics of the contained types.
+/**
+ * @file include/zanna/il/Module.hpp
+ * @brief Aggregates the stable, concrete data types that form an IL module.
+ *
+ * @details
+ * Language frontends and embedding clients can include this single header to
+ * obtain complete definitions for modules, functions, blocks, instructions,
+ * operands, types, globals, extern declarations, and parameters. The façade
+ * intentionally excludes parsing, verification, builder helpers, and internal
+ * implementation utilities so those dependencies remain explicit.
+ *
+ * The included types retain the ownership, mutation, and reference-stability
+ * contracts documented by their declarations in `src/il/core/`.
+ *
+ * @note The normative semantics of these types and their opcodes are defined
+ *       by `docs/il/il-guide.md#reference`.
+ */
 
 namespace il
 {

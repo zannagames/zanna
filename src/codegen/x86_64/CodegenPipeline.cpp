@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/CodegenPipeline.cpp
+// File: src/codegen/x86_64/CodegenPipeline.cpp
 // Purpose: Implement the reusable IL-to-x86-64 compilation pipeline used by
 //          CLI front ends. Coordinates module loading, verification, backend
 //          pass execution, and optional linking/execution.
@@ -21,9 +21,9 @@
 // Ownership/Lifetime:
 //   - The pipeline borrows IL modules and writes assembly/binaries to
 //     caller-specified locations without assuming ownership of resources.
-// Links: codegen/x86_64/CodegenPipeline.hpp,
-//        codegen/x86_64/Backend.hpp,
-//        codegen/x86_64/passes/PassManager.hpp
+// Links: src/codegen/x86_64/CodegenPipeline.hpp,
+//        src/codegen/x86_64/Backend.hpp,
+//        src/codegen/x86_64/passes/PassManager.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -60,15 +60,28 @@
 #include <utility>
 #include <vector>
 
+/**
+ * @file
+ * @brief Implements the x86-64 CLI compilation, object, link, and run workflow.
+ *
+ * The pipeline combines architecture-independent IL preparation and linker
+ * discovery with the x86-64 MIR pass stack. It supports native object encoding
+ * and a system-assembler path, then funnels executable production through the
+ * built-in linker with runtime archives selected from referenced symbols.
+ */
+
 namespace zanna::codegen::x64 {
 namespace {
 
+/// Concise alias for the public platform-selection enum.
 using TargetPlatform = CodegenOptions::TargetPlatform;
 
 /// @brief Resolve the concrete target platform from pipeline options.
 /// @details Honors an explicit non-Host @c target_platform; otherwise infers
 ///          it from the ABI (Win64 → Windows) or the detected host linker
 ///          platform. Falls back to Linux if detection is inconclusive.
+/// @param opts Pipeline options containing platform and ABI selections.
+/// @return Explicit Darwin, Linux, or Windows target platform.
 [[nodiscard]] TargetPlatform effectiveTargetPlatform(const CodegenPipeline::Options &opts) {
     if (opts.target_platform != TargetPlatform::Host)
         return opts.target_platform;
@@ -87,6 +100,8 @@ using TargetPlatform = CodegenOptions::TargetPlatform;
 
 /// @brief Map a target platform to its native object-file format
 ///        (Darwin→Mach-O, Linux→ELF, Windows→COFF; Host→detected).
+/// @param platform Target platform to map.
+/// @return Mach-O, ELF, or COFF object format.
 [[nodiscard]] objfile::ObjFormat targetObjectFormat(TargetPlatform platform) {
     switch (platform) {
         case TargetPlatform::Darwin:
@@ -103,6 +118,8 @@ using TargetPlatform = CodegenOptions::TargetPlatform;
 
 /// @brief Map a target platform to the linker's LinkPlatform enum
 ///        (Host resolves via the detected host linker platform).
+/// @param platform Code-generation platform selection.
+/// @return Equivalent native-linker platform value.
 [[nodiscard]] linker::LinkPlatform targetLinkPlatform(TargetPlatform platform) {
     switch (platform) {
         case TargetPlatform::Darwin:
@@ -120,6 +137,8 @@ using TargetPlatform = CodegenOptions::TargetPlatform;
 /// @brief Build the system assembler command prefix for @p platform.
 /// @details On a native Darwin host uses `cc`; cross-targets use `clang`
 ///          with the matching `--target=` x86-64 triple for the target OS.
+/// @param platform Platform whose assembler driver and target flags are needed.
+/// @return Executable name and fixed arguments preceding input/output arguments.
 [[nodiscard]] std::vector<std::string> systemAssemblerArgs(TargetPlatform platform) {
     switch (platform) {
         case TargetPlatform::Darwin:
@@ -293,6 +312,7 @@ std::string toNativePath(const std::filesystem::path &path) {
 ///          required.
 /// @param asmPath Path to the assembly file to assemble.
 /// @param objPath Destination path for the object file.
+/// @param targetPlatform Platform used to select the assembler target triple.
 /// @param out     Stream receiving the assembler's standard output.
 /// @param err     Stream receiving the assembler's standard error.
 /// @return Normalised assembler exit code (-1 when the command could not start).
@@ -329,11 +349,15 @@ int runExecutable(const std::filesystem::path &exePath, std::ostream &out, std::
 ///          components are present in the link context. The GUI support library
 ///          also pulls in zanna_text_core because CodeEditor uses the shared
 ///          text-buffer C ABI.
+/// @param ctx Runtime-component and build-directory discovery result.
+/// @param windowsDebugRuntime Optional override for the MSVC runtime flavor.
+/// @param archives Destination list extended with existing required archives.
 void collectNativeLinkArchives(const common::LinkContext &ctx,
                                std::optional<bool> windowsDebugRuntime,
                                std::vector<std::string> &archives) {
     std::unordered_set<std::string> seenArchives;
 
+    /// Append an existing archive once using its lexically normalized path.
     auto appendIfExists = [&](const std::filesystem::path &path) {
         if (!common::fileExists(path))
             return;
@@ -342,6 +366,7 @@ void collectNativeLinkArchives(const common::LinkContext &ctx,
             archives.push_back(archivePath);
     };
 
+    /// Resolve and append one runtime component archive when it exists.
     auto appendComponent = [&](RtComponent comp) {
         appendIfExists(common::runtimeArchivePath(ctx.buildDir, archiveNameForComponent(comp)));
     };
@@ -411,6 +436,17 @@ void collectNativeLinkArchives(const common::LinkContext &ctx,
 ///          a non-zero return value.
 /// @param objPath Object display name and filesystem fallback when @p objData is absent.
 /// @param objData Optional serialized object bytes transferred directly from codegen.
+/// @param exePath Destination executable path.
+/// @param ctx Prepared runtime archive and frontend dependency context.
+/// @param targetPlatform Platform conventions used by the native linker.
+/// @param extraObjects Additional relocatable object paths to link.
+/// @param stackSize Requested stack reservation, or zero for the linker default.
+/// @param fastLink Skip optional size-reduction work when @c true.
+/// @param preserveDebugSections Retain emitted debugging sections when @c true.
+/// @param windowsDebugRuntime Optional override for the MSVC runtime flavor.
+/// @param out Stream receiving informational linker output.
+/// @param err Stream receiving linker diagnostics.
+/// @return Native linker status; zero indicates success.
 int linkObjectWithNativeLinker(const std::filesystem::path &objPath,
                                std::optional<std::vector<uint8_t>> objData,
                                const std::filesystem::path &exePath,
@@ -453,22 +489,15 @@ int linkObjectWithNativeLinker(const std::filesystem::path &objPath,
 
 } // namespace
 
-/// @brief Construct a pipeline with the given configuration options.
-/// @details Copies the option struct so the pipeline retains a stable
-///          configuration even if the caller mutates their original instance.
-/// @param opts Pipeline configuration (input path, action flags, etc.).
+/// @copydoc CodegenPipeline::CodegenPipeline
 CodegenPipeline::CodegenPipeline(Options opts) : opts_(std::move(opts)) {}
 
-/// @brief Run the configured pipeline from IL loading to optional execution.
-/// @details Loads and verifies the IL module, executes the backend pass
-///          manager, writes assembly files, optionally links, and optionally
-///          runs the resulting executable. All diagnostics are aggregated into
-///          the returned @ref PipelineResult.
-/// @return Struct summarising exit code, stdout, and stderr output.
+/// @copydoc CodegenPipeline::run
 PipelineResult CodegenPipeline::run() {
     PipelineResult result{0, "", ""};
     std::ostringstream out;
     std::ostringstream err;
+    /// Snapshot captured streams into the process-style result at an exit point.
     auto finish = [&]() -> PipelineResult {
         result.stdout_text = out.str();
         result.stderr_text = err.str();
@@ -489,6 +518,7 @@ PipelineResult CodegenPipeline::run() {
     return runWithModule(std::move(module), opts_.input_il_path, true);
 }
 
+/// @copydoc CodegenPipeline::runWithModule
 PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
                                               std::string debugSourcePath,
                                               bool moduleAlreadyVerified) {
@@ -496,9 +526,7 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
     std::ostringstream out;
     std::ostringstream err;
 
-    // Flush the accumulated stdout/stderr buffers into `result` and return it.
-    // Used at every pipeline exit (success and failure) to avoid repeating the
-    // same three-line epilogue ~26 times.
+    /// Flush accumulated output into the result at any success or failure exit.
     auto finish = [&]() -> PipelineResult {
         result.stdout_text = out.str();
         result.stderr_text = err.str();

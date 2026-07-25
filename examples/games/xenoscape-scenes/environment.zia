@@ -1,0 +1,186 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/environment.zia
+// Purpose: Defines deterministic movement contracts for interactive surfaces.
+// Key invariants:
+//   - Every result uses integer arithmetic and is identical in VM/native modes.
+//   - Helpers are side-effect free; Player and Physics own runtime state.
+// Ownership/Lifetime:
+//   - This module owns no heap objects or persistent state.
+//   - Callers may evaluate helpers once per simulation frame without cleanup.
+// Links: config.zia, player.zia, physics.zia, level.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module environment;
+
+bind "./config";
+
+/// @brief Select ground deceleration for the current surface.
+///
+/// Ice retains momentum by applying exactly 25 percent of ordinary ground
+/// deceleration. The minimum result is one centipixel per baseline frame so a
+/// future low tuning value cannot create an accidental frictionless surface.
+///
+/// @param onIce True when the player's foot probe overlaps an ice-floor tile.
+/// @return Positive ground deceleration passed to `PlatformerController`.
+func environmentalGroundDeceleration(onIce: Boolean) -> Integer {
+    if onIce {
+        var reduced = PLAYER_DECEL * ICE_DECEL_PERCENT / 100;
+        if reduced < 1 { reduced = 1; }
+        return reduced;
+    }
+    return PLAYER_DECEL;
+}
+
+/// @brief Select the controller's horizontal cap for normal or quicksand ground.
+///
+/// Quicksand limits both ordinary and sprint movement to 55 percent of the
+/// corresponding dry-ground cap. Dash is handled outside the controller and is
+/// therefore intentionally unaffected by this helper.
+///
+/// @param inQuicksand True while the player's foot probe overlaps quicksand.
+/// @param sprinting True while the temporary speed power-up is active.
+/// @return Positive horizontal velocity cap in centipixels per baseline frame.
+func environmentalMaxSpeed(inQuicksand: Boolean,
+                           sprinting: Boolean) -> Integer {
+    var maximum = PLAYER_SPEED;
+    if sprinting { maximum = PLAYER_SPEED * 3 / 2; }
+    if inQuicksand { maximum = maximum * QUICKSAND_SPEED_PERCENT / 100; }
+    return maximum;
+}
+
+/// @brief Select the full jump impulse for dry ground or quicksand.
+///
+/// The negative sign of `PLAYER_JUMP` is preserved: multiplying by 80 percent
+/// makes the quicksand jump shorter while leaving it strong enough to escape.
+///
+/// @param inQuicksand True when jump input begins from quicksand contact.
+/// @return Full jump impulse in signed centipixels per baseline frame.
+func environmentalJumpImpulse(inQuicksand: Boolean) -> Integer {
+    if inQuicksand {
+        return PLAYER_JUMP * QUICKSAND_JUMP_PERCENT / 100;
+    }
+    return PLAYER_JUMP;
+}
+
+/// @brief Select the variable-height jump-cut impulse for a surface.
+///
+/// This mirrors `environmentalJumpImpulse` so early button release preserves
+/// the same 80-percent quicksand relationship as a fully held jump.
+///
+/// @param inQuicksand True when the controller is configured for quicksand.
+/// @return Signed jump-cut impulse used by `PlatformerController`.
+func environmentalJumpCutImpulse(inQuicksand: Boolean) -> Integer {
+    return environmentalJumpImpulse(inQuicksand) / 2;
+}
+
+/// @brief Add one frame-scaled conveyor impulse and clamp ordinary movement.
+///
+/// Direction values are normalized to -1, 0, or +1. The 200-centipixel push is
+/// scaled by elapsed time, and the result is clamped so a long frame or stacked
+/// input cannot accelerate ordinary movement without bound.
+///
+/// @param velocity Current signed horizontal velocity in centipixels.
+/// @param direction Authored belt direction; negative is left, positive right.
+/// @param dt Elapsed milliseconds, normally clamped by the game loop.
+/// @return Conveyor-adjusted velocity in `[-CONVEYOR_MAX_SPEED, +max]`.
+func environmentalConveyorVelocity(velocity: Integer,
+                                   direction: Integer,
+                                   dt: Integer) -> Integer {
+    var normalized = 0;
+    if direction < 0 { normalized = -1; }
+    if direction > 0 { normalized = 1; }
+
+    var elapsed = dt;
+    if elapsed < 0 { elapsed = 0; }
+    var result = velocity + normalized * CONVEYOR_PUSH * elapsed / DT_BASE;
+    if result > CONVEYOR_MAX_SPEED { result = CONVEYOR_MAX_SPEED; }
+    if result < 0 - CONVEYOR_MAX_SPEED { result = 0 - CONVEYOR_MAX_SPEED; }
+    return result;
+}
+
+/// @brief Decide whether current vent contact begins a new launch.
+///
+/// A vent fires only on contact entry and only after its 300 ms cooldown has
+/// expired. Remaining on one vent never retriggers, even after the cooldown,
+/// until the player leaves and enters again.
+///
+/// @param onVent True for current-frame foot contact with a steam vent.
+/// @param wasOnVent True when the previous simulation frame had vent contact.
+/// @param cooldownMs Remaining nonnegative retrigger cooldown in milliseconds.
+/// @return True exactly on an eligible false-to-true contact transition.
+func environmentalShouldLaunchSteam(onVent: Boolean,
+                                    wasOnVent: Boolean,
+                                    cooldownMs: Integer) -> Boolean {
+    return onVent and wasOnVent == false and cooldownMs <= 0;
+}
+
+/// @brief Test whether a descending body crosses a one-way platform top.
+///
+/// One-way tiles never block upward or horizontal movement. A downward sweep
+/// blocks only when the body's previous bottom was at or above the platform and
+/// its proposed bottom reaches or crosses the top. Active drop-through input
+/// suppresses the collision entirely.
+///
+/// @param previousBottom Previous body-bottom coordinate in centipixels.
+/// @param proposedBottom Proposed body-bottom coordinate in centipixels.
+/// @param platformTop Top edge of the candidate tile in centipixels.
+/// @param dropping True during the player's 180 ms drop-through window.
+/// @return True when the candidate tile must resolve as a floor this frame.
+func environmentalOneWayBlocks(previousBottom: Integer,
+                               proposedBottom: Integer,
+                               platformTop: Integer,
+                               dropping: Boolean) -> Boolean {
+    if dropping { return false; }
+    if proposedBottom <= previousBottom { return false; }
+    return previousBottom <= platformTop and proposedBottom >= platformTop;
+}
+
+/// @brief Compute a deterministic floor square root for nonnegative integers.
+///
+/// Binary search avoids floating-point differences between VM/native backends.
+/// Gameplay callers use this for grapple rope lengths, whose squared inputs are
+/// small enough that midpoint multiplication remains far below integer limits.
+///
+/// @param value Nonnegative squared distance; negative values are treated as 0.
+/// @return Greatest integer `root` satisfying `root * root <= value`.
+func environmentalIntegerSqrt(value: Integer) -> Integer {
+    if value <= 0 { return 0; }
+    var low = 1;
+    var high = value;
+    var answer = 0;
+    while low <= high {
+        var mid = low + (high - low) / 2;
+        if mid <= value / mid {
+            answer = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    return answer;
+}
+
+/// @brief Clamp one retained grapple-release velocity component.
+///
+/// Component clamping preserves swing direction and momentum while enforcing
+/// the documented 1.5-times-dash safety cap on both axes.
+///
+/// @param velocity Signed centipixel velocity component.
+/// @return Value clamped to `[-GRAPPLE_RELEASE_MAX_SPEED, +max]`.
+func environmentalClampGrappleVelocity(velocity: Integer) -> Integer {
+    if velocity > GRAPPLE_RELEASE_MAX_SPEED {
+        return GRAPPLE_RELEASE_MAX_SPEED;
+    }
+    if velocity < 0 - GRAPPLE_RELEASE_MAX_SPEED {
+        return 0 - GRAPPLE_RELEASE_MAX_SPEED;
+    }
+    return velocity;
+}

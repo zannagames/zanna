@@ -15,13 +15,13 @@
 // Key invariants: Shared lowering state is reset before each run and builders
 //                 are released once emission finishes to avoid dangling
 //                 pointers.
-// Ownership/Lifetime: ProgramLowering borrows the Lowerer; emitted modules are
-//                     owned by the caller-provided builder.
+// Ownership/Lifetime: ProgramLowering borrows the Lowerer; the caller owns the
+//                     destination module and the run owns its temporary builder.
 // Links: docs/internals/codemap.md, docs/internals/architecture.md#cpp-overview
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
+/// @file Lowerer_Program.cpp
 /// @brief Implements program-level helpers for the BASIC-to-IL lowering pipeline.
 /// @details These utilities reset shared lowering state, construct IR builders,
 ///          and drive the staged emission sequence used by the BASIC front end.
@@ -55,7 +55,7 @@ il::core::Type coreTypeForAstType(::il::frontends::basic::Type ty) {
 }
 } // namespace pipeline_detail
 
-/// @brief Create a program-lowering helper bound to an owning @c Lowerer.
+/// @brief Create a program-lowering helper bound to a borrowed @c Lowerer.
 ///
 /// @details The helper is a thin façade around the shared `Lowerer` instance.
 ///          Storing a reference keeps the orchestration code decoupled from the
@@ -69,13 +69,13 @@ ProgramLowering::ProgramLowering(Lowerer &lowerer) : lowerer(lowerer) {}
 ///
 /// @details The orchestration proceeds as follows:
 ///          1. Bind the destination module and initialise a fresh IR builder.
-///          2. Reset lowering caches (name mangler, string pool, runtime state)
-///             so previous compilations cannot leak into the new translation.
+///          2. Reset the procedure context, symbol/string/signature stores,
+///             mangler, runtime tracker, manual requirements, and module type caches.
 ///          3. Run scanning passes that gather type and runtime requirements
 ///             prior to emission.
-///          4. Declare and emit runtime helpers and program bodies in a
-///             deterministic order, reusing the builder for all procedures.
-///          5. Release borrowed references to ensure no dangling pointers remain
+///          4. Emit OOP bodies, procedures, and synthetic main with one builder.
+///          5. Declare the runtime externs requested by scanning and emission.
+///          6. Release borrowed references to ensure no dangling pointers remain
 ///             once the module is fully populated.
 ///
 /// @param prog AST representing the BASIC program.
@@ -85,7 +85,9 @@ void ProgramLowering::run(const Program &prog, il::core::Module &module) {
     build::IRBuilder builder(module);
     lowerer.builder = &builder;
 
+    /// @brief Clears run-scoped builder/module bindings on every scope exit.
     struct LowererBindingGuard {
+        /// Borrowed lowerer whose transient bindings are guarded.
         Lowerer &lowerer;
 
         /// @brief Clear borrowed module and builder pointers when lowering exits.

@@ -16,6 +16,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file Parser_Stmt.cpp
+/// @brief Implements BASIC statement dispatch and shared body parsing.
+/// @details This translation unit builds the core/OOP handler registry, applies
+///          statement-form precedence, parses namespace and USING constructs,
+///          manages recursion/nesting guards, and supplies shared FUNCTION body
+///          and error-recovery helpers.
+
 #include "frontends/basic/BasicDiagnosticMessages.hpp"
 #include "frontends/basic/IdentifierUtil.hpp"
 #include "frontends/basic/Options.hpp"
@@ -53,12 +60,11 @@ void Parser::registerCoreParsers(StatementParserRegistry &registry) {
     registry.registerHandler(TokenKind::KeywordUsing, &Parser::parseUsingDecl);
 }
 
-/// @brief Register object-oriented statement parsers when the feature set is enabled.
+/// @brief Register object-oriented statement parsers.
 ///
 /// @details Adds handlers for class/type declarations and delete statements so
-///          source files that opt into OOP extensions can parse the additional
-///          constructs.  The core registry remains unchanged when these
-///          keywords are absent.
+///          the dispatcher recognizes CLASS, INTERFACE, TYPE, ENUM, and DELETE
+///          introducers.
 ///
 /// @param registry Dispatcher that records keyword-to-handler mappings.
 void Parser::registerOopParsers(StatementParserRegistry &registry) {
@@ -97,9 +103,12 @@ StmtPtr Parser::parseStatement(int line) {
         return nullptr;
     }
 
+    /// @brief Restores the statement-recursion counter on every exit path.
     struct DepthGuard {
+        /// Counter incremented by the current parseStatement invocation.
         unsigned &d;
 
+        /// @brief Leave the current statement-recursion level.
         ~DepthGuard() {
             --d;
         }
@@ -143,6 +152,14 @@ StmtPtr Parser::parseStatement(int line) {
     return nullptr;
 }
 
+/// @brief Invoke the callback registered for the current statement token.
+/// @details Soft identifier keywords followed by `=` or `(` are deliberately
+///          left unmatched so implicit-assignment or call parsing can handle
+///          them. Otherwise the no-line callback takes precedence over the
+///          line-aware callback.
+/// @param line Source line forwarded to a line-aware handler.
+/// @return Disengaged when no callback should run; otherwise the handler's
+///         statement pointer, which may be null after a diagnosed error.
 Parser::StmtResult Parser::parseRegisteredStatement(int line) {
     const Token tok = peek(); // Copy to avoid reference invalidation
 
@@ -205,7 +222,9 @@ StmtPtr Parser::parseNamespaceDecl() {
     // Track namespace nesting to enforce USING-at-file-scope rule.
     ++nsDepth_;
 
+    /// @brief Restores namespace nesting depth on every return path.
     struct NamespaceDepthGuard {
+        /// Parser depth incremented for the current namespace.
         int &depth;
 
         /// @brief Restore parser namespace depth when namespace parsing exits.
@@ -347,6 +366,12 @@ StmtPtr Parser::parseUsingStatement(il::support::SourceLoc loc) {
     return stmt;
 }
 
+/// @brief Diagnose an unexpected numeric token at statement position.
+/// @details Leaves non-number tokens unmatched. For a number, emits the
+///          dedicated diagnostic, synchronizes to a statement boundary, and
+///          returns an engaged result containing a null statement.
+/// @return Disengaged when the current token is not a number; otherwise an
+///         engaged null statement indicating handled recovery.
 Parser::StmtResult Parser::parseLeadingLineNumberError() {
     if (!at(TokenKind::Number))
         return std::nullopt;
@@ -356,6 +381,10 @@ Parser::StmtResult Parser::parseLeadingLineNumberError() {
     return StmtResult(StmtPtr{});
 }
 
+/// @brief Emit the catalogued unexpected-line-number diagnostic.
+/// @details Uses the structured emitter when configured and otherwise prints a
+///          fallback message to standard error.
+/// @param tok Numeric token supplying spelling, location, and range length.
 void Parser::reportUnexpectedLineNumber(const Token &tok) {
     auto diagId = diag::BasicDiag::UnexpectedLineNumber;
     if (emitter_) {
@@ -371,6 +400,10 @@ void Parser::reportUnexpectedLineNumber(const Token &tok) {
     }
 }
 
+/// @brief Emit the catalogued unknown-statement diagnostic.
+/// @details Uses the structured emitter when configured and otherwise prints a
+///          fallback message to standard error.
+/// @param tok Unrecognized statement-leading token.
 void Parser::reportUnknownStatement(const Token &tok) {
     auto diagId = diag::BasicDiag::UnknownStatement;
     if (emitter_) {
@@ -388,6 +421,8 @@ void Parser::reportUnknownStatement(const Token &tok) {
     }
 }
 
+/// @brief Advance error recovery to the next statement boundary.
+/// @details Delegates to the token helper shared by statement parsers.
 void Parser::resyncAfterError() {
     syncToStmtBoundary();
 }
@@ -424,6 +459,12 @@ bool Parser::isStatementStart(TokenKind kind) const {
     return statementRegistry().contains(kind);
 }
 
+/// @brief Parse a FUNCTION header without consuming its body.
+/// @details Captures the identifier, suffix-derived return type, parameter
+///          list, and optional `AS` annotation. A recognized primitive stores
+///          `explicitRetType`; otherwise an identifier path is canonicalized
+///          into `explicitClassRetQname`.
+/// @return Owned partial function declaration ready for body collection.
 std::unique_ptr<FunctionDecl> Parser::parseFunctionHeader() {
     auto loc = peek().loc;
     consume(); // FUNCTION
@@ -467,15 +508,19 @@ std::unique_ptr<FunctionDecl> Parser::parseFunctionHeader() {
 ///
 /// @param endKind Keyword expected after END to close the body.
 /// @param body Destination vector for parsed statements.
-/// @return Source location of the terminating END token.
+/// @return Source location of the terminating END token, or an invalid location
+///         when end of file is reached first.
 il::support::SourceLoc Parser::parseProcedureBody(TokenKind endKind, std::vector<StmtPtr> &body) {
     auto ctx = statementSequencer();
     const bool isProcBody = (endKind != TokenKind::KeywordNamespace);
     if (isProcBody)
         ++procDepth_;
 
+    /// @brief Restores procedure nesting depth when body collection exits.
     struct ProcedureDepthGuard {
+        /// Parser procedure-depth counter.
         int &depth;
+        /// Whether this body contributes a procedure nesting level.
         bool active;
 
         /// @brief Restore parser procedure depth when body parsing exits.
@@ -485,10 +530,12 @@ il::support::SourceLoc Parser::parseProcedureBody(TokenKind endKind, std::vector
         }
     } guard{procDepth_, isProcBody};
 
+    /// Recognize the exact `END <endKind>` body terminator.
     auto info = ctx.collectStatements(
         [&](int, il::support::SourceLoc) {
             return at(TokenKind::KeywordEnd) && peek(1).kind == endKind;
         },
+        /// Consume both tokens of the already-recognized terminator.
         [&](int, il::support::SourceLoc, StatementSequencer::TerminatorInfo &) {
             consume();
             consume();
@@ -510,6 +557,7 @@ il::support::SourceLoc Parser::parseProcedureBody(TokenKind endKind, std::vector
 ///          downstream diagnostics.
 ///
 /// @param fn Function declaration to populate with body statements.
+/// @pre @p fn is non-null.
 void Parser::parseFunctionBody(FunctionDecl *fn) {
     fn->endLoc = parseProcedureBody(TokenKind::KeywordFunction, fn->body);
 }

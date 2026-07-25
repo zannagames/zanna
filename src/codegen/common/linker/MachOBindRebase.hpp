@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/MachOBindRebase.hpp
+// File: src/codegen/common/linker/MachOBindRebase.hpp
 // Purpose: Mach-O bind/rebase opcode emission and symbol table construction.
 //          Used by MachOExeWriter to generate __LINKEDIT content.
 // Key invariants:
@@ -18,6 +18,11 @@
 // Links: codegen/common/linker/MachOExeWriter.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file MachOBindRebase.hpp
+ * @brief Declares dyld bind/rebase stream and Mach-O symbol-table builders.
+ */
 
 #pragma once
 
@@ -32,13 +37,20 @@
 
 namespace zanna::codegen::linker {
 
-/// Build the bind opcode stream for non-lazy GOT binding + TLV descriptors.
-/// Appends bind opcodes to \p bindData, terminated with BIND_OPCODE_DONE.
-/// @param symOrdinals  Map from symbol name to 1-based dylib ordinal.
-///                     Ordinal 0 means flat lookup. Missing symbols default to ordinal 1.
-/// @returns false on hard layout errors (e.g. a TLV-descriptor section whose
-///          size isn't an exact multiple of 24 bytes). Diagnostics are written
-///          to @p err and \p bindData is left in an unspecified state.
+/// @brief Builds dyld bind opcodes for GOT, TLV, and direct data-pointer imports.
+/// @details Appends entries to @p bindData and terminates the stream with
+///          `BIND_OPCODE_DONE`. Addresses are encoded relative to the supplied
+///          data-segment base and use the supplied load-command segment index.
+/// @param bindData Destination opcode stream; may contain partial additions on failure.
+/// @param gotEntries Loader-populated GOT slots.
+/// @param layout Final sections, TLV descriptors, and direct bind entries.
+/// @param dataSegVmAddr Virtual-address base of the Mach-O data segment.
+/// @param dataSegIndex Load-command segment index encoded into bind opcodes.
+/// @param symOrdinals Symbol-to-dylib ordinal map. Zero selects flat lookup;
+///                    missing symbols default to ordinal one (libSystem).
+/// @param err Diagnostic output stream.
+/// @return `false` on a hard layout error, such as a malformed TLV descriptor
+///         section; otherwise `true`.
 bool buildBindOpcodes(std::vector<uint8_t> &bindData,
                       const std::vector<GotEntry> &gotEntries,
                       const LinkLayout &layout,
@@ -47,22 +59,32 @@ bool buildBindOpcodes(std::vector<uint8_t> &bindData,
                       const std::unordered_map<std::string, uint32_t> &symOrdinals,
                       std::ostream &err);
 
-/// Build rebase opcodes for ASLR pointer fixups in writable sections.
-/// dyld processes these at load time, adding the ASLR slide to each pointer.
+/// @brief Builds dyld rebase opcodes for ASLR-sensitive absolute pointers.
+/// @details Converts layout entries to unique, sorted data-segment offsets and
+///          run-length encodes consecutive eight-byte pointers. If the layout
+///          has no rebase entries, nothing is appended.
+/// @param rebaseData Destination opcode stream.
+/// @param layout Final layout containing pointer fixup locations.
+/// @param dataSegVmAddr Virtual-address base of the Mach-O data segment.
+/// @param dataSegIndex Load-command segment index encoded into rebase opcodes.
 void buildRebaseOpcodes(std::vector<uint8_t> &rebaseData,
                         const LinkLayout &layout,
                         uint64_t dataSegVmAddr,
                         uint32_t dataSegIndex);
 
-/// Build symbol table and string table for __LINKEDIT.
-/// @param symtabData   Output nlist entries (16 bytes each).
-/// @param strtabData   Output string table (NUL-separated, 4-byte aligned).
-/// @param layout       Link layout with global symbol table.
-/// @param dynSyms      Set of dynamic symbol names.
-/// @param symOrdinals  Map from symbol name to 1-based dylib ordinal (for nlist desc).
-///                     Ordinal 0 maps to DYNAMIC_LOOKUP_ORDINAL (0xFE).
-/// @param nExtDef      [out] Number of external defined symbols.
-/// @param nUndef       [out] Number of undefined (dynamic import) symbols.
+/// @brief Builds `nlist_64` records and their string table for `__LINKEDIT`.
+/// @details Appends `_main` as the sole external definition when present and
+///          sorted dynamic imports as undefined entries. Synthetic `__got_*`
+///          names are omitted. The string table begins with NUL and is padded
+///          to four bytes, so callers normally pass empty destination buffers.
+/// @param symtabData Destination 16-byte `nlist_64` records.
+/// @param strtabData Destination NUL-separated string table.
+/// @param layout Final global symbol table.
+/// @param dynSyms Dynamic symbol names to publish as undefined.
+/// @param symOrdinals Symbol-to-dylib ordinal map used in `n_desc`; zero maps
+///                    to `DYNAMIC_LOOKUP_ORDINAL`, and missing names use one.
+/// @param nExtDef Receives the number of external definitions appended.
+/// @param nUndef Receives the number of undefined imports appended.
 void buildSymtab(std::vector<uint8_t> &symtabData,
                  std::vector<uint8_t> &strtabData,
                  const LinkLayout &layout,

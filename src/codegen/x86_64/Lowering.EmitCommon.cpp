@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Lowering.EmitCommon.cpp
+// File: src/codegen/x86_64/Lowering.EmitCommon.cpp
 // Purpose: Implement the shared lowering helpers declared in
 //          Lowering.EmitCommon.hpp. Centralises register materialisation and
 //          instruction construction so opcode-specific emitters stay focused.
@@ -15,9 +15,9 @@
 // Ownership/Lifetime:
 //   - Operates on a borrowed MIRBuilder reference; no IL or MIR objects
 //     are owned by this file.
-// Links: codegen/x86_64/Lowering.EmitCommon.hpp,
-//        codegen/x86_64/LowerILToMIR.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/Lowering.EmitCommon.hpp,
+//        src/codegen/x86_64/LowerILToMIR.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +28,16 @@
 #include <limits>
 #include <utility>
 #include <vector>
+
+/**
+ * @file
+ * @brief Implements shared x86-64 lowering emission and operand legalization.
+ *
+ * The implementation validates backend-facing IL shapes, selects encodable
+ * register/immediate forms, reconstructs safe indexed addresses, emits delayed
+ * ABI call plans where needed, and centralizes compare, select, control-flow,
+ * memory, cast, and div/rem sequences used by individual rule units.
+ */
 
 namespace zanna::codegen::x64 {
 
@@ -84,6 +94,8 @@ void emitRetainStringVReg(MIRBuilder &builder, const VReg &valueVReg) {
 /// @details Indexed-address folding is a local straight-line rewrite. Labels
 ///          and control transfers mark possible alternate paths, so scans stop
 ///          there instead of inferring definitions from a different path.
+/// @param opcode Candidate scan boundary.
+/// @return @c true for a label, control transfer, return, or trap.
 [[nodiscard]] bool isIndexedFoldScanBarrier(MOpcode opcode) noexcept {
     return opcode == MOpcode::LABEL || opcode == MOpcode::JMP || opcode == MOpcode::JCC ||
            opcode == MOpcode::RET || opcode == MOpcode::UD2;
@@ -93,6 +105,9 @@ void emitRetainStringVReg(MIRBuilder &builder, const VReg &valueVReg) {
 /// @details The address-building patterns this helper recognizes use
 ///          destination-first MIR instructions. Treating any other definition of
 ///          the tracked vreg as a blocker keeps the fold conservative.
+/// @param instr Instruction to inspect.
+/// @param id Virtual-register identifier being traced.
+/// @return @c true when operand zero defines the requested virtual register.
 [[nodiscard]] bool definesVReg(const MInstr &instr, uint16_t id) noexcept {
     if (instr.operands.empty())
         return false;
@@ -101,6 +116,8 @@ void emitRetainStringVReg(MIRBuilder &builder, const VReg &valueVReg) {
 }
 
 /// @brief True if @p kind is integer-like (I64/I1/PTR) — GPR-eligible.
+/// @param kind IL kind to classify.
+/// @return @c true for an integer, boolean, or pointer.
 [[nodiscard]] bool isIntegerLikeKind(ILValue::Kind kind) noexcept {
     return kind == ILValue::Kind::I64 || kind == ILValue::Kind::I1 || kind == ILValue::Kind::PTR;
 }
@@ -108,6 +125,8 @@ void emitRetainStringVReg(MIRBuilder &builder, const VReg &valueVReg) {
 /// @brief Assert @p value has an integer-like IL kind (I64/I1/PTR).
 /// @details Raises phaseAUnsupported(@p context) when the kind is not
 ///          integer-like, halting lowering of a shape the backend can't emit.
+/// @param value Value whose kind is validated.
+/// @param context Diagnostic text reported on mismatch.
 void requireIntegerLike(const ILValue &value, const char *context) {
     if (!isIntegerLikeKind(value.kind)) {
         phaseAUnsupported(context);
@@ -117,6 +136,8 @@ void requireIntegerLike(const ILValue &value, const char *context) {
 /// @brief Assert @p value is an IL label operand.
 /// @details Raises phaseAUnsupported(@p context) for any non-LABEL kind;
 ///          used by control-flow emitters that require a branch target.
+/// @param value Candidate branch-target value.
+/// @param context Diagnostic text reported on mismatch.
 void requireLabel(const ILValue &value, const char *context) {
     if (value.kind != ILValue::Kind::LABEL) {
         phaseAUnsupported(context);
@@ -126,6 +147,9 @@ void requireLabel(const ILValue &value, const char *context) {
 /// @brief Assert @p operand is a register of @p cls, or (for GPR) an immediate.
 /// @details A register operand must match @p cls; an immediate is accepted only
 ///          when @p cls is GPR. Anything else raises phaseAUnsupported(@p context).
+/// @param operand Operand to validate.
+/// @param cls Required register class.
+/// @param context Diagnostic text reported on mismatch.
 void requireRegOrImmForClass(const Operand &operand, RegClass cls, const char *context) {
     if (const auto *reg = std::get_if<OpReg>(&operand)) {
         if (reg->cls != cls) {
@@ -142,6 +166,9 @@ void requireRegOrImmForClass(const Operand &operand, RegClass cls, const char *c
 /// @brief Assert @p operand is a register of exactly @p cls (no immediate form).
 /// @details Stricter than requireRegOrImmForClass(); raises
 ///          phaseAUnsupported(@p context) for immediates or class mismatch.
+/// @param operand Operand to validate.
+/// @param cls Required register class.
+/// @param context Diagnostic text reported on mismatch.
 void requireRegisterForClass(const Operand &operand, RegClass cls, const char *context) {
     const auto *reg = std::get_if<OpReg>(&operand);
     if (!reg || reg->cls != cls) {
@@ -637,6 +664,7 @@ void EmitCommon::emitSelect(const ILInstr &instr) {
     const Operand falseVal = builder().makeOperandForValue(instr.ops[2], destReg.cls);
 
     if (destReg.cls == RegClass::GPR) {
+        /// Preserve legal register/immediate arms and materialize other GPR values.
         auto materialiseGprSelectValue = [&](Operand operand) -> Operand {
             if (std::holds_alternative<OpReg>(operand) || std::holds_alternative<OpImm>(operand)) {
                 return operand;
@@ -1031,6 +1059,7 @@ void EmitCommon::emitFCmpNanSafe(const ILInstr &instr, std::string_view suffix) 
 
     const VReg destReg = builder().ensureVReg(instr.resultId, instr.resultKind);
     const Operand dest = makeVRegOperand(destReg.cls, destReg.id);
+    /// Emit SETcc followed by zero-extension to a canonical integer boolean.
     auto emitSetccBool = [&](int code, const Operand &target) {
         builder().append(MInstr::make(MOpcode::SETcc,
                                       std::vector<Operand>{makeImmOperand(code), clone(target)}));

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/Dominators.cpp
+// File: src/codegen/aarch64/peephole/Dominators.cpp
 // Purpose: Bit-vector iterative dominator analysis used by the AArch64 peephole
 //          optimizer. Replaces three previously-duplicated copies.
 //
@@ -24,16 +24,23 @@
 #include <algorithm>
 #include <limits>
 
+/// @file
+/// @brief Implements iterative bit-vector dominator analysis.
+
 namespace zanna::codegen::aarch64::peephole {
 
 namespace {
 
+/// @brief Set one block-index bit in a pre-sized packed vector.
+/// @param[in,out] bits Packed bit vector to modify.
+/// @param index Zero-based bit position; the caller guarantees it is in range.
 inline void setBit(std::vector<std::uint64_t> &bits, std::size_t index) noexcept {
     bits[index / 64] |= std::uint64_t{1} << (index % 64);
 }
 
 } // namespace
 
+/// @copydoc computeDominators
 DominatorSets computeDominators(std::size_t blockCount,
                                 const std::vector<std::vector<std::size_t>> &preds) {
     DominatorSets result;

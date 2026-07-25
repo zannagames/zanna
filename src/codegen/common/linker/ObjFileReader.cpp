@@ -5,13 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/ObjFileReader.cpp
+// File: src/codegen/common/linker/ObjFileReader.cpp
 // Purpose: Format detection and dispatch for object file reading.
 // Key invariants:
 //   - Auto-detects ELF (7f 45 4c 46), Mach-O (cf fa ed fe), COFF (machine field)
 // Links: codegen/common/linker/ObjFileReader.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ObjFileReader.cpp
+ * @brief Implements object-format detection, file I/O, and parser dispatch.
+ */
 
 #include "codegen/common/linker/ObjFileReader.hpp"
 
@@ -23,15 +28,22 @@
 
 namespace zanna::codegen::linker {
 
+/// @brief Reads an unaligned little-endian 16-bit value.
+/// @param p Pointer to at least two readable bytes.
+/// @return Host-order value.
 static uint16_t readLE16(const uint8_t *p) {
     return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
 }
 
+/// @brief Reads an unaligned little-endian 32-bit value.
+/// @param p Pointer to at least four readable bytes.
+/// @return Host-order value.
 static uint32_t readLE32(const uint8_t *p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
 }
 
+/// @copydoc isCoffImportLibraryMember(const uint8_t *, size_t)
 bool isCoffImportLibraryMember(const uint8_t *data, size_t size) {
     static constexpr size_t kImportObjectHeaderSize = 20;
     static constexpr uint16_t kImageFileMachineAmd64 = 0x8664;
@@ -57,6 +69,7 @@ bool isCoffImportLibraryMember(const uint8_t *data, size_t size) {
     return importType <= 2 && importNameType <= 4;
 }
 
+/// @copydoc detectFormat(const uint8_t *, size_t)
 ObjFileFormat detectFormat(const uint8_t *data, size_t size) {
     if (size < 4)
         return ObjFileFormat::Unknown;
@@ -86,6 +99,7 @@ ObjFileFormat detectFormat(const uint8_t *data, size_t size) {
     return ObjFileFormat::Unknown;
 }
 
+/// @copydoc readObjFile(const uint8_t *, size_t, const std::string &, ObjFile &, std::ostream &)
 bool readObjFile(
     const uint8_t *data, size_t size, const std::string &name, ObjFile &obj, std::ostream &err) {
     const ObjFileFormat fmt = detectFormat(data, size);
@@ -111,6 +125,7 @@ bool readObjFile(
     return true;
 }
 
+/// @copydoc readObjFile(const std::string &, ObjFile &, std::ostream &)
 bool readObjFile(const std::string &path, ObjFile &obj, std::ostream &err) {
     std::ifstream f(zanna::filesystem::pathFromUtf8(path), std::ios::binary | std::ios::ate);
     if (!f) {

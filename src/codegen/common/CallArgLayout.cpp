@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/CallArgLayout.cpp
+// File: src/codegen/common/CallArgLayout.cpp
 // Purpose: Shared ABI slot planning helpers for native backends.
 //
 //===----------------------------------------------------------------------===//
@@ -16,9 +16,13 @@
 #include <stdexcept>
 #include <vector>
 
+/// @file
+/// @brief Implements shared ABI register-window and stack-slot assignment.
+
 namespace zanna::codegen::common {
 namespace {
 
+/// @brief Internal scalarized unit consumed by the generic placement pass.
 struct LayoutSlot {
     std::size_t argIndex{0};
     CallArgClass cls{CallArgClass::GPR};
@@ -30,8 +34,13 @@ struct LayoutSlot {
     std::size_t byteSize{8};
 };
 
+/// Size in bytes of one abstract ABI argument slot.
 constexpr std::size_t kSlotBytes = 8;
 
+/// @brief Round a byte size up to abstract eight-byte slots.
+/// @param sizeBytes Aggregate size in bytes.
+/// @return Number of slots required; zero for an empty aggregate.
+/// @throws std::length_error when the rounding addition would overflow.
 std::size_t checkedRoundUpToSlots(std::size_t sizeBytes) {
     if (sizeBytes == 0)
         return 0;
@@ -40,6 +49,16 @@ std::size_t checkedRoundUpToSlots(std::size_t sizeBytes) {
     return (sizeBytes + (kSlotBytes - 1)) / kSlotBytes;
 }
 
+/// @brief Assign a scalarized slot stream using one configured register model.
+///
+/// Direct-aggregate groups are atomic with respect to register assignment.
+/// Scalars are assigned independently, while forced-stack and variadic slots
+/// bypass register capacity.
+///
+/// @tparam SlotBuilder Callable accepting `std::vector<LayoutSlot>&`.
+/// @param slotBuilder Producer that appends source-order internal slots.
+/// @param config ABI capacity and placement policy.
+/// @return Completed public layout and resource totals.
 template <typename SlotBuilder>
 CallArgLayout planLayout(SlotBuilder slotBuilder, const CallArgLayoutConfig &config) {
     std::vector<LayoutSlot> slots;
@@ -154,6 +173,10 @@ CallArgLayout planLayout(SlotBuilder slotBuilder, const CallArgLayoutConfig &con
     return layout;
 }
 
+/// @brief Convert scalar parameter classes into one internal slot each.
+/// @param[out] slots Destination internal slot vector.
+/// @param classes Source-order parameter classifications.
+/// @param config Variadic-tail boundary and stack policy.
 void appendScalarSlots(std::vector<LayoutSlot> &slots,
                        std::span<const CallArgClass> classes,
                        const CallArgLayoutConfig &config) {
@@ -171,6 +194,15 @@ void appendScalarSlots(std::vector<LayoutSlot> &slots,
     }
 }
 
+/// @brief Scalarize abstract call arguments into internal ABI slots.
+///
+/// Indirect aggregates remain pointer-like single GPR slots. Direct aggregate
+/// storage is divided into eight-byte GPR chunks and marked for forced stack
+/// placement when its size or alignment exceeds the configured register limit.
+///
+/// @param[out] slots Destination internal slot vector.
+/// @param args Source-order abstract call arguments.
+/// @param config Aggregate and variadic placement policy.
 void appendCallArgSlots(std::vector<LayoutSlot> &slots,
                         std::span<const CallArg> args,
                         const CallArgLayoutConfig &config) {
@@ -213,15 +245,19 @@ void appendCallArgSlots(std::vector<LayoutSlot> &slots,
 
 } // namespace
 
+/// @copydoc planCallArgs
 CallArgLayout planCallArgs(std::span<const CallArg> args, const CallArgLayoutConfig &config) {
+    /// Produce scalarized slots for the captured outgoing arguments.
     return planLayout([&](std::vector<LayoutSlot> &slots) {
                           appendCallArgSlots(slots, args, config);
                       },
                       config);
 }
 
+/// @copydoc planParamClasses
 CallArgLayout planParamClasses(std::span<const CallArgClass> classes,
                                const CallArgLayoutConfig &config) {
+    /// Produce one scalarized slot for each captured incoming parameter class.
     return planLayout([&](std::vector<LayoutSlot> &slots) {
                           appendScalarSlots(slots, classes, config);
                       },

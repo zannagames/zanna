@@ -1,0 +1,107 @@
+// =============================================================================
+// start_probe.zia — 8-frame physics + camera trace
+// Part of Xenoscape  (the 2D sidescroller platformer demo)
+// =============================================================================
+//
+// TUTORIAL — A "PRINT EVERY VARIABLE" PROBE IS USEFUL
+// ---------------------------------------------------
+// `smoke_probe.zia` checks "did anything render?".  This
+// probe goes one level deeper: it prints every interesting
+// scalar — player position, velocity, camera position,
+// collision flags — across the first 8 frames of gameplay.
+//
+// When a physics regression appears ("the player falls into
+// the ground at level start"), this probe's output makes it
+// trivial to find which frame and which value diverged.
+// Diff the probe output across two builds and the offending
+// number jumps out.
+//
+// PATTERNS WORTH STEALING
+// -----------------------
+//   * `sayKV(name, value)` — every printed value is on its
+//     own line as `key=value`.  Easy to grep and easy to
+//     diff.
+//   * Sections delimited by an all-caps banner ("LEVEL",
+//     "INITIAL", "DIRECT_MOVE", "FRAME=N").  Helps your
+//     eye find the right block.
+//   * Sample at *known* boundary moments: right after
+//     spawn ("INITIAL"), once after a forced single-step
+//     ("DIRECT_MOVE"), then per-frame for 8 frames.  Each
+//     answers a different "did this work?" question.
+//
+// =============================================================================
+
+module start_probe;
+
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind "./config";
+bind "./palette";
+bind "./player";
+bind "./level";
+bind "./camera";
+bind "./physics";
+
+func sayKV(name: String, value: Integer) {
+    Terminal.Say(name + "=" + Fmt.Int(value));
+}
+
+func main() {
+    var pal = new Palette();
+    var lvl = new Level();
+    lvl.loadLevel(1);
+
+    var p = new Player();
+    p.reset();
+    p.spawn(lvl.playerStartX, lvl.playerStartY);
+
+    var cam = new GameCamera(pal);
+    cam.setLevelSize(lvl.levelWidth, lvl.levelHeight);
+    cam.snapTo(p.centerX(), p.centerY());
+    var phys = new PhysicsHelper();
+
+    Terminal.Say("LEVEL");
+    sayKV("levelWidth", lvl.levelWidth);
+    sayKV("levelHeight", lvl.levelHeight);
+    sayKV("playerStartX", lvl.playerStartX);
+    sayKV("playerStartY", lvl.playerStartY);
+
+    Terminal.Say("INITIAL");
+    sayKV("rawX", p.x);
+    sayKV("rawY", p.y);
+    sayKV("vx", p.vx);
+    sayKV("vy", p.vy);
+    sayKV("playerX", p.pixelX());
+    sayKV("playerY", p.pixelY());
+    sayKV("playerCX", p.centerX());
+    sayKV("playerCY", p.centerY());
+    sayKV("cameraX", cam.x);
+    sayKV("cameraY", cam.y);
+    sayKV("cameraMaxX", lvl.levelWidth * TILE_SIZE - SCREEN_W);
+    sayKV("cameraMaxY", lvl.levelHeight * TILE_SIZE - SCREEN_H);
+
+    var probeMove = phys.moveAndCollide(p.x, p.y, 0, 29, PLAYER_W, PLAYER_H, lvl);
+    Terminal.Say("DIRECT_MOVE");
+    sayKV("moveX", probeMove.x);
+    sayKV("moveY", probeMove.y);
+    if probeMove.hitFloor { Terminal.Say("moveHitFloor=1"); } else { Terminal.Say("moveHitFloor=0"); }
+    if probeMove.hitCeiling { Terminal.Say("moveHitCeiling=1"); } else { Terminal.Say("moveHitCeiling=0"); }
+    if probeMove.hitLeft { Terminal.Say("moveHitLeft=1"); } else { Terminal.Say("moveHitLeft=0"); }
+    if probeMove.hitRight { Terminal.Say("moveHitRight=1"); } else { Terminal.Say("moveHitRight=0"); }
+
+    var i = 0;
+    while i < 8 {
+        p.update(lvl, 16);
+        cam.follow(p.centerX(), p.centerY());
+        Terminal.Say("FRAME=" + Fmt.Int(i));
+        sayKV("rawX", p.x);
+        sayKV("rawY", p.y);
+        sayKV("vx", p.vx);
+        sayKV("vy", p.vy);
+        sayKV("playerX", p.pixelX());
+        sayKV("playerY", p.pixelY());
+        sayKV("cameraX", cam.x);
+        sayKV("cameraY", cam.y);
+        i = i + 1;
+    }
+}

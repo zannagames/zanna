@@ -44,17 +44,27 @@
 // - Borrows DiagnosticEngine and SourceManager; does not own them
 // - Caches source text per file ID to avoid repeated file I/O
 // - Diagnostics are accumulated and can be emitted in batch or individually
-// - Thread-safe for diagnostic emission (though not typically used concurrently)
+// - Emission and source registration are unsynchronized and externally serialized
 //
 // Usage:
 //   DiagnosticEmitter emitter(diagnosticEngine, sourceManager);
-//   emitter.registerSource(fileId, sourceText);
+//   emitter.addSource(fileId, sourceText);
 //   // During compilation:
-//   emitter.error(location, "Undefined variable", "E1001");
+//   emitter.emit(Severity::Error, "B1001", location, 1, "undefined variable");
 //   // After compilation:
-//   emitter.flush(std::cerr);
+//   emitter.printAll(std::cerr);
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file DiagnosticEmitter.hpp
+ * @brief Declares ordered BASIC diagnostic capture and caret-rich formatting.
+ *
+ * Each emission is forwarded immediately to a borrowed DiagnosticEngine and
+ * copied into an ordered local record for later presentation against registered
+ * source snapshots and borrowed SourceManager paths.
+ */
+
 #pragma once
 
 #include "frontends/basic/Token.hpp"
@@ -70,16 +80,19 @@ namespace il::frontends::basic {
 /// @brief Formats BASIC diagnostics with error codes and caret ranges.
 /// @invariant Diagnostics are emitted in order and printed with original source line.
 /// @ownership Borrows DiagnosticEngine and SourceManager; copies source text per file id.
+/// @warning Instances are not internally synchronized.
 class DiagnosticEmitter {
   public:
     /// @brief Create emitter forwarding counts to @p de and using @p sm for file paths.
     /// @param de Diagnostic engine collecting counts.
     /// @param sm Source manager providing file paths.
+    /// @warning @p de and @p sm must both outlive this emitter.
     DiagnosticEmitter(il::support::DiagnosticEngine &de, const il::support::SourceManager &sm);
 
     /// @brief Register source text for a file id.
     /// @param fileId Identifier from SourceManager.
     /// @param source Full contents of the source file.
+    /// @post Replaces any previously cached source for @p fileId.
     void addSource(uint32_t fileId, std::string source);
 
     /// @brief Emit diagnostic with @p code at @p loc covering @p length characters.
@@ -101,13 +114,18 @@ class DiagnosticEmitter {
     void emitExpected(TokenKind got, TokenKind expect, il::support::SourceLoc loc);
 
     /// @brief Print all diagnostics to @p os with source snippets.
+    /// @details Preserves emission order and does not clear captured entries.
     /// @param os Output stream.
     void printAll(std::ostream &os) const;
 
     /// @brief Number of errors reported.
+    /// @return Error count from the borrowed DiagnosticEngine, including errors
+    ///         reported through other clients of that engine.
     size_t errorCount() const;
 
     /// @brief Number of warnings reported.
+    /// @return Warning count from the borrowed DiagnosticEngine, including
+    ///         warnings reported through other clients of that engine.
     size_t warningCount() const;
 
     /// @brief Format a file:line string for a SourceLoc using SourceManager paths.
@@ -130,12 +148,17 @@ class DiagnosticEmitter {
     /// @brief Retrieve full line text for @p fileId at @p line.
     /// @param fileId Identifier from SourceManager.
     /// @param line 1-based line number to fetch.
-    /// @return Line contents without trailing newline; empty if unavailable.
+    /// @return Line contents without trailing newline; empty for an unregistered
+    ///         file, an unavailable line, or BASIC's unlabeled-line sentinel.
     std::string getLine(uint32_t fileId, uint32_t line) const;
 
+    ///< Borrowed engine receiving immediate structured diagnostics.
     il::support::DiagnosticEngine &de_;                 ///< Underlying diagnostic engine.
+    ///< Borrowed manager used only for path/location formatting.
     const il::support::SourceManager &sm_;              ///< Source manager for file paths.
+    ///< Owning presentation records in emission order.
     std::vector<Entry> entries_;                        ///< Diagnostics in emission order.
+    ///< Owning source snapshot keyed by file id.
     std::unordered_map<uint32_t, std::string> sources_; ///< Source text per file id.
 };
 

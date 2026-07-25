@@ -69,6 +69,7 @@ class Scene2DWorkspaceState {
     expose Number inspectorScrollY;
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
+    expose Boolean previewActive;
     expose List[String] undoStack;
     expose List[String] redoStack;
     expose String cleanSerialized;
@@ -92,6 +93,7 @@ class Scene2DWorkspaceState {
         inspectorScrollY = 0.0;
         inspectorRequestedVisible = true;
         compactInspectorShown = false;
+        previewActive = false;
         undoStack = [];
         redoStack = [];
         cleanSerialized = "";
@@ -122,6 +124,7 @@ class Scene3DWorkspaceState {
     expose Number inspectorScrollY;
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
+    expose Boolean previewActive;
     expose List[String] undoStack;
     expose List[String] redoStack;
     expose String cleanSerialized;
@@ -146,6 +149,7 @@ class Scene3DWorkspaceState {
         inspectorScrollY = 0.0;
         inspectorRequestedVisible = true;
         compactInspectorShown = false;
+        previewActive = false;
         undoStack = [];
         redoStack = [];
         cleanSerialized = "";

@@ -17,12 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
-/// @brief Implements procedure-scope management and call validation helpers for the BASIC semantic
-/// analyzer.
-/// @details The routines in this translation unit manage per-procedure symbol
-///          state, register SUB/FUNCTION signatures, and perform signature-based
-///          diagnostics for CALL statements.
+/// @file SemanticAnalyzer_Procs.cpp
+/// @brief Implements BASIC procedure scopes, return flow, and call resolution.
+/// @details The routines transact procedure-local analyzer state, register
+///          parameters, validate FUNCTION/SUB bodies, conservatively model
+///          explicit and VB-style returns, orchestrate whole-program analysis,
+///          resolve qualified/imported/runtime-aliased calls, and validate call
+///          arguments and result types.
 
 #include "frontends/basic/Diag.hpp"
 #include "frontends/basic/IdentifierUtil.hpp"
@@ -42,9 +43,12 @@ namespace il::frontends::basic {
 
 using semantic_analyzer_detail::astToSemanticType;
 
-/// @brief Enter a procedure scope, capturing analyzer state that must be restored.
-///
-/// @param analyzer Semantic analyzer coordinating symbol and control-flow tracking.
+/// @brief Enters a rollback transaction for procedure-local analyzer state.
+/// @details Saves the enclosing active scope and error handler, installs this
+///          scope, clears handler state for the new procedure, records FOR/loop
+///          stack depths, and pushes a lexical mapping scope.
+/// @param analyzer Analyzer borrowed until this scope is destroyed.
+/// @post @p analyzer identifies this object as its active procedure scope.
 SemanticAnalyzer::ProcedureScope::ProcedureScope(SemanticAnalyzer &analyzer) noexcept
     : analyzer_(analyzer) {
     previous_ = analyzer_.activeProcScope_;
@@ -58,7 +62,12 @@ SemanticAnalyzer::ProcedureScope::ProcedureScope(SemanticAnalyzer &analyzer) noe
     analyzer_.scopes_.pushScope();
 }
 
-/// @brief Restore analyzer state when a procedure scope ends.
+/// @brief Rolls back every mutation recorded by this procedure scope.
+/// @details Restores enclosing scope/handler state; erases inserted label
+///          references, labels, and symbols; restores or erases baseline map
+///          entries; restores literal channel states; truncates control stacks
+///          to their captured depths; and pops the lexical scope.
+/// @post Module/enclosing-procedure state matches the recorded baselines.
 SemanticAnalyzer::ProcedureScope::~ProcedureScope() noexcept {
     analyzer_.activeProcScope_ = previous_;
     analyzer_.errorHandlerActive_ = previousHandlerActive_;
@@ -100,17 +109,16 @@ SemanticAnalyzer::ProcedureScope::~ProcedureScope() noexcept {
     analyzer_.scopes_.popScope();
 }
 
-/// @brief Record that a new symbol was declared within the active procedure scope.
-///
-/// @param name Canonical symbol name inserted into the symbol table.
+/// @brief Records a newly inserted symbol for unconditional rollback.
+/// @param name Exact symbol-set key copied into the rollback log.
 void SemanticAnalyzer::ProcedureScope::noteSymbolInserted(const std::string &name) {
     newSymbols_.push_back(name);
 }
 
-/// @brief Track that a variable's inferred type changed within the scope.
-///
-/// @param name Variable whose type is being updated.
-/// @param previous Prior type if one was present, allowing restoration on scope exit.
+/// @brief Records the first variable-type baseline for a key.
+/// @param name Exact type-map key.
+/// @param previous Prior value, or no value when previously absent.
+/// @note Repeated mutations of the same key retain the original baseline.
 void SemanticAnalyzer::ProcedureScope::noteVarTypeMutation(const std::string &name,
                                                            std::optional<Type> previous) {
     if (!trackedVarTypes_.insert(name).second)
@@ -118,10 +126,9 @@ void SemanticAnalyzer::ProcedureScope::noteVarTypeMutation(const std::string &na
     varTypeDeltas_.push_back({name, previous});
 }
 
-/// @brief Track that a variable's object class binding changed within the scope.
-///
-/// @param name Variable whose object class is being updated.
-/// @param previous Prior class name if one was present.
+/// @brief Records the first object-class baseline for a key.
+/// @param name Exact object-class map key.
+/// @param previous Prior qualified class, or no value when absent.
 void SemanticAnalyzer::ProcedureScope::noteObjectClassMutation(
     const std::string &name, std::optional<std::string> previous) {
     if (!trackedObjectClasses_.insert(name).second)
@@ -129,10 +136,9 @@ void SemanticAnalyzer::ProcedureScope::noteObjectClassMutation(
     objectClassDeltas_.push_back({name, std::move(previous)});
 }
 
-/// @brief Track that an array binding changed size or allocation state.
-///
-/// @param name Array identifier being mutated.
-/// @param previous Previous metadata when available.
+/// @brief Records the first array-metadata baseline for a key.
+/// @param name Exact array map key.
+/// @param previous Prior metadata, or no value when absent.
 void SemanticAnalyzer::ProcedureScope::noteArrayMutation(const std::string &name,
                                                          std::optional<ArrayMetadata> previous) {
     if (!trackedArrays_.insert(name).second)
@@ -140,33 +146,35 @@ void SemanticAnalyzer::ProcedureScope::noteArrayMutation(const std::string &name
     arrayDeltas_.push_back({name, previous});
 }
 
-/// @brief Record the open/closed state change for a file channel.
-///
-/// @param channel Channel number being toggled.
-/// @param previouslyOpen True when the channel was already open prior to the mutation.
+/// @brief Records a literal channel's entry state on its first mutation.
+/// @param channel Channel key.
+/// @param previouslyOpen Whether the channel was present before the procedure.
 void SemanticAnalyzer::ProcedureScope::noteChannelMutation(long long channel, bool previouslyOpen) {
     if (!trackedChannels_.insert(channel).second)
         return;
     channelDeltas_.push_back({channel, previouslyOpen});
 }
 
-/// @brief Remember that a new label was defined inside the procedure.
-///
-/// @param label Numeric line label introduced in the body.
+/// @brief Records a newly inserted procedure label for rollback.
+/// @param label Label-set value.
 void SemanticAnalyzer::ProcedureScope::noteLabelInserted(int label) {
     newLabels_.push_back(label);
 }
 
-/// @brief Track that a label reference was encountered in the procedure body.
-///
-/// @param label Numeric label referenced by a GOTO/GOSUB.
+/// @brief Records a newly inserted procedure label reference for rollback.
+/// @param label Reference-set value.
 void SemanticAnalyzer::ProcedureScope::noteLabelRefInserted(int label) {
     newLabelRefs_.push_back(label);
 }
 
-/// @brief Register a procedure parameter and update tracking tables.
-///
-/// @param param Parameter description sourced from the AST.
+/// @brief Registers one parameter in lexical, symbol, type, and array state.
+/// @details Initially binds source spelling to itself. Scalar type comes from
+///          the AST; arrays become object/string/integer-array categories and
+///          receive unknown-shape metadata. Existing type/array baselines are
+///          logged for rollback. Symbol tracking may resolve the name further,
+///          in which case the source spelling is rebound to that resolved key.
+/// @param param Parsed parameter metadata.
+/// @pre A lexical scope is active; normally a @ref ProcedureScope is active.
 void SemanticAnalyzer::registerProcedureParam(const Param &param) {
     scopes_.bind(param.name, param.name);
 
@@ -207,10 +215,13 @@ void SemanticAnalyzer::registerProcedureParam(const Param &param) {
         scopes_.bind(param.name, paramName);
 }
 
-/// @brief Shared implementation for analyzing SUB/FUNCTION bodies.
-///
+/// @brief Performs common scoped traversal for SUB/FUNCTION bodies.
+/// @details Creates a procedure transaction, optionally pushes an EXIT context,
+///          registers parameters, pre-collects only user line labels for forward
+///          references, visits non-null body statements, invokes @p bodyCheck,
+///          and pops the optional context before rollback at scope exit.
 /// @tparam Proc AST node type modelling the procedure declaration.
-/// @tparam BodyCallback Callable invoked after statement analysis for final checks.
+/// @tparam BodyCallback Callable accepting the analyzed `const Proc &`.
 /// @param proc Procedure declaration being analyzed.
 /// @param bodyCheck Callback that performs procedure-specific validation.
 /// @param loopKind Optional loop kind for EXIT statement validation.
@@ -247,9 +258,14 @@ void SemanticAnalyzer::analyzeProcedureCommon(const Proc &proc,
     }
 }
 
-/// @brief Analyze a FUNCTION declaration and ensure it produces a return value.
-///
-/// @param f FUNCTION declaration node.
+/// @brief Analyzes a FUNCTION in its declaration namespace.
+/// @details Temporarily derives @ref nsStack_ from the function's qualified
+///          name and installs active-function result state. A supported name
+///          suffix conflicting with an explicit return type emits `B4006`.
+///          Common body traversal then requires explicit/VB-style result flow,
+///          emitting `B1007` at END FUNCTION or the declaration when missing.
+///          All active-function and namespace state is restored afterward.
+/// @param f Function declaration borrowed during analysis.
 void SemanticAnalyzer::analyzeProc(const FunctionDecl &f) {
     // Preserve current namespace stack and establish the procedure's namespace context
     auto savedNs = nsStack_;
@@ -283,6 +299,7 @@ void SemanticAnalyzer::analyzeProc(const FunctionDecl &f) {
         }
     }
 
+    /// Checks the fully analyzed function body for guaranteed result flow.
     analyzeProcedureCommon(
         f,
         [this](const FunctionDecl &func) {
@@ -306,9 +323,12 @@ void SemanticAnalyzer::analyzeProc(const FunctionDecl &f) {
     nsStack_ = std::move(savedNs);
 }
 
-/// @brief Analyze a SUB declaration.
-///
-/// @param s SUB declaration node.
+/// @brief Analyzes a SUB in its declaration namespace.
+/// @details Temporarily derives the namespace stack from the qualified name,
+///          performs common scoped body traversal under a SUB EXIT context, and
+///          restores the prior namespace stack. No final return-flow callback is
+///          required.
+/// @param s Subroutine declaration borrowed during analysis.
 void SemanticAnalyzer::analyzeProc(const SubDecl &s) {
     // Preserve current namespace stack and establish the procedure's namespace context
     auto savedNs = nsStack_;
@@ -319,6 +339,7 @@ void SemanticAnalyzer::analyzeProc(const SubDecl &s) {
         nsStack_ = segs;
     }
 
+    /// No-op final checker because SUB bodies need no result guarantee.
     analyzeProcedureCommon(s, [](const SubDecl &) {}, LoopKind::Sub);
 
     // Restore namespace context
@@ -327,11 +348,20 @@ void SemanticAnalyzer::analyzeProc(const SubDecl &s) {
 
 namespace {
 
+/// @brief Conservative result-flow state after a statement or statement list.
 struct ReturnFlow {
+    /// @brief Whether every modeled path terminates with a supplied result.
     bool alwaysReturns{false};
+
+    /// @brief Whether every continuing modeled path has assigned the active
+    ///        FUNCTION name.
     bool assignedAfter{false};
 };
 
+/// @brief Tests for VB-style assignment to the active FUNCTION name.
+/// @param stmt Candidate LET statement.
+/// @param activeFunction Function whose name is compared case-insensitively.
+/// @return @c true only for a variable-target LET matching the active name.
 bool assignsActiveFunctionName(const Stmt &stmt, const FunctionDecl *activeFunction) {
     if (!activeFunction)
         return false;
@@ -342,8 +372,21 @@ bool assignsActiveFunctionName(const Stmt &stmt, const FunctionDecl *activeFunct
     return target && string_utils::iequals(target->name, activeFunction->name);
 }
 
+/// @brief Computes conservative result flow for one statement.
+/// @param stmt Statement to classify.
+/// @param activeFunction Function used for VB-style name assignment.
+/// @param assignedBefore Whether every incoming path already has a result.
+/// @return Return/assignment state after @p stmt.
 ReturnFlow flowForStmt(const Stmt &stmt, const FunctionDecl *activeFunction, bool assignedBefore);
 
+/// @brief Propagates result flow through an ordered statement list.
+/// @details Null statements are skipped. Traversal stops at the first statement
+///          that always returns; otherwise the assignment guarantee threads
+///          into the next statement.
+/// @param stmts Statements in execution order.
+/// @param activeFunction Function used for name-assignment recognition.
+/// @param assignedBefore Incoming assignment guarantee.
+/// @return Flow after the first guaranteed return or the complete list.
 ReturnFlow flowForStmtList(const std::vector<StmtPtr> &stmts,
                            const FunctionDecl *activeFunction,
                            bool assignedBefore) {
@@ -359,6 +402,11 @@ ReturnFlow flowForStmtList(const std::vector<StmtPtr> &stmts,
     return {false, assigned};
 }
 
+/// @brief Computes branch flow while tolerating a missing branch node.
+/// @param stmt Optional branch statement.
+/// @param activeFunction Function used for name-assignment recognition.
+/// @param assignedBefore Incoming assignment guarantee.
+/// @return Unchanged continuing flow for null, otherwise @ref flowForStmt.
 ReturnFlow flowForBranchStmt(const StmtPtr &stmt,
                              const FunctionDecl *activeFunction,
                              bool assignedBefore) {
@@ -367,6 +415,15 @@ ReturnFlow flowForBranchStmt(const StmtPtr &stmt,
     return flowForStmt(*stmt, activeFunction, assignedBefore);
 }
 
+/// @brief Merges result guarantees across IF/ELSEIF/ELSE branches.
+/// @details Guaranteed return requires an ELSE and every branch returning.
+///          Guaranteed assignment after the IF requires every continuing branch
+///          to assign or return; without ELSE the incoming assignment state
+///          represents the unselected path.
+/// @param stmt IF statement to inspect.
+/// @param activeFunction Function used for name-assignment recognition.
+/// @param assignedBefore Incoming assignment guarantee.
+/// @return Merged branch flow.
 ReturnFlow flowForIf(const IfStmt &stmt, const FunctionDecl *activeFunction, bool assignedBefore) {
     std::vector<ReturnFlow> branches;
     branches.push_back(flowForBranchStmt(stmt.then_branch, activeFunction, assignedBefore));
@@ -386,6 +443,14 @@ ReturnFlow flowForIf(const IfStmt &stmt, const FunctionDecl *activeFunction, boo
     return {allReturn, assignedAfter};
 }
 
+/// @brief Merges result guarantees across SELECT CASE arms.
+/// @details A non-empty CASE ELSE body is required for exhaustive return or new
+///          assignment guarantees. Every explicit arm and the else body are
+///          analyzed as statement lists from the same incoming state.
+/// @param stmt SELECT statement to inspect.
+/// @param activeFunction Function used for name-assignment recognition.
+/// @param assignedBefore Incoming assignment guarantee.
+/// @return Merged arm flow.
 ReturnFlow flowForSelect(const SelectCaseStmt &stmt,
                          const FunctionDecl *activeFunction,
                          bool assignedBefore) {
@@ -407,6 +472,15 @@ ReturnFlow flowForSelect(const SelectCaseStmt &stmt,
     return {allReturn, assignedAfter};
 }
 
+/// @brief Merges result flow across TRY, optional CATCH, and FINALLY.
+/// @details An always-returning FINALLY dominates. Otherwise normal-return
+///          status requires TRY and any non-empty CATCH to return, while the
+///          assignment guarantee entering FINALLY requires both possible
+///          pre-finally paths to have returned or assigned.
+/// @param stmt TRY/CATCH/FINALLY statement.
+/// @param activeFunction Function used for name-assignment recognition.
+/// @param assignedBefore Incoming assignment guarantee.
+/// @return Flow after FINALLY.
 ReturnFlow flowForTry(const TryCatchStmt &stmt,
                       const FunctionDecl *activeFunction,
                       bool assignedBefore) {
@@ -429,6 +503,15 @@ ReturnFlow flowForTry(const TryCatchStmt &stmt,
     return {normalReturn, finallyFlow.assignedAfter};
 }
 
+/// @brief Classifies one statement for function-result flow.
+/// @details Handles statement lists, value/assigned RETURN, EXIT FUNCTION,
+///          function-name assignment, IF, SELECT, and TRY. Loops are
+///          conservatively treated as possibly unexecuted and do not establish
+///          new guarantees; all other statements preserve incoming assignment.
+/// @param stmt Statement to inspect.
+/// @param activeFunction Function used for name-assignment recognition.
+/// @param assignedBefore Incoming assignment guarantee.
+/// @return Conservative post-statement flow.
 ReturnFlow flowForStmt(const Stmt &stmt, const FunctionDecl *activeFunction, bool assignedBefore) {
     if (const auto *lst = as<const StmtList>(stmt))
         return flowForStmtList(lst->stmts, activeFunction, assignedBefore);
@@ -452,8 +535,14 @@ ReturnFlow flowForStmt(const Stmt &stmt, const FunctionDecl *activeFunction, boo
     return {false, assignedBefore};
 }
 
+/// @brief Tests whether a statement subtree contains GOSUB.
+/// @param stmt Root statement.
+/// @return @c true when a recognized nested construct contains GOSUB.
 bool containsGosub(const Stmt &stmt);
 
+/// @brief Tests a statement list for any nested GOSUB.
+/// @param stmts List whose null entries are skipped.
+/// @return @c true on the first matching subtree.
 bool containsGosubList(const std::vector<StmtPtr> &stmts) {
     for (const auto &stmt : stmts)
         if (stmt && containsGosub(*stmt))
@@ -461,6 +550,12 @@ bool containsGosubList(const std::vector<StmtPtr> &stmts) {
     return false;
 }
 
+/// @brief Recursively tests one statement for GOSUB.
+/// @details Descends through lists, IF branches, SELECT arms/else, all TRY
+///          bodies, loop bodies, and namespace bodies. Other constructs are not
+///          traversed.
+/// @param stmt Statement subtree root.
+/// @return @c true when GOSUB is found.
 bool containsGosub(const Stmt &stmt) {
     if (is<GosubStmt>(stmt))
         return true;
@@ -499,31 +594,41 @@ bool containsGosub(const Stmt &stmt) {
 
 } // namespace
 
-/// @brief Determine whether a block of statements guarantees a return value.
-///
-/// @param stmts Statement list to evaluate.
-/// @return True when every control path produces a function value.
+/// @brief Determines whether a statement list guarantees a function result.
+/// @param stmts Body evaluated with no incoming function-name assignment.
+/// @return @c true when modeled flow always returns or every continuing path
+///         assigns the active function name.
 bool SemanticAnalyzer::mustReturn(const std::vector<StmtPtr> &stmts) const {
     ReturnFlow flow = flowForStmtList(stmts, activeFunction_, false);
     return flow.alwaysReturns || flow.assignedAfter;
 }
 
-/// @brief Inspect an individual statement to see if it mandates a return value.
-///
-/// @param s Statement to inspect.
-/// @return True when execution of @p s guarantees a return.
+/// @brief Determines whether one statement guarantees a function result.
+/// @param s Statement evaluated with no incoming function-name assignment.
+/// @return @c true for guaranteed return or guaranteed name assignment.
 bool SemanticAnalyzer::mustReturn(const Stmt &s) const {
     ReturnFlow flow = flowForStmt(s, activeFunction_, false);
     return flow.alwaysReturns || flow.assignedAfter;
 }
 
+/// @brief Reports the main-module GOSUB pre-scan result.
+/// @return Cached value populated by @ref analyze.
 bool SemanticAnalyzer::mainHasGosub() const noexcept {
     return mainHasGosub_;
 }
 
-/// @brief Run semantic analysis for the entire BASIC program.
-///
-/// @param prog Program AST containing procedure definitions and main statements.
+/// @brief Orchestrates semantic analysis for an entire BASIC program.
+/// @details Clears core symbol/control/procedure state and creates a root USING
+///          scope. It registers top-level and namespace-nested procedures before
+///          calls are checked, rebuilds OOP and namespace/USING indexes, seeds
+///          non-alias file imports, and constructs the type resolver. Main
+///          user-line labels and GOSUB presence are pre-collected before the
+///          module body is visited. Top-level procedures are then analyzed, and
+///          a recursive namespace pass analyzes nested procedure bodies under
+///          inherited imports plus namespace-local USING directives.
+/// @param prog Program whose shared AST nodes may receive semantic annotations.
+/// @post Procedure-local mutations have been rolled back; module-level query
+///       state and rebuilt registries remain available.
 void SemanticAnalyzer::analyze(const Program &prog) {
     symbols_.clear();
     labels_.clear();
@@ -556,6 +661,7 @@ void SemanticAnalyzer::analyze(const Program &prog) {
 
     // Also register procedures declared inside namespace blocks using their
     // fully-qualified names (assigned by CollectProcedures).
+    /// Recursively registers FUNCTION/SUB declarations inside namespaces.
     std::function<void(const std::vector<StmtPtr> &)> scan;
     scan = [&](const std::vector<StmtPtr> &stmts) {
         for (const auto &stmtPtr : stmts) {
@@ -627,6 +733,8 @@ void SemanticAnalyzer::analyze(const Program &prog) {
         }
 
     // Additionally analyze procedures declared inside namespace blocks.
+    /// Recursively analyzes namespace-nested procedure bodies while maintaining
+    /// namespace and USING stacks.
     std::function<void(const std::vector<StmtPtr> &)> scanBodies;
     scanBodies = [&](const std::vector<StmtPtr> &stmts) {
         for (const auto &stmtPtr : stmts) {
@@ -675,13 +783,25 @@ void SemanticAnalyzer::analyze(const Program &prog) {
     scanBodies(prog.main);
 }
 
-/// @brief Resolve the signature for a procedure call and validate its kind.
-///
-/// @param c Call expression whose callee should be checked.
-/// @param expectedKind Whether the caller requires a function or subroutine.
-/// @return Pointer to the resolved signature, or nullptr when diagnostics were emitted.
+/// @brief Resolves a call target and enforces its callable category.
+/// @details BASIC type suffixes are stripped before lookup. Qualified calls
+///          expand an innermost scoped alias first, then a file alias, and try a
+///          canonical registry name. A registered runtime class-method alias may
+///          rewrite the mutable call to its canonical target. Unqualified calls
+///          choose the nearest enclosing namespace match, then global, then
+///          collect import matches; multiple imports emit an ambiguity
+///          diagnostic with display-cased names. Failed qualified alias
+///          expansion adds an alias note, while other failures report qualified
+///          or attempted names. Functions are permitted where a SUB statement
+///          call is expected; a SUB in expression context emits `B2005`.
+/// @param c Call expression. Runtime alias fallback may update its callee fields
+///          through the mutable AST despite the const reference.
+/// @param expectedKind FUNCTION for expression calls or SUB for statement calls.
+/// @return Pointer to registry-owned signature, or @c nullptr after resolution,
+///         ambiguity, or kind diagnostics.
 const ProcSignature *SemanticAnalyzer::resolveCallee(const CallExpr &c,
                                                      ProcSignature::Kind expectedKind) {
+    /// Removes one recognized BASIC type suffix from a non-empty name.
     auto stripSuffix = [](std::string_view name) -> std::string_view {
         if (name.empty())
             return name;
@@ -888,6 +1008,8 @@ const ProcSignature *SemanticAnalyzer::resolveCallee(const CallExpr &c,
                 // and the original typed callee for the suffix.
                 std::vector<std::string> displayHits;
                 displayHits.reserve(importHits.size());
+                /// Title-cases the first byte of each dotted namespace segment
+                /// for fallback ambiguity-display text.
                 auto titleCaseNs = [](const std::string &ns) {
                     std::string out;
                     out.reserve(ns.size());
@@ -962,11 +1084,20 @@ const ProcSignature *SemanticAnalyzer::resolveCallee(const CallExpr &c,
     return sig;
 }
 
-/// @brief Validate call arguments against a procedure signature.
-///
-/// @param c Call expression supplying argument expressions.
-/// @param sig Resolved signature for the callee; may be null when unknown.
-/// @return Vector of inferred argument types for follow-up analysis.
+/// @brief Evaluates and validates arguments against a resolved signature.
+/// @details Every argument is visited first, using unknown for null nodes, even
+///          when @p sig is null. Exact arity is required. Array parameters
+///          require a direct variable present in array metadata. Runtime object
+///          parameters reject integer/float/boolean primitives except literal
+///          integer zero; object, string, and unknown pass. Scalar compatibility
+///          permits integer-to-float, float-to-integer, numeric-to-boolean, and
+///          object-to-I64. Canonical `Zanna.Text.StringBuilder.*` calls relax
+///          mismatches for I64 parameters. Runtime signatures receive a final
+///          raw-pointer safety check whose boolean result is intentionally not
+///          used to suppress the returned type vector.
+/// @param c Call supplying AST arguments, callee text, and location.
+/// @param sig Registry-owned signature, or null after unresolved lookup.
+/// @return Actual semantic argument types in source order.
 std::vector<SemanticAnalyzer::Type> SemanticAnalyzer::checkCallArgs(const CallExpr &c,
                                                                     const ProcSignature *sig) {
     std::vector<Type> argTys;
@@ -1070,11 +1201,12 @@ std::vector<SemanticAnalyzer::Type> SemanticAnalyzer::checkCallArgs(const CallEx
     return argTys;
 }
 
-/// @brief Infer the result type produced by a procedure call expression.
-///
-/// @param c Call expression being analyzed.
-/// @param sig Signature describing the callee.
-/// @return Semantic type returned by the procedure, or Unknown when unresolved.
+/// @brief Maps a procedure signature's return metadata to semantic type space.
+/// @param c Call expression retained for interface symmetry but not inspected.
+/// @param sig Resolved signature, or null.
+/// @return Unknown without a return type, object when @c objectReturn is set,
+///         float/string/boolean for those AST types, and integer for every
+///         remaining return type.
 SemanticAnalyzer::Type SemanticAnalyzer::inferCallType([[maybe_unused]] const CallExpr &c,
                                                        const ProcSignature *sig) {
     if (!sig || !sig->retType)
@@ -1090,10 +1222,10 @@ SemanticAnalyzer::Type SemanticAnalyzer::inferCallType([[maybe_unused]] const Ca
     return Type::Int;
 }
 
-/// @brief Analyze a call expression using the shared helper implementation.
-///
-/// @param c Call expression to analyze.
-/// @return Inferred result type of the call.
+/// @brief Delegates expression-call analysis to the shared semantic helper.
+/// @param c Function-call expression to resolve and validate.
+/// @return Active-instance array-field element type, resolved function result,
+///         or unknown recovery type.
 SemanticAnalyzer::Type SemanticAnalyzer::analyzeCall(const CallExpr &c) {
     return sem::analyzeCallExpr(*this, c);
 }

@@ -7,8 +7,26 @@
 //
 // File: src/bytecode/ValueStackStringOwnership.hpp
 // Purpose: Encapsulate the bytecode VM value-stack string ownership bitmap.
+// Key invariants:
+//   - Each entry corresponds one-to-one with a BytecodeVM value-stack slot.
+//   - Stored bytes are canonical Boolean values (zero or one).
+// Ownership/Lifetime:
+//   - The tracker owns its bitmap and never owns or releases runtime strings.
+//   - Snapshots are returned by value and remain independent of later mutations.
+// Links: BytecodeVM.hpp, BytecodeVM.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Defines the compact side table used to track bytecode stack-string
+ *        ownership.
+ *
+ * Bytecode slots are intentionally untagged, so reference ownership cannot be
+ * encoded in `BCSlot` itself. This helper centralizes the parallel bitmap used
+ * during normal stack mutation and trap/resume snapshots. Bounds assumptions
+ * are programmer invariants enforced with assertions in debug builds.
+ */
 
 #pragma once
 
@@ -30,6 +48,8 @@ namespace bytecode {
 ///          exception handling. Keeping direct bitmap access out of dispatch
 ///          code reduces the chance of stale ownership flags causing leaks or
 ///          double releases.
+/// @invariant Every stored byte is either zero or one.
+/// @note This type tracks responsibility only; it never touches string handles.
 class ValueStackStringOwnership {
   public:
     /// @brief Replace the ownership map with @p count slots initialized to @p owned.
@@ -40,12 +60,14 @@ class ValueStackStringOwnership {
     }
 
     /// @brief Clear all tracked slots and release backing storage.
+    /// @post The represented slot count is zero.
     void clear() {
         owned_.clear();
     }
 
     /// @brief Set every tracked slot to non-owning.
     /// @details Used when the VM resets or restores the value stack wholesale.
+    /// @post The represented slot count is unchanged.
     void clearAll() {
         std::fill(owned_.begin(), owned_.end(), 0);
     }
@@ -84,6 +106,7 @@ class ValueStackStringOwnership {
     /// @param flags Captured ownership flags.
     /// @param count Number of flags to restore from @p flags.
     /// @pre @p count is no larger than both @p flags and this map.
+    /// @post Entries at indices greater than or equal to @p count are unchanged.
     void restorePrefix(const std::vector<uint8_t> &flags, size_t count) {
         assert(count <= flags.size());
         assert(count <= owned_.size());

@@ -5,16 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/passes/RegAllocPass.cpp
+// File: src/codegen/x86_64/passes/RegAllocPass.cpp
 // Purpose: Implement the register allocation stage for the x86-64 pipeline.
 // Key invariants:
 //   - Register allocation is only complete when legalisation has run and the
 //     module carries legalised MIR.
 // Ownership/Lifetime:
 //   - Stateless transformation; mutates Module::mir in place.
-// Links: codegen/x86_64/passes/RegAllocPass.hpp,
-//        codegen/x86_64/RegAllocLinear.hpp,
-//        codegen/x86_64/Backend.hpp
+// Links: src/codegen/x86_64/passes/RegAllocPass.hpp,
+//        src/codegen/x86_64/RegAllocLinear.hpp,
+//        src/codegen/x86_64/Backend.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,16 +22,21 @@
 
 #include <string>
 
+/// @file
+/// @brief Implements register-allocation gating and module-level delegation.
+
 namespace zanna::codegen::x64::passes {
 
 /// @brief Run register allocation on legalized MIR.
 /// @details The pass checks the @p module bookkeeping flags and concrete MIR
-///          state before invoking the backend allocation helpers. On success it
-///          flips the `registersAllocated` flag, allowing subsequent passes to
-///          emit assembly or binary code without rerunning hidden lowering work.
+///          state before invoking @ref allocateModuleMIR, which runs each
+///          function's allocation/frame pipeline and updates its parallel frame
+///          summary. On success it flips @c registersAllocated, allowing
+///          subsequent scheduling, optimization, and emission.
 /// @param module Backend pipeline state to update.
-/// @param diags  Diagnostics sink for reporting ordering mistakes.
-/// @return @c true when register allocation can be considered complete.
+/// @param diags Diagnostics sink for ordering, consistency, or allocation errors.
+/// @return @c true when all functions are allocated; @c false after recording
+///         a diagnostic.
 bool RegAllocPass::run(Module &module, Diagnostics &diags) {
     if (!module.legalised) {
         diags.error("regalloc: legalisation must run before register allocation");

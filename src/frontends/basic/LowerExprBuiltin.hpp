@@ -48,36 +48,55 @@ struct BuiltinExprLowering {
     /// @details Delegates to the builtin registry, which applies argument
     ///          coercions, runtime helper requests, and specialised lowering
     ///          for registered builtin families.
+    /// @param lowerer Borrowed engine receiving emitted IL and feature requests.
+    /// @param expr Builtin invocation to lower.
+    /// @return Lowered value and its IL type.
     static Lowerer::RVal emitRuleDrivenBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr);
 
     /// @brief Lower the LOF builtin (file length query).
     /// @details Normalizes the channel argument, emits the runtime call, and
     ///          inserts control flow to trap on runtime errors.
+    /// @param lowerer Borrowed engine receiving the generated control flow.
+    /// @param expr LOF invocation and channel argument.
+    /// @return File length as `i64`, or zero when the argument is absent.
     static Lowerer::RVal emitLofBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr);
 
     /// @brief Lower the EOF builtin (end-of-file predicate).
     /// @details Normalizes the channel argument, emits the runtime call, and
     ///          handles sentinel return values by trapping on errors and
     ///          widening the result to BASIC's logical representation.
+    /// @param lowerer Borrowed engine receiving the generated control flow.
+    /// @param expr EOF invocation and channel argument.
+    /// @return Runtime EOF sentinel as `i64`, or zero when the argument is absent.
     static Lowerer::RVal emitEofBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr);
 
     /// @brief Lower the LOC builtin (current file position).
     /// @details Normalizes the channel argument, emits the runtime call, and
     ///          traps on runtime errors before returning the position value.
+    /// @param lowerer Borrowed engine receiving the generated control flow.
+    /// @param expr LOC invocation and channel argument.
+    /// @return Current position as `i64`, or zero when the argument is absent.
     static Lowerer::RVal emitLocBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr);
 
     /// @brief Lower the ERR builtin (current runtime error code).
     /// @details Extracts the error code from the current handler context when
     ///          available; otherwise returns zero to indicate "no error."
+    /// @param lowerer Borrowed engine providing the current handler block.
+    /// @param expr ERR invocation whose location annotates emitted instructions.
+    /// @return Sign-extended handler error code, or zero outside a handler.
     static Lowerer::RVal emitErrBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr);
 
     /// @brief Fallback emitter used when no builtin lowering rule exists.
     /// @details Emits a diagnostic where possible and returns a placeholder
     ///          integer so compilation can continue.
+    /// @param lowerer Borrowed engine providing diagnostics and result shaping.
+    /// @param expr Unsupported builtin invocation.
+    /// @return Zero-valued placeholder appropriate to the builtin context.
     static Lowerer::RVal emitUnsupportedBuiltin(Lowerer &lowerer, const BuiltinCallExpr &expr);
 
   private:
     /// @brief Borrowed lowering engine used for emission and diagnostics.
+    /// @invariant Non-null for the entire lifetime of this facade.
     Lowerer *lowerer_{nullptr};
 };
 

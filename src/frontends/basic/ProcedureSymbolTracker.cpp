@@ -5,13 +5,13 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
+/// @file ProcedureSymbolTracker.cpp
 /// @brief Implements BASIC procedure symbol usage tracking.
 /// @details Provides the out-of-line definitions for
 ///          @ref ProcedureSymbolTracker, which records symbol usage during
-///          lowering without mutating the symbol table directly. The tracker
-///          delegates to the lowerer to mark symbols and optionally records
-///          cross-procedure globals.
+///          lowering through the Lowerer's symbol-table mutation APIs and
+///          optionally records module symbols that require cross-procedure
+///          storage.
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +28,7 @@ namespace il::frontends::basic {
 ///          cross-procedure global tracking is enabled.
 /// @param lowerer Lowering engine used to record symbol references.
 /// @param trackCrossProc Whether to track cross-procedure globals.
+/// @pre @p lowerer outlives the tracker.
 ProcedureSymbolTracker::ProcedureSymbolTracker(Lowerer &lowerer, bool trackCrossProc) noexcept
     : lowerer_(lowerer), trackCrossProc_(trackCrossProc) {}
 
@@ -57,7 +58,8 @@ void ProcedureSymbolTracker::trackScalar(std::string_view name) {
 
 /// @brief Record usage of an array symbol.
 /// @details Marks the symbol as referenced, flags it as an array, and optionally
-///          updates cross-procedure global tracking.
+///          updates cross-procedure global tracking. If module metadata records
+///          an object element class, that class is copied into symbol metadata.
 /// @param name Array symbol name to record.
 void ProcedureSymbolTracker::trackArray(std::string_view name) {
     if (shouldSkip(name))

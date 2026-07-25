@@ -27,6 +27,9 @@
 #include <cstdint>
 #include <optional>
 
+/// @file
+/// @brief Computes target-independent multiply/shift constants for division.
+
 namespace zanna::codegen {
 
 /// @brief Magic number parameters for signed division by a constant.
@@ -49,6 +52,9 @@ struct UnsignedMagicNumber {
 };
 
 /// @brief Compute floor(log2(value)) for a non-zero 64-bit integer.
+/// @param value Nonzero unsigned integer.
+/// @return Greatest exponent `e` such that `2^e <= value`.
+/// @pre @p value is nonzero.
 [[nodiscard]] inline unsigned floorLog2U64(uint64_t value) noexcept {
     unsigned log = 0;
     // Guard BEFORE the shift: (1 << 64) is undefined behavior, and the old
@@ -62,8 +68,9 @@ struct UnsignedMagicNumber {
 /// @param hi      Upper 64 bits of the numerator.
 /// @param lo      Lower 64 bits of the numerator.
 /// @param divisor 64-bit unsigned divisor.
-/// @param rem     Output: remainder of the division.
-/// @return 64-bit quotient.
+/// @param[out] rem Receives the remainder.
+/// @return Low 64-bit quotient.
+/// @pre @p divisor is nonzero and the mathematical quotient fits in 64 bits.
 [[nodiscard]] inline uint64_t divU128ByU64(uint64_t hi,
                                            uint64_t lo,
                                            uint64_t divisor,

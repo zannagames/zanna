@@ -21,6 +21,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file Lowerer_Procedure_Skeleton.cpp
+ * @brief Implements virtual lines, block skeletons, local slots, and GOSUB storage.
+ *
+ * Block pointers are borrowed from the active function and may be invalidated
+ * when blocks are appended; stable indexes are recorded in ProcedureContext.
+ * Symbol iteration is sorted before allocation for cross-platform determinism.
+ */
+
 #include "frontends/basic/LineUtils.hpp"
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/LoweringPipeline.hpp"
@@ -264,7 +273,8 @@ void Lowerer::allocateArrayLengthSlots(const std::unordered_set<std::string> &pa
 /// @brief Check if a symbol should have a slot allocated.
 /// @details Filters out unreferenced symbols, static variables (which use
 ///          runtime storage), parameters when not included, and module-level
-///          globals (except for CONST-shadowing locals).
+///          symbols while lowering a non-main procedure. Parameters are tested
+///          before module-scope checks so a shadowing formal remains eligible.
 /// @param name Symbol name.
 /// @param info Symbol metadata.
 /// @param paramNames Set of parameter names.

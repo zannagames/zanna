@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/RelocConstants.hpp
+// File: src/codegen/common/linker/RelocConstants.hpp
 // Purpose: Named constants for relocation type numbers across ELF, Mach-O,
 //          and COFF formats. Replaces raw integer literals in switch
 //          statements and stub generators with self-documenting names.
@@ -16,6 +16,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file RelocConstants.hpp
+ * @brief Defines named native relocation numbers for every supported object ABI.
+ *
+ * The constants are grouped by both object format and architecture because raw
+ * relocation values are meaningful only within that pair. Their numeric values
+ * mirror the platform ABI definitions and are shared by object writers,
+ * relocation classification, dynamic-stub generation, and patching code.
+ */
+
 #pragma once
 
 #include <cstdint>
@@ -24,6 +34,7 @@ namespace zanna::codegen::linker {
 
 // ── ELF x86_64 Relocation Types (elf.h / System V AMD64 ABI) ────────────
 
+/// @brief ELF AMD64 `R_X86_64_*` relocation numbers.
 namespace elf_x64 {
 constexpr uint32_t kAbs64 = 1;         // R_X86_64_64
 constexpr uint32_t kPC32 = 2;          // R_X86_64_PC32
@@ -37,6 +48,7 @@ constexpr uint32_t kRexGotPcRelX = 42; // R_X86_64_REX_GOTPCRELX
 
 // ── ELF AArch64 Relocation Types (ELF for ARM 64-bit Architecture) ──────
 
+/// @brief ELF AArch64 `R_AARCH64_*` relocation numbers.
 namespace elf_a64 {
 constexpr uint32_t kAbs64 = 257;         // R_AARCH64_ABS64
 constexpr uint32_t kPrel64 = 260;        // R_AARCH64_PREL64
@@ -59,6 +71,7 @@ constexpr uint32_t kTlsLeAddTprelLo12Nc = 551;  // R_AARCH64_TLSLE_ADD_TPREL_LO1
 
 // ── Mach-O x86_64 Relocation Types (mach-o/x86_64/reloc.h) ─────────────
 
+/// @brief Mach-O x86-64 `X86_64_RELOC_*` relocation numbers.
 namespace macho_x64 {
 constexpr uint32_t kUnsigned = 0;   // X86_64_RELOC_UNSIGNED
 constexpr uint32_t kSigned = 1;     // X86_64_RELOC_SIGNED
@@ -74,6 +87,7 @@ constexpr uint32_t kTlv = 9;        // X86_64_RELOC_TLV
 
 // ── Mach-O ARM64 Relocation Types (mach-o/arm64/reloc.h) ────────────────
 
+/// @brief Mach-O arm64 `ARM64_RELOC_*` relocation numbers.
 namespace macho_a64 {
 constexpr uint32_t kUnsigned = 0;          // ARM64_RELOC_UNSIGNED
 constexpr uint32_t kSubtractor = 1;        // ARM64_RELOC_SUBTRACTOR
@@ -89,6 +103,7 @@ constexpr uint32_t kTlvpLoadPageOff12 = 9; // ARM64_RELOC_TLVP_LOAD_PAGEOFF12
 
 // ── COFF AMD64 Relocation Types (winnt.h) ───────────────────────────────
 
+/// @brief PE/COFF AMD64 `IMAGE_REL_AMD64_*` relocation numbers.
 namespace coff_x64 {
 constexpr uint32_t kAddr64 = 1;   // IMAGE_REL_AMD64_ADDR64
 constexpr uint32_t kAddr32 = 2;   // IMAGE_REL_AMD64_ADDR32
@@ -105,6 +120,7 @@ constexpr uint32_t kSecRel = 11;  // IMAGE_REL_AMD64_SECREL
 
 // ── COFF ARM64 Relocation Types (winnt.h) ───────────────────────────────
 
+/// @brief PE/COFF ARM64 `IMAGE_REL_ARM64_*` relocation numbers.
 namespace coff_a64 {
 constexpr uint32_t kAddr32 = 1;         // IMAGE_REL_ARM64_ADDR32
 constexpr uint32_t kAddr32Nb = 2;       // IMAGE_REL_ARM64_ADDR32NB

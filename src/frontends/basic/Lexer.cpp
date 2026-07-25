@@ -49,7 +49,7 @@
 /// - Hexadecimal: `&H1F` or `0x1F`
 /// - Binary: `&B1010` or `0b1010`
 /// - Floating point: `1.5`, `1.5E-3`
-/// - Type suffixes: `%` (long), `!` (single), `#` (double)
+/// - Type suffixes: `%`, `&`, `!`, and `#`
 ///
 /// ## String Literals
 ///
@@ -100,6 +100,7 @@ using common::keyword_table::lookupKeywordBinary;
 
 namespace {
 
+/// Sorted canonical keyword spellings and their token kinds.
 constexpr std::array<KeywordEntry<TokenKind>, 108> kKeywordTable{{
     {"ABS", TokenKind::KeywordAbs},
     {"ABSTRACT", TokenKind::KeywordAbstract},
@@ -303,8 +304,9 @@ void Lexer::skipWhitespaceExceptNewline() {
 /// @details BASIC treats apostrophe-prefixed and "REM" tokens as
 ///          rest-of-line comments.  The helper repeatedly removes whitespace and
 ///          comment bodies so the next significant token begins at the current
-///          cursor.  The newline terminating a comment is preserved so callers
-///          can emit @ref TokenKind::EndOfLine.
+///          cursor. The LF terminating a comment is preserved so callers can
+///          emit @ref TokenKind::EndOfLine; a lone CR inside a comment is
+///          consumed as part of that comment.
 void Lexer::skipWhitespaceAndComments() {
     while (true) {
         skipWhitespaceExceptNewline();
@@ -347,6 +349,7 @@ Token Lexer::lexNumber() {
     std::string s;
     bool seenDot = false;
     char suffix = '\0';
+    /// Maximum retained decimal literal length before returning Unknown.
     constexpr size_t kMaxNumLen = 1024;
     if (peek() == '.') {
         seenDot = true;
@@ -409,6 +412,7 @@ Token Lexer::lexNumber() {
 Token Lexer::lexBasedNumber() {
     il::support::SourceLoc loc{fileId_, line_, column_};
     std::string s;
+    /// Maximum retained based-literal length before returning Unknown.
     constexpr size_t kMaxNumLen = 1024;
 
     const char first = get();
@@ -450,6 +454,7 @@ Token Lexer::lexBasedNumber() {
 Token Lexer::lexIdentifierOrKeyword() {
     il::support::SourceLoc loc{fileId_, line_, column_};
     std::string s;
+    /// Maximum retained identifier length before returning Unknown.
     constexpr size_t kMaxIdentLen = 1024;
     while (isAlphanumeric(peek()) || peek() == '_') {
         if (s.size() >= kMaxIdentLen) {
@@ -468,15 +473,15 @@ Token Lexer::lexIdentifierOrKeyword() {
 
 /// @brief Lex a string literal delimited by double quotes.
 ///
-/// @details Copies characters verbatim until a closing quote or end of input is
-///          reached.  Escape sequences are not interpreted; instead they are
-///          preserved for later interpretation by runtime helpers.  When the
-///          stream terminates before a closing quote the unterminated literal is
-///          returned to the parser, which is responsible for issuing an error.
-/// @return String token containing characters between quotes.
+/// @details Copies ordinary characters verbatim, treats backslash as ordinary,
+///          and decodes each doubled quote into one quote byte. Newline, EOF
+///          before closure, or the size cap produces Unknown for the parser to
+///          diagnose.
+/// @return String token containing the decoded interior, otherwise Unknown.
 Token Lexer::lexString() {
     il::support::SourceLoc loc{fileId_, line_, column_};
     std::string s;
+    /// Maximum decoded string payload retained by one token.
     constexpr size_t kMaxStringLen = 16 * 1024 * 1024; // 16MB
     get();                                             // consume opening quote
     bool closed = false;
@@ -516,6 +521,9 @@ Token Lexer::lexString() {
 ///          strings.  Punctuation is handled inline via a switch statement to
 ///          keep hot paths branch-friendly.  Location metadata is captured for
 ///          every token so diagnostics can point back to the source program.
+///          An underscore followed by horizontal whitespace and LF suppresses
+///          that line break and restarts scanning; other standalone underscores
+///          produce Unknown.
 /// @return The next token, which may be EndOfLine or EndOfFile.
 Token Lexer::next() {
     for (;;) {

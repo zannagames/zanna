@@ -2124,7 +2124,8 @@ class SceneEditor3D {
             while fieldIndex < component.fields.count() {
                 var field = component.fields.get(fieldIndex);
                 if node.MetadataHas(field.key) {
-                    if node.MetadataKind(field.key) != field.kind {
+                    if node.MetadataKind(field.key)
+                       != scene_component_schema.ValueKind(field.kind) {
                         detailLabel.SetText(
                             "Component \"" + component.label
                             + "\" conflicts with metadata \"" + field.key
@@ -2201,7 +2202,10 @@ class SceneEditor3D {
         var node = SelectedNode();
         if node == null
            or metadataInspector.SetDraft(
-               node, field.key, field.kind, field.defaultText) == false {
+               node,
+               field.key,
+               scene_component_schema.ValueKind(field.kind),
+               field.defaultText) == false {
             return false;
         }
         selectedNodeMetadata = metadataInspector.selectedProperty;
@@ -2220,25 +2224,26 @@ class SceneEditor3D {
         var floatValue = 0.0;
         var boolValue = false;
         var applied = false;
-        if field.kind == "string" {
+        var kind = scene_component_schema.ValueKind(field.kind);
+        if kind == "string" {
             applied =
                 node.MetadataSetString(field.key, field.defaultText);
-        } else if field.kind == "int" {
+        } else if kind == "int" {
             var parsedInt = Parse.TryInt(field.defaultText);
             if parsedInt.IsNone { return false; }
             intValue = parsedInt.UnwrapI64();
             applied = node.MetadataSetInt(field.key, intValue);
-        } else if field.kind == "float" {
+        } else if kind == "float" {
             var parsedFloat = Parse.TryDouble(field.defaultText);
             if parsedFloat.IsNone { return false; }
             floatValue = parsedFloat.UnwrapF64();
             applied = node.MetadataSetFloat(field.key, floatValue);
-        } else if field.kind == "bool" {
+        } else if kind == "bool" {
             var parsedBool = Parse.TryBool(field.defaultText);
             if parsedBool.IsNone { return false; }
             boolValue = parsedBool.UnwrapI1();
             applied = node.MetadataSetBool(field.key, boolValue);
-        } else if field.kind == "null" {
+        } else if kind == "null" {
             applied = node.MetadataSetNull(field.key);
         } else {
             return false;
@@ -2246,7 +2251,7 @@ class SceneEditor3D {
         return applied and NodeMetadataMatches(
             node,
             field.key,
-            field.kind,
+            kind,
             field.defaultText,
             intValue,
             floatValue,
@@ -4762,7 +4767,9 @@ class SceneEditor3D {
                     var field = component.fields.get(fieldIndex);
                     if node.MetadataHas(field.key) == false {
                         missing = missing + 1;
-                    } else if node.MetadataKind(field.key) == field.kind {
+                    } else if node.MetadataKind(field.key)
+                               == scene_component_schema.ValueKind(
+                                      field.kind) {
                         present = present + 1;
                     } else {
                         conflicts = conflicts + 1;

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/fastpaths/FastPathsInternal.hpp
+// File: src/codegen/aarch64/fastpaths/FastPathsInternal.hpp
 // Purpose: Internal shared declarations for fast-path pattern matching.
 // Key invariants:
 //   - Each fast-path returns the lowered MFunction if matched, nullopt otherwise.
@@ -14,12 +14,12 @@
 // Ownership/Lifetime:
 //   - FastPathContext borrows references to externally-owned state for the
 //     duration of a single fast-path attempt; does not retain any lifetimes.
-// Links: codegen/aarch64/FastPaths.hpp,
-//        codegen/aarch64/fastpaths/FastPaths_Arithmetic.cpp,
-//        codegen/aarch64/fastpaths/FastPaths_Call.cpp,
-//        codegen/aarch64/fastpaths/FastPaths_Cast.cpp,
-//        codegen/aarch64/fastpaths/FastPaths_Memory.cpp,
-//        codegen/aarch64/fastpaths/FastPaths_Return.cpp
+// Links: src/codegen/aarch64/FastPaths.hpp,
+//        src/codegen/aarch64/fastpaths/FastPaths_Arithmetic.cpp,
+//        src/codegen/aarch64/fastpaths/FastPaths_Call.cpp,
+//        src/codegen/aarch64/fastpaths/FastPaths_Cast.cpp,
+//        src/codegen/aarch64/fastpaths/FastPaths_Memory.cpp,
+//        src/codegen/aarch64/fastpaths/FastPaths_Return.cpp
 //
 // This header is NOT part of the public API; include only from FastPaths_*.cpp.
 //
@@ -45,27 +45,48 @@
 #include <unordered_map>
 #include <vector>
 
+/**
+ * @file
+ * @brief Defines the private shared context and contracts for AArch64 fast-path lowering.
+ *
+ * Fast paths recognize narrowly constrained single-block IL shapes and return
+ * a complete MIR function only when they can reproduce generic lowering
+ * semantics. This header is private to the split fast-path implementation.
+ */
+
 namespace zanna::codegen::aarch64::fastpaths {
 
 //===----------------------------------------------------------------------===//
 // Common Constants
 //===----------------------------------------------------------------------===//
 
-/// @brief Counter for generating unique trap labels.
-/// @details Thread-local to avoid races during parallel compilation.
+/**
+ * @brief Per-thread counter used to uniquify generated fast-path trap labels.
+ * @details Defined by the arithmetic fast-path translation unit and isolated
+ *          between parallel compilation threads.
+ */
 extern thread_local unsigned trapLabelCounter;
 
 //===----------------------------------------------------------------------===//
 // Context Structure
 //===----------------------------------------------------------------------===//
 
-/// @brief Context for fast-path lowering operations.
-/// @details Groups commonly-used references and lambdas for convenient access.
+/**
+ * @brief Bundles borrowed function-lowering state for one fast-path attempt.
+ *
+ * @invariant Every reference describes the same function-lowering invocation.
+ * @invariant Referenced objects and optional metadata maps outlive the context.
+ */
 struct FastPathContext {
+    /// @brief Source IL function.
     const il::core::Function &fn;
+    /// @brief Target ABI/register metadata.
     const TargetInfo &ti;
+    /// @brief Caller-owned frame allocator.
     FrameBuilder &fb;
+    /// @brief Caller-owned output MIR function.
     MFunction &mf;
+    /// @brief Borrowed integer argument-register order.
     const std::array<PhysReg, kMaxGPRArgs> &argOrder;
     const std::unordered_map<std::string, std::size_t> *stringLiteralByteLengths;
     const std::unordered_map<std::string, std::size_t> *knownVarArgNamedArgCounts;
@@ -75,6 +96,8 @@ struct FastPathContext {
     /// @param ti ABI and register information for the AArch64 target.
     /// @param fb Frame builder for stack slot allocation.
     /// @param mf Output MIR function being constructed.
+    /// @param stringLiteralByteLengths Optional literal-length metadata.
+    /// @param knownVarArgNamedArgCounts Optional direct-callee vararg metadata.
     FastPathContext(const il::core::Function &fn,
                     const TargetInfo &ti,
                     FrameBuilder &fb,
@@ -85,7 +108,12 @@ struct FastPathContext {
           stringLiteralByteLengths(stringLiteralByteLengths),
           knownVarArgNamedArgCounts(knownVarArgNamedArgCounts) {}
 
-    /// @brief Get the MIR output block at the given index.
+    /**
+     * @brief Retrieves a mutable MIR output block by index.
+     * @param idx Index into `mf.blocks`.
+     * @return Reference to the indexed output block.
+     * @pre `idx < mf.blocks.size()`.
+     */
     MBasicBlock &bbOut(std::size_t idx) {
         return mf.blocks[idx];
     }
@@ -111,28 +139,34 @@ struct FastPathContext {
 // Fast-Path Entry Points
 //===----------------------------------------------------------------------===//
 
-/// @brief Try fast-path for simple return patterns.
-/// @details Handles: ret %paramN, ret const i64, ret const_str/addr_of
+/// @brief Attempts simple parameter, constant, string, and address return patterns.
+/// @param[in,out] ctx Active fast-path state.
+/// @return Complete MIR function on a match, otherwise `std::nullopt`.
 std::optional<MFunction> tryReturnFastPaths(FastPathContext &ctx);
 
-/// @brief Try fast-path for memory operations.
-/// @details Handles: alloca/store/load/ret pattern
+/// @brief Attempts an alloca/store/load/return memory pattern.
+/// @param[in,out] ctx Active fast-path state.
+/// @return Complete MIR function on a match, otherwise `std::nullopt`.
 std::optional<MFunction> tryMemoryFastPaths(FastPathContext &ctx);
 
-/// @brief Try fast-path for integer arithmetic operations.
-/// @details Handles: add/sub/mul/and/or/xor RR ops, RI ops, comparisons
+/// @brief Attempts integer arithmetic, bitwise, immediate, and comparison patterns.
+/// @param[in,out] ctx Active fast-path state.
+/// @return Complete MIR function on a match, otherwise `std::nullopt`.
 std::optional<MFunction> tryIntArithmeticFastPaths(FastPathContext &ctx);
 
-/// @brief Try fast-path for floating-point arithmetic operations.
-/// @details Handles: fadd/fsub/fmul/fdiv RR ops
+/// @brief Attempts binary floating-point arithmetic patterns.
+/// @param[in,out] ctx Active fast-path state.
+/// @return Complete MIR function on a match, otherwise `std::nullopt`.
 std::optional<MFunction> tryFPArithmeticFastPaths(FastPathContext &ctx);
 
-/// @brief Try fast-path for type conversion operations.
-/// @details Handles: zext1/trunc1, cast.si_narrow.chk, cast.fp_to_si.rte.chk
+/// @brief Attempts supported boolean and checked signed-narrowing patterns.
+/// @param[in,out] ctx Active fast-path state.
+/// @return Complete MIR function on a match, otherwise `std::nullopt`.
 std::optional<MFunction> tryCastFastPaths(FastPathContext &ctx);
 
-/// @brief Try fast-path for call operations.
-/// @details Handles: call @callee(args...) feeding ret
+/// @brief Attempts a direct call whose result feeds the function return.
+/// @param[in,out] ctx Active fast-path state.
+/// @return Complete MIR function on a match, otherwise `std::nullopt`.
 std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx);
 
 //===----------------------------------------------------------------------===//

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/LoweringRuleTable.hpp
+// File: src/codegen/x86_64/LoweringRuleTable.hpp
 // Purpose: Describe declarative lowering rules for x86-64 emission.
 // Key invariants:
 //   - Rule table entries are immutable and indexed by opcode prefix.
@@ -13,9 +13,9 @@
 //   - Emit callbacks may only append to the MIRBuilder, never remove.
 // Ownership/Lifetime:
 //   - Shared across lowering translation units via inline constexpr data.
-// Links: codegen/x86_64/LoweringRuleTable.cpp,
-//        codegen/x86_64/LoweringRules.hpp,
-//        codegen/x86_64/LowerILToMIR.hpp
+// Links: src/codegen/x86_64/LoweringRuleTable.cpp,
+//        src/codegen/x86_64/LoweringRules.hpp,
+//        src/codegen/x86_64/LowerILToMIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,6 +27,16 @@
 #include <limits>
 #include <string_view>
 
+/**
+ * @file
+ * @brief Declares x86-64 lowering emitters and their declarative dispatch table.
+ *
+ * Emitters translate one backend-facing IL instruction into MIR or delayed
+ * lowering metadata. RuleSpec combines an opcode match, arity and operand-kind
+ * constraints, and the emitter callback. Lookup uses immutable exact-opcode and
+ * prefix-family indices built from the master table.
+ */
+
 namespace zanna::codegen::x64 {
 
 struct ILInstr;
@@ -34,33 +44,21 @@ class MIRBuilder;
 
 namespace lowering {
 
-/// @brief Emits x86-64 MIR for IL `add` instruction (integer addition).
-///
-/// Generates an ADD instruction for two integer operands. The x86-64 ADD instruction
-/// modifies flags, so subsequent flag-dependent operations may use the result without
-/// an explicit comparison. Handles both 32-bit and 64-bit integer operands based on
-/// the IL instruction's type.
+/// @brief Lower integer or F64 @c add using the result register class.
+/// @details Integer immediates use ADDri when encodable; other cases use the
+///          appropriate GPR or XMM register form.
 ///
 /// @param instr The IL add instruction with two value operands.
 /// @param builder The MIR builder to append instructions to.
 void emitAdd(const ILInstr &instr, MIRBuilder &builder);
 
-/// @brief Emits x86-64 MIR for IL `sub` instruction (integer subtraction).
-///
-/// Generates a SUB instruction. Like ADD, this sets CPU flags that can be used
-/// by subsequent conditional operations. The destination is the first operand
-/// minus the second operand.
+/// @brief Lower integer or F64 @c sub using a destructive two-operand form.
 ///
 /// @param instr The IL sub instruction with two value operands.
 /// @param builder The MIR builder to append instructions to.
 void emitSub(const ILInstr &instr, MIRBuilder &builder);
 
-/// @brief Emits x86-64 MIR for IL `mul` instruction (integer multiplication).
-///
-/// Generates an IMUL instruction for signed multiplication. The x86-64 IMUL
-/// has three forms: one-operand (implicitly uses RAX), two-operand, and
-/// three-operand with immediate. This function typically uses the two-operand
-/// form for register-register multiplication.
+/// @brief Lower integer or F64 @c mul to the matching GPR or XMM operation.
 ///
 /// @param instr The IL mul instruction with two value operands.
 /// @param builder The MIR builder to append instructions to.
@@ -83,8 +81,7 @@ void emitMulOvf(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `fdiv` instruction (floating-point division).
 ///
-/// Generates a DIVSD (divide scalar double) instruction for 64-bit floating-point
-/// division, or DIVSS for 32-bit. Uses SSE/AVX registers (XMM0-XMM15).
+/// Generates the backend's scalar-double FDIV MIR operation in XMM registers.
 ///
 /// @param instr The IL fdiv instruction with two floating-point operands.
 /// @param builder The MIR builder to append instructions to.
@@ -138,10 +135,9 @@ void emitFCmp(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL division family (div, sdiv, udiv, srem, urem, rem).
 ///
-/// Handles all division and remainder operations. The x86-64 DIV/IDIV instructions
-/// are complex: they implicitly use RDX:RAX as the dividend and produce both quotient
-/// (in RAX) and remainder (in RDX). This function generates the setup (sign extension
-/// via CDQ/CQO for signed, zero extension for unsigned) and extracts the correct result.
+/// Handles all division and remainder operations by emitting a signed or
+/// unsigned div/rem pseudo. A later pass performs constant strength reduction
+/// or expands the pseudo around x86-64's implicit RDX:RAX pair.
 ///
 /// @param instr The IL division instruction (div, sdiv, udiv, rem, srem, urem).
 /// @param builder The MIR builder to append instructions to.
@@ -214,8 +210,8 @@ void emitCondBranch(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `ret` instruction (function return).
 ///
-/// Generates the function epilogue and RET instruction. If the function returns a
-/// value, it must be in RAX (integer) or XMM0 (floating-point) per the SysV ABI.
+/// Moves an optional result into the target descriptor's integer or F64 return
+/// register and emits RET. Frame lowering inserts the epilogue later.
 ///
 /// @param instr The IL ret instruction with optional return value operand.
 /// @param builder The MIR builder to append instructions to.
@@ -223,9 +219,8 @@ void emitReturn(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `call` instruction (direct function call).
 ///
-/// Generates a CALL instruction to a named function. Arguments are passed per the
-/// SysV AMD64 ABI: first six integer/pointer args in RDI, RSI, RDX, RCX, R8, R9;
-/// first eight floating-point args in XMM0-XMM7; remaining args on the stack.
+/// Records a target-independent call plan, emits a tagged direct CALL, and
+/// captures an optional result. ABI argument placement is deferred.
 ///
 /// @param instr The IL call instruction with function label and argument operands.
 /// @param builder The MIR builder to append instructions to.
@@ -242,9 +237,8 @@ void emitCallIndirect(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `load` instruction (memory load).
 ///
-/// Generates a MOV instruction to load a value from memory. The address operand
-/// can be a register (base pointer) with an optional immediate offset. Supports
-/// 8, 16, 32, and 64-bit loads with appropriate zero or sign extension.
+/// Emits a GPR or scalar-double load from a base pointer with an optional byte
+/// displacement, folding a proven indexed-address pattern when possible.
 ///
 /// @param instr The IL load instruction with address and optional offset operands.
 /// @param builder The MIR builder to append instructions to.
@@ -261,9 +255,8 @@ void emitStore(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL type conversion instructions (zext, sext, trunc).
 ///
-/// Handles zero extension (MOVZX), sign extension (MOVSX/MOVSXD), and truncation.
-/// For truncation, this may be a no-op at the register level since x86-64 registers
-/// can be accessed at different widths (AL, AX, EAX, RAX).
+/// Copies the source and emits masks or shift pairs according to source/result
+/// bit widths so narrow values remain canonically extended.
 ///
 /// @param instr The IL conversion instruction (zext, sext, or trunc).
 /// @param builder The MIR builder to append instructions to.
@@ -271,8 +264,7 @@ void emitZSTrunc(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `sitofp` instruction (signed int to floating-point).
 ///
-/// Generates a CVTSI2SD (convert signed integer to scalar double) or CVTSI2SS
-/// instruction to convert a signed integer to floating-point representation.
+/// Generates CVTSI2SD for the backend's F64 result representation.
 ///
 /// @param instr The IL sitofp instruction with integer operand.
 /// @param builder The MIR builder to append instructions to.
@@ -280,8 +272,8 @@ void emitSIToFP(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `fptosi` instruction (floating-point to signed int).
 ///
-/// Generates a CVTTSD2SI (convert with truncation scalar double to signed integer)
-/// instruction. Uses truncation toward zero (not rounding to nearest).
+/// Rejects NaN and values outside the destination width, then generates
+/// CVTTSD2SI using truncation toward zero.
 ///
 /// @param instr The IL fptosi instruction with floating-point operand.
 /// @param builder The MIR builder to append instructions to.
@@ -289,8 +281,8 @@ void emitFPToSI(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for checked `fptosi_chk` (float to signed int with NaN/overflow trap).
 ///
-/// Generates UCOMISD NaN check, CVTTSD2SI, then verifies the result is not the overflow
-/// sentinel (0x8000000000000000). Traps via UD2 on NaN, Inf, or out-of-range values.
+/// Rounds to nearest-even through the runtime helper, performs explicit NaN
+/// and range checks, then generates CVTTSD2SI or a typed runtime trap.
 ///
 /// @param instr The IL fptosi_chk instruction with floating-point operand.
 /// @param builder The MIR builder to append instructions to.
@@ -306,10 +298,14 @@ void emitFpToUi(const ILInstr &instr, MIRBuilder &builder);
 /// @param builder The MIR builder to append instructions to.
 void emitUiToFp(const ILInstr &instr, MIRBuilder &builder);
 
-/// @brief Emits x86-64 MIR for checked signed integer narrowing.
+/// @brief Narrow a signed integer and trap if re-extension changes its value.
+/// @param instr Checked signed-narrowing instruction.
+/// @param builder MIR builder receiving the check and result.
 void emitSiNarrowChecked(const ILInstr &instr, MIRBuilder &builder);
 
-/// @brief Emits x86-64 MIR for checked unsigned integer narrowing.
+/// @brief Narrow an unsigned integer and trap if re-extension changes its value.
+/// @param instr Checked unsigned-narrowing instruction.
+/// @param builder MIR builder receiving the check and result.
 void emitUiNarrowChecked(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `const_null` instruction (null pointer constant).
@@ -338,34 +334,26 @@ void emitAddrOf(const ILInstr &instr, MIRBuilder &builder);
 /// @param builder The MIR builder to append instructions to.
 void emitIdxChk(const ILInstr &instr, MIRBuilder &builder);
 
-/// @brief Emits x86-64 MIR for IL `switch_i32` instruction (multi-way branch).
-/// @details Emits a chain of CMP + JCC pairs followed by a JMP to the default label.
+/// @brief Emit x86-64 MIR for an IL @c switch_i32 multi-way branch.
+/// @details Selects a short linear chain, balanced compare tree, or dense jump
+///          table according to validated case count and density.
 /// @param instr The IL switch_i32 instruction with scrutinee, case pairs, default.
 /// @param builder The MIR builder to append instructions to.
 void emitSwitchI32(const ILInstr &instr, MIRBuilder &builder);
 
-/// @brief Emits x86-64 MIR for IL `eh.push` instruction (push exception handler).
-///
-/// Pushes an exception handler onto the runtime exception handler stack. The operand
-/// is the label of the handler block to jump to when an exception is raised.
+/// @brief Ignore a residual @c eh.push marker after NativeEHLowering.
 ///
 /// @param instr The IL eh.push instruction with handler label operand.
 /// @param builder The MIR builder to append instructions to.
 void emitEhPush(const ILInstr &instr, MIRBuilder &builder);
 
-/// @brief Emits x86-64 MIR for IL `eh.pop` instruction (pop exception handler).
-///
-/// Pops the topmost exception handler from the runtime exception handler stack.
-/// Called when leaving a protected region normally (without an exception).
+/// @brief Ignore a residual @c eh.pop marker after NativeEHLowering.
 ///
 /// @param instr The IL eh.pop instruction (no operands).
 /// @param builder The MIR builder to append instructions to.
 void emitEhPop(const ILInstr &instr, MIRBuilder &builder);
 
-/// @brief Emits x86-64 MIR for IL `eh.entry` instruction (exception handler entry).
-///
-/// Marks the entry point of an exception handler block. Generates code to retrieve
-/// the current exception object from the runtime's exception state.
+/// @brief Ignore a residual @c eh.entry marker after NativeEHLowering.
 ///
 /// @param instr The IL eh.entry instruction (no operands).
 /// @param builder The MIR builder to append instructions to.
@@ -373,9 +361,8 @@ void emitEhEntry(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `trap` instruction (raise runtime error).
 ///
-/// Generates code to raise a runtime trap/exception. May call a runtime function
-/// to report the error and abort execution, or trigger a CPU trap instruction
-/// depending on the trap kind specified.
+/// Plans a call to @c rt_trap_string with the optional managed-string payload
+/// and appends UD2 as a non-returning safety net.
 ///
 /// @param instr The IL trap instruction with optional trap code operand.
 /// @param builder The MIR builder to append instructions to.
@@ -383,9 +370,8 @@ void emitTrap(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `const_str` instruction (string constant).
 ///
-/// Generates code to load the address of a string constant. The string data is
-/// emitted to a read-only data section, and this instruction produces a pointer
-/// to that data.
+/// Adds the literal bytes to rodata, calls @c rt_str_from_lit through the normal
+/// ABI plan, and places the managed string handle in the result vreg.
 ///
 /// @param instr The IL const_str instruction with string index operand.
 /// @param builder The MIR builder to append instructions to.
@@ -403,8 +389,8 @@ void emitAlloca(const ILInstr &instr, MIRBuilder &builder);
 
 /// @brief Emits x86-64 MIR for IL `gep` instruction (get element pointer).
 ///
-/// Generates address arithmetic to compute a pointer to an element within an
-/// aggregate type (array or struct). Computes base + index * element_size.
+/// Computes a pointer from a base plus either an immediate byte displacement or
+/// a dynamic GPR offset.
 ///
 /// @param instr The IL gep instruction with base pointer and index operands.
 /// @param builder The MIR builder to append instructions to.
@@ -471,12 +457,12 @@ constexpr bool hasFlag(RuleFlags flags, RuleFlags flag) noexcept {
 /// ## Operand Kind Hierarchy
 ///
 /// The IL has three fundamental operand kinds:
-/// - **Value**: A virtual register reference (e.g., `%0`, `%result`)
+/// - **Value**: Any non-label value, including SSA references and immediates
 /// - **Label**: A basic block label (e.g., `@entry`, `@loop_header`)
 /// - **Immediate**: A literal constant (e.g., `42`, `3.14`)
 ///
-/// The `Any` pattern matches all three kinds, while the specific patterns
-/// require an exact match.
+/// The `Any` pattern matches all three kinds. `Value` intentionally accepts
+/// both SSA and immediate values; `Label` and `Immediate` are exact constraints.
 ///
 /// @see OperandShape for combining patterns into instruction-level constraints
 enum class OperandKindPattern : std::uint8_t {
@@ -484,8 +470,8 @@ enum class OperandKindPattern : std::uint8_t {
     /// Use this for operands where the emit function handles all cases.
     Any,
 
-    /// @brief Matches only value operands (virtual register references).
-    /// Used for operands that must be in registers for the target instruction.
+    /// @brief Matches any non-label value, whether SSA-backed or immediate.
+    /// Emitters remain responsible for register materialization when required.
     Value,
 
     /// @brief Matches only label operands (basic block references).
@@ -525,7 +511,7 @@ enum class OperandKindPattern : std::uint8_t {
 ///     {OperandKindPattern::Value, OperandKindPattern::Value,
 ///      OperandKindPattern::Any, OperandKindPattern::Any}}
 /// ```
-/// This matches instructions with exactly 2 operands, both of which must be values.
+/// This matches exactly two non-label operands.
 ///
 /// @see RuleSpec for the complete rule definition structure
 struct OperandShape {
@@ -559,7 +545,7 @@ struct OperandShape {
 /// A rule matches an IL instruction if:
 /// 1. The opcode matches (exact or prefix, depending on flags)
 /// 2. The operand count is within [minArity, maxArity]
-/// 3. Each operand's kind matches the corresponding pattern (if kindCount > 0)
+/// 3. Each operand satisfies the corresponding pattern (if kindCount > 0)
 ///
 /// ## Example Rule
 ///
@@ -651,16 +637,14 @@ bool matchesRuleSpec(const lowering::RuleSpec &spec, const ILInstr &instr);
 
 /// @brief Finds the first lowering rule that matches an IL instruction.
 ///
-/// Searches the kLoweringRuleTable linearly and returns a pointer to the first
-/// rule that matches the instruction (as determined by matchesRuleSpec). This
-/// is the primary entry point for instruction selection during lowering.
+/// Probes the cached exact-opcode hash table first, then the small ordered list
+/// of prefix rules, and returns the first candidate whose operand shape matches.
+/// This is the primary entry point for instruction selection during lowering.
 ///
 /// ## Performance Note
 ///
-/// The current implementation uses linear search through the rule table. For
-/// the current table size (39 rules), this is efficient enough. If the table
-/// grows significantly, consider switching to a hash map indexed by opcode
-/// or a trie structure for prefix matching.
+/// Exact opcodes normally require one hash lookup plus a short same-key candidate
+/// scan. Only prefix families such as @c icmp_ require linear probing.
 ///
 /// ## No Match Handling
 ///

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/PeepholeDCE.hpp
+// File: src/codegen/common/PeepholeDCE.hpp
 // Purpose: Template-based dead code elimination shared between AArch64 and
 //          x86-64 peephole passes.
 //
@@ -34,6 +34,9 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+
+/// @file
+/// @brief Implements traits-based block-local machine dead-code elimination.
 
 namespace zanna::codegen::common {
 

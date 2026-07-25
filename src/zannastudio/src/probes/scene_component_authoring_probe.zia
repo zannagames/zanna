@@ -99,7 +99,8 @@ func main() {
         "Hit points",
         "int",
         "25",
-        "Starting health.");
+        "Starting health.",
+        "");
     var fieldSchema =
         scene_component_schema.ParseText(fieldUpdated.content, "memory");
     enemy = fieldSchema.Find(
@@ -135,6 +136,7 @@ func main() {
         "Duplicate",
         "int",
         "1",
+        "",
         "");
     if duplicate.ok or duplicate.changed
        or duplicate.content != moved.content {
@@ -180,6 +182,7 @@ func main() {
         "Hit points",
         "int",
         "12",
+        "",
         "");
     if unknownEdit.ok == false
        or Str.Contains(unknownEdit.content, "\"vendor\"") == false
@@ -201,6 +204,7 @@ func main() {
         "Counter value",
         "int",
         "0",
+        "",
         "");
     if labelOnlyEdit.ok == false or labelOnlyEdit.changed == false
        or Str.Contains(labelOnlyEdit.content, "\"label\"") == false
@@ -216,7 +220,8 @@ func main() {
         "counter.value",
         "int",
         "0",
-        "Counts accepted events.");
+        "Counts accepted events.",
+        "");
     if fieldDescriptionOnly.ok == false
        or Str.Contains(fieldDescriptionOnly.content, "\"description\"")
           == false

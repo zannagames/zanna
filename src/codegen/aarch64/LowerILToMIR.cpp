@@ -16,14 +16,24 @@
 //   - Phi slots are allocated as stack spills before instruction lowering.
 // Ownership/Lifetime:
 //   - All state is local to lowerFunction(); the LowerILToMIR object is stateless.
-// Links: codegen/aarch64/LowerILToMIR.hpp,
-//        codegen/aarch64/InstrLowering.hpp,
-//        codegen/aarch64/OpcodeDispatch.hpp,
-//        codegen/aarch64/TerminatorLowering.hpp,
-//        codegen/aarch64/LivenessAnalysis.hpp,
-//        codegen/aarch64/FastPaths.hpp
+// Links: src/codegen/aarch64/LowerILToMIR.hpp,
+//        src/codegen/aarch64/InstrLowering.hpp,
+//        src/codegen/aarch64/OpcodeDispatch.hpp,
+//        src/codegen/aarch64/TerminatorLowering.hpp,
+//        src/codegen/aarch64/LivenessAnalysis.hpp,
+//        src/codegen/aarch64/FastPaths.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Implements whole-function IL-to-AArch64-MIR orchestration.
+ *
+ * Lowering first probes transactional fast paths. The generic path allocates
+ * locals and phi slots, analyzes cross-block values, seeds register classes,
+ * materializes entry parameters, dispatches ordinary instructions, lowers
+ * terminators, and finalizes the frame without retaining per-function state.
+ */
 
 #include "LowerILToMIR.hpp"
 
@@ -55,11 +65,15 @@ namespace {
 using il::core::Opcode;
 
 /// @brief Return the AArch64 condition-code string for an IL comparison opcode.
+/// @param op IL integer or floating-point comparison opcode.
+/// @return Pointer to a static target condition spelling.
 static const char *condForOpcode(Opcode op) {
     return lookupAnyCondition(op);
 }
 
 /// @brief Return the bit-width for an IL integer type (I1→1, I16→16, I32→32, else 64).
+/// @param kind IL type kind.
+/// @return Integer width used by overflow and sign-extension lowering.
 static int integerTypeBits(il::core::Type::Kind kind) {
     switch (kind) {
         case il::core::Type::Kind::I1:
@@ -77,6 +91,8 @@ static int integerTypeBits(il::core::Type::Kind kind) {
 /// @details Full-width checked overflow opcodes use dedicated MIR lowering. The
 ///          compare-after-narrowing expansion below is only needed for signed
 ///          integer widths below 64 bits.
+/// @param ins Candidate checked arithmetic instruction.
+/// @return `true` for sub-64-bit signed add/sub/multiply overflow operations.
 static bool isSubWidthCheckedOverflowOp(const il::core::Instr &ins) {
     return integerTypeBits(ins.type.kind) < 64 &&
            (ins.op == Opcode::IAddOvf || ins.op == Opcode::ISubOvf || ins.op == Opcode::IMulOvf);
@@ -84,6 +100,11 @@ static bool isSubWidthCheckedOverflowOp(const il::core::Instr &ins) {
 
 /// @brief Emit LSL/ASR to sign-extend @p src from @p bits to 64 bits; return the result vreg.
 /// @details No-op (returns @p src) when @p bits >= 64.
+/// @param out Machine block receiving the two shifts.
+/// @param src Source GPR virtual register.
+/// @param bits Original signed width.
+/// @param nextVRegId Monotonic allocator advanced when extension is required.
+/// @return Extended result vreg, or @p src for 64-bit values.
 static uint16_t signExtendVRegToWidth(MBasicBlock &out,
                                       uint16_t src,
                                       int bits,
@@ -109,6 +130,13 @@ static uint16_t signExtendVRegToWidth(MBasicBlock &out,
 ///          to the shared overflow trap block identified by @p trapLabel. The function never
 ///          appends to @c MFunction::blocks, so callers can safely pass references into the
 ///          current block without risking vector reallocation invalidation.
+/// @param out Machine block receiving arithmetic, narrowing, compare, and branch MIR.
+/// @param ins Checked IL arithmetic instruction.
+/// @param dst Destination GPR virtual register.
+/// @param lhs Left operand GPR virtual register.
+/// @param rhs Right operand GPR virtual register.
+/// @param trapLabel Shared overflow trap block label.
+/// @param nextVRegId Monotonic allocator for sign-extension temporaries.
 /// @return true if the instruction was handled as a sub-width checked op; false if bits >= 64
 ///         or the opcode is not a checked overflow op (caller should use the generic path).
 static bool emitSubWidthCheckedBinary(MBasicBlock &out,
@@ -216,6 +244,8 @@ static int callerStackParamOffset(std::size_t stackSlotIndex) {
 /// @details Cross-block reloads can see a temp before its defining block has
 ///          been lowered when IL block order differs from CFG dominance order.
 ///          Seeding classes up front keeps f64 temps from defaulting to GPR.
+/// @param fn Function whose parameters and instruction results are classified.
+/// @return Sparse temp-id to GPR/FPR map.
 static std::unordered_map<unsigned, RegClass> buildTempRegClassMap(const il::core::Function &fn) {
     auto classForType = [](const il::core::Type &type) {
         return type.kind == il::core::Type::Kind::F64 ? RegClass::FPR : RegClass::GPR;
@@ -238,6 +268,9 @@ static std::unordered_map<unsigned, RegClass> buildTempRegClassMap(const il::cor
 /// @brief Return true if @p bb's terminator is a CBr that consumes @p tempId as its condition.
 /// @details Used to skip materializing the condition into an extra vreg when the CBr
 ///          can consume the flag result directly from the preceding comparison.
+/// @param bb Basic block whose terminator is inspected.
+/// @param tempId Comparison-result temporary.
+/// @return `true` when the final instruction condition directly names @p tempId.
 static bool cbrConsumesTemp(const il::core::BasicBlock &bb, unsigned tempId) {
     using il::core::Opcode;
     using il::core::Value;
@@ -258,6 +291,15 @@ static bool cbrConsumesTemp(const il::core::BasicBlock &bb, unsigned tempId) {
 ///
 ///          Uses `planParamClasses` (shared with x86_64) so register-vs-stack
 ///          assignment matches the platform ABI exactly.
+/// @param fn Enclosing IL function and variadic metadata.
+/// @param bbIn Entry block whose parameters mirror function arguments.
+/// @param ti Target ABI register orders.
+/// @param out Entry machine block receiving moves, loads, and spill stores.
+/// @param tempVReg Parameter-temp to canonical-vreg map.
+/// @param tempRegClass Parameter-temp register-class map.
+/// @param funcParamSpillOffset Cross-block parameter spill map updated in place.
+/// @param crossBlockSpillOffset Preallocated liveness spill offsets.
+/// @param nextVRegId Monotonic virtual-register allocator.
 static void spillEntryBlockParams(const il::core::Function &fn,
                                   const il::core::BasicBlock &bbIn,
                                   const TargetInfo &ti,
@@ -326,6 +368,9 @@ static void spillEntryBlockParams(const il::core::Function &fn,
 /// @details Populates @p fb with one local per Alloca and returns the set of
 ///          temp ids that are allocas (used by liveness to exclude them from
 ///          cross-block spilling).
+/// @param fn Function whose alloca instructions are scanned.
+/// @param fb Frame builder receiving local-slot allocations.
+/// @return Set of alloca result temp ids.
 /// @throws std::out_of_range if any alloca size is out-of-range (<=0 or > INT_MAX).
 static std::unordered_set<unsigned> setupFrameLocals(const il::core::Function &fn,
                                                      FrameBuilder &fb) {
@@ -357,11 +402,18 @@ static std::unordered_set<unsigned> setupFrameLocals(const il::core::Function &f
 ///          blocks get a vreg per param plus a stack slot so edges can spill their
 ///          phi arguments before branching.
 struct PhiAssignment {
+    /// Block label to canonical phi virtual-register ids.
     std::unordered_map<std::string, std::vector<uint16_t>> vregId;
+    /// Block label to phi register classes.
     std::unordered_map<std::string, std::vector<RegClass>> regClass;
+    /// Block label to FP-relative phi spill offsets.
     std::unordered_map<std::string, std::vector<int>> spillOffset;
 };
 
+/// @brief Allocate canonical vregs and frame spills for non-entry block parameters.
+/// @param fn Function whose block parameters are assigned.
+/// @param fb Frame builder receiving phi spill slots.
+/// @return Parallel maps keyed by block label.
 static PhiAssignment allocatePhiSlots(const il::core::Function &fn, FrameBuilder &fb) {
     PhiAssignment out;
     uint16_t phiNextId = kPhiVRegStart; // reserve a distinct vreg range

@@ -23,6 +23,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file GlobalPinning.hpp
+ * @brief Defines target-independent whole-lifetime register pinning helpers.
+ *
+ * Copy-connected candidates may first be coalesced when their precise
+ * intra-block segments do not overlap. A weighted greedy allocator then shares
+ * physical registers only between candidates with disjoint live-block sets.
+ */
+
 #pragma once
 
 #include <algorithm>
@@ -41,12 +50,15 @@ namespace zanna::codegen::ra {
 ///          gives x an end of 2*i and t a start of 2*i+1, which is exactly
 ///          disjoint, while any real simultaneous liveness overlaps.
 struct BlockSegment {
+    ///< Inclusive half-position at which the value becomes live.
     uint32_t start{0};
+    ///< Inclusive half-position at which the value ceases to be live.
     uint32_t end{0};
 };
 
 /// @brief One cross-block virtual register considered for whole-lifetime pinning.
 struct GlobalPinCandidate {
+    ///< Virtual register represented by this candidate or coalesced root.
     uint16_t vreg{0};
     /// Block-granularity live set: liveBlocks[b] != 0 when the vreg is live
     /// into, out of, or within block b.
@@ -81,6 +93,8 @@ coalescePinChains(std::vector<GlobalPinCandidate> &candidates,
     std::vector<std::size_t> parent(candidates.size());
     for (std::size_t i = 0; i < parent.size(); ++i)
         parent[i] = i;
+
+    /// Find a union-find root while applying path compression.
     auto find = [&](std::size_t x) {
         while (parent[x] != x) {
             parent[x] = parent[parent[x]];
@@ -89,6 +103,7 @@ coalescePinChains(std::vector<GlobalPinCandidate> &candidates,
         return x;
     };
 
+    /// Test whether two inclusive half-position segments do not overlap.
     auto disjoint = [](const BlockSegment &a, const BlockSegment &b) {
         return a.end < b.start || b.end < a.start;
     };
@@ -253,6 +268,7 @@ GlobalPinAssignment<PhysRegT> assignGlobalPins(std::vector<GlobalPinCandidate> c
     if (pool.empty() || candidates.empty() || blockCount == 0)
         return result;
 
+    /// Order candidates by descending spill benefit with a deterministic vreg tie-break.
     std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) {
         if (a.weight != b.weight)
             return a.weight > b.weight;

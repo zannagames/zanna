@@ -1,0 +1,398 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_tile_behavior_2d.zia
+// Purpose: Present bounded per-tile collision, typed property, animation, and
+//          autotile controls for Studio's 2D scene inspector.
+// Key invariants:
+//   - This presentation object never mutates SceneDocument or Document state.
+//   - Rows and drafts always rebuild from canonical typed runtime state.
+//   - Every control returns intent; SceneEditor2D owns validation and history.
+// Ownership/Lifetime: SceneEditor2D owns one inspector; GUI owns its widgets.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        docs/adr/0176-typed-tile-behavior-sections.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_tile_behavior_2d;
+
+bind GUI = Zanna.GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Seq = Zanna.Collections.Seq;
+bind Box = Zanna.Core.Box;
+bind Fmt = Zanna.Text.Fmt;
+bind Str = Zanna.String;
+
+// ============================================================================
+// MODULE: scene_tile_behavior_2d
+// PURPOSE: Keep tile-behavior widgets and draft presentation outside the
+//          already-large SceneEditor2D document coordinator.
+//
+// WHERE-THIS-FITS: SceneDocument owns typed tile-behavior truth (ADR 0176).
+//          SceneEditor2D owns validation, mutation, dirty state, and history.
+//
+// TEACHING-NOTE: Frame and duration lists are drafted as comma-separated text.
+//          The editor parses and validates before any runtime mutation, so a
+//          malformed draft can never enter canonical scene content.
+// ============================================================================
+
+final TILE_PROPERTY_TYPE_INT: Integer = 0;
+final TILE_PROPERTY_TYPE_BOOL: Integer = 1;
+final MAX_VISIBLE_TILE_PROPERTIES: Integer = 64;
+
+final COLLISION_NONE: Integer = 0;
+final COLLISION_SOLID: Integer = 1;
+final COLLISION_ONE_WAY_UP: Integer = 2;
+
+/// @brief Presentation-only tile-behavior editor embedded in the 2D inspector.
+class SceneTileBehavior2D {
+    expose GUI.GroupBox group;
+    expose GUI.Label summary;
+    expose GUI.Dropdown collisionDropdown;
+    expose GUI.ListBox propertyList;
+    expose GUI.TextInput propertyKeyInput;
+    expose GUI.Dropdown propertyTypeDropdown;
+    expose GUI.TextInput propertyValueInput;
+    expose GUI.Button propertyNewButton;
+    expose GUI.Button propertySetButton;
+    expose GUI.Button propertyRemoveButton;
+    expose GUI.TextInput animFramesInput;
+    expose GUI.TextInput animDurationsInput;
+    expose GUI.Button animSetButton;
+    expose GUI.Button animClearButton;
+    expose GUI.TextInput autotileInput;
+    expose GUI.Button autotileSetButton;
+    expose GUI.Button autotileClearButton;
+    expose List[String] propertyKeys;
+    expose Integer selectedProperty;
+    hide Integer shownTile;
+    hide Boolean editorEnabled;
+
+    expose func init() {
+        group = null;
+        summary = null;
+        collisionDropdown = null;
+        propertyList = null;
+        propertyKeyInput = null;
+        propertyTypeDropdown = null;
+        propertyValueInput = null;
+        propertyNewButton = null;
+        propertySetButton = null;
+        propertyRemoveButton = null;
+        animFramesInput = null;
+        animDurationsInput = null;
+        animSetButton = null;
+        animClearButton = null;
+        autotileInput = null;
+        autotileSetButton = null;
+        autotileClearButton = null;
+        propertyKeys = [];
+        selectedProperty = -1;
+        shownTile = 0;
+        editorEnabled = false;
+    }
+
+    /// @brief Build the bounded per-tile behavior surface.
+    expose func Setup(parent: GUI.VBox) {
+        group = GUI.GroupBox.New(parent, "Tile behavior");
+        summary = GUI.Label.New(
+            group,
+            "Scene-wide collision, data, animation, and autotile rules "
+            + "for the selected palette tile.");
+        summary.SetWordWrap(true);
+
+        var collisionRow = GUI.HBox.New();
+        collisionRow.SetSpacing(4.0);
+        group.AddChild(collisionRow);
+        var collisionLabel = GUI.Label.New(collisionRow, "Collision");
+        collisionLabel.SetTooltip(
+            "Solid blocks movement; one-way platforms pass from below");
+        collisionDropdown = GUI.Dropdown.New(collisionRow);
+        collisionDropdown.SetAccessibleName("Tile collision kind");
+        collisionDropdown.AddItem("None");
+        collisionDropdown.AddItem("Solid");
+        collisionDropdown.AddItem("One-way up");
+        collisionDropdown.SetSelected(COLLISION_NONE);
+        collisionDropdown.SetTooltip(
+            "Author this tile's collision kind as one undoable edit");
+
+        propertyList = GUI.ListBox.New(group);
+        propertyList.SetAccessibleName("Tile properties");
+        propertyList.SetPreferredSize(0.0, 88.0);
+
+        propertyKeyInput = GUI.TextInput.New(group);
+        propertyKeyInput.SetAccessibleName("Tile property key");
+        propertyKeyInput.SetPlaceholder("Tile property key");
+
+        var propertyValueRow = GUI.HBox.New();
+        propertyValueRow.SetSpacing(4.0);
+        group.AddChild(propertyValueRow);
+        propertyTypeDropdown = GUI.Dropdown.New(propertyValueRow);
+        propertyTypeDropdown.SetAccessibleName("Tile property type");
+        propertyTypeDropdown.AddItem("Integer");
+        propertyTypeDropdown.AddItem("Boolean");
+        propertyTypeDropdown.SetSelected(TILE_PROPERTY_TYPE_INT);
+        propertyValueInput = GUI.TextInput.New(propertyValueRow);
+        propertyValueInput.SetAccessibleName("Tile property value");
+        propertyValueInput.SetPlaceholder("Property value");
+        propertyValueInput.SetFlex(1.0);
+
+        var propertyActions = GUI.HBox.New();
+        propertyActions.SetSpacing(4.0);
+        group.AddChild(propertyActions);
+        propertyNewButton = GUI.Button.New(propertyActions, "New");
+        propertyNewButton.SetTooltip("Clear the fields to add a tile property");
+        propertySetButton = GUI.Button.New(propertyActions, "Set");
+        propertySetButton.SetTooltip(
+            "Create or update one typed tile property as one undoable edit");
+        propertyRemoveButton = GUI.Button.New(propertyActions, "Remove");
+        propertyRemoveButton.SetTooltip(
+            "Remove the selected tile property as one undoable edit");
+
+        var animLabel = GUI.Label.New(group, "Animation frames / durations (ms)");
+        animLabel.SetWordWrap(true);
+        animFramesInput = GUI.TextInput.New(group);
+        animFramesInput.SetAccessibleName("Tile animation frames");
+        animFramesInput.SetPlaceholder("Frame tile ids, e.g. 5, 6, 7");
+        animDurationsInput = GUI.TextInput.New(group);
+        animDurationsInput.SetAccessibleName("Tile animation durations");
+        animDurationsInput.SetPlaceholder("Durations in ms, e.g. 120, 90, 120");
+        var animActions = GUI.HBox.New();
+        animActions.SetSpacing(4.0);
+        group.AddChild(animActions);
+        animSetButton = GUI.Button.New(animActions, "Set Animation");
+        animSetButton.SetTooltip(
+            "Author per-frame tile animation as one undoable edit");
+        animClearButton = GUI.Button.New(animActions, "Clear");
+        animClearButton.SetTooltip(
+            "Remove this tile's animation as one undoable edit");
+
+        var autotileLabel = GUI.Label.New(group, "Autotile variants (16 ids)");
+        autotileLabel.SetWordWrap(true);
+        autotileInput = GUI.TextInput.New(group);
+        autotileInput.SetAccessibleName("Autotile variants");
+        autotileInput.SetPlaceholder("16 neighbor-mask variant tile ids");
+        var autotileActions = GUI.HBox.New();
+        autotileActions.SetSpacing(4.0);
+        group.AddChild(autotileActions);
+        autotileSetButton = GUI.Button.New(autotileActions, "Set Rule");
+        autotileSetButton.SetTooltip(
+            "Author this tile's 16-variant autotile rule as one undoable edit");
+        autotileClearButton = GUI.Button.New(autotileActions, "Clear");
+        autotileClearButton.SetTooltip(
+            "Remove this tile's autotile rule as one undoable edit");
+
+        SetEnabled(false);
+    }
+
+    /// @brief Rebuild every row and draft from canonical typed runtime state.
+    expose func Refresh(scene: SceneDocument, tile: Integer, enabled: Boolean) {
+        shownTile = tile;
+        editorEnabled = enabled and scene != null and tile >= 1 and tile <= 4095;
+        propertyList.Clear();
+        propertyKeys = [];
+        selectedProperty = -1;
+        if editorEnabled == false {
+            if tile < 1 or tile > 4095 {
+                summary.SetText(
+                    "Behavior applies to tile ids 1 through 4095.");
+            } else {
+                summary.SetText(
+                    "Scene-wide collision, data, animation, and autotile "
+                    + "rules for the selected palette tile.");
+            }
+            collisionDropdown.SetSelected(COLLISION_NONE);
+            animFramesInput.SetText("");
+            animDurationsInput.SetText("");
+            autotileInput.SetText("");
+            RefreshEnabledState();
+            RefreshPropertyFields(scene);
+            return;
+        }
+
+        summary.SetText("Behavior for tile " + tile
+                        + ". BuildTilemap applies it scene-wide.");
+        collisionDropdown.SetSelected(scene.TileCollision(tile));
+
+        var keys = scene.TilePropertyKeys(tile);
+        var total = Seq.get_Count(keys);
+        var visible = total;
+        if visible > MAX_VISIBLE_TILE_PROPERTIES {
+            visible = MAX_VISIBLE_TILE_PROPERTIES;
+        }
+        var index = 0;
+        while index < visible {
+            var key = Seq.GetStr(keys, index);
+            var kind = scene.TilePropertyKind(tile, key);
+            propertyKeys.add(key);
+            propertyList.AddItem(
+                key + "  [" + kind + "] = " + PropertyValueText(scene, key));
+            index = index + 1;
+        }
+        if total > visible {
+            propertyList.AddItem(
+                "… " + (total - visible) + " more properties not shown");
+        }
+
+        animFramesInput.SetText(IntSeqCsv(scene.TileAnimFrames(tile)));
+        animDurationsInput.SetText(IntSeqCsv(scene.TileAnimDurations(tile)));
+        autotileInput.SetText(IntSeqCsv(scene.AutotileVariants(tile)));
+        RefreshEnabledState();
+        RefreshPropertyFields(scene);
+    }
+
+    /// @brief Consume presentation-only selection and New-draft changes.
+    expose func Pump(scene: SceneDocument) {
+        if scene == null { return; }
+        if propertyList.WasSelectionChanged() {
+            var selected = propertyList.SelectedIndex;
+            if selected >= 0 and selected < propertyKeys.count() {
+                selectedProperty = selected;
+            } else {
+                selectedProperty = -1;
+            }
+            RefreshPropertyFields(scene);
+        }
+        if propertyNewButton.WasClicked() {
+            selectedProperty = -1;
+            propertyList.SelectIndex(-1);
+            RefreshPropertyFields(scene);
+            propertyKeyInput.Focus();
+        }
+    }
+
+    /// @brief Return the newly selected collision kind, or -1 without a change.
+    expose func TakeCollisionKind() -> Integer {
+        if collisionDropdown.WasChanged() == false { return -1; }
+        return collisionDropdown.Selected;
+    }
+
+    /// @brief Consume tile-property Set button or field-submit intent.
+    expose func TakePropertySetRequested() -> Boolean {
+        var requested = propertySetButton.WasClicked();
+        if propertyKeyInput.WasSubmitted() { requested = true; }
+        if propertyValueInput.WasSubmitted() { requested = true; }
+        return requested;
+    }
+
+    /// @brief Consume tile-property Remove button intent.
+    expose func TakePropertyRemoveRequested() -> Boolean {
+        return propertyRemoveButton.WasClicked();
+    }
+
+    /// @brief Consume animation Set button or field-submit intent.
+    expose func TakeAnimSetRequested() -> Boolean {
+        var requested = animSetButton.WasClicked();
+        if animFramesInput.WasSubmitted() { requested = true; }
+        if animDurationsInput.WasSubmitted() { requested = true; }
+        return requested;
+    }
+
+    /// @brief Consume animation Clear button intent.
+    expose func TakeAnimClearRequested() -> Boolean {
+        return animClearButton.WasClicked();
+    }
+
+    /// @brief Consume autotile Set button or field-submit intent.
+    expose func TakeAutotileSetRequested() -> Boolean {
+        var requested = autotileSetButton.WasClicked();
+        if autotileInput.WasSubmitted() { requested = true; }
+        return requested;
+    }
+
+    /// @brief Consume autotile Clear button intent.
+    expose func TakeAutotileClearRequested() -> Boolean {
+        return autotileClearButton.WasClicked();
+    }
+
+    /// @brief Return the exact selected property key, or empty without a row.
+    expose func SelectedPropertyKey() -> String {
+        if selectedProperty < 0 or selectedProperty >= propertyKeys.count() {
+            return "";
+        }
+        return propertyKeys.get(selectedProperty);
+    }
+
+    /// @brief Return the scalar kind selected by the property-type dropdown.
+    expose func SelectedPropertyKind() -> String {
+        if propertyTypeDropdown.Selected == TILE_PROPERTY_TYPE_BOOL {
+            return "bool";
+        }
+        return "int";
+    }
+
+    /// @brief Reconcile all controls with scene validity.
+    expose func SetEnabled(enabled: Boolean) {
+        editorEnabled = enabled;
+        if group == null { return; }
+        RefreshEnabledState();
+        RefreshPropertyFields(null);
+    }
+
+    /// @brief Apply one shared enabled state to every behavior control.
+    hide func RefreshEnabledState() {
+        collisionDropdown.SetEnabled(editorEnabled);
+        propertyList.SetEnabled(editorEnabled);
+        propertyKeyInput.SetEnabled(editorEnabled);
+        propertyTypeDropdown.SetEnabled(editorEnabled);
+        propertyValueInput.SetEnabled(editorEnabled);
+        propertyNewButton.SetEnabled(editorEnabled);
+        propertySetButton.SetEnabled(editorEnabled);
+        animFramesInput.SetEnabled(editorEnabled);
+        animDurationsInput.SetEnabled(editorEnabled);
+        animSetButton.SetEnabled(editorEnabled);
+        animClearButton.SetEnabled(editorEnabled);
+        autotileInput.SetEnabled(editorEnabled);
+        autotileSetButton.SetEnabled(editorEnabled);
+        autotileClearButton.SetEnabled(editorEnabled);
+    }
+
+    /// @brief Refresh selected or empty property drafts from the live model.
+    hide func RefreshPropertyFields(scene: SceneDocument) {
+        var hasProperty = editorEnabled and scene != null
+            and selectedProperty >= 0
+            and selectedProperty < propertyKeys.count();
+        propertyRemoveButton.SetEnabled(hasProperty);
+        if hasProperty == false {
+            propertyKeyInput.SetText("");
+            propertyTypeDropdown.SetSelected(TILE_PROPERTY_TYPE_INT);
+            propertyValueInput.SetText("");
+            return;
+        }
+        var key = propertyKeys.get(selectedProperty);
+        var kind = scene.TilePropertyKind(shownTile, key);
+        propertyKeyInput.SetText(key);
+        if kind == "bool" {
+            propertyTypeDropdown.SetSelected(TILE_PROPERTY_TYPE_BOOL);
+        } else {
+            propertyTypeDropdown.SetSelected(TILE_PROPERTY_TYPE_INT);
+        }
+        propertyValueInput.SetText(PropertyValueText(scene, key));
+    }
+
+    /// @brief Format one live tile-property value without changing its kind.
+    hide func PropertyValueText(scene: SceneDocument, key: String) -> String {
+        var kind = scene.TilePropertyKind(shownTile, key);
+        if kind == "bool" {
+            return Fmt.Bool(scene.TilePropertyBool(shownTile, key, false));
+        }
+        return Fmt.Int(scene.TilePropertyInt(shownTile, key, 0));
+    }
+
+    /// @brief Render one runtime integer sequence as comma-separated draft text.
+    hide func IntSeqCsv(values: Any) -> String {
+        var out = "";
+        var count = Seq.get_Count(values);
+        var index = 0;
+        while index < count {
+            if index > 0 { out = out + ", "; }
+            out = out + Fmt.Int(Box.ToI64(Seq.Get(values, index)));
+            index = index + 1;
+        }
+        return out;
+    }
+}

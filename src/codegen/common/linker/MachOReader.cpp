@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/MachOReader.cpp
+// File: src/codegen/common/linker/MachOReader.cpp
 // Purpose: Mach-O 64-bit relocatable object file reader.
 // Key invariants:
 //   - Magic 0xFEEDFACF (little-endian 64-bit)
@@ -15,6 +15,16 @@
 // Links: codegen/common/linker/ObjFileReader.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file MachOReader.cpp
+ * @brief Implements bounded x86-64 and AArch64 Mach-O object parsing.
+ *
+ * Load commands, sections, symbols, and inline relocation addends are
+ * translated into the neutral object model. Objects carrying
+ * `MH_SUBSECTIONS_VIA_SYMBOLS` are split into per-atom executable sections
+ * while preserving symbol and relocation ownership.
+ */
 
 #include "codegen/common/AArch64RelocUtil.hpp"
 #include "codegen/common/linker/ObjFileReader.hpp"
@@ -63,6 +73,7 @@ static constexpr uint32_t S_ATTR_SOME_INSTRUCTIONS = 0x00000400;
 static constexpr uint32_t S_ATTR_DEBUG = 0x02000000;
 static constexpr uint32_t S_ATTR_NO_DEAD_STRIP = 0x10000000;
 
+/// @brief Packed Mach-O 64-bit object header.
 struct mach_header_64 {
     uint32_t magic;
     uint32_t cputype;
@@ -74,11 +85,13 @@ struct mach_header_64 {
     uint32_t reserved;
 };
 
+/// @brief Common prefix of every Mach-O load command.
 struct load_command {
     uint32_t cmd;
     uint32_t cmdsize;
 };
 
+/// @brief Mach-O 64-bit segment load command.
 struct segment_command_64 {
     uint32_t cmd;
     uint32_t cmdsize;
@@ -93,6 +106,7 @@ struct segment_command_64 {
     uint32_t flags;
 };
 
+/// @brief Mach-O 64-bit section record.
 struct section_64 {
     char sectname[16];
     char segname[16];
@@ -108,6 +122,7 @@ struct section_64 {
     uint32_t reserved3;
 };
 
+/// @brief Mach-O 64-bit symbol-table record.
 struct nlist_64 {
     uint32_t n_strx;
     uint8_t n_type;
@@ -116,6 +131,7 @@ struct nlist_64 {
     uint64_t n_value;
 };
 
+/// @brief Mach-O scattered-free relocation record.
 struct relocation_info {
     int32_t r_address;
     uint32_t r_info; // symbolnum:24 | pcrel:1 | length:2 | extern:1 | type:4
@@ -124,6 +140,11 @@ struct relocation_info {
 } // namespace macho
 
 /// @brief Bounds-checked struct copy at @p offset within a byte buffer.
+/// @tparam T Trivially copyable Mach-O record type.
+/// @param data Base of the object-file bytes.
+/// @param size Total buffer size.
+/// @param offset Byte offset of the requested record.
+/// @return Copied record, or `std::nullopt` when the range is truncated.
 template <typename T>
 static std::optional<T> readAt(const uint8_t *data, size_t size, size_t offset) {
     if (offset > size || sizeof(T) > size - offset)
@@ -136,6 +157,9 @@ static std::optional<T> readAt(const uint8_t *data, size_t size, size_t offset) 
 /// @brief Copy @p s up to the first NUL or @p maxLen bytes (Mach-O fixed-name fields).
 /// @details Mach-O segment/section names occupy fixed 16-byte slots that are
 ///          NUL-padded; this helper trims to the actual logical length.
+/// @param s Fixed-width character field.
+/// @param maxLen Maximum field width.
+/// @return Logical string without trailing NUL padding.
 static std::string trimNul(const char *s, size_t maxLen) {
     size_t len = 0;
     while (len < maxLen && s[len] != '\0')
@@ -144,8 +168,13 @@ static std::string trimNul(const char *s, size_t maxLen) {
 }
 
 /// @brief Read a NUL-terminated string from a Mach-O LC_SYMTAB strtab.
-/// @return Empty string when the table is out of bounds, @p pos is past the end,
-///         or no NUL terminator is found before the end.
+/// @param data Base of the object-file bytes.
+/// @param size Total object-file size.
+/// @param off Byte offset of the string table.
+/// @param len String-table size.
+/// @param pos Offset of the requested string within the table.
+/// @return Decoded string, or `std::nullopt` for an invalid table/range or a
+///         missing terminator.
 static std::optional<std::string> readStringOpt(
     const uint8_t *data, size_t size, size_t off, size_t len, uint32_t pos) {
     if (!checkedRange(off, len, size) || pos >= len)
@@ -158,7 +187,13 @@ static std::optional<std::string> readStringOpt(
     return std::string(reinterpret_cast<const char *>(begin), static_cast<const char *>(nul));
 }
 
+/// @brief Splits a monolithic Mach-O text section at symbol-defined atom boundaries.
+/// @details Creates per-function sections, remaps symbol offsets and section
+///          indices, and redistributes relocations. Alternate-entry symbols do
+///          not introduce cuts because they remain inside their owning atom.
+/// @param obj Parsed object to rewrite in place.
 static void splitMachOTextSubsections(ObjFile &obj) {
+    /// @brief Maps a half-open range in an old section to its new section.
     struct Range {
         uint32_t oldSec = 0;
         uint32_t newSec = 0;
@@ -262,6 +297,7 @@ static void splitMachOTextSubsections(ObjFile &obj) {
             rangesByOldSec[range.oldSec].push_back(&range);
     }
 
+    /// Finds the split range containing an old section-relative offset.
     auto findRange = [&](uint32_t oldSec, size_t off) -> const Range * {
         if (oldSec >= rangesByOldSec.size())
             return nullptr;
@@ -269,6 +305,7 @@ static void splitMachOTextSubsections(ObjFile &obj) {
         if (sectionRanges.empty())
             return nullptr;
 
+        /// Locates the first range beginning after the requested offset.
         auto it = std::upper_bound(
             sectionRanges.begin(), sectionRanges.end(), off, [](size_t value, const Range *range) {
                 return value < range->start;
@@ -312,6 +349,9 @@ static void splitMachOTextSubsections(ObjFile &obj) {
 }
 
 /// @brief Sign-extend the low @p bits of @p value to a 64-bit signed integer.
+/// @param value Unsigned bit pattern containing the field.
+/// @param bits Width of the signed field.
+/// @return Sign-extended value.
 static int64_t signExtend(uint64_t value, unsigned bits) {
     const uint64_t signBit = uint64_t{1} << (bits - 1);
     const uint64_t mask = (uint64_t{1} << bits) - 1;
@@ -401,6 +441,7 @@ static bool extractMachOAddend(const uint8_t *sectionData,
     const size_t fieldSize = size_t{1} << relocLength;
     if (!checkedRange(offset, fieldSize, sectionSize))
         return false;
+    /// Converts Mach-O signed PC-relative inline values to relocation addends.
     auto normalizeX64Addend = [&](int64_t val) {
         switch (relocType) {
             case macho_x64::kSigned:
@@ -433,6 +474,17 @@ static bool extractMachOAddend(const uint8_t *sectionData,
     return true;
 }
 
+/// @brief Parses a Mach-O 64-bit relocatable object into the neutral linker model.
+/// @details Accepts x86-64 and AArch64 `MH_OBJECT` files, validates all load
+///          command/table ranges and resource limits, materializes sections,
+///          normalizes external names, decodes relocations, and optionally
+///          performs subsection splitting. The destination may be partial on failure.
+/// @param data Pointer to complete object-file bytes.
+/// @param size Size of @p data.
+/// @param name Display name used in diagnostics and stored in @p obj.
+/// @param obj Destination object representation.
+/// @param err Stream that receives the first hard parse diagnostic.
+/// @return `true` when the object is supported and fully parsed.
 bool readMachOObj(
     const uint8_t *data, size_t size, const std::string &name, ObjFile &obj, std::ostream &err) {
     const auto hdrValue = readAt<macho::mach_header_64>(data, size, 0);
@@ -929,6 +981,7 @@ bool readMachOObj(
 
         // Fix up relocation symbol indices from nlist indices to ObjFile indices.
         std::vector<uint32_t> sectionSymMap(machoSecMap.size(), 0);
+        /// Returns or synthesizes a local section symbol for a non-external relocation.
         auto sectionSymbolFor = [&](uint32_t machoSectionOrdinal) -> uint32_t {
             if (machoSectionOrdinal >= machoSecMap.size())
                 return 0;

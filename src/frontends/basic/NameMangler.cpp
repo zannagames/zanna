@@ -14,12 +14,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
-/// @brief Implements helpers that produce compiler-reserved BASIC identifiers.
-/// @details The mangler is isolated so semantic analysis and lowering can share
-///          a single policy for naming blocks and temporaries.  Keeping the
-///          implementation out-of-line documents the sequencing requirements for
-///          counters and hints without polluting the public header.
+/// @file NameMangler.cpp
+/// @brief Retains the historical BASIC NameMangler implementation.
+/// @details The public BASIC header currently aliases the common frontend
+///          mangler, whose interface supplies the same temporary and block
+///          naming operations together with collision and overflow handling.
 
 #include "frontends/basic/NameMangler.hpp"
 
@@ -30,6 +29,7 @@ namespace il::frontends::basic {
 /// increments `tempCounter` and appends the previous value to the prefix,
 /// yielding monotonically increasing, collision-free identifiers that remain
 /// deterministic across compiler runs.
+/// @return The next name in the sequence `%t0`, `%t1`, and so on.
 std::string NameMangler::nextTemp() {
     return "%t" + std::to_string(tempCounter++);
 }
@@ -41,6 +41,8 @@ std::string NameMangler::nextTemp() {
 /// subsequent request appends the current counter value, then increments the
 /// counter, ensuring unique yet recognizable labels across control-flow
 /// lowering passes.
+/// @param hint Base text used for the generated label.
+/// @return @p hint on its first use, then the hint with `1`, `2`, and so on appended.
 std::string NameMangler::block(const std::string &hint) {
     auto &count = blockCounters[hint];
     std::string name = hint;

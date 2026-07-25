@@ -22,6 +22,20 @@
 // all the information needed to execute a program: functions, constant pools,
 // native function references, and optional debug information.
 
+/**
+ * @file src/bytecode/BytecodeModule.hpp
+ * @brief Defines the owning in-memory representation of compiled bytecode.
+ *
+ * @details
+ * A module combines versioned header data, deduplicated constant pools,
+ * compiled functions, native-call references, global descriptors, and source
+ * metadata. Name-to-index maps accelerate lookup while vectors preserve the
+ * stable numeric indices encoded by bytecode instructions.
+ *
+ * Returned pointers and references into module vectors are borrowed and may be
+ * invalidated by later insertions. A module must outlive every VM executing it.
+ */
+
 #pragma once
 
 #include "bytecode/Bytecode.hpp"
@@ -52,6 +66,8 @@ namespace detail {
 /// @param value The value to find or add.
 /// @param eq    Equality comparison function.
 /// @return Index of the value in the pool (existing or newly appended).
+/// @throws std::length_error When a new entry would exceed 32-bit indexing.
+/// @throws std::bad_alloc If vector growth or element copying fails.
 template <typename T, typename Eq>
 inline uint32_t findOrAddToPool(std::vector<T> &pool, const T &value, Eq eq) {
     for (size_t i = 0; i < pool.size(); ++i) {
@@ -218,7 +234,10 @@ struct BytecodeModule {
 
     /// @brief Find a compiled function by its fully qualified name.
     /// @param name The function name to search for.
-    /// @return Pointer to the BytecodeFunction if found; nullptr otherwise.
+    /// @return Borrowed pointer to the indexed function when both map and vector
+    ///         entry agree with @p name; otherwise null.
+    /// @warning A non-null pointer may be invalidated by later function-vector
+    ///          reallocation.
     const BytecodeFunction *findFunction(const std::string &name) const {
         auto it = functionIndex.find(name);
         if (it != functionIndex.end() && it->second < functions.size() &&
@@ -230,7 +249,9 @@ struct BytecodeModule {
 
     /// @brief Add a compiled function to the module and update the name index.
     /// @param fn The BytecodeFunction to add (moved into the module).
-    /// @return The index of the newly added function in the functions vector.
+    /// @return Existing index for an already indexed matching name, or the index
+    ///         of the newly appended function.
+    /// @throws std::length_error When a new entry exceeds 32-bit indexing.
     uint32_t addFunction(BytecodeFunction fn) {
         auto existing = functionIndex.find(fn.name);
         if (existing != functionIndex.end() && existing->second < functions.size() &&
@@ -248,6 +269,7 @@ struct BytecodeModule {
     /// @brief Add a 64-bit integer constant to the pool, deduplicating by value.
     /// @param value The integer constant to add.
     /// @return The pool index of the (possibly pre-existing) constant.
+    /// @throws std::length_error When a new entry exceeds 32-bit indexing.
     uint32_t addI64(int64_t value) {
         return detail::findOrAddToPool(i64Pool, value, std::equal_to<int64_t>{});
     }
@@ -258,6 +280,7 @@ struct BytecodeModule {
     ///          representations are stored separately while +0.0 and -0.0 remain distinct.
     /// @param value The double constant to add.
     /// @return The pool index of the (possibly pre-existing) constant.
+    /// @throws std::length_error When a new entry exceeds 32-bit indexing.
     uint32_t addF64(double value) {
         auto bitwiseEq = [](double a, double b) {
             uint64_t pa = 0;
@@ -272,6 +295,7 @@ struct BytecodeModule {
     /// @brief Add a string constant to the pool, deduplicating by value.
     /// @param value The string constant to add.
     /// @return The pool index of the (possibly pre-existing) string.
+    /// @throws std::length_error When a new entry exceeds 32-bit indexing.
     uint32_t addString(const std::string &value) {
         return detail::findOrAddToPool(stringPool, value, std::equal_to<std::string>{});
     }
@@ -285,6 +309,9 @@ struct BytecodeModule {
     /// @param paramCount Number of parameters the function expects.
     /// @param hasReturn  True if the function returns a value.
     /// @return The index of the native function reference.
+    /// @throws std::length_error When a new entry exceeds 32-bit indexing.
+    /// @post A new record caches runtime descriptor/signature and string
+    ///       ownership traits when available.
     uint32_t addNativeFunc(const std::string &name, uint32_t paramCount, bool hasReturn) {
         const std::string key = detail::nativeFunctionKey(name, paramCount, hasReturn);
         auto it = nativeFuncIndex.find(key);
@@ -312,7 +339,9 @@ struct BytecodeModule {
 
     /// @brief Add a global variable descriptor, deduplicating by name.
     /// @param global The global descriptor to add.
-    /// @return The index of the global descriptor.
+    /// @return Existing index for an already indexed matching name, or the index
+    ///         of the newly appended descriptor.
+    /// @throws std::length_error When a new entry exceeds 32-bit indexing.
     uint32_t addGlobal(GlobalInfo global) {
         auto it = globalIndex.find(global.name);
         if (it != globalIndex.end() && it->second < globals.size() &&

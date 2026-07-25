@@ -1,0 +1,841 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/mechanics_probe.zia
+// Purpose: Deterministically verifies XENOSCAPE's ability and combat contracts.
+// Key invariants:
+//   - Locked traversal abilities cannot leak through Player reset or spawn.
+//   - Projectile and enemy trait tables remain independent of rendering state.
+// Ownership/Lifetime:
+//   - The probe owns short-lived gameplay objects for one process invocation.
+//   - No production save data or packaged asset is read or modified.
+// Links: player.zia, projectile.zia, enemy.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module mechanics_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "./abilities";
+bind "./camera_logic";
+bind "./combat_feedback";
+bind "./achievements";
+bind "./config";
+bind "./enemy";
+bind "./environment";
+bind "./level";
+bind "./physics";
+bind "./palette";
+bind "./player";
+bind "./player_animation";
+bind "./projectile";
+bind "./sound";
+bind "./world_state";
+
+/// @brief Emit one deterministic failure result for CTest consumption.
+///
+/// @param message Stable explanation of the violated gameplay contract.
+/// @return Nothing. The caller returns immediately after reporting failure.
+func fail(message: String) {
+    Terminal.Say("RESULT: fail " + message);
+}
+
+/// @brief Verify baseline traversal survives reset while later moves stay locked.
+///
+/// @return True when Wall Jump and Double Jump are initially available, reset
+///         preserves them, and later campaign abilities remain gated.
+func verifyAbilityGates() -> Boolean {
+    var p = new Player();
+    if p.canUseWallJump() == false {
+        fail("starting wall jump unavailable");
+        return false;
+    }
+    if p.canUseDoubleJump() == false {
+        fail("baseline double jump unavailable");
+        return false;
+    }
+
+    p.setAbilityMask(ABILITY_WALL_JUMP + ABILITY_DOUBLE_JUMP);
+    if p.canUseDoubleJump() == false {
+        fail("double jump unavailable after acquisition");
+        return false;
+    }
+    p.reset();
+    if p.canUseDoubleJump() == false {
+        fail("reset discarded synchronized ability mask");
+        return false;
+    }
+
+    // Player still obeys an explicitly supplied restricted mask. This keeps
+    // the low-level ability contract testable even though campaign profiles
+    // always supply both baseline movement bits.
+    p.setAbilityMask(ABILITY_WALL_JUMP);
+    p.spawn(64, 64);
+    if p.canUseDoubleJump() {
+        fail("spawn refunded a locked double jump");
+        return false;
+    }
+    if p.startDash() {
+        fail("dash activated while locked");
+        return false;
+    }
+    if p.startCharge() {
+        fail("charge shot activated while locked");
+        return false;
+    }
+    if p.startPound() {
+        fail("ground pound activated while locked");
+        return false;
+    }
+
+    p.setAbilityMask(ABILITY_WALL_JUMP + ABILITY_DASH +
+                     ABILITY_CHARGE_SHOT + ABILITY_GROUND_POUND);
+    if p.startDash() == false {
+        fail("dash unavailable after acquisition");
+        return false;
+    }
+    p.reset();
+    if p.startCharge() == false {
+        fail("charge shot unavailable after acquisition");
+        return false;
+    }
+    if p.startPound() == false {
+        fail("ground pound unavailable after acquisition");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Verify charge tiers map to the documented damage and wall power.
+///
+/// @return True when normal, partial, full, and out-of-range charge levels are
+///         clamped to the release-plan combat contract.
+func verifyProjectileTraits() -> Boolean {
+    if projectileDamageForCharge(0) != 1 {
+        fail("normal projectile damage");
+        return false;
+    }
+    if projectileDamageForCharge(1) != 2 {
+        fail("partial charge damage");
+        return false;
+    }
+    if projectileDamageForCharge(2) != 3 {
+        fail("full charge damage");
+        return false;
+    }
+    if projectileDamageForCharge(99) != 3 {
+        fail("charge damage upper clamp");
+        return false;
+    }
+    if projectileDestructiblePower(0) != 0 {
+        fail("normal projectile broke destructible");
+        return false;
+    }
+    if projectileDestructiblePower(1) != 1 {
+        fail("partial charge destructible power");
+        return false;
+    }
+    if projectileDestructiblePower(2) != 2 {
+        fail("full charge destructible power");
+        return false;
+    }
+
+    var shots = new ProjectilePool();
+    if shots.fireCharged(100, 100, 1, 2) == false {
+        fail("full charge projectile did not acquire a slot");
+        return false;
+    }
+    var handle = -1;
+    var i = 0;
+    while i < shots.getCount() {
+        if shots.isActive(i) == 1 { handle = i; }
+        i = i + 1;
+    }
+    if handle < 0 or shots.getChargeLevel(handle) != 2 {
+        fail("full charge projectile state");
+        return false;
+    }
+    if shots.isReflected(handle) {
+        fail("new projectile started reflected");
+        return false;
+    }
+    shots.reflectBullet(handle);
+    if shots.isReflected(handle) == false {
+        fail("projectile reflection state");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Verify representative enemy archetypes expose their authored traits.
+///
+/// @return True when projectile immunity, contact damage, score, death effect,
+///         and freeze status values match their gameplay descriptions.
+func verifyEnemyTraits() -> Boolean {
+    if enemyProjectileImmuneForType(ENEMY_MIRROR_SLIME) == false {
+        fail("mirror slime projectile immunity");
+        return false;
+    }
+    if enemyProjectileImmuneForType(ENEMY_PISTON_TRAP) == false {
+        fail("piston trap projectile immunity");
+        return false;
+    }
+    if enemyProjectileImmuneForType(ENEMY_SLIME) {
+        fail("ordinary slime projectile immunity");
+        return false;
+    }
+    if enemyContactDamageForType(ENEMY_MAGMA_CORE) != 3 {
+        fail("magma core contact damage");
+        return false;
+    }
+    if enemyScoreForType(ENEMY_ARCHITECT) != 10000 {
+        fail("architect score");
+        return false;
+    }
+    if enemyDisplayName(ENEMY_SPORE_MOTHER) != "Spore Mother" {
+        fail("spore mother display name");
+        return false;
+    }
+    if enemyDeathEffectForType(ENEMY_CRYSTAL_GOLEM) != 2 {
+        fail("crystal golem death effect");
+        return false;
+    }
+    if enemyFreezeDurationForType(ENEMY_ICE_WRAITH) != ICE_FREEZE_DURATION_MS {
+        fail("ice wraith freeze duration");
+        return false;
+    }
+    if enemyFreezeDurationForType(ENEMY_SLIME) != 0 {
+        fail("ordinary slime freeze status");
+        return false;
+    }
+    var regionalTypes: List[Integer] = [
+        ENEMY_BEACON_WARDEN, ENEMY_RELAY_CUSTODIAN,
+        ENEMY_TIDE_LEVIATHAN, ENEMY_VERDANT_COLOSSUS,
+        ENEMY_CRYO_CUSTODIAN, ENEMY_NULL_HARVESTER
+    ];
+    var regionalNames: List[String] = [
+        "Beacon Warden", "Relay Custodian", "Tide Leviathan",
+        "Verdant Colossus", "Cryo Custodian", "Null Harvester"
+    ];
+    var regional = 0;
+    while regional < regionalTypes.length() {
+        var regionalType: Integer = regionalTypes.get(regional);
+        if isRegionalClimaxBoss(regionalType) == false or
+           enemyDisplayName(regionalType) != regionalNames.get(regional) or
+           regionalClimaxHp(regionalType) <= 0 or
+           regionalClimaxSpeed(regionalType) <= 0 or
+           enemyScoreForType(regionalType) <= 0 or
+           enemyContactDamageForType(regionalType) != 2 {
+            fail("regional climax trait " + Int(regional));
+            return false;
+        }
+        regional = regional + 1;
+    }
+    return true;
+}
+
+/// @brief Verify destructible walls track durability and restore on level load.
+///
+/// @return True when normal shots are ignored, two partial hits or one full hit
+///         break a wall, horizontal projectile tracing finds the first wall, and
+///         rebuilding the level restores authored durability.
+func verifyDestructibleTiles() -> Boolean {
+    var lvl = new Level();
+    lvl.loadLevel(10);
+    if lvl.getTile(55, 12) != TILE_DESTRUCTIBLE {
+        fail("core destructible fixture missing");
+        return false;
+    }
+    if lvl.getDestructibleDurability(55, 12) != 2 {
+        fail("destructible initial durability");
+        return false;
+    }
+    if lvl.damageDestructible(55, 12, 0) != 0 {
+        fail("normal shot damaged destructible");
+        return false;
+    }
+    if lvl.damageDestructible(55, 12, 1) != 1 {
+        fail("partial charge did not damage destructible");
+        return false;
+    }
+    if lvl.getDestructibleDurability(55, 12) != 1 {
+        fail("destructible durability did not decrement");
+        return false;
+    }
+    if lvl.damageDestructible(55, 12, 1) != 2 {
+        fail("second partial charge did not break destructible");
+        return false;
+    }
+    if lvl.getTile(55, 12) != TILE_EMPTY {
+        fail("broken destructible remained solid");
+        return false;
+    }
+
+    lvl.loadLevel(10);
+    if lvl.getDestructibleDurability(55, 12) != 2 {
+        fail("level reload did not restore destructible");
+        return false;
+    }
+    var startX = 54 * TILE_SIZE;
+    var endX = 56 * TILE_SIZE;
+    var hitY = 12 * TILE_SIZE + TILE_SIZE / 2;
+    if lvl.damageFirstDestructibleHorizontal(startX, endX, hitY, 2) != 2 {
+        fail("horizontal full charge did not break first wall");
+        return false;
+    }
+    lvl.loadLevel(10);
+    if lvl.damageDestructibleAtWorld(55 * TILE_SIZE + TILE_SIZE / 2,
+                                     12 * TILE_SIZE + TILE_SIZE / 2,
+                                     2) != 2 {
+        fail("ground-pound world sample did not break floor");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Verify exact dynamic-surface tuning and contact-transition rules.
+///
+/// The probe covers pure ice, quicksand, conveyor, steam, and one-way mappings;
+/// exercises the collision solver from above, below, and during drop-through;
+/// and proves crumble contact interruption, break timing, and regeneration.
+///
+/// @return True when every documented environmental contract holds.
+func verifyEnvironmentalMechanics() -> Boolean {
+    if environmentalGroundDeceleration(false) != PLAYER_DECEL {
+        fail("ordinary ground deceleration");
+        return false;
+    }
+    if environmentalGroundDeceleration(true) != PLAYER_DECEL * 25 / 100 {
+        fail("ice deceleration is not 25 percent");
+        return false;
+    }
+    if environmentalMaxSpeed(true, false) !=
+       PLAYER_SPEED * QUICKSAND_SPEED_PERCENT / 100 {
+        fail("quicksand walk cap");
+        return false;
+    }
+    if environmentalJumpImpulse(true) !=
+       PLAYER_JUMP * QUICKSAND_JUMP_PERCENT / 100 {
+        fail("quicksand jump impulse");
+        return false;
+    }
+    if environmentalConveyorVelocity(0, 1, DT_BASE) != CONVEYOR_PUSH {
+        fail("conveyor baseline push");
+        return false;
+    }
+    if environmentalConveyorVelocity(CONVEYOR_MAX_SPEED, 1, DT_BASE * 4) !=
+       CONVEYOR_MAX_SPEED {
+        fail("conveyor positive clamp");
+        return false;
+    }
+    if environmentalShouldLaunchSteam(true, false, 0) == false or
+       environmentalShouldLaunchSteam(true, true, 0) or
+       environmentalShouldLaunchSteam(true, false, 1) {
+        fail("steam contact-entry cooldown");
+        return false;
+    }
+
+    var tileTop = 10 * TILE_SIZE * 100;
+    if environmentalOneWayBlocks(tileTop, tileTop + 100,
+                                 tileTop, false) == false {
+        fail("one-way downward crossing");
+        return false;
+    }
+    if environmentalOneWayBlocks(tileTop, tileTop + 100,
+                                 tileTop, true) {
+        fail("one-way drop-through suppression");
+        return false;
+    }
+    if environmentalOneWayBlocks(tileTop + 100, tileTop - 100,
+                                 tileTop, false) {
+        fail("one-way upward pass");
+        return false;
+    }
+
+    var lvl = new Level();
+    lvl.loadLevel(1);
+    lvl.tilemap.SetTile(10, 10, TILE_ONE_WAY);
+    var phys = new PhysicsHelper();
+    var bodyH = 10;
+    var startY = tileTop - bodyH * 100;
+    var landing = phys.movePlayerAndCollide(
+        10 * TILE_SIZE * 100, startY, 0, 200,
+        8, bodyH, lvl, false);
+    if landing.hitFloor == false or landing.y != startY {
+        fail("one-way collision from above");
+        return false;
+    }
+    var dropping = phys.movePlayerAndCollide(
+        10 * TILE_SIZE * 100, startY, 0, 200,
+        8, bodyH, lvl, true);
+    if dropping.hitFloor or dropping.y != startY + 200 {
+        fail("one-way collision during drop window");
+        return false;
+    }
+    var rising = phys.movePlayerAndCollide(
+        10 * TILE_SIZE * 100, tileTop + 100, 0, -200,
+        8, bodyH, lvl, false);
+    if rising.hitCeiling or rising.y != tileTop - 100 {
+        fail("one-way pass from below");
+        return false;
+    }
+
+    lvl.tilemap.SetTile(9, 10, TILE_EMPTY);
+    lvl.tilemap.SetTile(10, 10, TILE_GROUND);
+    lvl.tilemap.SetTile(11, 10, TILE_EMPTY);
+    var cornerStartX = 10 * TILE_SIZE * 100 - 1900;
+    var cornerStartY = 11 * TILE_SIZE * 100 + 100;
+    var corrected = phys.movePlayerAndCollide(
+        cornerStartX, cornerStartY, 0, -200,
+        20, 20, lvl, false);
+    if corrected.hitCeiling or corrected.x != cornerStartX - 100 or
+       corrected.y != cornerStartY - 200 {
+        fail("six-pixel upward corner correction");
+        return false;
+    }
+    var excessiveStartX = 10 * TILE_SIZE * 100 - 1300;
+    var blockedCorner = phys.movePlayerAndCollide(
+        excessiveStartX, cornerStartY, 0, -200,
+        20, 20, lvl, false);
+    if blockedCorner.hitCeiling == false or
+       blockedCorner.x != excessiveStartX {
+        fail("corner correction exceeded six pixels");
+        return false;
+    }
+
+    lvl.tilemap.SetTile(12, 10, TILE_CRUMBLE);
+    if lvl.touchCrumble(12, 10, 200) != 1 {
+        fail("crumble initial contact");
+        return false;
+    }
+    lvl.updateDynamicTiles(DT_BASE);
+    lvl.updateDynamicTiles(DT_BASE);
+    if lvl.getCrumbleContactMs(12, 10) != 0 {
+        fail("crumble interrupted contact reset");
+        return false;
+    }
+    if lvl.touchCrumble(12, 10, CRUMBLE_CONTACT_MS - 1) != 1 {
+        fail("crumble warning threshold");
+        return false;
+    }
+    lvl.updateDynamicTiles(DT_BASE);
+    if lvl.touchCrumble(12, 10, 1) != 2 or
+       lvl.getTile(12, 10) != TILE_EMPTY {
+        fail("crumble break threshold");
+        return false;
+    }
+    if lvl.getCrumbleRegenMs(12, 10) != CRUMBLE_REGEN_MS {
+        fail("crumble regeneration timer start");
+        return false;
+    }
+    if lvl.updateDynamicTiles(CRUMBLE_REGEN_MS - 1) != 0 or
+       lvl.getTile(12, 10) != TILE_EMPTY {
+        fail("crumble regenerated early");
+        return false;
+    }
+    if lvl.updateDynamicTiles(1) != 1 or
+       lvl.getTile(12, 10) != TILE_CRUMBLE {
+        fail("crumble regeneration completion");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Verify persistent authored interaction state and level projection.
+///
+/// @return True when keys remain owned after opening, switches toggle, shrines
+///         and pad discovery are idempotent, travel requires two discovered
+///         endpoints, and Level applies switch/door masks to authored tiles.
+func verifyWorldInteractionState() -> Boolean {
+    var state = new WorldState();
+    if state.tryOpenDoor(0) != 0 {
+        fail("door opened without matching key");
+        return false;
+    }
+    if state.collectKey(0) == false or state.collectKey(0) {
+        fail("key acquisition idempotence");
+        return false;
+    }
+    if state.tryOpenDoor(0) != 1 or state.tryOpenDoor(0) != 2 or
+       state.hasKey(0) == false {
+        fail("door permanence or key consumption");
+        return false;
+    }
+    if state.toggleSwitch(0) == false or state.isSwitchOn(0) == false or
+       state.toggleSwitch(0) or state.isSwitchOn(0) {
+        fail("persistent switch toggle");
+        return false;
+    }
+    if state.consumeShrine(0) == false or state.consumeShrine(0) {
+        fail("shrine consumption idempotence");
+        return false;
+    }
+    if state.discoverTeleporter(1) == false or
+       state.findTeleporterDestination(1) != -1 {
+        fail("single teleporter destination gate");
+        return false;
+    }
+    state.discoverTeleporter(0);
+    if state.findTeleporterDestination(1) != 0 {
+        fail("discovered teleporter destination");
+        return false;
+    }
+
+    var lvl = new Level();
+    lvl.loadLevel(1);
+    var switchRecord = -1;
+    var targetRecord = -1;
+    var doorRecord = -1;
+    var i = 0;
+    while i < lvl.interactionTypes.length() {
+        var kind = lvl.interactionTypes.get(i);
+        if kind == INTERACTION_SWITCH { switchRecord = i; }
+        if kind == INTERACTION_SWITCH_TARGET { targetRecord = i; }
+        if kind == INTERACTION_LOCKED_DOOR { doorRecord = i; }
+        i = i + 1;
+    }
+    if switchRecord < 0 or targetRecord < 0 or doorRecord < 0 {
+        fail("release interaction records missing");
+        return false;
+    }
+    var sx = lvl.interactionCols.get(switchRecord) * TILE_SIZE + TILE_SIZE / 2;
+    var sy = lvl.interactionRows.get(switchRecord) * TILE_SIZE + TILE_SIZE / 2;
+    if lvl.findNearbyInteraction(INTERACTION_SWITCH, sx, sy, 0) != switchRecord {
+        fail("stable nearby interaction lookup");
+        return false;
+    }
+
+    lvl.applyPersistentInteractionState(0, 0, 0);
+    if lvl.getTile(lvl.interactionCols.get(targetRecord),
+                   lvl.interactionRows.get(targetRecord)) != TILE_EMPTY {
+        fail("switch target default state");
+        return false;
+    }
+    var channel = lvl.interactionChannels.get(targetRecord);
+    lvl.applyPersistentInteractionState(worldStateBit(channel),
+                                        worldStateBit(0), 0);
+    if lvl.getTile(lvl.interactionCols.get(targetRecord),
+                   lvl.interactionRows.get(targetRecord)) != TILE_HOLO_BRIDGE {
+        fail("switch target enabled state");
+        return false;
+    }
+    if lvl.getTile(lvl.interactionCols.get(doorRecord),
+                   lvl.interactionRows.get(doorRecord)) != TILE_EMPTY {
+        fail("opened door tile projection");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Verify formerly unreachable pacifist and true-ending event hooks.
+///
+/// @return True when negative pacifist cases remain locked and the exact
+///         positive events idempotently unlock achievement indices 29 and 31.
+func verifyEndingAchievementHooks() -> Boolean {
+    var pal = new Palette();
+    var achievements = new AchievementSystem();
+    achievements.initAchievements(pal);
+    achievements.onPacifistLevelComplete(2, 0);
+    achievements.onPacifistLevelComplete(1, 1);
+    if achievements.isUnlocked(29) {
+        fail("pacifist unlocked for invalid completion");
+        return false;
+    }
+    achievements.onPacifistLevelComplete(1, 0);
+    if achievements.isUnlocked(29) == false {
+        fail("pacifist event hook");
+        return false;
+    }
+    if achievements.isUnlocked(31) {
+        fail("true ending unlocked early");
+        return false;
+    }
+    achievements.onTrueEnding();
+    achievements.onTrueEnding();
+    if achievements.isUnlocked(31) == false {
+        fail("true ending event hook");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Drive every advertised achievement through its production event hook.
+///
+/// This reachability sweep deliberately uses ordinary threshold calls instead of
+/// setting the final mask. It therefore catches missing bullet, jump, dash,
+/// pound, collection, boss, pacifist, ability, lore, and ending dispatch paths.
+/// The freshly allocated tracker is cleared first so no prior process-local state
+/// can conceal a missing unlock.
+///
+/// @return True only when all 32 stable achievement indices become unlocked.
+func verifyAllAchievementHooks() -> Boolean {
+    var pal = new Palette();
+    var achievements = new AchievementSystem();
+    achievements.initAchievements(pal);
+    achievements.setMask(0);
+
+    achievements.onLevelReached(10);
+    var i = 0;
+    while i < 500 {
+        achievements.onEnemyKilled();
+        i = i + 1;
+    }
+    i = 0;
+    while i < 200 {
+        achievements.onBulletFired();
+        i = i + 1;
+    }
+    i = 0;
+    while i < 50 {
+        achievements.onDashUsed();
+        i = i + 1;
+    }
+    i = 0;
+    while i < 25 {
+        achievements.onPoundUsed();
+        i = i + 1;
+    }
+    achievements.onJump();
+
+    achievements.onBossDefeated(ENEMY_SPORE_MOTHER);
+    achievements.onBossDefeated(ENEMY_CRYSTAL_WYRM);
+    achievements.onBossDefeated(ENEMY_MAGMA_CORE);
+    achievements.onBossDefeated(ENEMY_ARCHITECT);
+
+    i = 0;
+    while i < 500 {
+        achievements.onCoinCollected();
+        i = i + 1;
+    }
+    i = 0;
+    while i < 100 {
+        achievements.onGemCollected();
+        i = i + 1;
+    }
+    achievements.onLoreFound(10);
+    achievements.onAllLore();
+    achievements.onLevelComplete(29000, 0);
+    achievements.onAllAbilities();
+    achievements.onPacifistLevelComplete(1, 0);
+    i = 0;
+    while i < 10 {
+        achievements.onPlayerDeath();
+        i = i + 1;
+    }
+    achievements.onTrueEnding();
+
+    i = 0;
+    while i < ACH_COUNT {
+        if achievements.isUnlocked(i) == false {
+            fail("unreachable achievement index " + Int(i));
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// @brief Verify radial ground-pound stagger and environmental immunity.
+///
+/// @return True when a nearby ordinary enemy receives the full stagger timer
+///         while an equally near piston trap remains unaffected.
+func verifyGroundPoundStagger() -> Boolean {
+    var enemies = new EnemyManager();
+    enemies.spawnEnemy(ENEMY_SLIME, 100, 100);
+    enemies.spawnEnemy(ENEMY_PISTON_TRAP, 110, 100);
+    if enemies.staggerInRadius(120, 120, GROUND_POUND_RADIUS,
+                               GROUND_POUND_STAGGER_MS) != 1 {
+        fail("ground-pound stagger affected count");
+        return false;
+    }
+    if enemies.getStaggerRemaining(0) != GROUND_POUND_STAGGER_MS or
+       enemies.getStaggerRemaining(1) != 0 {
+        fail("ground-pound stagger state or piston immunity");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Verify deterministic grapple acquisition, ownership, and release caps.
+///
+/// @return True when integer distance helpers are exact, locked use is rejected,
+///         an authored line-of-sight anchor attaches within range, duplicate
+///         attach is rejected, and release retains direction within safety caps.
+func verifyGrappleMechanics() -> Boolean {
+    if environmentalIntegerSqrt(0) != 0 or
+       environmentalIntegerSqrt(15) != 3 or
+       environmentalIntegerSqrt(16) != 4 {
+        fail("grapple deterministic distance");
+        return false;
+    }
+    if environmentalClampGrappleVelocity(5000) !=
+       GRAPPLE_RELEASE_MAX_SPEED or
+       environmentalClampGrappleVelocity(-5000) !=
+       0 - GRAPPLE_RELEASE_MAX_SPEED {
+        fail("grapple release velocity clamp");
+        return false;
+    }
+
+    var lvl = new Level();
+    lvl.loadLevel(7);
+    var key = -1;
+    var row = 0;
+    while row < lvl.levelHeight and key < 0 {
+        var col = 0;
+        while col < lvl.levelWidth and key < 0 {
+            if lvl.getTile(col, row) == TILE_GRAPPLE_ANCHOR {
+                key = col + row * lvl.levelWidth;
+            }
+            col = col + 1;
+        }
+        row = row + 1;
+    }
+    if key < 0 {
+        fail("authored grapple anchor lookup");
+        return false;
+    }
+    var anchorX = (key % lvl.levelWidth) * TILE_SIZE + TILE_SIZE / 2;
+    var anchorY = (key / lvl.levelWidth) * TILE_SIZE + TILE_SIZE / 2;
+    var player = new Player();
+    player.x = (anchorX - PLAYER_W / 2) * 100;
+    player.y = (anchorY + 100 - PLAYER_H / 2) * 100;
+    player.setAbilityMask(ABILITY_WALL_JUMP);
+    if player.startGrapple(lvl) {
+        fail("locked grapple activated");
+        return false;
+    }
+    player.setAbilityMask(63);
+    if player.startGrapple(lvl) == false or player.startGrapple(lvl) {
+        fail("grapple attach or duplicate gate");
+        return false;
+    }
+    if player.getGrappleAnchorX() != anchorX or
+       player.getGrappleAnchorY() != anchorY or
+       player.getGrappleRopeLength() > GRAPPLE_MAX_ROPE_LENGTH {
+        fail("grapple anchor or rope state");
+        return false;
+    }
+    player.vx = 5000;
+    player.vy = -5000;
+    if player.releaseGrapple() == false or
+       player.vx != GRAPPLE_RELEASE_MAX_SPEED or
+       player.vy != 0 - GRAPPLE_RELEASE_MAX_SPEED {
+        fail("grapple momentum-preserving release");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Verify boss phase changes expose a readable simulation lockout event.
+///
+/// @return True when crossing the generic boss's first HP threshold raises one
+///         phase event and arms at least the documented 500 ms transition timer.
+func verifyBossPhaseTransition() -> Boolean {
+    var pal = new Palette();
+    var particles = new ParticleSystem(pal);
+    var lvl = new Level();
+    lvl.loadLevel(1);
+    var enemies = new EnemyManager();
+    enemies.spawnEnemy(ENEMY_BOSS, lvl.playerStartX + 200,
+                       lvl.playerStartY);
+    enemies.damageEnemy(0, BOSS_HP / 2);
+    enemies.updateAll(lvl, lvl.playerStartX, lvl.playerStartY,
+                      HURT_TIMER_MS, particles);
+    if enemies.didBossPhaseChange() == false or enemies.bossPhase != 1 or
+       enemies.getBossPhaseTransitionTimer() < 500 {
+        fail("boss phase transition event or lockout");
+        return false;
+    }
+    enemies.updateAll(lvl, lvl.playerStartX, lvl.playerStartY,
+                      DT_BASE, particles);
+    if enemies.didBossPhaseChange() {
+        fail("boss phase transition event repeated");
+        return false;
+    }
+    var shooter = new EnemyManager();
+    shooter.spawnEnemy(ENEMY_BOSS, lvl.playerStartX + 200,
+                       lvl.playerStartY);
+    shooter.updateAll(lvl, lvl.playerStartX, lvl.playerStartY,
+                      BOSS_SHOOT0_MS, particles);
+    if shooter.didFireEnemyProjectile() == false {
+        fail("enemy projectile tell event missing");
+        return false;
+    }
+    shooter.updateAll(lvl, lvl.playerStartX, lvl.playerStartY,
+                      DT_BASE, particles);
+    if shooter.didFireEnemyProjectile() {
+        fail("enemy projectile tell event repeated");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Run the deterministic mechanics contract probe.
+///
+/// @return Nothing. Prints `RESULT: ok` only when every contract passes.
+func main() {
+    if cameraLookAheadTarget(PLAYER_SPEED, false) != 160 or
+       cameraLookAheadTarget(0 - PLAYER_SPEED, false) != -160 or
+       cameraLookAheadTarget(PLAYER_SPEED * 3, false) != 160 or
+       cameraLookAheadTarget(PLAYER_SPEED, true) != 0 or
+       cameraVerticalIntentTarget(-1, 249, false) != 0 or
+       cameraVerticalIntentTarget(-1, 250, false) != -96 or
+       cameraVerticalIntentTarget(1, 250, false) != 96 or
+       cameraVerticalIntentTarget(1, 500, true) != 0 or
+       approachCameraOffset(0, 160, 16, 96) <= 0 or
+       approachCameraOffset(159, 160, 16, 96) != 160 {
+        fail("camera intent contract"); return;
+    }
+    if advanceWallContactTimer(50, true, 29) != 79 or
+       wallSlideReady(79) or
+       advanceWallContactTimer(79, true, 1) != 80 or
+       wallSlideReady(80) == false or
+       advanceWallContactTimer(80, true, 500) != 80 or
+       advanceWallContactTimer(80, false, 16) != 0 {
+        fail("wall-stick grace contract"); return;
+    }
+    if killHitStopDurationMs(0) != 35 or
+       killHitStopDurationMs(1) != 60 or
+       killHitStopDurationMs(2) != 60 or
+       bossPhaseHitStopDurationMs() != 100 {
+        fail("hit-stop timing contract"); return;
+    }
+    if playerAnimationFrameCount(PLAYER_ANIM_RUN) != 6 or
+       playerAnimationFrameCount(PLAYER_ANIM_TURN) != 3 or
+       playerAnimationFrameCount(PLAYER_ANIM_LAND) != 4 or
+       playerAnimationFrameCount(PLAYER_ANIM_SHOOT) != 4 or
+       playerAnimationFrameCount(PLAYER_ANIM_CHARGE) < 2 or
+       playerAnimationFrameCount(PLAYER_ANIM_DASH) < 1 or
+       playerAnimationFrameCount(PLAYER_ANIM_GRAPPLE) < 1 or
+       playerAnimationFrameCount(PLAYER_ANIM_POUND) < 1 or
+       playerAnimationFrameCount(PLAYER_ANIM_HURT) < 1 or
+       playerAnimationFrameCount(PLAYER_ANIM_DEATH) < 1 or
+       playerAnimationFrameCount(PLAYER_ANIM_ACQUIRE) < 1 or
+       playerSheetFrame(PLAYER_ANIM_ACQUIRE, 99) != 40 or
+       playerTimedAnimationFrame(0, 100, 4) != 3 {
+        fail("release player animation minimums"); return;
+    }
+    if footstepIdentityForTile(TILE_JUNGLE_GROUND) != FOOTSTEP_SOFT or
+       footstepIdentityForTile(TILE_HULL_PLATE) != FOOTSTEP_METAL or
+       footstepIdentityForTile(TILE_ICE_FLOOR) != FOOTSTEP_CRYSTAL or
+       footstepIdentityForTile(TILE_OBSIDIAN) != FOOTSTEP_HEAVY {
+        fail("surface-specific footstep mapping"); return;
+    }
+    if verifyAbilityGates() == false { return; }
+    if verifyProjectileTraits() == false { return; }
+    if verifyEnemyTraits() == false { return; }
+    if verifyDestructibleTiles() == false { return; }
+    if verifyEnvironmentalMechanics() == false { return; }
+    if verifyWorldInteractionState() == false { return; }
+    if verifyEndingAchievementHooks() == false { return; }
+    if verifyAllAchievementHooks() == false { return; }
+    if verifyGroundPoundStagger() == false { return; }
+    if verifyGrappleMechanics() == false { return; }
+    if verifyBossPhaseTransition() == false { return; }
+    Terminal.Say("RESULT: ok");
+}

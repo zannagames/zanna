@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/FrameLayoutUtils.hpp
+// File: src/codegen/common/FrameLayoutUtils.hpp
 // Purpose: Shared helpers for stack-slot allocation and frame-size alignment.
 //
 //===----------------------------------------------------------------------===//
@@ -17,11 +17,17 @@
 #include <limits>
 #include <stdexcept>
 
+/// @file
+/// @brief Provides validated alignment and downward-frame cursor utilities.
+
 namespace zanna::codegen::common {
 
 /// @brief Round @p value up to the next multiple of @p align.
 /// @details Performs always-on validation so release builds do not divide by
 ///          zero or overflow when frame sizes become unexpectedly large.
+/// @param value Nonnegative byte count to align.
+/// @param align Positive byte alignment; need not be a power of two.
+/// @return Smallest multiple of @p align not less than @p value.
 /// @throws std::invalid_argument if @p value is negative or @p align is not positive.
 /// @throws std::overflow_error if the rounded value exceeds int range.
 [[nodiscard]] inline int roundUpBytes(int value, int align) {
@@ -41,6 +47,9 @@ namespace zanna::codegen::common {
 /// @brief Round @p value up to the next multiple of @p align.
 /// @details Performs always-on validation so release builds do not divide by
 ///          zero or overflow when frame sizes become unexpectedly large.
+/// @param value Byte count to align.
+/// @param align Positive byte alignment; need not be a power of two.
+/// @return Smallest multiple of @p align not less than @p value.
 /// @throws std::invalid_argument if @p align is zero.
 /// @throws std::overflow_error if the rounded value exceeds size_t range.
 [[nodiscard]] inline std::size_t roundUpBytes(std::size_t value, std::size_t align) {
@@ -58,6 +67,9 @@ namespace zanna::codegen::common {
 /// @brief Convert a byte count into fixed-size stack slots.
 /// @details A zero byte count still reserves one slot, matching the previous
 ///          alloca behavior. Negative sizes and invalid slot widths are rejected.
+/// @param bytes Requested object size in bytes.
+/// @param slotBytes Positive fixed slot width.
+/// @return Number of slots needed after rounding; at least one.
 /// @throws std::invalid_argument if @p bytes is negative or @p slotBytes is not positive.
 [[nodiscard]] inline int bytesToSlots(int bytes, int slotBytes) {
     if (bytes < 0)
@@ -80,10 +92,15 @@ struct DownwardFrameSlot {
 /// slot, which is the correct base pointer for stack-allocated objects.
 class DownwardFrameCursor {
   public:
+    /// @brief Construct an empty downward-growing cursor.
+    /// @param minSlotBytes Minimum reservation made for any allocation; values
+    ///                     below one are clamped to one.
     explicit DownwardFrameCursor(int minSlotBytes = 1) noexcept
         : minSlotBytes_(std::max(1, minSlotBytes)) {}
 
     /// @brief Seed the cursor from an already-assigned negative slot offset.
+    /// @param offset Frame-pointer-relative offset. Nonnegative values are ignored.
+    /// @post The reserved byte count never decreases.
     void seedFromOffset(int offset) noexcept {
         if (offset < 0)
             usedBytes_ = std::max(usedBytes_, -offset);
@@ -93,6 +110,9 @@ class DownwardFrameCursor {
     /// @details Rounds the current cursor up to @p alignBytes and advances by
     ///          max(minSlotBytes, sizeBytes), checking for invalid sizes and
     ///          signed overflow before publishing the new offset.
+    /// @param sizeBytes Requested payload size.
+    /// @param alignBytes Positive start alignment.
+    /// @return Negative base offset and actual reserved payload bytes.
     /// @throws std::invalid_argument if @p sizeBytes is negative or @p alignBytes is not positive.
     /// @throws std::overflow_error if the frame offset exceeds int range.
     [[nodiscard]] DownwardFrameSlot allocate(int sizeBytes, int alignBytes) {
@@ -109,12 +129,16 @@ class DownwardFrameCursor {
     }
 
     /// @brief Return the total bytes reserved so far.
+    /// @return Monotonically nondecreasing cursor distance from the frame pointer.
     [[nodiscard]] int usedBytes() const noexcept {
         return usedBytes_;
     }
 
   private:
+    /// Current distance below the frame pointer.
     int usedBytes_{0};
+
+    /// Minimum payload reservation per allocation.
     int minSlotBytes_{1};
 };
 

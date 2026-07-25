@@ -6,14 +6,22 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/frontends/basic/IoStatementLowerer.cpp
-// Purpose: Implementation of I/O statement lowering extracted from Lowerer.
+// Purpose: Implement I/O statement lowering extracted from Lowerer.
 //          Handles lowering of BASIC terminal and file I/O statements to IL
 //          and runtime helper calls.
 // Key invariants: Maintains Lowerer's I/O lowering semantics exactly
 // Ownership/Lifetime: Borrows Lowerer reference; coordinates with parent
-// Links: docs/internals/codemap.md
+// Links: src/frontends/basic/IoStatementLowerer.hpp,
+//        src/frontends/basic/Lowerer.hpp,
+//        src/frontends/basic/RuntimeCallHelpers.hpp,
+//        src/frontends/basic/RuntimeNames.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file IoStatementLowerer.cpp
+ * @brief Implements BASIC terminal, channel, and record I/O lowering.
+ */
 
 #include "IoStatementLowerer.hpp"
 #include "Lowerer.hpp"
@@ -75,13 +83,15 @@ using Value = il::core::Value;
 using Opcode = il::core::Opcode;
 using PrintChArgString = Lowerer::PrintChArgString;
 
-// Forward declarations of file-local helper functions
+/// Convert one already-lowered PRINT#/WRITE# argument to an owned/runtime string.
 PrintChArgString lowerPrintChArgToString(IoStatementLowerer &self,
                                          const Expr &expr,
                                          Lowerer::RVal value,
                                          bool quoteStrings);
+/// Build the single comma-delimited string emitted by WRITE#.
 Value buildPrintChWriteRecord(IoStatementLowerer &self, const PrintChStmt &stmt);
 
+/// @copydoc IoStatementLowerer::IoStatementLowerer()
 IoStatementLowerer::IoStatementLowerer(Lowerer &lowerer) : lowerer_(lowerer) {}
 
 /// @brief Lower an OPEN statement to the runtime helper sequence.
@@ -158,6 +168,7 @@ void IoStatementLowerer::lowerPrint(const PrintStmt &stmt) {
     std::size_t column = 1;
     bool columnKnown = true;
 
+    /// Advance the compile-time column estimate or mark it unknown.
     auto updateColumn = [&](std::optional<std::size_t> width) {
         if (!columnKnown)
             return;
@@ -167,6 +178,7 @@ void IoStatementLowerer::lowerPrint(const PrintStmt &stmt) {
             columnKnown = false;
     };
 
+    /// Reset local column accounting after an emitted newline.
     auto resetColumn = [&]() {
         column = 1;
         columnKnown = true;
@@ -267,6 +279,7 @@ void IoStatementLowerer::lowerPrint(const PrintStmt &stmt) {
 ///          The helper returns both the lowered string and the runtime feature
 ///          that must be requested for linking.
 ///
+/// @param self I/O lowering helper whose borrowed Lowerer emits conversions.
 /// @param expr AST expression being lowered.
 /// @param value Result of lowering the expression.
 /// @param quoteStrings Whether string arguments should be quoted for CSV mode.
@@ -289,6 +302,7 @@ PrintChArgString lowerPrintChArgToString(IoStatementLowerer &self,
     const char *runtime = nullptr;
     il::runtime::RuntimeFeature feature = il::runtime::RuntimeFeature::StrFromDouble;
 
+    /// Coerce an integer-like value to i64, then emit checked narrowing.
     auto narrowInteger = [&](IlType::Kind target) {
         value = self.lowerer_.ensureI64(std::move(value), expr.loc);
         int bits = 64;
@@ -345,6 +359,7 @@ PrintChArgString lowerPrintChArgToString(IoStatementLowerer &self,
 ///          helper.  When no arguments are present the helper returns an empty
 ///          string literal handle.
 ///
+/// @param self I/O lowering helper whose context receives the record IL.
 /// @param stmt Parsed PRINT# statement describing the arguments.
 /// @return Runtime string handle suitable for writing.
 Value buildPrintChWriteRecord(IoStatementLowerer &self, const PrintChStmt &stmt) {
@@ -387,8 +402,9 @@ Value buildPrintChWriteRecord(IoStatementLowerer &self, const PrintChStmt &stmt)
 ///
 /// @details Normalises the channel, determines whether the statement is WRITE
 ///          (which aggregates arguments) or PRINT (which streams them
-///          individually), and emits calls to `rt_println_ch_err`.  Each call is
-///          wrapped in runtime error checking.
+///          individually), and emits `rt_write_ch_err` or
+///          `rt_println_ch_err` as required. Each call is wrapped in runtime
+///          error checking.
 ///
 /// @param stmt Parsed PRINT#/WRITE# statement.
 void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
@@ -451,6 +467,7 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
     }
 
     if (stmt.trailingNewline) {
+        /// Detect whether any sparse argument slot produced output.
         auto hasPrintedArg = std::any_of(stmt.args.begin(), stmt.args.end(), [](const auto &expr) {
             return static_cast<bool>(expr);
         });
@@ -467,10 +484,11 @@ void IoStatementLowerer::lowerPrintCh(const PrintChStmt &stmt) {
 
 /// @brief Lower an INPUT statement that reads from the console.
 ///
-/// @details Optionally prints the prompt, reads a line from the runtime, splits
-///          fields when multiple variables are present, and stores each field
-///          into the appropriate slot with type-specific conversions and string
-///          release management.
+/// @details Prints the prompt only when it is a StringExpr literal, reads a line
+///          from the runtime, splits fields when multiple variables are present,
+///          and stores each field into the appropriate slot with type-specific
+///          conversions and string release management. With no targets, the
+///          routine returns before reading.
 ///
 /// @param stmt Parsed INPUT statement.
 void IoStatementLowerer::lowerInput(const InputStmt &stmt) {
@@ -489,6 +507,7 @@ void IoStatementLowerer::lowerInput(const InputStmt &stmt) {
     // Read a full line from the console using kTerminalReadLine.
     Value line = lowerer_.emitCallRet(IlType(IlType::Kind::Str), kTerminalReadLine, {});
     // Precompute store kinds for each variable to avoid repeated symbol lookups.
+    /// Target storage category used by the field-store closure.
     enum class StoreKind { I64, F64, I1, Str };
     std::unordered_map<std::string, StoreKind> storeKinds;
     storeKinds.reserve(stmt.vars.size());
@@ -513,6 +532,7 @@ void IoStatementLowerer::lowerInput(const InputStmt &stmt) {
         storeKinds.emplace(vn, k);
     }
 
+    /// Convert or transfer one input field into the named target's storage.
     auto storeField = [&](const std::string &name, Value field) {
         auto storage = lowerer_.resolveVariableStorage(name, stmt.loc);
         assert(storage && "INPUT target should have storage");
@@ -599,8 +619,9 @@ void IoStatementLowerer::lowerInput(const InputStmt &stmt) {
 /// @brief Lower an INPUT# statement for reading a record from a channel.
 ///
 /// @details Allocates temporary slots, performs the channel read via
-///          `rt_line_input_ch_err`, splits the result into a single field, and
-///          parses it into the target slot according to its declared type.
+///          `rt_line_input_ch_err`, splits the result into one field per target
+///          (or one disposable field when no targets exist), and parses each
+///          field according to its declared slot type.
 ///
 /// @param stmt Parsed INPUT# statement.
 void IoStatementLowerer::lowerInputCh(const InputChStmt &stmt) {
@@ -630,6 +651,7 @@ void IoStatementLowerer::lowerInputCh(const InputChStmt &stmt) {
     lowerer_.requireStrReleaseMaybe();
     lowerer_.emitCall("rt_str_release_maybe", {line});
 
+    /// Parse or transfer one channel field into a resolved variable slot.
     auto parseAndStore = [&](const std::string &name, Value field) {
         auto storage = lowerer_.resolveVariableStorage(name, stmt.loc);
         if (!storage)

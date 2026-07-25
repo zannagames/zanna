@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/LoweringRuleTable.cpp
+// File: src/codegen/x86_64/LoweringRuleTable.cpp
 // Purpose: Translate declarative lowering rules into efficient opcode dispatch
 //          queries for the x86-64 backend.
 // Key invariants:
@@ -14,8 +14,8 @@
 // Ownership/Lifetime:
 //   - Dispatch tables are computed on first use and cached for the lifetime
 //     of the process.
-// Links: codegen/x86_64/LoweringRuleTable.hpp,
-//        codegen/x86_64/LoweringRules.cpp
+// Links: src/codegen/x86_64/LoweringRuleTable.hpp,
+//        src/codegen/x86_64/LoweringRules.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,10 +27,27 @@
 #include <unordered_map>
 #include <vector>
 
+/**
+ * @file
+ * @brief Defines the declarative x86-64 lowering registry and indexed lookup.
+ *
+ * Rule specifications bind opcode names or prefixes and operand-shape
+ * constraints to emitter callbacks. A process-lifetime dispatch cache partitions
+ * exact opcodes from prefix families while preserving table order among
+ * candidates that share a key.
+ */
+
 namespace zanna::codegen::x64 {
 
 namespace lowering {
 
+/**
+ * @brief Complete ordered registry of IL-to-x86-64 lowering rules.
+ *
+ * Exact and prefix entries share one immutable source of truth. The order is
+ * significant for overlapping candidates because lookup returns the first rule
+ * whose opcode and operand shape both match.
+ */
 const std::array<RuleSpec, 57> kLoweringRuleTable = {
     // === Arithmetic Operations ===
     RuleSpec{"add",

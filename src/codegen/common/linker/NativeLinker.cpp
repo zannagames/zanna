@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/NativeLinker.cpp
+// File: src/codegen/common/linker/NativeLinker.cpp
 // Purpose: Top-level native linker implementation.
 // Key invariants:
 //   - Pipeline: parse .o → parse archives → resolve symbols → generate stubs →
@@ -18,6 +18,11 @@
 //                             import planners, executable writer selection.
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file NativeLinker.cpp
+ * @brief Implements cross-platform native link orchestration and synthetic ABI helpers.
+ */
 
 #include "codegen/common/linker/NativeLinker.hpp"
 
@@ -59,6 +64,7 @@ namespace zanna::codegen::linker {
 
 namespace {
 
+/// @brief One process-wide immutable archive-cache record and invalidation key.
 struct ArchiveCacheEntry {
     std::filesystem::file_time_type modified{}; ///< Last-write time used for invalidation.
     std::uintmax_t size = 0;                    ///< File size used for invalidation.
@@ -116,8 +122,11 @@ bool readArchiveCached(const std::string &path,
     return true;
 }
 
+/// @brief Emits per-stage elapsed times when `ZANNA_LINKER_STATS` is enabled.
 class LinkTiming {
   public:
+    /// @brief Creates a timer whose diagnostics are written to @p err.
+    /// @param err Timing output stream retained by reference.
     explicit LinkTiming(std::ostream &err)
         : err_(err), enabled_([]() {
               const char *value = std::getenv("ZANNA_LINKER_STATS");
@@ -125,6 +134,8 @@ class LinkTiming {
           }()),
           last_(std::chrono::steady_clock::now()) {}
 
+    /// @brief Reports elapsed time since construction or the previous mark.
+    /// @param stage Human-readable pipeline stage name.
     void mark(const char *stage) {
         if (!enabled_)
             return;
@@ -140,6 +151,11 @@ class LinkTiming {
     std::chrono::steady_clock::time_point last_;
 };
 
+/// @brief Installs one defined synthetic symbol unless a static definition already wins.
+/// @param sym Synthetic object symbol to consider.
+/// @param objIdx Owning object's index in the active object list.
+/// @param globalSyms Mutable global resolution table.
+/// @return `true` when a global entry was installed or replaced.
 bool installSyntheticGlobal(const ObjSymbol &sym,
                             size_t objIdx,
                             std::unordered_map<std::string, GlobalSymEntry> &globalSyms) {
@@ -169,6 +185,9 @@ bool installSyntheticGlobal(const ObjSymbol &sym,
 /// @details Used after we synthesize helper objects (Windows CRT shims, PE
 ///          import stubs, etc.) so they participate in symbol resolution as if
 ///          they had been read from a real archive.
+/// @param obj Synthetic object whose definitions are registered.
+/// @param objIdx Index of @p obj in the active object list.
+/// @param globalSyms Mutable global resolution table.
 void registerSyntheticSymbols(const ObjFile &obj,
                               size_t objIdx,
                               std::unordered_map<std::string, GlobalSymEntry> &globalSyms) {
@@ -179,12 +198,17 @@ void registerSyntheticSymbols(const ObjFile &obj,
 }
 
 /// @brief Drop @p name from the dynamic-symbol set when a static definition resolves it.
+/// @param name Exact symbol name to remove.
+/// @param dynamicSyms Mutable unresolved dynamic-symbol set.
 [[maybe_unused]] void removeDynamicSymbol(const char *name,
                                           std::unordered_set<std::string> &dynamicSyms) {
     dynamicSyms.erase(name);
 }
 
 /// @brief ASCII case-insensitive string compare (used for Windows DLL name dedup).
+/// @param lhs First ASCII string.
+/// @param rhs Second ASCII string.
+/// @return `true` when equal after per-byte ASCII case folding.
 bool equalsIgnoreAsciiCase(const std::string &lhs, const std::string &rhs) {
     return lhs.size() == rhs.size() &&
            std::equal(lhs.begin(), lhs.end(), rhs.begin(), [](unsigned char a, unsigned char b) {
@@ -196,6 +220,9 @@ bool equalsIgnoreAsciiCase(const std::string &lhs, const std::string &rhs) {
 /// @details Walks @p imports for an existing entry matching @p dllName (case-
 ///          insensitive — Windows lookup is case-insensitive); appends to its
 ///          functions list if absent, otherwise inserts a fresh DllImport.
+/// @param imports Mutable import descriptor list.
+/// @param dllName Provider DLL name.
+/// @param functionName Imported function name.
 void ensurePeImportFunction(std::vector<DllImport> &imports,
                             const std::string &dllName,
                             const std::string &functionName) {
@@ -218,6 +245,9 @@ void ensurePeImportFunction(std::vector<DllImport> &imports,
 /// @details SectionMerger seeds LinkLayout::imageBase before relocation and
 ///          writing. Hand-built test layouts may leave it zero, so callers use
 ///          this helper to retain the historical default behavior.
+/// @param layout Link layout that may contain an explicit base.
+/// @param platform Target used for fallback selection.
+/// @return Explicit nonzero layout base or the conventional platform default.
 uint64_t imageBaseForLayout(const LinkLayout &layout, LinkPlatform platform) {
     return layout.imageBase != 0 ? layout.imageBase : defaultImageBaseForPlatform(platform);
 }
@@ -227,6 +257,10 @@ uint64_t imageBaseForLayout(const LinkLayout &layout, LinkPlatform platform) {
 ///          records relocation references to them. This helper keeps that path
 ///          from silently wrapping if helper generation ever exceeds the object
 ///          format's symbol-index range.
+/// @param index Host-sized synthetic symbol index.
+/// @param context Record description used in an exception message.
+/// @return Index narrowed to `uint32_t`.
+/// @throws std::runtime_error If @p index exceeds the relocation field.
 uint32_t checkedSyntheticSymbolIndex(size_t index, const char *context) {
     if (index > std::numeric_limits<uint32_t>::max()) {
         throw std::runtime_error(std::string("native linker: synthetic helper symbol index "
@@ -240,6 +274,11 @@ uint32_t checkedSyntheticSymbolIndex(size_t index, const char *context) {
 /// @details Native helper objects are assembled directly into byte vectors.
 ///          Their offsets later become relocation sites, so size arithmetic must
 ///          fail before a vector resize can wrap the computed byte count.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @param context Operation description used in an exception message.
+/// @return Checked sum.
+/// @throws std::runtime_error If the sum exceeds `size_t`.
 size_t checkedSyntheticSizeAdd(size_t lhs, size_t rhs, const char *context) {
     if (lhs > std::numeric_limits<size_t>::max() - rhs) {
         throw std::runtime_error(std::string("native linker: synthetic helper size overflow in ") +
@@ -254,6 +293,9 @@ size_t checkedSyntheticSizeAdd(size_t lhs, size_t rhs, const char *context) {
 ///          is kept; everything else is stripped. The returned object inherits
 ///          @p userObj's format/arch/endianness so it slots cleanly into the
 ///          object list.
+/// @param userObj Object supplying target format and machine metadata.
+/// @param symbolName Entry symbol to reference as undefined.
+/// @return Synthetic root object containing a null section and undefined symbol.
 ObjFile makeUndefinedRootObject(const ObjFile &userObj, const std::string &symbolName) {
     ObjFile root;
     root.name = "<entry-root>";
@@ -279,8 +321,10 @@ ObjFile makeUndefinedRootObject(const ObjFile &userObj, const std::string &symbo
 ///          per-image identity cookie passed to `__cxa_atexit` — its contents
 ///          are never read. A normal crt provides it, but Zanna's crt-less
 ///          native binaries do not, so we define an 8-byte zero-filled symbol
-///          ourselves. Both the C name and the Mach-O-mangled `_`-prefixed
-///          form are exported so the reference resolves on every format.
+///          ourselves. A single logical C name is exported; the shared Mach-O
+///          fallback resolves its underscore-prefixed object spelling.
+/// @param userObj Object supplying target format and machine metadata.
+/// @return Synthetic object defining one eight-byte `__dso_handle`.
 ObjFile makeDsoHandleObject(const ObjFile &userObj) {
     ObjFile obj;
     obj.name = "<dso-handle>";
@@ -319,6 +363,8 @@ ObjFile makeDsoHandleObject(const ObjFile &userObj) {
 /// @details Inspects each path for the conventional `\Debug\`, `/debug/`, or
 ///          `*d.lib` suffixes used by MSVC's debug runtime. The result selects
 ///          ucrtbased.dll / vcruntime140d.dll for IAT generation.
+/// @param archivePaths Runtime archive paths to inspect.
+/// @return `true` when any path follows a recognized Debug CRT convention.
 bool usesDebugWindowsRuntime(const std::vector<std::string> &archivePaths) {
     for (const auto &path : archivePaths) {
         std::string lower = path;
@@ -336,6 +382,8 @@ bool usesDebugWindowsRuntime(const std::vector<std::string> &archivePaths) {
 }
 
 /// @brief Return a human-readable name for a LinkPlatform (for diagnostics).
+/// @param platform Platform enum value.
+/// @return Process-lifetime display string.
 const char *platformName(LinkPlatform platform) {
     switch (platform) {
         case LinkPlatform::Linux:
@@ -349,6 +397,8 @@ const char *platformName(LinkPlatform platform) {
 }
 
 /// @brief Return a human-readable name for a LinkArch (for diagnostics).
+/// @param arch Architecture enum value.
+/// @return Process-lifetime display string.
 const char *archName(LinkArch arch) {
     switch (arch) {
         case LinkArch::X86_64:
@@ -359,6 +409,10 @@ const char *archName(LinkArch arch) {
     return "unknown";
 }
 
+/// @brief Tests whether an address lies in a nonempty executable output section.
+/// @param layout Final merged layout.
+/// @param addr Virtual address to test.
+/// @return `true` when a valid half-open executable section range contains it.
 bool addressInExecutableSection(const LinkLayout &layout, uint64_t addr) {
     for (const auto &sec : layout.sections) {
         const size_t memSize = outputSectionMemSize(sec);
@@ -374,6 +428,8 @@ bool addressInExecutableSection(const LinkLayout &layout, uint64_t addr) {
 }
 
 /// @brief Map a target LinkPlatform to its native object-file format.
+/// @param platform Target platform.
+/// @return ELF, Mach-O, or COFF; invalid enum values map to Unknown.
 ObjFileFormat expectedFormat(LinkPlatform platform) {
     switch (platform) {
         case LinkPlatform::Linux:
@@ -390,6 +446,9 @@ ObjFileFormat expectedFormat(LinkPlatform platform) {
 /// @details Windows uses the IMAGE_FILE_MACHINE_* values (0x8664/0xAA64); ELF
 ///          and Mach-O use the EM_X86_64 (62) / EM_AARCH64 (183) numbering and
 ///          MachOReader normalises Mach-O cputype to those same values.
+/// @param platform Target object format.
+/// @param arch Target architecture.
+/// @return Expected object header machine value.
 uint16_t expectedMachine(LinkPlatform platform, LinkArch arch) {
     if (platform == LinkPlatform::Windows)
         return arch == LinkArch::AArch64 ? 0xAA64 : 0x8664;
@@ -397,6 +456,8 @@ uint16_t expectedMachine(LinkPlatform platform, LinkArch arch) {
 }
 
 /// @brief Return a human-readable name for an ObjFileFormat (for diagnostics).
+/// @param format Object format enum value.
+/// @return Process-lifetime display string.
 const char *formatName(ObjFileFormat format) {
     switch (format) {
         case ObjFileFormat::ELF:
@@ -415,6 +476,11 @@ const char *formatName(ObjFileFormat format) {
 /// @details Synthetic objects are exempt from the check because they were minted
 ///          with the target's format already. User/archive object names are not
 ///          trusted for this decision.
+/// @param objects Parsed input and extracted objects.
+/// @param platform Requested output platform.
+/// @param arch Requested output architecture.
+/// @param err Diagnostic output stream.
+/// @return `true` when every non-synthetic object matches the target.
 bool validateInputObjects(const std::vector<ObjFile> &objects,
                           LinkPlatform platform,
                           LinkArch arch,
@@ -442,6 +508,8 @@ bool validateInputObjects(const std::vector<ObjFile> &objects,
 }
 
 /// @brief Append an AArch64 instruction (32-bit little-endian) to a byte stream.
+/// @param data Destination text-section bytes.
+/// @param insn Instruction word.
 void appendArm64Insn(std::vector<uint8_t> &data, uint32_t insn) {
     data.push_back(static_cast<uint8_t>(insn & 0xFF));
     data.push_back(static_cast<uint8_t>((insn >> 8) & 0xFF));
@@ -455,6 +523,9 @@ void appendArm64Insn(std::vector<uint8_t> &data, uint32_t insn) {
 ///          (synthetic, 64-bit COFF, little-endian) with a placeholder section[0]
 ///          / symbol[0] slot already pushed. Centralising the boilerplate here
 ///          means a future third architecture only changes one place.
+/// @param name Synthetic object display name.
+/// @param machine COFF machine value.
+/// @return Initialized synthetic object with null section and symbol entries.
 static ObjFile makeWindowsHelpersObj(const char *name, uint16_t machine) {
     ObjFile obj;
     obj.name = name;
@@ -470,6 +541,7 @@ static ObjFile makeWindowsHelpersObj(const char *name, uint16_t machine) {
 
 /// @brief Construct the canonical executable `.text` ObjSection used by the
 ///        Windows-helpers builders (16-byte aligned, allocated, executable).
+/// @return Empty configured text section.
 static ObjSection makeWindowsHelpersTextSec() {
     ObjSection s;
     s.name = ".text";
@@ -481,6 +553,7 @@ static ObjSection makeWindowsHelpersTextSec() {
 
 /// @brief Construct the canonical writable `.data` ObjSection used by the
 ///        Windows-helpers builders (8-byte aligned, allocated, writable).
+/// @return Empty configured data section.
 static ObjSection makeWindowsHelpersDataSec() {
     ObjSection s;
     s.name = ".data";
@@ -501,6 +574,8 @@ static ObjSection makeWindowsHelpersDataSec() {
 /// @param needTlsIndex    When true, emit `_tls_index` and `_tls_used` placeholders.
 /// @param debugWindowsRuntime When false, suppress Debug-CRT-only report and validation hooks
 ///        retained by Debug-built archives so release-runtime package links stay redistributable.
+/// @return Synthetic AMD64 COFF object containing only required definitions.
+/// @throws std::runtime_error If generated size or symbol indices overflow.
 ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamicSyms,
                                   bool haveVmTrapDefault,
                                   bool needTlsIndex,
@@ -509,10 +584,12 @@ ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamic
     ObjSection textSec = makeWindowsHelpersTextSec();
     ObjSection dataSec = makeWindowsHelpersDataSec();
 
+    /// Tests both direct and `__imp_` spellings for an unresolved helper.
     auto needsHelper = [&](const std::string &name) {
         return dynamicSyms.count(name) || dynamicSyms.count("__imp_" + name);
     };
 
+    /// Appends a complete x64 helper body and publishes its global symbol.
     auto addRetFn = [&](const std::string &name, std::initializer_list<uint8_t> bytes) {
         const size_t off = textSec.data.size();
         textSec.data.insert(textSec.data.end(), bytes.begin(), bytes.end());
@@ -525,6 +602,7 @@ ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamic
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
+    /// Appends aligned helper data and publishes its global symbol.
     auto addData = [&](const std::string &name, const std::vector<uint8_t> &bytes, uint32_t align) {
         while ((dataSec.data.size() % align) != 0)
             dataSec.data.push_back(0);
@@ -539,6 +617,7 @@ ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamic
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
+    /// Adds an eight-byte data pointer and an absolute target relocation.
     auto addAbs64DataRef = [&](const std::string &name, uint32_t align, uint32_t targetSymIdx) {
         while ((dataSec.data.size() % align) != 0)
             dataSec.data.push_back(0);
@@ -560,11 +639,13 @@ ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamic
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
+    /// Publishes `__imp_name` as a pointer alias to a generated definition.
     auto addImportAlias = [&](const std::string &name, uint32_t targetSymIdx) {
         if (dynamicSyms.count("__imp_" + name))
             addAbs64DataRef("__imp_" + name, 8, targetSymIdx);
     };
 
+    /// Adds an x64 relative-jump forwarding helper and its target relocation.
     auto addJmpFn = [&](const std::string &name, const std::string &target) {
         const size_t off = textSec.data.size();
         textSec.data.insert(textSec.data.end(), {0xE9, 0x00, 0x00, 0x00, 0x00});
@@ -845,6 +926,13 @@ ObjFile generateWindowsX64Helpers(const std::unordered_set<std::string> &dynamic
     return obj;
 }
 
+/// @brief Synthesizes the required Windows AArch64 CRT and ABI helper definitions.
+/// @param dynamicSyms Current unresolved direct and import-pointer symbol names.
+/// @param haveVmTrapDefault Whether a static `vm_trap_default` target exists.
+/// @param needTlsIndex Whether TLS index placeholders must be emitted.
+/// @param debugWindowsRuntime Whether Debug CRT-only compatibility hooks are allowed.
+/// @return Synthetic AArch64 COFF object containing only required definitions.
+/// @throws std::runtime_error If generated size or symbol indices overflow.
 ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynamicSyms,
                                     bool haveVmTrapDefault,
                                     bool needTlsIndex,
@@ -853,10 +941,12 @@ ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynam
     ObjSection textSec = makeWindowsHelpersTextSec();
     ObjSection dataSec = makeWindowsHelpersDataSec();
 
+    /// Tests both direct and `__imp_` spellings for an unresolved helper.
     auto needsHelper = [&](const std::string &name) {
         return dynamicSyms.count(name) || dynamicSyms.count("__imp_" + name);
     };
 
+    /// Encodes an AArch64 instruction sequence and publishes its global symbol.
     auto addTextFn = [&](const std::string &name, const std::vector<uint32_t> &insns) {
         const size_t off = textSec.data.size();
         for (uint32_t insn : insns)
@@ -871,14 +961,17 @@ ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynam
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
+    /// Adds a helper consisting only of `ret`.
     auto addRetFn = [&](const std::string &name) {
         return addTextFn(name, {0xD65F03C0U}); // ret
     };
 
+    /// Adds a helper returning a small immediate in `x0`.
     auto addRetImmFn = [&](const std::string &name, uint16_t imm) {
         return addTextFn(name, {0xD2800000U | (static_cast<uint32_t>(imm) << 5), 0xD65F03C0U});
     };
 
+    /// Appends aligned helper data and publishes its global symbol.
     auto addData = [&](const std::string &name, const std::vector<uint8_t> &bytes, uint32_t align) {
         while ((dataSec.data.size() % align) != 0)
             dataSec.data.push_back(0);
@@ -893,6 +986,7 @@ ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynam
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
+    /// Adds an eight-byte data pointer and an absolute target relocation.
     auto addAbs64DataRef = [&](const std::string &name, uint32_t align, uint32_t targetSymIdx) {
         while ((dataSec.data.size() % align) != 0)
             dataSec.data.push_back(0);
@@ -914,6 +1008,7 @@ ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynam
         return checkedSyntheticSymbolIndex(obj.symbols.size() - 1, name.c_str());
     };
 
+    /// Publishes `__imp_name` as a pointer alias to a generated definition.
     auto addImportAlias = [&](const std::string &name, uint32_t targetSymIdx) {
         if (dynamicSyms.count("__imp_" + name))
             addAbs64DataRef("__imp_" + name, 8, targetSymIdx);
@@ -1242,6 +1337,10 @@ ObjFile generateWindowsArm64Helpers(const std::unordered_set<std::string> &dynam
 ///          @ref nativeLink so the driver can read as a sequence of named
 ///          stages rather than inlining 10+ LOC of archive iteration. Writes
 ///          an error to @p err and returns false on any per-archive failure.
+/// @param paths Archive paths to read in order.
+/// @param outArchives Destination shared archive snapshots; existing entries are preserved.
+/// @param err Diagnostic output stream.
+/// @return `true` after every archive is loaded.
 static bool readArchiveFiles(const std::vector<std::string> &paths,
                              std::vector<std::shared_ptr<const Archive>> &outArchives,
                              std::ostream &err) {
@@ -1263,6 +1362,10 @@ static bool readArchiveFiles(const std::vector<std::string> &paths,
 ///          archives has a single named entry point. Empty members are
 ///          skipped silently; any read or parse failure returns false with
 ///          an error message written to @p err.
+/// @param paths Force-load archive paths.
+/// @param extraObjects Destination object list; parsed members are appended.
+/// @param err Diagnostic output stream.
+/// @return `true` after all nonempty members are parsed.
 static bool loadForceLoadArchiveMembers(const std::vector<std::string> &paths,
                                         std::vector<ObjFile> &extraObjects,
                                         std::ostream &err) {
@@ -1298,6 +1401,9 @@ static bool loadForceLoadArchiveMembers(const std::vector<std::string> &paths,
 ///          (including dynamic stubs on macOS), dead-strips unreachable code,
 ///          performs ICF, inserts branch trampolines, applies relocations, and
 ///          writes the final executable. Zero external tool dependencies.
+/// @param opts Link request and target configuration.
+/// @param err Diagnostic and optional timing output stream.
+/// @return Zero on success; one after a diagnosed failure.
 int nativeLink(const NativeLinkerOptions &opts, std::ostream & /*out*/, std::ostream &err) {
     LinkTiming timing(err);
 
@@ -1409,6 +1515,7 @@ int nativeLink(const NativeLinkerOptions &opts, std::ostream & /*out*/, std::ost
             });
 
         if (opts.arch == LinkArch::X86_64 || opts.arch == LinkArch::AArch64) {
+            /// Tests direct and import-pointer spellings before adding CRT dependencies.
             auto needsDynamicSym = [&](const std::string &name) {
                 return dynamicSyms.count(name) || dynamicSyms.count("__imp_" + name);
             };
@@ -1600,6 +1707,7 @@ int nativeLink(const NativeLinkerOptions &opts, std::ostream & /*out*/, std::ost
             layout.gotEntries.push_back(std::move(ge));
         }
     }
+    /// Stabilizes loader GOT metadata independently of unordered symbol iteration.
     std::sort(layout.gotEntries.begin(),
               layout.gotEntries.end(),
               [](const GotEntry &a, const GotEntry &b) { return a.symbolName < b.symbolName; });

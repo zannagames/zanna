@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/TargetX64.cpp
+// File: src/codegen/x86_64/TargetX64.cpp
 // Purpose: Materialise the SysV AMD64 target description used by the Zanna
 //          Machine IR pipeline and surface helper queries about register
 //          classes and names.
@@ -14,12 +14,15 @@
 //   - All sets and argument orders are immutable after initialisation.
 // Ownership/Lifetime:
 //   - All resources live in static storage; callers do not own or free them.
-// Links: codegen/x86_64/TargetX64.hpp,
-//        codegen/common/TargetInfoBase.hpp
+// Links: src/codegen/x86_64/TargetX64.hpp,
+//        src/codegen/common/TargetInfoBase.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "TargetX64.hpp"
+
+/// @file
+/// @brief Defines the x86-64 ABI descriptors and register-query helpers.
 
 namespace zanna::codegen::x64 {
 
@@ -184,7 +187,9 @@ TargetInfo makeWin64Target() {
     return info;
 }
 
+/// @brief Process-lifetime storage for the immutable SysV ABI descriptor.
 TargetInfo sysvTargetInstance = makeSysVTarget();
+/// @brief Process-lifetime storage for the immutable Microsoft x64 ABI descriptor.
 TargetInfo win64TargetInstance = makeWin64Target();
 
 } // namespace
@@ -192,9 +197,8 @@ TargetInfo win64TargetInstance = makeWin64Target();
 /// @brief Retrieve the canonical SysV AMD64 target description.
 ///
 /// @details Returns a reference to the statically initialised singleton created
-///          by @ref makeSysVTarget().  The non-const reference allows callers to
-///          pass the descriptor to APIs expecting mutable references while still
-///          conceptually treating the object as immutable configuration data.
+///          by @ref makeSysVTarget(). Callers receive read-only configuration
+///          data and do not acquire ownership.
 ///
 /// @return Reference to the global SysV target descriptor.
 const TargetInfo &sysvTarget() noexcept {

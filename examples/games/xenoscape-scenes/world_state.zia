@@ -1,0 +1,309 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/world_state.zia
+// Purpose: Owns persistent key, switch, door, shrine, and teleporter state.
+// Key invariants:
+//   - Authored ids are stable zero-based values represented by integer masks.
+//   - Repeated acquisitions are idempotent and never consume owned keycards.
+// Ownership/Lifetime:
+//   - Game owns one WorldState for the active save-slot lifetime.
+//   - SaveManager serializes masks; Level only renders/applies their effects.
+// Links: game.zia, level.zia, save.zia, worldmap.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module world_state;
+
+bind "./config";
+bind "./world_graph";
+
+/// @brief Convert a bounded authored id to a power-of-two mask flag.
+///
+/// Interaction ids intentionally occupy 0..30 so signed integer arithmetic
+/// remains straightforward in Zia. Invalid ids map to zero and cannot mutate a
+/// mask, providing a safe failure path for malformed authored records.
+///
+/// @param id Stable zero-based authored interaction identifier.
+/// @return Power-of-two flag, or zero when `id` is outside 0..30.
+func worldStateBit(id: Integer) -> Integer {
+    if id < 0 or id > 30 { return 0; }
+    var bit = 1;
+    var i = 0;
+    while i < id {
+        bit = bit * 2;
+        i = i + 1;
+    }
+    return bit;
+}
+
+/// @brief Test an authored id in a nonnegative persistent-state mask.
+///
+/// @param mask Integer mask loaded from the active save slot.
+/// @param id Stable zero-based authored identifier.
+/// @return True when the valid id's bit is set; false for invalid ids/masks.
+func worldStateMaskHas(mask: Integer, id: Integer) -> Boolean {
+    var bit = worldStateBit(id);
+    if mask < 0 or bit == 0 { return false; }
+    return (mask / bit) % 2 == 1;
+}
+
+/// @brief Persistent interaction state shared by every campaign area.
+class WorldState {
+    hide Integer keyMask;
+    hide Integer switchMask;
+    hide Integer doorMask;
+    hide Integer shrineMask;
+    hide Integer teleporterMask;
+    hide List[Integer] roomMasks; // eight local-room bits per region
+
+    /// @brief Construct a fresh state with no discovered or activated records.
+    ///
+    /// @return Nothing. Delegates to `reset` and allocates no external resource.
+    expose func init() {
+        reset();
+    }
+
+    /// @brief Reset all persistent interaction masks for a new expedition.
+    ///
+    /// @return Nothing. All prior slot-local world interaction state is cleared.
+    expose func reset() {
+        keyMask = 0;
+        switchMask = 0;
+        doorMask = 0;
+        shrineMask = 0;
+        teleporterMask = 0;
+        roomMasks = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    }
+
+    /// @brief Restore every interaction mask from one versioned save snapshot.
+    ///
+    /// Negative values are treated as corrupt input and clamped to zero. Unknown
+    /// high bits are retained for forward compatibility with later content.
+    ///
+    /// @param keys Permanently owned authored keycard mask.
+    /// @param switches Current persistent switch-channel mask.
+    /// @param doors Permanently opened keyed-door mask.
+    /// @param shrines Permanently consumed ability-shrine mask.
+    /// @param teleporters Discovered fast-travel-pad mask.
+    /// @return Nothing. Replaces all five masks after clamping negative input.
+    expose func setMasks(keys: Integer, switches: Integer, doors: Integer,
+                         shrines: Integer, teleporters: Integer) {
+        keyMask = keys;
+        switchMask = switches;
+        doorMask = doors;
+        shrineMask = shrines;
+        teleporterMask = teleporters;
+        if keyMask < 0 { keyMask = 0; }
+        if switchMask < 0 { switchMask = 0; }
+        if doorMask < 0 { doorMask = 0; }
+        if shrineMask < 0 { shrineMask = 0; }
+        if teleporterMask < 0 { teleporterMask = 0; }
+    }
+
+    /// @brief Permanently add an authored keycard without consuming duplicates.
+    ///
+    /// @param keyId Stable key id, normally the zero-based region id.
+    /// @return True only when a valid previously missing key was added.
+    expose func collectKey(keyId: Integer) -> Boolean {
+        var bit = worldStateBit(keyId);
+        if bit == 0 or hasKey(keyId) { return false; }
+        keyMask = keyMask + bit;
+        return true;
+    }
+
+    /// @brief Query permanent ownership of one authored keycard.
+    ///
+    /// @param keyId Stable key identifier.
+    /// @return True when owned; false for missing or invalid ids.
+    expose func hasKey(keyId: Integer) -> Boolean {
+        return worldStateMaskHas(keyMask, keyId);
+    }
+
+    /// @brief Toggle one authored switch channel and persist its new polarity.
+    ///
+    /// @param channel Stable zero-based switch channel.
+    /// @return New channel state, or false for an invalid channel.
+    expose func toggleSwitch(channel: Integer) -> Boolean {
+        var bit = worldStateBit(channel);
+        if bit == 0 { return false; }
+        if isSwitchOn(channel) {
+            switchMask = switchMask - bit;
+            return false;
+        }
+        switchMask = switchMask + bit;
+        return true;
+    }
+
+    /// @brief Query current persistent polarity of a switch channel.
+    ///
+    /// @param channel Stable zero-based authored channel.
+    /// @return True for on, false for off or invalid.
+    expose func isSwitchOn(channel: Integer) -> Boolean {
+        return worldStateMaskHas(switchMask, channel);
+    }
+
+    /// @brief Attempt to permanently open a keyed door without consuming its key.
+    ///
+    /// @param doorId Stable door id; the matching keycard uses the same id.
+    /// @return 0 when the key is missing/invalid, 1 when newly opened, or 2 when
+    ///         the door was already permanently open.
+    expose func tryOpenDoor(doorId: Integer) -> Integer {
+        var bit = worldStateBit(doorId);
+        if bit == 0 { return 0; }
+        if worldStateMaskHas(doorMask, doorId) { return 2; }
+        if hasKey(doorId) == false { return 0; }
+        doorMask = doorMask + bit;
+        return 1;
+    }
+
+    /// @brief Query whether one keyed door is permanently open.
+    ///
+    /// @param doorId Stable zero-based door identifier.
+    /// @return True when opened in this save slot.
+    expose func isDoorOpen(doorId: Integer) -> Boolean {
+        return worldStateMaskHas(doorMask, doorId);
+    }
+
+    /// @brief Permanently mark an authored ability shrine as consumed.
+    ///
+    /// @param shrineId Stable shrine identifier.
+    /// @return True only on the first valid activation.
+    expose func consumeShrine(shrineId: Integer) -> Boolean {
+        var bit = worldStateBit(shrineId);
+        if bit == 0 or isShrineConsumed(shrineId) { return false; }
+        shrineMask = shrineMask + bit;
+        return true;
+    }
+
+    /// @brief Query whether a shrine has already granted its permanent reward.
+    ///
+    /// @param shrineId Stable shrine identifier.
+    /// @return True when consumed; false for unused or invalid ids.
+    expose func isShrineConsumed(shrineId: Integer) -> Boolean {
+        return worldStateMaskHas(shrineMask, shrineId);
+    }
+
+    /// @brief Discover a teleporter pad for bidirectional fast travel.
+    ///
+    /// @param padId Stable pad id, one per campaign region.
+    /// @return True only when the pad was newly added to discovery.
+    expose func discoverTeleporter(padId: Integer) -> Boolean {
+        var bit = worldStateBit(padId);
+        if bit == 0 or isTeleporterDiscovered(padId) { return false; }
+        teleporterMask = teleporterMask + bit;
+        return true;
+    }
+
+    /// @brief Query discovery of one authored teleporter endpoint.
+    ///
+    /// @param padId Stable endpoint identifier.
+    /// @return True when this save slot has visited the endpoint.
+    expose func isTeleporterDiscovered(padId: Integer) -> Boolean {
+        return worldStateMaskHas(teleporterMask, padId);
+    }
+
+    /// @brief Select a deterministic discovered destination other than the source.
+    ///
+    /// The nearest lower discovered id is preferred, then the nearest higher id.
+    /// This makes newly discovered adjacent region pads immediately useful while
+    /// a later destination-selection UI can reuse the same discovery mask.
+    ///
+    /// @param currentPad Source pad id.
+    /// @return Discovered destination id, or -1 when no other endpoint exists.
+    expose func findTeleporterDestination(currentPad: Integer) -> Integer {
+        var candidate = currentPad - 1;
+        while candidate >= 0 {
+            if isTeleporterDiscovered(candidate) { return candidate; }
+            candidate = candidate - 1;
+        }
+        candidate = currentPad + 1;
+        while candidate < LEVEL_COUNT {
+            if isTeleporterDiscovered(candidate) { return candidate; }
+            candidate = candidate + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Replace one region's persisted eight-room discovery mask.
+    ///
+    /// @param region Zero-based region id in 0..9.
+    /// @param mask Nonnegative local room mask; only the low eight bits are used.
+    /// @return Nothing. Invalid regions are ignored and negative masks become 0.
+    expose func setRoomMask(region: Integer, mask: Integer) {
+        if region < 0 or region >= WORLD_REGION_COUNT { return; }
+        var bounded = mask;
+        if bounded < 0 { bounded = 0; }
+        if bounded > 255 { bounded = 255; }
+        roomMasks.set(region, bounded);
+    }
+
+    /// @brief Mark one stable local room as discovered.
+    ///
+    /// @param region Zero-based region id.
+    /// @param room Local room index in 0..7.
+    /// @return True only when a valid previously unseen room bit was added.
+    expose func discoverRoom(region: Integer, room: Integer) -> Boolean {
+        if region < 0 or region >= WORLD_REGION_COUNT or
+           room < 0 or room >= WORLD_ROOMS_PER_REGION { return false; }
+        var bit = worldStateBit(room);
+        var mask = roomMasks.get(region);
+        if (mask / bit) % 2 == 1 { return false; }
+        roomMasks.set(region, mask + bit);
+        return true;
+    }
+
+    /// @brief Query one stable local room's discovery state.
+    ///
+    /// @param region Zero-based region id.
+    /// @param room Local room index in 0..7.
+    /// @return True when discovered; false for unseen or invalid coordinates.
+    expose func isRoomDiscovered(region: Integer, room: Integer) -> Boolean {
+        if region < 0 or region >= WORLD_REGION_COUNT or
+           room < 0 or room >= WORLD_ROOMS_PER_REGION { return false; }
+        return worldStateMaskHas(roomMasks.get(region), room);
+    }
+
+    /// @brief Read one region's eight-room discovery mask.
+    ///
+    /// @param region Zero-based region id.
+    /// @return Low-eight-bit room mask, or zero for invalid input.
+    expose func getRoomMask(region: Integer) -> Integer {
+        if region < 0 or region >= WORLD_REGION_COUNT { return 0; }
+        return roomMasks.get(region);
+    }
+
+    /// @brief Borrow all ten room masks for one batched save snapshot.
+    ///
+    /// The returned list remains owned by WorldState and callers must treat it as
+    /// read-only. SaveManager copies its values before returning from the write.
+    ///
+    /// @return Ten-element list indexed by stable region id.
+    expose func getRoomMasks() -> List[Integer] { return roomMasks; }
+
+    /// @brief Return the permanent keycard mask for save serialization.
+    ///
+    /// @return Nonnegative bitmask keyed by stable authored key id.
+    expose func getKeyMask() -> Integer { return keyMask; }
+    /// @brief Return the persistent switch-channel mask for save serialization.
+    ///
+    /// @return Nonnegative bitmask keyed by stable switch channel.
+    expose func getSwitchMask() -> Integer { return switchMask; }
+    /// @brief Return the permanently opened door mask for save serialization.
+    ///
+    /// @return Nonnegative bitmask keyed by stable door id.
+    expose func getDoorMask() -> Integer { return doorMask; }
+    /// @brief Return the consumed shrine mask for save serialization.
+    ///
+    /// @return Nonnegative bitmask keyed by stable shrine id.
+    expose func getShrineMask() -> Integer { return shrineMask; }
+    /// @brief Return the discovered teleporter mask for save serialization.
+    ///
+    /// @return Nonnegative bitmask keyed by stable teleporter-pad id.
+    expose func getTeleporterMask() -> Integer { return teleporterMask; }
+}

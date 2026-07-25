@@ -11,11 +11,21 @@
 //          translation units while keeping this TU as a lightweight dispatcher.
 // Key invariants: Sub-components remain singletons owned by the Lowerer
 //                 instance and are re-used across procedure invocations.
-// Ownership/Lifetime: Owns the lowering helpers and IR builder façade used to
-//                     emit IL, but borrows AST nodes from callers.
+// Ownership/Lifetime: Owns lowering/emitter facades; temporarily borrows the
+//                     destination builder/module and caller-owned AST nodes.
 // Links: docs/internals/codemap.md, docs/tutorials/basic-tutorial.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file Lowerer.cpp
+ * @brief Implements BASIC lowering orchestration and OOP type-query helpers.
+ *
+ * The central Lowerer owns specialized lowering facades and transient
+ * bookkeeping, borrows AST inputs, and returns completed IL modules by value.
+ * This unit also implements namespace qualification and metadata queries used
+ * when lowering fields and method results.
+ */
 
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/BasicTypes.hpp"
@@ -38,6 +48,13 @@ using il::frontends::basic::BasicType;
 
 namespace {
 
+/// @brief Select an IL return type from a BASIC hint and legacy name suffix.
+/// @details Explicit String, Float, Int, Bool, and Void hints take precedence.
+///          For other hints, a trailing `$` selects `str`, `#` selects `f64`,
+///          and every remaining spelling defaults to `i64`.
+/// @param fnName Source-level function name, possibly carrying a type suffix.
+/// @param hint Semantic return-type hint.
+/// @return IL type used for the emitted function signature.
 Type ilTypeForBasicRet(const std::string &fnName, BasicType hint) {
     using K = Type::Kind;
     if (hint == BasicType::String)
@@ -64,14 +81,25 @@ Type ilTypeForBasicRet(const std::string &fnName, BasicType hint) {
 
 namespace il::frontends::basic {
 
+/// @brief Map a function name and semantic hint to its emitted IL return type.
+/// @param fnName Source-level function name, possibly carrying `$` or `#`.
+/// @param hint Semantic BASIC return category.
+/// @return Type selected by the shared hint/suffix mapping.
 Lowerer::Type Lowerer::functionRetTypeFromHint(const std::string &fnName, BasicType hint) const {
     return ilTypeForBasicRet(fnName, hint);
 }
 
+/// @brief Append namespace segments to the active qualification stack.
+/// @param path Ordered segments to append; an empty path leaves the stack unchanged.
+/// @post Existing segments retain their order and @p path forms the new suffix.
 void Lowerer::pushNamespace(const std::vector<std::string> &path) {
     nsStack_.insert(nsStack_.end(), path.begin(), path.end());
 }
 
+/// @brief Remove trailing segments from the active namespace stack.
+/// @details Zero and an empty stack are no-ops; an excessive count is clamped
+///          so the operation can empty but never underflow the stack.
+/// @param count Requested number of trailing segments to remove.
 void Lowerer::popNamespace(std::size_t count) {
     if (count == 0 || nsStack_.empty())
         return;
@@ -80,6 +108,12 @@ void Lowerer::popNamespace(std::size_t count) {
     nsStack_.erase(nsStack_.end() - static_cast<std::ptrdiff_t>(count), nsStack_.end());
 }
 
+/// @brief Qualify an unqualified class name with the active namespace.
+/// @details Empty names, already dotted names, and names observed with an empty
+///          stack are returned unchanged. Otherwise stack segments and @p klass
+///          are joined with dots.
+/// @param klass Candidate class name.
+/// @return Qualified or unchanged name, preserving all input casing.
 std::string Lowerer::qualify(const std::string &klass) const {
     if (klass.empty())
         return klass;
@@ -107,6 +141,13 @@ std::string Lowerer::qualify(const std::string &klass) const {
     return out;
 }
 
+/// @brief Find the AST return type recorded for a user-defined method.
+/// @details Looks up the class and method in the OOP index. An explicit
+///          signature return type wins; otherwise a recognized method-name
+///          suffix supplies the type. Runtime classes are not consulted.
+/// @param className Qualified user-defined class name.
+/// @param methodName Method spelling used as the method-map key.
+/// @return Recorded or suffix-inferred AST type, otherwise `std::nullopt`.
 std::optional<::il::frontends::basic::Type> Lowerer::findMethodReturnType(
     std::string_view className, std::string_view methodName) const {
     if (className.empty())
@@ -128,6 +169,17 @@ std::optional<::il::frontends::basic::Type> Lowerer::findMethodReturnType(
     return std::nullopt;
 }
 
+/// @brief Infer the concrete class returned by an object-valued method.
+/// @details User-defined metadata is checked first. Runtime metadata then uses
+///          the optional arity, explicit return-class annotations, cross-class
+///          target prefixes, and parsed signatures. As a fallback, object
+///          methods on runtime types without Push, Set, or Enqueue are treated
+///          as returning their receiver class; collection-like results remain
+///          unknown.
+/// @param className Qualified receiver class name.
+/// @param methodName Method name, compared case-insensitively for runtime classes.
+/// @param arity Optional argument count used to disambiguate overloads.
+/// @return Qualified concrete result class, or an empty string when unknown.
 std::string Lowerer::findMethodReturnClassName(std::string_view className,
                                                std::string_view methodName,
                                                std::optional<std::size_t> arity) const {
@@ -217,6 +269,10 @@ std::string Lowerer::findMethodReturnClassName(std::string_view className,
     return {};
 }
 
+/// @brief Query a user-defined field's AST type.
+/// @param className Qualified class name; an empty name cannot resolve.
+/// @param fieldName Field spelling, matched through the OOP index.
+/// @return Field type when present, otherwise `std::nullopt`.
 std::optional<::il::frontends::basic::Type> Lowerer::findFieldType(
     std::string_view className, std::string_view fieldName) const {
     if (className.empty())
@@ -230,6 +286,10 @@ std::optional<::il::frontends::basic::Type> Lowerer::findFieldType(
     return field->type;
 }
 
+/// @brief Test whether a user-defined field is declared as an array.
+/// @param className Qualified class name; an empty name returns false.
+/// @param fieldName Field spelling, matched through the OOP index.
+/// @return The field's array flag, or false when the class/field is absent.
 bool Lowerer::isFieldArray(std::string_view className, std::string_view fieldName) const {
     if (className.empty())
         return false;
@@ -260,6 +320,8 @@ Lowerer::Lowerer(bool boundsChecks)
       ctrlStmtLowerer_(std::make_unique<ControlStatementLowerer>(*this)),
       runtimeStmtLowerer_(std::make_unique<RuntimeStatementLowerer>(*this)) {}
 
+/// @brief Access the owned type-coercion service.
+/// @return Non-null service reference valid for this Lowerer's lifetime.
 TypeCoercionEngine &Lowerer::coercion() noexcept {
     return *coercionEngine_;
 }

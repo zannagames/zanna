@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: common/RunProcess.cpp
+// File: src/common/RunProcess.cpp
 // Purpose: Native subprocess launcher shared by Zanna tools and linker helpers.
 // Key invariants:
 //   - `run_process` launches argv directly without shell interpretation.
@@ -14,7 +14,7 @@
 // Ownership/Lifetime:
 //   - Returned output buffers are owned by the caller via RunResult.
 //   - Helper-local OS handles/pipes are closed before return.
-// Links: common/RunProcess.hpp
+// Links: src/common/RunProcess.hpp, src/common/Filesystem.hpp
 // Cross-platform touchpoints: POSIX spawn + pipe polling, Windows
 //                             CreateProcess handle inheritance, cwd/env
 //                             behavior across host toolchains.
@@ -447,14 +447,19 @@ int normalize_windows_exit_code(DWORD exit_code) noexcept {
 }
 
 struct CaptureThreadContext {
+    ///< Parent-side pipe handle consumed by the capture thread.
     HANDLE handle = INVALID_HANDLE_VALUE;
+    ///< Caller-owned byte buffer receiving all data read before EOF.
     std::string *buffer = nullptr;
+    ///< First non-broken-pipe ReadFile failure, or ERROR_SUCCESS.
     DWORD error = ERROR_SUCCESS;
 };
 
 /// @brief Read one redirected Win32 pipe until EOF on a background thread.
 /// @param param Pointer to a @ref CaptureThreadContext owned by the caller.
 /// @return Always zero; unexpected read errors are retained in the context.
+/// @pre @p param, its context's buffer, and handle remain valid until this
+///      thread returns.
 unsigned __stdcall capture_handle_thread_proc(void *param) {
     auto *ctx = static_cast<CaptureThreadContext *>(param);
     char chunk[4096];
@@ -474,16 +479,31 @@ unsigned __stdcall capture_handle_thread_proc(void *param) {
 }
 #endif
 
+/// @brief Temporarily override one process environment variable.
+/// @details Captures the previous value, applies the requested replacement,
+///          and restores the original state at destruction. Move operations
+///          transfer restoration responsibility so exactly one live guard owns
+///          each saved state. Empty names are inert.
+/// @warning This helper mutates process-global state and is not safe against
+///          concurrent environment access.
 class ScopedEnvironmentAssignment {
   public:
+    /// @brief Capture a variable and apply a temporary replacement.
+    /// @param name Environment variable name; an empty name makes the guard inert.
+    /// @param value Replacement value retained for move reassignment.
     ScopedEnvironmentAssignment(std::string name, std::string value)
         : name_(std::move(name)), previous_(capture_existing()), override_(std::move(value)) {
         apply_override();
     }
 
+    /// Copying is disabled because restoration ownership must remain unique.
     ScopedEnvironmentAssignment(const ScopedEnvironmentAssignment &) = delete;
+    /// Copy assignment is disabled because restoration ownership must remain unique.
     ScopedEnvironmentAssignment &operator=(const ScopedEnvironmentAssignment &) = delete;
 
+    /// @brief Transfer responsibility for restoring another guard's variable.
+    /// @param other Guard relinquishing its captured name and values.
+    /// @post @p other is inert and this guard owns its former restoration state.
     ScopedEnvironmentAssignment(ScopedEnvironmentAssignment &&other) noexcept
         : name_(std::move(other.name_)), previous_(std::move(other.previous_)),
           override_(std::move(other.override_)) {
@@ -492,6 +512,11 @@ class ScopedEnvironmentAssignment {
         other.override_.reset();
     }
 
+    /// @brief Restore the current assignment, then take another guard's state.
+    /// @param other Guard whose restoration responsibility is transferred.
+    /// @return This guard.
+    /// @post The prior variable owned by this guard is restored, @p other is
+    ///       inert, and the transferred override is reapplied.
     ScopedEnvironmentAssignment &operator=(ScopedEnvironmentAssignment &&other) noexcept {
         if (this == &other) {
             return *this;
@@ -508,11 +533,14 @@ class ScopedEnvironmentAssignment {
         return *this;
     }
 
+    /// @brief Restore the captured value or remove a previously absent variable.
     ~ScopedEnvironmentAssignment() {
         restore();
     }
 
   private:
+    /// @brief Snapshot the current value of @c name_.
+    /// @return Owning prior value, or `std::nullopt` when it is absent.
     std::optional<std::string> capture_existing() const {
         const char *existing = std::getenv(name_.c_str());
         if (existing == nullptr) {
@@ -521,6 +549,9 @@ class ScopedEnvironmentAssignment {
         return std::string(existing);
     }
 
+    /// @brief Assign one value to @c name_ through the host C runtime.
+    /// @param value Bytes to install as the variable's value.
+    /// @note Native assignment errors are intentionally ignored.
     void apply(const std::string &value) const {
 #ifdef _WIN32
         _putenv_s(name_.c_str(), value.c_str());
@@ -529,6 +560,7 @@ class ScopedEnvironmentAssignment {
 #endif
     }
 
+    /// @brief Apply the retained override when this guard is active.
     void apply_override() const {
         if (!override_.has_value() || name_.empty()) {
             return;
@@ -536,6 +568,10 @@ class ScopedEnvironmentAssignment {
         apply(*override_);
     }
 
+    /// @brief Restore the original environment state owned by this guard.
+    /// @details If the variable was absent, POSIX removes it while Windows
+    ///          assigns an empty value through `_putenv_s`.
+    /// @note Native restoration errors are intentionally ignored.
     void restore() const {
         if (name_.empty()) {
             return;
@@ -557,11 +593,19 @@ class ScopedEnvironmentAssignment {
 #endif
     }
 
+    ///< Variable whose previous state this guard owns; empty means inert.
     std::string name_;
+    ///< Value captured before the guard applied its replacement.
     std::optional<std::string> previous_;
+    ///< Replacement value reapplied after move assignment.
     std::optional<std::string> override_;
 };
 
+/// @brief Validate an optional UTF-8 child working directory.
+/// @param cwd Directory text, or `std::nullopt` to inherit the parent's directory.
+/// @param err Receives a stable launch diagnostic when validation fails.
+/// @return True when no directory was requested or the converted path exists
+///         and is a directory.
 bool validate_working_directory(const std::optional<std::string> &cwd, std::string &err) {
     if (!cwd.has_value()) {
         return true;
@@ -805,6 +849,7 @@ bool add_spawn_file_actions(posix_spawn_file_actions_t *actions,
                             const int stderr_pipe[2],
                             const std::optional<std::string> &cwd,
                             std::string &err) {
+    /// Convert a POSIX action error code into the caller's diagnostic channel.
     auto fail = [&](int code, const char *what) {
         err = std::string(what) + ": " + std::strerror(code);
         return false;
@@ -864,6 +909,7 @@ bool capture_posix_pipes(
     char buffer[4096];
     bool ok = true;
 
+    /// Close a descriptor copy and clear its separately tracked open state.
     auto close_tracked = [](int fd, bool &open_flag) {
         int close_fd = fd;
         close_fd_if_open(close_fd);
@@ -951,13 +997,31 @@ bool capture_posix_pipes(
 } // namespace
 
 namespace zanna::test_support {
+/// @brief Observations produced by the scoped-environment move probe.
+/// @details This private test-support record lets a separate test translation
+///          unit verify move construction, move assignment, and final
+///          restoration without exposing the guard implementation itself.
 struct ScopedEnvironmentAssignmentMoveResult {
+    ///< Whether the source override survived move construction.
     bool value_visible_after_move_ctor;
+    ///< Whether the transferred override survived move assignment.
     bool value_visible_after_move_assign;
+    ///< Whether leaving both scopes restored the pre-probe environment.
     bool restored;
+    ///< Value observed immediately after move assignment, if defined.
     std::optional<std::string> move_assigned_value;
 };
 
+/// @brief Exercise restoration ownership across both guard move operations.
+/// @details Snapshots @p name, applies @p source_value, move-constructs a new
+///          guard, then move-assigns that guard over a receiver holding
+///          @p receiver_value. After the scope exits, records whether the
+///          original environment state was restored.
+/// @param name Environment variable used by the probe.
+/// @param source_value Override whose visibility should survive both moves.
+/// @param receiver_value Temporary value owned by the move-assignment receiver.
+/// @return Visibility and restoration observations collected during the probe.
+/// @warning Mutates process-global environment state and is not thread-safe.
 ScopedEnvironmentAssignmentMoveResult scoped_environment_assignment_move_preserves(
     const std::string &name, const std::string &source_value, const std::string &receiver_value) {
     const char *original_raw = std::getenv(name.c_str());
@@ -997,10 +1061,12 @@ ScopedEnvironmentAssignmentMoveResult scoped_environment_assignment_move_preserv
 }
 } // namespace zanna::test_support
 
+/// @copydoc run_process()
 RunResult run_process(const std::vector<std::string> &argv,
                       std::optional<std::string> cwd,
                       const std::vector<std::pair<std::string, std::string>> &env) {
     RunResult rr{};
+    /// Mark a pre-launch failure and replace stderr with its diagnostic.
     auto fail_launch = [&](std::string message) {
         rr.exit_code = -1;
         rr.launch_failed = true;
@@ -1297,6 +1363,7 @@ RunResult run_process(const std::vector<std::string> &argv,
 #endif
 }
 
+/// @copydoc run_shell_command()
 RunResult run_shell_command(const std::string &command,
                             std::optional<std::string> cwd,
                             const std::vector<std::pair<std::string, std::string>> &env) {

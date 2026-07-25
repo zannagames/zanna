@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/SchedulerPass.cpp
+// File: src/codegen/aarch64/passes/SchedulerPass.cpp
 // Purpose: Post-RA critical-path list scheduler for the AArch64 modular pipeline.
 //          Each basic block is partitioned into segments at call/guard-branch
 //          boundaries; each segment is scheduled independently using a DAG with
@@ -37,6 +37,9 @@
 #include <queue>
 #include <vector>
 
+/// @file
+/// @brief Implements bounded critical-path list scheduling for allocated AArch64 MIR.
+
 namespace zanna::codegen::aarch64::passes {
 
 namespace {
@@ -50,6 +53,10 @@ namespace {
 /// Latency model tuned for Apple M1/M2/M3 Firestorm (performance) cores.
 /// Values are approximate; actual latencies vary by microarchitecture revision
 /// and operand width but are close enough for effective scheduling.
+///
+/// @param opc Machine opcode whose result latency is requested.
+/// @return Approximate producer-to-consumer latency in cycles. Unlisted
+///         instructions use the conservative one-cycle default.
 static unsigned instrLatency(MOpcode opc) noexcept {
     switch (opc) {
         // Loads: L1 hit ~4 cycles on Apple M-series.
@@ -108,7 +115,9 @@ static unsigned instrLatency(MOpcode opc) noexcept {
 // Memory classification helpers
 // ---------------------------------------------------------------------------
 
-/// @brief Return true if @p opc is any load instruction (LDR/LDP variants).
+/// @brief Test whether an opcode reads memory through a modeled load operation.
+/// @param opc Machine opcode to classify.
+/// @return `true` for the recognized LDR/LDP variants; `false` otherwise.
 static bool isLoad(MOpcode opc) noexcept {
     switch (opc) {
         case MOpcode::LdrRegFpImm:
@@ -129,7 +138,9 @@ static bool isLoad(MOpcode opc) noexcept {
     }
 }
 
-/// @brief Return true if @p opc is any store instruction (STR/STP variants).
+/// @brief Test whether an opcode writes memory through a modeled store operation.
+/// @param opc Machine opcode to classify.
+/// @return `true` for the recognized STR/STP variants; `false` otherwise.
 static bool isStore(MOpcode opc) noexcept {
     switch (opc) {
         case MOpcode::StrRegFpImm:
@@ -203,20 +214,32 @@ static constexpr std::size_t kMaxScheduledSegmentInstructions = 256;
 /// register reuse while keeping the scheduler active on normal functions.
 static constexpr std::size_t kMaxScheduledFunctionInstructions = 1024;
 
-/// Map a physical register ID (or sentinel) to a flat-array index.
+/// @brief Map an AArch64 physical-register identifier to its tracking-array slot.
+/// @param reg Numeric `PhysReg` value. Valid physical values occupy `[0, 63]`.
+/// @return Zero-based slot corresponding to @p reg.
+/// @note The caller must check the returned index before indexing a fixed-size
+///       physical-register array.
 static std::size_t regIdx(uint32_t reg) noexcept {
     // PhysReg enum values are 0..63, which map to themselves.
     return static_cast<std::size_t>(reg);
 }
 
-/// @brief Construct a MemoryAccessClass by combining @p base with an instruction-level offset.
+/// @brief Resolve an instruction's byte range relative to a symbolic base.
+/// @param base Tracked base address and any offset accumulated while deriving it.
+/// @param accessOffset Additional byte offset encoded by the memory instruction.
+/// @param size Width of the memory access in bytes.
+/// @return Resolved base identity and half-open byte range information.
 static std::optional<MemoryAccessClass> makeResolvedAccessClass(const AddressValue &base,
                                                                 long long accessOffset,
                                                                 unsigned size) noexcept {
     return MemoryAccessClass{base.baseKind, base.baseTag, base.offset + accessOffset, size};
 }
 
-/// @brief Look up the tracked address value for physical register @p reg, or nullopt.
+/// @brief Look up the symbolic address currently held by a physical register.
+/// @param tracked Per-register address-provenance table.
+/// @param reg Numeric physical-register identifier to query.
+/// @return The tracked address when @p reg is in range and has known
+///         provenance; `std::nullopt` otherwise.
 static std::optional<AddressValue> getTrackedAddressValue(
     const std::array<std::optional<AddressValue>, kNumPhysRegs> &tracked, uint32_t reg) noexcept {
     const std::size_t idx = regIdx(reg);
@@ -226,6 +249,15 @@ static std::optional<AddressValue> getTrackedAddressValue(
 }
 
 /// @brief Classify the memory address of a load/store instruction.
+///
+/// The opcode determines the access width and which operands carry the base and
+/// displacement. FP- and SP-relative accesses resolve directly. Base-register
+/// accesses resolve only when @p trackedAddrs proves the register was derived
+/// from a known address; an untracked heap/object base remains unknown so alias
+/// analysis stays conservative.
+///
+/// @param mi Memory instruction to inspect.
+/// @param trackedAddrs Symbolic addresses currently associated with physical GPRs.
 /// @return A resolved MemoryAccessClass if the base is FP/SP/tracked-GPR; nullopt otherwise.
 static std::optional<MemoryAccessClass> classifyMemoryAccess(
     const MInstr &mi,
@@ -310,6 +342,10 @@ static std::optional<MemoryAccessClass> classifyMemoryAccess(
 /// @details Returns true conservatively when either access class is unknown.
 ///          Two known accesses with different base kinds cannot alias.
 ///          Two known FP/SP accesses with non-overlapping ranges do not alias.
+/// @param lhs First access region, or `std::nullopt` when unresolved.
+/// @param rhs Second access region, or `std::nullopt` when unresolved.
+/// @return `false` only when the available base and range information proves
+///         that the accesses are disjoint; `true` otherwise.
 static bool mayAliasMemory(const std::optional<MemoryAccessClass> &lhs,
                            const std::optional<MemoryAccessClass> &rhs) noexcept {
     if (!lhs || !rhs)
@@ -326,9 +362,14 @@ static bool mayAliasMemory(const std::optional<MemoryAccessClass> &lhs,
 /// @brief Derive a symbolic AddressValue for the destination of @p mi if trackable.
 /// @details Handles MovRR (copy), AddRI/SubRI (offset arithmetic), and AddFpImm.
 ///          Returns nullopt for instructions whose result cannot be statically analysed.
+/// @param mi Instruction whose destination address is being derived.
+/// @param trackedAddrs Symbolic input-register addresses available before @p mi.
+/// @return The symbolic destination address, or `std::nullopt` when the opcode,
+///         operands, or source provenance cannot be tracked.
 static std::optional<AddressValue> deriveTrackedAddressValue(
     const MInstr &mi,
     const std::array<std::optional<AddressValue>, kNumPhysRegs> &trackedAddrs) noexcept {
+    /// Return the tracked address of the physical-register operand at @p opIdx.
     auto regTracked = [&](std::size_t opIdx) -> std::optional<AddressValue> {
         if (opIdx >= mi.ops.size() || mi.ops[opIdx].kind != MOperand::Kind::Reg ||
             !mi.ops[opIdx].reg.isPhys) {
@@ -365,7 +406,10 @@ static std::optional<AddressValue> deriveTrackedAddressValue(
     }
 }
 
-/// @brief Return true if @p opc terminates a basic block (Ret/Br/BCond/Cbz/Cbnz/Tbz/Tbnz).
+/// @brief Test whether an opcode is treated as a basic-block terminator.
+/// @param opc Machine opcode to classify.
+/// @return `true` for returns, direct or conditional branches, test branches,
+///         compare-and-branches, and jump tables.
 static bool isTerminator(MOpcode opc) noexcept {
     switch (opc) {
         case MOpcode::Ret:
@@ -386,7 +430,9 @@ static bool isTerminator(MOpcode opc) noexcept {
 // Flag (NZCV) classification helpers
 // ---------------------------------------------------------------------------
 
-/// @brief Returns true if the opcode sets the NZCV condition flags.
+/// @brief Test whether an opcode defines the implicit NZCV scheduling resource.
+/// @param opc Machine opcode to classify.
+/// @return `true` when @p opc writes condition flags.
 static bool setsFlags(MOpcode opc) noexcept {
     switch (opc) {
         case MOpcode::AddsRRR:
@@ -403,7 +449,9 @@ static bool setsFlags(MOpcode opc) noexcept {
     }
 }
 
-/// @brief Returns true if the opcode reads the NZCV condition flags.
+/// @brief Test whether an opcode consumes the implicit NZCV scheduling resource.
+/// @param opc Machine opcode to classify.
+/// @return `true` when @p opc reads condition flags.
 static bool usesFlags(MOpcode opc) noexcept {
     switch (opc) {
         case MOpcode::BCond:
@@ -420,13 +468,17 @@ static bool usesFlags(MOpcode opc) noexcept {
 // Stack pointer helpers
 // ---------------------------------------------------------------------------
 
-/// @brief Returns true if the opcode implicitly modifies the stack pointer.
+/// @brief Test whether an opcode defines the implicit stack-pointer resource.
+/// @param opc Machine opcode to classify.
+/// @return `true` for the modeled immediate stack-pointer adjustments.
 static bool modifiesSP(MOpcode opc) noexcept {
     return opc == MOpcode::SubSpImm || opc == MOpcode::AddSpImm;
 }
 
 /// @brief Returns true if the opcode implicitly reads the stack pointer
 ///        (SP-relative loads/stores for outgoing arguments).
+/// @param opc Machine opcode to classify.
+/// @return `true` when @p opc depends on the current stack-pointer value.
 static bool usesSP(MOpcode opc) noexcept {
     switch (opc) {
         case MOpcode::StrRegSpImm:
@@ -439,7 +491,9 @@ static bool usesSP(MOpcode opc) noexcept {
     }
 }
 
-/// @brief Returns true if the opcode is a call (Bl or Blr).
+/// @brief Test whether an opcode is a direct or indirect call.
+/// @param opc Machine opcode to classify.
+/// @return `true` for `Bl` or `Blr`; `false` otherwise.
 static bool isCall(MOpcode opc) noexcept {
     return opc == MOpcode::Bl || opc == MOpcode::Blr;
 }
@@ -467,6 +521,10 @@ struct ReadyNode {
 
 /// @brief std::priority_queue comparator for @ref ReadyNode.
 struct ReadyNodeLess {
+    /// @brief Order ready nodes for a max-priority critical-path queue.
+    /// @param lhs Left queue entry.
+    /// @param rhs Right queue entry.
+    /// @return `true` when @p lhs has lower scheduling priority than @p rhs.
     bool operator()(const ReadyNode &lhs, const ReadyNode &rhs) const noexcept {
         if (lhs.critPath != rhs.critPath)
             return lhs.critPath < rhs.critPath;
@@ -478,10 +536,6 @@ struct ReadyNodeLess {
 // Block scheduler
 // ---------------------------------------------------------------------------
 
-/// @brief Reorder the instructions in @p body using critical-path list scheduling.
-/// @param body Instructions to schedule (terminators excluded by caller).
-/// @param target Target info providing caller-saved register lists for ABI-correct barriers.
-/// @return Reordered instruction vector (same multiset, different order).
 /// @brief Build the dependency graph for a single basic-block body.
 /// @details Walks the body in program order, tracking last-def / uses-since-def
 ///          per tracked register slot, an FP-relative memory history, and the
@@ -495,6 +549,10 @@ struct ReadyNodeLess {
 ///            * `memoryHistory` lists every memory access plus call barriers in
 ///              program order; `memoryStoreHistory` is the store-only filter
 ///              used by load-only RAW edges.
+/// @param body Straight-line instruction segment in original program order.
+/// @param target Target description supplying caller-saved GPR and FPR sets.
+/// @return One dependency node per instruction, with deduplicated predecessor
+///         edges and edge latencies.
 static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body,
                                                  const TargetInfo &target) {
     const std::size_t N = body.size();
@@ -502,6 +560,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
     for (std::size_t i = 0; i < N; ++i)
         nodes[i].instrIdx = i;
 
+    /// Add an edge from predecessor @p p to consumer @p i with latency @p lat.
     auto addDep = [&](std::size_t i, std::size_t p, unsigned lat) {
         if (p != i) {
             nodes[i].preds.push_back(p);
@@ -529,6 +588,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         callerSaved.push_back(static_cast<uint32_t>(reg));
 
     // --- Per-dep-type emitters -------------------------------------------------
+    /// Add true dependencies from each physical-register use to its last definition.
     auto emitRegRAW = [&](std::size_t i, const MInstr &mi) {
         for (std::size_t opIdx = 0; opIdx < mi.ops.size(); ++opIdx) {
             const auto roles = ra::operandRoles(mi, opIdx);
@@ -544,6 +604,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
+    /// Add the NZCV definition-to-use edge for a flag-consuming instruction.
     auto emitFlagUse = [&](std::size_t i, const MInstr &mi) {
         if (usesFlags(mi.opc)) {
             if (lastDef[kIdxNZCV] != kNone)
@@ -552,6 +613,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
+    /// Serialize implicit SP reads and writes while preserving WAR and WAW order.
     auto emitStackPointer = [&](std::size_t i, const MInstr &mi) {
         if (usesSP(mi.opc)) {
             if (lastDef[kIdxSP] != kNone)
@@ -568,6 +630,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
+    /// Add conservative alias dependencies and record the current memory access.
     auto emitMemoryDeps = [&](std::size_t i, const MInstr &mi) {
         const bool memLoad = isLoad(mi.opc);
         const bool memStore = isStore(mi.opc);
@@ -593,6 +656,8 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
             memoryStoreHistory.push_back(entry);
     };
 
+    /// Make a call depend on prior memory effects, live caller-saved definitions,
+    /// and the most recent NZCV definition, then record a full memory barrier.
     auto emitCallBarrier = [&](std::size_t i, const MInstr &mi) {
         if (!isCall(mi.opc))
             return;
@@ -610,6 +675,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         memoryStoreHistory.push_back(barrier);
     };
 
+    /// Add WAW/WAR edges for explicit definitions and update register state.
     auto emitRegDefs = [&](std::size_t i, const MInstr &mi) {
         for (std::size_t opIdx = 0; opIdx < mi.ops.size(); ++opIdx) {
             const auto [isUse, isDef] = ra::operandRoles(mi, opIdx);
@@ -629,6 +695,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
+    /// Add WAW/WAR edges for an NZCV definition and update flag state.
     auto emitFlagDef = [&](std::size_t i, const MInstr &mi) {
         if (!setsFlags(mi.opc))
             return;
@@ -640,6 +707,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         lastDef[kIdxNZCV] = i;
     };
 
+    /// Model a call as definitions of caller-saved registers and NZCV.
     auto emitCallClobbers = [&](std::size_t i, const MInstr &mi) {
         if (!isCall(mi.opc))
             return;
@@ -712,6 +780,18 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
     return nodes;
 }
 
+/// @brief Reorder one straight-line segment using critical-path list scheduling.
+///
+/// Dependency-ready instructions are prioritized by descending critical-path
+/// length, with original instruction index as the deterministic tie breaker.
+/// Segments with zero or one instruction, or more than the configured bound,
+/// are returned unchanged. If dependency construction unexpectedly yields a
+/// cycle, unscheduled instructions are appended in their original order.
+///
+/// @param body Instructions to schedule; boundary instructions are excluded by
+///             the caller.
+/// @param target Target information used to model ABI call clobbers.
+/// @return A vector containing exactly the input instructions in scheduled order.
 static std::vector<MInstr> scheduleBlock(const std::vector<MInstr> &body,
                                          const TargetInfo &target) {
     const std::size_t N = body.size();
@@ -814,6 +894,10 @@ static std::vector<MInstr> scheduleBlock(const std::vector<MInstr> &body,
 /// @brief Apply list scheduling to every basic block in @p fn.
 /// @details Partitions each block into schedulable body segments at call/guard-branch
 ///          boundaries; terminators are always appended in original relative order.
+///          Functions exceeding the configured instruction limit are retained
+///          unchanged.
+/// @param[in,out] fn Allocated MIR function whose eligible blocks are reordered.
+/// @param target Target information used by each segment's dependency model.
 static void scheduleFunction(MFunction &fn, const TargetInfo &target) {
     std::size_t instructionCount = 0;
     for (const auto &bb : fn.blocks) {
@@ -891,6 +975,7 @@ static void scheduleFunction(MFunction &fn, const TargetInfo &target) {
 // Pass implementation
 // ---------------------------------------------------------------------------
 
+/// @copydoc SchedulerPass::run
 bool SchedulerPass::run(AArch64Module &module, Diagnostics &diags) {
     if (module.ti == nullptr) {
         diags.error("aarch64 scheduler: target info is required");

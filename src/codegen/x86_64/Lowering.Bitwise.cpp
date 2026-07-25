@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Lowering.Bitwise.cpp
+// File: src/codegen/x86_64/Lowering.Bitwise.cpp
 // Purpose: Implement bitwise opcode lowering rules for the x86-64 backend.
 //          Emitters rely on EmitCommon to manage register materialisation and
 //          operand cloning.
@@ -14,9 +14,9 @@
 //   - Resulting machine instructions operate on GPR registers only.
 // Ownership/Lifetime:
 //   - Operates on borrowed IL instructions and MIR builders; no ownership transfer.
-// Links: codegen/x86_64/LoweringRules.hpp,
-//        codegen/x86_64/Lowering.EmitCommon.hpp,
-//        codegen/x86_64/MachineIR.hpp
+// Links: src/codegen/x86_64/LoweringRules.hpp,
+//        src/codegen/x86_64/Lowering.EmitCommon.hpp,
+//        src/codegen/x86_64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,10 +26,21 @@
 #include "Lowering.EmitCommon.hpp"
 #include "Unsupported.hpp"
 
+/**
+ * @file
+ * @brief Implements GPR bitwise and shift rules for the x86-64 IL bridge.
+ *
+ * AND, OR, and XOR select legal register/immediate forms through EmitCommon.
+ * Shift rules delegate count materialization so constants use immediate forms
+ * and variable counts satisfy x86-64's fixed RCX/CL constraint.
+ */
+
 namespace zanna::codegen::x64::lowering {
 namespace {
 
 /// @brief True if @p kind is integer-like (I64/I1/PTR) and thus GPR-eligible.
+/// @param kind IL value kind to classify.
+/// @return @c true for values represented in the integer register bank.
 [[nodiscard]] bool isIntegerLikeKind(ILValue::Kind kind) noexcept {
     return kind == ILValue::Kind::I64 || kind == ILValue::Kind::I1 || kind == ILValue::Kind::PTR;
 }
@@ -37,6 +48,10 @@ namespace {
 /// @brief Assert a bitwise op's result is integer-like and maps to a GPR.
 /// @details Bitwise opcodes only have GPR encodings; a non-integer or
 ///          non-GPR result raises phaseAUnsupported(@p context).
+/// @param instr Instruction whose result type is validated.
+/// @param builder Builder used to resolve the target register class.
+/// @param context Diagnostic text reported on mismatch.
+/// @throws std::runtime_error Through @c phaseAUnsupported for an invalid result.
 void requireBitwiseResult(const ILInstr &instr, MIRBuilder &builder, const char *context) {
     if (!isIntegerLikeKind(instr.resultKind) ||
         builder.regClassFor(instr.resultKind) != RegClass::GPR) {

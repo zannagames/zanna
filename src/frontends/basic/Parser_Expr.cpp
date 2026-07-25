@@ -12,6 +12,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file Parser_Expr.cpp
+/// @brief Implements Pratt parsing and literal construction for BASIC expressions.
+/// @details Static parselet tables define operator binding and associativity;
+///          parser members construct owned AST nodes for literals, calls,
+///          references, allocation, casts, intrinsics, and postfix member chains.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/BuiltinRegistry.hpp"
 #include "frontends/basic/Parser.hpp"
@@ -30,18 +36,28 @@
 
 namespace il::frontends::basic {
 namespace {
+/// @brief Associativity used to derive the right-hand binding power.
 enum class Assoc { Left, Right };
 
+/// @brief Prefix-token mapping to a unary AST operator and binding power.
 struct PrefixParselet {
+    /// Token that introduces the prefix expression.
     TokenKind kind;
+    /// Unary AST operation to construct.
     UnaryExpr::Op op;
+    /// Binding power used for the operand.
     int rbp;
 };
 
+/// @brief Infix-token mapping to a binary AST operator and binding behavior.
 struct InfixParselet {
+    /// Token separating the operands.
     TokenKind kind;
+    /// Binary AST operation to construct.
     BinaryExpr::Op op;
+    /// Left binding power of the operator.
     int lbp;
+    /// Rule used to compute right binding power.
     Assoc assoc;
 };
 
@@ -55,6 +71,7 @@ constexpr std::array<PrefixParselet, 3> prefixParselets{
     PrefixParselet{TokenKind::Minus, UnaryExpr::Op::Negate, 4},
 };
 
+/// Infix operators and their BASIC binding/associativity rules.
 constexpr std::array<InfixParselet, 18> infixParselets{
     InfixParselet{TokenKind::Caret, BinaryExpr::Op::Pow, 7, Assoc::Right},
     InfixParselet{TokenKind::Star, BinaryExpr::Op::Mul, 5, Assoc::Left},
@@ -79,7 +96,9 @@ constexpr std::array<InfixParselet, 18> infixParselets{
 /// @brief Direct-index lookup table mapping TokenKind -> PrefixParselet pointer.
 /// @details Built once at static-init time from the prefixParselets array.
 ///          O(1) lookup replaces the previous linear search.
+/// @return Const reference to the process-lifetime lookup table.
 const auto &prefixLookup() {
+    /// Build the immutable token-indexed prefix table.
     static const auto table = [] {
         constexpr auto count = static_cast<size_t>(TokenKind::Count);
         std::array<const PrefixParselet *, count> tbl{};
@@ -94,7 +113,9 @@ const auto &prefixLookup() {
 /// @brief Direct-index lookup table mapping TokenKind -> InfixParselet pointer.
 /// @details Built once at static-init time from the infixParselets array.
 ///          O(1) lookup replaces the previous linear search.
+/// @return Const reference to the process-lifetime lookup table.
 const auto &infixLookup() {
+    /// Build the immutable token-indexed infix table.
     static const auto table = [] {
         constexpr auto count = static_cast<size_t>(TokenKind::Count);
         std::array<const InfixParselet *, count> tbl{};
@@ -273,9 +294,12 @@ ExprPtr Parser::parseBinary(int min_prec) {
         return nullptr;
     }
 
+    /// @brief Restores the parser's expression-depth counter on every exit path.
     struct DepthGuard {
+        /// Counter incremented by the current parseBinary invocation.
         unsigned &d;
 
+        /// @brief Leave the current expression-recursion level.
         ~DepthGuard() {
             --d;
         }
@@ -330,10 +354,10 @@ ExprPtr Parser::parseBinary(int min_prec) {
 /// @details Consumes a token classified as TokenKind::Number and constructs the corresponding BASIC
 /// literal node. Presence of a decimal point, exponent, or type-marker suffix (%/&/!/ #) determines
 /// whether an IntExpr or FloatExpr is emitted and records explicit suffix intent on the AST node.
-/// The lexer guarantees the lexeme conforms to the numeric grammar, so no diagnostics are produced
-/// here; the standard library conversion falls back to zero on malformed values, matching BASIC's
-/// permissive semantics.
-/// @return Newly allocated numeric literal expression.
+/// Based integers accept `&H`, `&B`, `0x`, and `0b` prefixes and interpret a full-width unsigned
+/// value as a signed two's-complement bit pattern. Invalid, overflowing, or non-finite conversions
+/// emit an error, consume the token, and return a zero-valued recovery node.
+/// @return Newly allocated numeric literal or zero-valued recovery expression.
 ExprPtr Parser::parseNumber() {
     auto loc = peek().loc;
     std::string lex = peek().lexeme;
@@ -588,10 +612,10 @@ ExprPtr Parser::parseArrayOrVar() {
 /// @brief Parse a BASIC primary expression.
 /// @details Covers literals, boolean keywords, builtin invocations, identifier references, and
 /// parenthesized expressions per `primary := number | string | boolean | builtin-call |
-/// identifier | '(' expression ')'`. When no valid production applies, the parser returns a zero
-/// literal as error recovery; any diagnostics should already have been issued by the routines that
-/// attempted to parse the unexpected token.
-/// @return Parsed primary expression node, never null.
+/// identifier | '(' expression ')'`, plus object-oriented and channel/bound intrinsic forms. An
+/// unexpected token produces `B0008` and a zero-valued recovery node; nested expression parsing may
+/// still propagate a null result after the recursion guard fires.
+/// @return Parsed primary or recovery expression, or null when a nested parse aborts.
 ExprPtr Parser::parsePrimary() {
     if (at(TokenKind::Number))
         return parseNumber();
@@ -712,6 +736,7 @@ ExprPtr Parser::parsePrimary() {
                 // call and let parsePostfix handle it as member access + method call.
                 // This fixes chained method calls like obj.field.Method().
                 // Note: Use case-insensitive comparison since BASIC is case-insensitive.
+                /// Compare the candidate namespace head using BASIC's casing rules.
                 bool isKnownNamespace =
                     std::any_of(knownNamespaces_.begin(),
                                 knownNamespaces_.end(),
@@ -765,7 +790,10 @@ ExprPtr Parser::parsePrimary() {
 }
 
 /// @brief Parse a NEW expression allocating a class instance.
-/// @return Newly allocated expression node.
+/// @details Consumes a possibly qualified class name followed by an optional
+///          parenthesized argument list and records both the joined and segmented
+///          class spellings in the AST.
+/// @return Newly allocated NEW expression, including partial recovery data after errors.
 ExprPtr Parser::parseNewExpression() {
     auto loc = peek().loc;
     consume();
@@ -813,6 +841,12 @@ ExprPtr Parser::parseNewExpression() {
     return expr;
 }
 
+/// @brief Parse one or more dot-separated member-identifier tokens.
+/// @details Keyword tokens accepted by `isMemberIdentToken` are allowed in every
+///          segment. A dot not followed by an accepted segment is consumed and
+///          terminates collection.
+/// @return Parsed spellings and the first segment's location, or an empty vector
+///         and invalid location when the current token cannot begin a segment.
 std::pair<std::vector<std::string>, il::support::SourceLoc> Parser::parseQualifiedIdentSegments() {
     std::vector<std::string> segs;
     il::support::SourceLoc startLoc{};

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/binenc/A64Encoding.hpp
+// File: src/codegen/aarch64/binenc/A64Encoding.hpp
 // Purpose: AArch64 instruction encoding constants, templates, and helpers for
 //          the binary encoder. Provides 32-bit instruction templates for each
 //          opcode class, register-to-hardware mapping, and condition code encoding.
@@ -16,9 +16,9 @@
 //   - Condition codes are 4-bit values; inversion flips the LSB
 // Ownership/Lifetime:
 //   - Helpers are inline and stateless; invalid runtime inputs throw
-// Links: codegen/aarch64/TargetAArch64.hpp,
-//        codegen/aarch64/binenc/A64BinaryEncoder.hpp,
-//        codegen/aarch64/binenc/A64BinaryEncoder.cpp
+// Links: src/codegen/aarch64/TargetAArch64.hpp,
+//        src/codegen/aarch64/binenc/A64BinaryEncoder.hpp,
+//        src/codegen/aarch64/binenc/A64BinaryEncoder.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,6 +30,15 @@
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
+
+/**
+ * @file
+ * @brief Defines AArch64 instruction templates and field-packing helpers.
+ *
+ * Constants provide fixed opcode bits for the binary emitter. Helper functions
+ * map Zanna register/condition representations to architectural fields and
+ * encode the nontrivial logical and floating-point immediate formats.
+ */
 
 namespace zanna::codegen::aarch64::binenc {
 
@@ -388,14 +397,27 @@ constexpr uint32_t encode2Reg(uint32_t tmpl, uint32_t rd, uint32_t rn) {
 // Logical Immediate Encoding
 // =============================================================================
 
-/// Encode a 64-bit bitmask as a 13-bit AArch64 logical immediate (N:immr:imms).
-/// Returns the 13-bit encoding on success, or -1 if the value is not encodable.
-/// The algorithm finds the smallest repeating element size whose rotation produces
-/// the input value. See ARM ARM section C6.2.
+/**
+ * @brief Encodes a 64-bit bitmask as `N:immr:imms`.
+ *
+ * The architectural parameter space is searched by element width, run length,
+ * and rotation. Candidate elements are replicated to 64 bits and compared with
+ * the requested value.
+ *
+ * @param val Logical-immediate bit pattern.
+ * @return Packed 13-bit encoding, or `-1` when @p val is not encodable.
+ */
 inline int32_t encodeLogicalImmediate(uint64_t val) {
     if (val == 0 || val == ~0ULL)
         return -1; // All-zeros and all-ones are not encodable.
 
+    /**
+     * @brief Rotates an element right within a selected bit width.
+     * @param bits Element bits before masking.
+     * @param rot Rotation count.
+     * @param width Element width from the architectural set.
+     * @return Masked, rotated element.
+     */
     auto ror = [](uint64_t bits, unsigned rot, unsigned width) -> uint64_t {
         const uint64_t mask = (width == 64) ? ~0ULL : ((1ULL << width) - 1);
         bits &= mask;
@@ -405,6 +427,12 @@ inline int32_t encodeLogicalImmediate(uint64_t val) {
         return ((bits >> rot) | (bits << (width - rot))) & mask;
     };
 
+    /**
+     * @brief Replicates an element until it fills a 64-bit value.
+     * @param elem Low-width element bits.
+     * @param width Element width dividing 64.
+     * @return Replicated 64-bit pattern.
+     */
     auto replicate = [](uint64_t elem, unsigned width) -> uint64_t {
         if (width == 64)
             return elem;
@@ -456,9 +484,16 @@ inline uint32_t encodeLogImm(uint32_t tmpl, uint32_t rd, uint32_t rn, int32_t ni
 /// FMOV Dd, #imm8 instruction template.
 inline constexpr uint32_t kFMovDImm = 0x1E601000;
 
-/// Encode a double-precision FP value as an 8-bit AArch64 FP immediate.
-/// Returns the 8-bit encoding on success, or -1 if not encodable.
-/// Encodable values: ±(1 + n/16) * 2^r where n ∈ [0,15], r ∈ [-3,4].
+/**
+ * @brief Encodes a binary64 value in AArch64's 8-bit FP-immediate format.
+ *
+ * Encodable values have the form `±(1 + n/16) * 2^r`, where `n` is in
+ * `[0, 15]` and `r` is in `[-3, 4]`.
+ *
+ * @param val Floating-point value to encode exactly.
+ * @return Packed 8-bit immediate, or `-1` if the exponent or mantissa cannot
+ *         be represented.
+ */
 inline int32_t encodeFP8Immediate(double val) {
     uint64_t bits;
     std::memcpy(&bits, &val, sizeof(bits));

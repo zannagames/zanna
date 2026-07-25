@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/BinaryEmitPass.hpp
+// File: src/codegen/aarch64/passes/BinaryEmitPass.hpp
 // Purpose: Declare the binary emission pass for the AArch64 codegen pipeline.
 //          Encodes MIR into machine code bytes via A64BinaryEncoder.
 // Key invariants:
@@ -13,7 +13,8 @@
 //   - Populates AArch64Module::binaryText and AArch64Module::binaryRodata
 // Ownership/Lifetime:
 //   - Stateless pass; mutates AArch64Module binary fields
-// Links: codegen/aarch64/binenc/A64BinaryEncoder.hpp
+// Links: src/codegen/aarch64/binenc/A64BinaryEncoder.hpp,
+//        src/codegen/aarch64/passes/PassManager.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,15 +22,29 @@
 
 #include "codegen/aarch64/passes/PassManager.hpp"
 
+/**
+ * @file
+ * @brief Declares the AArch64 direct binary-emission pipeline pass.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
-/// @brief Encode all MIR functions into machine code bytes.
+/**
+ * @brief Encodes allocated MIR plus module data into object-writer sections.
+ *
+ * The pass owns no persistent state; all products are stored in the supplied
+ * `AArch64Module`.
+ */
 class BinaryEmitPass final : public Pass {
   public:
-    /// @brief Run the binary emission pass.
-    /// @param module Module state; mir must have physical registers assigned.
-    /// @param diags  Diagnostic sink for emission errors.
-    /// @return True if emission succeeded for all functions.
+    /**
+     * @brief Runs direct binary emission for every MIR function.
+     * @param[in,out] module Module whose text, rodata, data, and optional debug
+     *        products are replaced.
+     * @param[in,out] diags Diagnostic sink for validation/encoding failures.
+     * @return `true` when every function and section was emitted.
+     * @pre `module.ti` is non-null and MIR register allocation is complete.
+     */
     bool run(AArch64Module &module, Diagnostics &diags) override;
 };
 

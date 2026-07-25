@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
+/// @file LowererFwd.hpp
 /// @brief Forward declarations for the BASIC lowering subsystem.
 /// @details Provides lightweight type declarations so clients can reference
 ///          lowering types without including the full lowering headers. This

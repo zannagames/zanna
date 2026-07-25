@@ -14,6 +14,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file SemanticAnalyzer_Stmts_Control.cpp
+/// @brief Implements control-flow statement entry points and scoped TRY/USING checks.
+/// @details Most routines adapt the main analyzer to modular `sem::` checkers.
+///          TRY/CATCH and resource USING manage lexical bindings directly;
+///          RETURN adds declared-result compatibility warnings; error-handler
+///          accessors maintain procedure-local handler state.
+
 #include "frontends/basic/SemanticAnalyzer_Stmts_Control.hpp"
 
 #include "frontends/basic/sem/Check_Common.hpp"
@@ -21,111 +28,88 @@
 
 namespace il::frontends::basic {
 
-/// @brief Type-check and normalise a condition expression.
-///
-/// @details Delegates to @ref sem::checkConditionExpr, which verifies BASIC
-///          truthiness rules and applies implicit casts through the analyzer's
-///          diagnostic machinery.
-///
-/// @param expr Condition expression to validate.
+/// @brief Delegates boolean-condition validation to the control checker.
+/// @param expr Mutable condition that may receive conversion metadata.
 void SemanticAnalyzer::checkConditionExpr(Expr &expr) {
     sem::checkConditionExpr(*this, expr);
 }
 
-/// @brief Perform semantic analysis for an IF statement tree.
-///
-/// @details Keeps the user-facing analyzer API thin by forwarding to
-///          @ref sem::analyzeIf, which manages branch contexts, label balance,
-///          and expression typing for conditional blocks.
-///
-/// @param stmt IF statement to analyse.
+/// @brief Delegates IF condition and branch analysis.
+/// @param stmt IF/ELSEIF/ELSE tree borrowed during traversal.
 void SemanticAnalyzer::analyzeIf(const IfStmt &stmt) {
     sem::analyzeIf(*this, stmt);
 }
 
-/// @brief Analyse the header of a SELECT CASE statement.
-///
-/// @details @ref sem::analyzeSelectCase performs selector typing, pushes the
-///          control-flow context, and prepares case arm metadata.  This wrapper
-///          provides a stable entry point for the rest of the analyzer.
-///
-/// @param stmt SELECT CASE statement node.
+/// @brief Delegates full SELECT CASE validation and body traversal.
+/// @details The checker classifies the selector, validates arms cumulatively,
+///          stops at the first invalid arm, and analyzes each accepted arm in a
+///          fresh lexical scope. A non-empty else body is analyzed last.
+/// @param stmt SELECT CASE statement to inspect.
 void SemanticAnalyzer::analyzeSelectCase(const SelectCaseStmt &stmt) {
     sem::analyzeSelectCase(*this, stmt);
 }
 
-/// @brief Validate the statements nested within a SELECT CASE arm.
-///
-/// @details Forwards to @ref sem::analyzeSelectCaseBody so the specialised
-///          checker can ensure fall-through semantics, EXIT CASE handling, and
-///          nested control structures obey BASIC rules.
-///
-/// @param body Statements forming the SELECT CASE body.
+/// @brief Analyzes a CASE body in a fresh lexical scope.
+/// @param body Ordered statement pointers; null entries are skipped.
 void SemanticAnalyzer::analyzeSelectCaseBody(const std::vector<StmtPtr> &body) {
     sem::analyzeSelectCaseBody(*this, body);
 }
 
 SemanticAnalyzer::SelectCaseSelectorInfo
-/// @brief Categorise the SELECT CASE selector expression.
-///
-/// @details Creates a @ref sem::ControlCheckContext to capture loop/label
-///          information and then defers to
-///          @ref sem::detail::classifySelectCaseSelector for the core logic.
-///          The resulting descriptor informs arm validation and diagnostics.
-///
-/// @param stmt SELECT CASE statement whose selector should be classified.
-/// @return Descriptor describing selector type and comparison mode.
+/// @brief Classifies a SELECT CASE selector as integer, string, or invalid.
+/// @details A missing or unknown selector produces an all-false nonfatal
+///          descriptor. Integer records an integer conversion; string records
+///          string mode. Every other known type emits the SELECT selector
+///          diagnostic and marks the result fatal.
+/// @param stmt Statement whose selector is evaluated.
+/// @return Selector mode and fatal-error flags.
 SemanticAnalyzer::classifySelectCaseSelector(const SelectCaseStmt &stmt) {
     sem::ControlCheckContext context(*this);
     return sem::detail::classifySelectCaseSelector(context, stmt);
 }
 
-/// @brief Validate structural constraints shared by all SELECT CASE arms.
-///
-/// @details Delegates to @ref sem::detail::validateSelectCaseArm to examine
-///          label uniqueness, exclusivity, and other invariants common to both
-///          numeric and string selectors.
-///
-/// @param arm Case arm under inspection.
-/// @param ctx Working context describing selector metadata.
-/// @return True when the arm satisfies general constraints.
+/// @brief Validates one CASE arm against cumulative SELECT state.
+/// @details Handles CASE ELSE counting, mixed label kinds, selector/label
+///          compatibility, duplicate labels, range validity, and interval
+///          collisions while updating @p ctx.
+/// @param arm Arm to validate.
+/// @param ctx Mutable cumulative state shared by earlier/later arms.
+/// @return @c true when no arm diagnostic was emitted.
 bool SemanticAnalyzer::validateSelectCaseArm(const CaseArm &arm, SelectCaseArmContext &ctx) {
     return sem::detail::validateSelectCaseArm(arm, ctx);
 }
 
-/// @brief Validate SELECT CASE arms specialised for string selectors.
-///
-/// @details Forwards to @ref sem::detail::validateSelectCaseStringArm, which
-///          enforces case-insensitive comparisons and duplicate string checks.
-///
-/// @param arm String case arm to validate.
-/// @param ctx Selector context describing the enclosing SELECT CASE.
-/// @return True when the arm adheres to string rules.
+/// @brief Validates and records the string labels in one CASE arm.
+/// @details Rejects string labels for numeric selectors, checks cross-arm label
+///          kind consistency, and detects duplicate strings using the context's
+///          exact string set.
+/// @param arm Arm whose string labels are inspected.
+/// @param ctx Mutable cumulative SELECT state.
+/// @return @c true when all string checks pass.
 bool SemanticAnalyzer::validateSelectCaseStringArm(const CaseArm &arm, SelectCaseArmContext &ctx) {
     return sem::detail::validateSelectCaseStringArm(arm, ctx);
 }
 
-/// @brief Validate SELECT CASE arms for numeric selectors.
-///
-/// @details The numeric helper checks interval ordering, overlapping ranges, and
-///          implicit conversions via @ref sem::detail::validateSelectCaseNumericArm.
-///
-/// @param arm Numeric case arm to validate.
-/// @param ctx Selector context describing the active statement.
-/// @return True when numeric constraints are satisfied.
+/// @brief Validates and records numeric CASE labels, ranges, and relations.
+/// @details Rejects numeric labels for string selectors, enforces signed 32-bit
+///          bounds and range ordering, and detects collisions among exact
+///          labels, inclusive ranges, and relational intervals.
+/// @param arm Arm whose numeric predicates are inspected.
+/// @param ctx Mutable cumulative SELECT state.
+/// @return @c true when all numeric checks pass.
 bool SemanticAnalyzer::validateSelectCaseNumericArm(const CaseArm &arm, SelectCaseArmContext &ctx) {
     return sem::detail::validateSelectCaseNumericArm(arm, ctx);
 }
 
-/// @brief Perform semantic analysis for a TRY/CATCH statement.
-///
-/// - Analyzes the TRY body in the current scope (no new scope).
-/// - Begins a new local scope for the CATCH body.
-/// - If a catch variable is present, declares it as a local of INTEGER (i64) type
-///   scoped to the CATCH body. Initialization occurs during lowering.
-/// - Issues a warning if both TRY and CATCH bodies are empty.
-/// - Duplicate declaration of the catch variable within the same (catch) scope
-///   is forbidden and reported consistently with local duplication rules.
+/// @brief Analyzes TRY, CATCH, and FINALLY bodies with catch binding state.
+/// @details Visits TRY in the surrounding lexical scope and warns with `B3203`
+///          only when all three bodies are empty. It then pushes one scope,
+///          optionally declares a unique integer catch variable while logging
+///          procedure rollback state, and visits CATCH followed by FINALLY.
+///          Under the current lifetime of the scope guard, FINALLY shares the
+///          catch scope and can resolve the catch binding. Lowering performs
+///          catch-variable initialization.
+/// @param stmt Structured handler statement to analyze.
 void SemanticAnalyzer::visit(const TryCatchStmt &stmt) {
     // Analyze TRY body under the existing scope.
     for (const auto &st : stmt.tryBody)
@@ -187,17 +171,13 @@ void SemanticAnalyzer::visit(const TryCatchStmt &stmt) {
             visitStmt(*st);
 }
 
-/// @brief Perform semantic checks for USING resource statements.
-///
-/// @details The USING statement declares a scoped resource variable and guarantees
-///          cleanup at scope exit. This method:
-/// - Begins a new local scope for the USING body.
-/// - Declares the resource variable as a local of Object type.
-/// - Analyzes the initializer expression.
-/// - Analyzes the body statements within the new scope.
-/// - Duplicate declaration is forbidden and reported consistently.
-///
-/// @param stmt USING statement to analyze.
+/// @brief Validates a scoped resource USING statement.
+/// @details Pushes a lexical scope, declares a non-empty resource name as an
+///          object local while logging procedure rollback state, then analyzes
+///          the initializer and body inside that same scope. A known
+///          non-object initializer emits `B3204`; unknown is tolerated for
+///          recovery. Same-scope duplicate names emit `B1006`.
+/// @param stmt Resource declaration, initializer, and body to analyze.
 void SemanticAnalyzer::visit(const UsingStmt &stmt) {
     // Begin a new scope for the USING body; the resource variable is local to it.
     ScopeTracker::ScopedScope usingScope(scopes_);
@@ -253,79 +233,74 @@ void SemanticAnalyzer::visit(const UsingStmt &stmt) {
             visitStmt(*st);
 }
 
-/// @brief Perform semantic checks for WHILE loops.
-///
+/// @brief Delegates WHILE condition/body and loop-stack validation.
 /// @param stmt WHILE statement to analyse.
 void SemanticAnalyzer::analyzeWhile(const WhileStmt &stmt) {
     sem::analyzeWhile(*this, stmt);
 }
 
-/// @brief Analyse DO/LOOP constructs, including UNTIL/WHILE variants.
-///
+/// @brief Delegates DO/LOOP condition/body and loop-stack validation.
 /// @param stmt DO statement node.
 void SemanticAnalyzer::analyzeDo(const DoStmt &stmt) {
     sem::analyzeDo(*this, stmt);
 }
 
-/// @brief Analyse FOR/NEXT loop semantics and iterator binding.
-///
+/// @brief Delegates numeric FOR typing, binding, and body validation.
 /// @param stmt FOR statement being analysed.
 void SemanticAnalyzer::analyzeFor(ForStmt &stmt) {
     sem::analyzeFor(*this, stmt);
 }
 
-/// @brief Analyse FOR EACH array iteration semantics.
-///
+/// @brief Delegates FOR EACH iterator/container and body validation.
 /// @param stmt FOR EACH statement being analysed.
 void SemanticAnalyzer::analyzeForEach(ForEachStmt &stmt) {
     sem::analyzeForEach(*this, stmt);
 }
 
-/// @brief Resolve the target of a GOTO statement and validate reachability.
-///
+/// @brief Delegates GOTO target recording/validation.
 /// @param stmt GOTO statement node.
 void SemanticAnalyzer::analyzeGoto(const GotoStmt &stmt) {
     sem::analyzeGoto(*this, stmt);
 }
 
-/// @brief Analyse a GOSUB invocation, recording return expectations.
-///
+/// @brief Delegates GOSUB target and protocol validation.
 /// @param stmt GOSUB statement node.
 void SemanticAnalyzer::analyzeGosub(const GosubStmt &stmt) {
     sem::analyzeGosub(*this, stmt);
 }
 
-/// @brief Process an ON ERROR GOTO statement.
-///
+/// @brief Delegates ON ERROR target/handler-state validation.
 /// @param stmt ON ERROR GOTO statement to analyse.
 void SemanticAnalyzer::analyzeOnErrorGoto(const OnErrorGoto &stmt) {
     sem::analyzeOnErrorGoto(*this, stmt);
 }
 
-/// @brief Analyse a NEXT statement, pairing it with its FOR ancestor.
-///
+/// @brief Delegates NEXT/FOR pairing validation.
 /// @param stmt NEXT statement to process.
 void SemanticAnalyzer::analyzeNext(const NextStmt &stmt) {
     sem::analyzeNext(*this, stmt);
 }
 
-/// @brief Validate EXIT statements (EXIT FOR/DO/SUB, etc.).
-///
+/// @brief Delegates EXIT target validation against active construct kinds.
 /// @param stmt EXIT statement to validate.
 void SemanticAnalyzer::analyzeExit(const ExitStmt &stmt) {
     sem::analyzeExit(*this, stmt);
 }
 
-/// @brief Analyse RESUME statements for error-handling flows.
-///
+/// @brief Delegates RESUME validation against active handler state.
 /// @param stmt RESUME statement node.
 void SemanticAnalyzer::analyzeResume(const Resume &stmt) {
     sem::analyzeResume(*this, stmt);
 }
 
-/// @brief Validate RETURN statements from procedures and functions.
-///
-/// @param stmt RETURN statement subject to analysis.
+/// @brief Validates RETURN control context and declared scalar result category.
+/// @details The shared checker handles procedure versus top-level GOSUB return
+///          semantics and may mutate @c isGosubReturn or clear an active error
+///          handler. A present value is always visited. For an active FUNCTION
+///          with an explicit int/float/string return type, only string-versus-
+///          numeric category mismatches emit warning `B4010`; unknown and
+///          int/float differences are tolerated here.
+/// @param stmt Mutable RETURN statement and optional value.
 void SemanticAnalyzer::analyzeReturn(ReturnStmt &stmt) {
     sem::analyzeReturn(*this, stmt);
 
@@ -359,31 +334,28 @@ void SemanticAnalyzer::analyzeReturn(ReturnStmt &stmt) {
     }
 }
 
-/// @brief Handle END statements that terminate program execution.
-///
-/// @param EndStmt Unused parameter naming suppressed intentionally.
+/// @brief Accepts END without additional semantic state changes.
+/// @details Program termination semantics are handled by later stages.
 void SemanticAnalyzer::analyzeEnd(const EndStmt &) {
     // nothing
 }
 
-/// @brief Activate an error handler targeting the supplied label.
-///
+/// @brief Activates an error handler and records its numeric target.
 /// @param label Numeric line label associated with the handler entry point.
+/// @post @ref hasActiveErrorHandler returns @c true and the target is @p label.
 void SemanticAnalyzer::installErrorHandler(int label) {
     errorHandlerActive_ = true;
     errorHandlerTarget_ = label;
 }
 
-/// @brief Clear the currently installed error handler state.
+/// @brief Deactivates the current error handler and removes its target.
 void SemanticAnalyzer::clearErrorHandler() {
     errorHandlerActive_ = false;
     errorHandlerTarget_.reset();
 }
 
-/// @brief Determine whether an ON ERROR handler is currently active.
-///
-/// @return True when @ref installErrorHandler has been called without a matching
-///         @ref clearErrorHandler.
+/// @brief Reports the current error-handler active flag.
+/// @return @c true after installation and before clearing/scope restoration.
 bool SemanticAnalyzer::hasActiveErrorHandler() const noexcept {
     return errorHandlerActive_;
 }

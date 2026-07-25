@@ -16,6 +16,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file NumericRules.hpp
+/// @brief Defines shared constexpr numeric classification and promotion rules.
+/// @details These stateless helpers keep semantic-analysis types and IL lowering
+///          types on explicit, parallel paths. Unknown semantic types are
+///          accepted by selected predicates to suppress cascading diagnostics;
+///          the IL helpers operate only on concrete core type kinds.
+
 #pragma once
 
 #include "frontends/basic/SemanticAnalyzer.hpp"
@@ -108,21 +115,22 @@ using SemType = SemanticAnalyzer::Type;
 }
 
 /// @brief Compute result type for integer division (\) and modulus (MOD).
-/// @details These operations always produce Int.
+/// @details These operations always produce Int; both input values are ignored.
 /// @return Always Int.
 [[nodiscard]] constexpr SemType integerOnlyResultType(SemType, SemType) noexcept {
     return SemType::Int;
 }
 
 /// @brief Compute result type for exponentiation (^).
-/// @details BASIC exponentiation always produces Float (Double in runtime).
+/// @details BASIC exponentiation always produces Float (Double in runtime);
+///          both input values are ignored.
 /// @return Always Float.
 [[nodiscard]] constexpr SemType powerResultType(SemType, SemType) noexcept {
     return SemType::Float;
 }
 
 /// @brief Compute result type for comparison operators.
-/// @details All comparisons produce Bool.
+/// @details All comparisons produce Bool; both input values are ignored.
 /// @return Always Bool.
 [[nodiscard]] constexpr SemType comparisonResultType(SemType, SemType) noexcept {
     return SemType::Bool;

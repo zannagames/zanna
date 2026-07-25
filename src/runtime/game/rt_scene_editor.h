@@ -11,6 +11,9 @@
 //   - SceneDocument loads never publish partially parsed external documents.
 //   - Tiled filesystem and asset-package dependency resolution are separate,
 //     explicit entry points with Result companions for recoverable failures.
+//   - Tile-behavior (collision/tileProperties/animations/autotiles) and
+//     camera/lighting sections load into typed state, serialize canonically,
+//     and retain unrecognized members verbatim.
 //
 // Ownership/Lifetime:
 //   - Returned SceneDocument and Result handles are owned runtime objects.
@@ -20,7 +23,9 @@
 //   docs/adr/0140-tiled-map-and-scene-import.md,
 //   docs/adr/0174-scene-object-authoring-metadata-and-duplication.md,
 //   docs/adr/0164-backward-compatible-2d-scene-object-hierarchy.md,
-//   docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md
+//   docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md,
+//   docs/adr/0176-typed-tile-behavior-sections.md,
+//   docs/adr/0177-scene-camera-and-lighting-sections.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -141,6 +146,60 @@ int64_t rt_game_scene_find_object(void *scene, rt_string id);
 /// @return Opaque Zanna.Option containing the object index, or None.
 void *rt_game_scene_find_object_option(void *scene, rt_string id);
 void rt_game_scene_move_object(void *scene, int64_t from, int64_t to);
+
+/// @brief Return one tile's authored collision kind (0 none, 1 solid, 2 one-way-up).
+int64_t rt_game_scene_tile_collision(void *scene, int64_t tile);
+/// @brief Author one tile's collision kind; kind 0 removes the record.
+/// @details Tile IDs outside 1..4095 and kinds outside 0..2 are edit-time
+///          warning no-ops, matching Tilemap's behavior-table addressability.
+void rt_game_scene_set_tile_collision(void *scene, int64_t tile, int64_t kind);
+/// @brief Return ascending tile IDs whose authored collision kind is not none.
+void *rt_game_scene_collision_tiles(void *scene);
+int64_t rt_game_scene_collision_layer(void *scene);
+void rt_game_scene_set_collision_layer(void *scene, int64_t layer);
+
+/// @brief Return "int", "bool", or "" for one authored tile property.
+rt_string rt_game_scene_tile_property_kind(void *scene, int64_t tile, rt_string key);
+int64_t rt_game_scene_tile_property_int(void *scene, int64_t tile, rt_string key, int64_t def);
+int8_t rt_game_scene_tile_property_bool(void *scene, int64_t tile, rt_string key, int8_t def);
+void rt_game_scene_set_tile_property_int(void *scene, int64_t tile, rt_string key, int64_t value);
+void rt_game_scene_set_tile_property_bool(void *scene, int64_t tile, rt_string key, int8_t value);
+void rt_game_scene_remove_tile_property(void *scene, int64_t tile, rt_string key);
+/// @brief Return one tile's authored property keys in lexicographic order.
+void *rt_game_scene_tile_property_keys(void *scene, int64_t tile);
+/// @brief Return ascending tile IDs carrying at least one typed property.
+void *rt_game_scene_tile_property_tiles(void *scene);
+
+/// @brief Author one tile animation from equal-length frame/duration sequences.
+/// @details 1..4096 frames, every duration positive; invalid input is an
+///          edit-time warning no-op that leaves any existing rule unchanged.
+void rt_game_scene_set_tile_anim(void *scene, int64_t base_tile, void *frames, void *durations_ms);
+void *rt_game_scene_tile_anim_frames(void *scene, int64_t base_tile);
+void *rt_game_scene_tile_anim_durations(void *scene, int64_t base_tile);
+void rt_game_scene_remove_tile_anim(void *scene, int64_t base_tile);
+/// @brief Return ascending base tile IDs carrying an authored animation.
+void *rt_game_scene_tile_anim_bases(void *scene);
+
+/// @brief Author one autotile rule from exactly 16 variant tile IDs.
+void rt_game_scene_set_autotile_rule(void *scene, int64_t base_tile, void *variants);
+void *rt_game_scene_autotile_variants(void *scene, int64_t base_tile);
+void rt_game_scene_remove_autotile_rule(void *scene, int64_t base_tile);
+/// @brief Return ascending base tile IDs carrying an authored autotile rule.
+void *rt_game_scene_autotile_bases(void *scene);
+
+/// @brief Return "int", "string", or "" for one camera-section field.
+rt_string rt_game_scene_camera_field_kind(void *scene, rt_string key);
+int64_t rt_game_scene_camera_get_int(void *scene, rt_string key, int64_t def);
+rt_string rt_game_scene_camera_get_str(void *scene, rt_string key, rt_string def);
+void rt_game_scene_camera_set_int(void *scene, rt_string key, int64_t value);
+void rt_game_scene_camera_set_str(void *scene, rt_string key, rt_string value);
+void rt_game_scene_camera_remove(void *scene, rt_string key);
+void *rt_game_scene_camera_keys(void *scene);
+rt_string rt_game_scene_lighting_field_kind(void *scene, rt_string key);
+int64_t rt_game_scene_lighting_get_int(void *scene, rt_string key, int64_t def);
+void rt_game_scene_lighting_set_int(void *scene, rt_string key, int64_t value);
+void rt_game_scene_lighting_remove(void *scene, rt_string key);
+void *rt_game_scene_lighting_keys(void *scene);
 
 void rt_game_scene_set_property(void *scene, rt_string key, rt_string value);
 rt_string rt_game_scene_get_property(void *scene, rt_string key);

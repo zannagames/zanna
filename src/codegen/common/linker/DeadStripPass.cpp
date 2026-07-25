@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/DeadStripPass.cpp
+// File: src/codegen/common/linker/DeadStripPass.cpp
 // Purpose: Mark-and-sweep dead section stripping for the native linker.
 //          Follows relocations to transitively mark live sections, then
 //          clears data from unreachable sections so they occupy zero bytes.
@@ -17,6 +17,11 @@
 // Links: codegen/common/linker/DeadStripPass.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file DeadStripPass.cpp
+ * @brief Implements root discovery, liveness propagation, and dead-section sweeping.
+ */
 
 #include "codegen/common/linker/DeadStripPass.hpp"
 
@@ -31,11 +36,18 @@
 
 namespace zanna::codegen::linker {
 
+/// @brief Tests whether a section name begins with a literal prefix.
+/// @param s Section name to inspect.
+/// @param prefix NUL-terminated prefix to match.
+/// @return `true` when @p prefix occurs at offset zero.
 static bool hasPrefix(const std::string &s, const char *prefix) {
     return s.rfind(prefix, 0) == 0;
 }
 
-/// Check if a section name indicates it must always be kept.
+/// @brief Checks whether platform runtime discovery makes a section an implicit root.
+/// @param name Input section name.
+/// @return `true` for Objective-C metadata, initialization/finalization arrays,
+///         unwind metadata, or COFF CRT contribution sections.
 static bool isAlwaysLiveSection(const std::string &name) {
     // ObjC metadata — runtime discovers classes, selectors, protocols by section name.
     if (name.find("__objc_") != std::string::npos)
@@ -74,10 +86,16 @@ static bool isAlwaysLiveSection(const std::string &name) {
     return false;
 }
 
+/// @brief Tests for a Windows unwind metadata section.
+/// @param name COFF input section name.
+/// @return `true` for `.pdata*` or `.xdata*` sections.
 static bool isWindowsUnwindSection(const std::string &name) {
     return name.rfind(".pdata", 0) == 0 || name.rfind(".xdata", 0) == 0;
 }
 
+/// @brief Tests whether a non-allocating section carries recognized debug data.
+/// @param sec Input section to classify.
+/// @return `true` for ELF/DWARF or Mach-O debug section naming conventions.
 static bool isDebugSection(const ObjSection &sec) {
     if (sec.alloc)
         return false;
@@ -85,17 +103,27 @@ static bool isDebugSection(const ObjSection &sec) {
            sec.name.find("__debug") != std::string::npos;
 }
 
+/// @brief Caches non-relocation liveness edges for one input object.
 struct ObjectLivenessIndex {
     std::vector<std::vector<size_t>> associativeChildren;
     std::vector<std::vector<size_t>> coffUnwindByCodeSection;
 };
 
+/// @brief Adds a valid directed section-liveness edge.
+/// @param edges Per-source-section adjacency lists.
+/// @param fromSec One-based source section index.
+/// @param toSec One-based destination section index.
 static void addSectionEdge(std::vector<std::vector<size_t>> &edges, size_t fromSec, size_t toSec) {
     if (fromSec == 0 || fromSec >= edges.size() || toSec == 0)
         return;
     edges[fromSec].push_back(toSec);
 }
 
+/// @brief Builds associative-COMDAT and reverse Windows-unwind liveness indices.
+/// @param allObjects Input objects to scan.
+/// @param globalSyms Global definitions used to resolve named unwind targets.
+/// @param platform Target platform controlling symbol-name fallback.
+/// @return One cached liveness index per input object.
 static std::vector<ObjectLivenessIndex> buildObjectLivenessIndexes(
     const std::vector<ObjFile> &allObjects,
     const std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
@@ -152,6 +180,7 @@ static std::vector<ObjectLivenessIndex> buildObjectLivenessIndexes(
     return indexes;
 }
 
+/// @copydoc deadStrip(std::vector<ObjFile> &, size_t, const std::unordered_map<std::string, GlobalSymEntry> &, const std::string &, LinkPlatform, bool, std::ostream &)
 void deadStrip(std::vector<ObjFile> &allObjects,
                size_t userObjCount,
                const std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
@@ -164,6 +193,7 @@ void deadStrip(std::vector<ObjFile> &allObjects,
     std::queue<InputSectionKey> worklist;
     const auto livenessIndexes = buildObjectLivenessIndexes(allObjects, globalSyms, platform);
 
+    /// Marks a section once and schedules it for transitive edge traversal.
     auto markLive = [&](size_t objIdx, size_t secIdx) {
         InputSectionKey key{objIdx, secIdx};
         if (live.insert(key).second)

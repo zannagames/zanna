@@ -5,15 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/Scheduler.cpp
+// File: src/codegen/x86_64/Scheduler.cpp
 // Purpose: Conservative post-RA list scheduler for x86-64 Machine IR.
 // Key invariants:
 //   - Data dependences are computed per basic block before reordering.
 //   - Block boundaries and control flow instructions are never reordered.
 // Ownership/Lifetime:
 //   - Stateless; mutates caller-owned MFunction in place.
-// Links: codegen/x86_64/Scheduler.hpp,
-//        codegen/x86_64/OperandRoles.hpp
+// Links: src/codegen/x86_64/Scheduler.hpp,
+//        src/codegen/x86_64/OperandRoles.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +28,16 @@
 #include <stdexcept>
 #include <unordered_set>
 
+/**
+ * @file
+ * @brief Implements dependency-aware post-RA list scheduling for x86-64 MIR.
+ *
+ * Each bounded segment receives an acyclic program-order dependency graph.
+ * Ready instructions are prioritized by critical-path height and latency while
+ * preserving register, EFLAGS, and memory hazards. Win64 prologue save runs are
+ * kept contiguous so emitted unwind metadata remains valid.
+ */
+
 namespace zanna::codegen::x64 {
 namespace {
 
@@ -36,6 +46,7 @@ namespace {
 /// leaving them in source order avoids pathological compile-time spikes.
 inline constexpr std::size_t kMaxScheduledSegmentInstructions = 256;
 
+/// @brief Explicit and implicit scheduling dependencies for one instruction.
 struct InstrDeps {
     std::unordered_set<uint16_t> uses{};
     std::unordered_set<uint16_t> defs{};
@@ -54,6 +65,8 @@ struct InstrDeps {
 /// @details Post-register-allocation scheduling refuses to operate on blocks
 ///          that still contain virtual operands because their interference
 ///          isn't yet resolved. Used as a guard by @ref isSchedulingBoundary.
+/// @param op Operand to inspect, including memory address components.
+/// @return @c true when any referenced register remains virtual.
 [[nodiscard]] bool isVirtualOperand(const Operand &op) noexcept {
     if (const auto *reg = std::get_if<OpReg>(&op))
         return !reg->isPhys;
@@ -66,6 +79,9 @@ struct InstrDeps {
 }
 
 /// @brief Predicate: does @p op name physical register @p reg?
+/// @param op Candidate direct register operand.
+/// @param reg Physical register to match.
+/// @return @c true for an exact physical-register match.
 [[nodiscard]] bool operandIsPhysReg(const Operand &op, PhysReg reg) noexcept {
     const auto *operandReg = std::get_if<OpReg>(&op);
     return operandReg != nullptr && operandReg->isPhys &&
@@ -73,6 +89,8 @@ struct InstrDeps {
 }
 
 /// @brief Predicate: is @p reg a Win64 callee-saved GPR/XMM register?
+/// @param reg Physical register to classify.
+/// @return @c true for a nonvolatile Win64 register saved by this backend.
 [[nodiscard]] bool isWin64CalleeSaved(PhysReg reg) noexcept {
     switch (reg) {
         case PhysReg::RBX:
@@ -99,12 +117,16 @@ struct InstrDeps {
 }
 
 /// @brief Predicate: does @p instr push RBP as the Win64 frame-chain save?
+/// @param instr Candidate prologue instruction.
+/// @return @c true for `PUSH RBP`.
 [[nodiscard]] bool isWin64FramePush(const MInstr &instr) noexcept {
     return instr.opcode == MOpcode::PUSH && !instr.operands.empty() &&
            operandIsPhysReg(instr.operands[0], PhysReg::RBP);
 }
 
 /// @brief Predicate: does @p instr establish RBP from RSP?
+/// @param instr Candidate prologue instruction.
+/// @return @c true for the canonical frame-pointer copy.
 [[nodiscard]] bool isFramePointerSetup(const MInstr &instr) noexcept {
     return instr.opcode == MOpcode::MOVrr && instr.operands.size() >= 2 &&
            operandIsPhysReg(instr.operands[0], PhysReg::RBP) &&
@@ -112,6 +134,8 @@ struct InstrDeps {
 }
 
 /// @brief Predicate: does @p instr subtract the fixed frame allocation from RSP?
+/// @param instr Candidate prologue instruction.
+/// @return @c true for a negative ADDri applied to RSP.
 [[nodiscard]] bool isStackAllocation(const MInstr &instr) noexcept {
     if (instr.opcode != MOpcode::ADDri || instr.operands.size() < 2 ||
         !operandIsPhysReg(instr.operands[0], PhysReg::RSP))
@@ -121,12 +145,16 @@ struct InstrDeps {
 }
 
 /// @brief Predicate: does @p instr load the Win64 large-frame probe size?
+/// @param instr Candidate prologue instruction.
+/// @return @c true for a MOVri destination of RAX.
 [[nodiscard]] bool isChkstkSizeLoad(const MInstr &instr) noexcept {
     return instr.opcode == MOpcode::MOVri && instr.operands.size() >= 2 &&
            operandIsPhysReg(instr.operands[0], PhysReg::RAX);
 }
 
 /// @brief Predicate: does @p instr call the Win64 stack-probe helper?
+/// @param instr Candidate call.
+/// @return @c true for a direct call to @c __chkstk.
 [[nodiscard]] bool isChkstkCall(const MInstr &instr) noexcept {
     if (instr.opcode != MOpcode::CALL || instr.operands.empty())
         return false;
@@ -135,6 +163,8 @@ struct InstrDeps {
 }
 
 /// @brief Predicate: does @p instr store a Win64 callee-save register into the frame?
+/// @param instr Candidate frame store.
+/// @return @c true for a recognized nonvolatile GPR or XMM save.
 [[nodiscard]] bool isWin64PrologueFrameSave(const MInstr &instr) noexcept {
     if ((instr.opcode != MOpcode::MOVrm && instr.opcode != MOpcode::MOVUPSrm) ||
         instr.operands.size() < 2)
@@ -157,6 +187,8 @@ struct InstrDeps {
 /// @details Memory operands implicitly read their base and index registers.
 ///          The scheduler records those reads so dependency edges include
 ///          address computation.
+/// @param mem Memory operand whose address registers are recorded.
+/// @param deps Dependency descriptor to update.
 void addMemRegs(const OpMem &mem, InstrDeps &deps) {
     if (mem.base.isPhys)
         deps.uses.insert(mem.base.idOrPhys);
@@ -170,6 +202,8 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 ///          (3) form the bulk of the table; everything else defaults to 1.
 ///          The scheduler uses this to prefer dispatching long-latency
 ///          instructions earlier in the segment.
+/// @param opcode Opcode to estimate.
+/// @return Conservative latency weight in abstract cycles.
 [[nodiscard]] unsigned opcodeLatency(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::MOVmr:
@@ -197,6 +231,8 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 ///          implicit-register opcodes (CQO, IDIV) cannot be reordered around.
 ///          Instructions that define RSP or RBP, or that still reference
 ///          virtual operands, also serve as boundaries.
+/// @param instr Instruction to classify.
+/// @return @c true when scheduling may not cross the instruction.
 [[nodiscard]] bool isSchedulingBoundary(const MInstr &instr) noexcept {
     switch (instr.opcode) {
         case MOpcode::LABEL:
@@ -244,6 +280,8 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 /// @details MOVmr-family opcodes load; MOVrm-family opcodes store. LEA only
 ///          computes an address. Everything else with a memory operand is
 ///          conservatively treated as both reading and writing.
+/// @param opcode Opcode with a memory operand.
+/// @return @c true when that operand may read memory.
 [[nodiscard]] bool opcodeReadsMem(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::MOVmr:
@@ -268,6 +306,8 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 }
 
 /// @brief Predicate: does this opcode WRITE to its memory operand?
+/// @param opcode Opcode with a memory operand.
+/// @return @c true when that operand may write memory.
 [[nodiscard]] bool opcodeWritesMem(MOpcode opcode) noexcept {
     switch (opcode) {
         case MOpcode::MOVrm:
@@ -297,6 +337,8 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 ///          access performed (read/write, frame-slot precision), and the
 ///          assumed latency. The result feeds the dependency graph
 ///          constructed by @ref scheduleSegment.
+/// @param instr Instruction to analyze.
+/// @return Complete dependency and latency descriptor.
 [[nodiscard]] InstrDeps analyseInstr(const MInstr &instr) {
     InstrDeps deps{};
     deps.usesFlags = usesEFlags(instr.opcode);
@@ -361,6 +403,9 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 /// @details Recursion onto the smaller set keeps the hash-set lookup count
 ///          minimal. Used by @ref dependsOn to detect def-use, use-def, and
 ///          def-def conflicts.
+/// @param a First physical-register set.
+/// @param b Second physical-register set.
+/// @return @c true when the sets overlap.
 [[nodiscard]] bool intersects(const std::unordered_set<uint16_t> &a,
                               const std::unordered_set<uint16_t> &b) {
     if (a.size() > b.size())
@@ -378,6 +423,9 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 ///            different displacements are provably disjoint (slots are
 ///            8-byte stepped and non-overlapping by frame construction);
 ///            anything else involving at least one write is ordered.
+/// @param first Earlier instruction's dependency descriptor.
+/// @param second Later instruction's dependency descriptor.
+/// @return @c true when program order must be preserved.
 [[nodiscard]] bool dependsOn(const InstrDeps &first, const InstrDeps &second) {
     if (intersects(first.defs, second.uses))
         return true;
@@ -476,6 +524,7 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
     order.reserve(n);
 
     while (!ready.empty()) {
+        /// Rank ready nodes by critical height, latency, then stable source order.
         auto best =
             std::max_element(ready.begin(), ready.end(), [&](std::size_t lhs, std::size_t rhs) {
                 if (heights[lhs] != heights[rhs])
@@ -525,6 +574,9 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
 ///          schedulable instructions whenever a boundary is hit. The
 ///          @p changedSegments counter is bumped only when the
 ///          reordering actually mutated the stream.
+/// @param out Rewritten block instruction stream to extend.
+/// @param segment Accumulated schedulable instructions, consumed and cleared.
+/// @param changedSegments Counter incremented when ordering changes.
 void flushSegment(std::vector<MInstr> &out,
                   std::vector<MInstr> &segment,
                   std::size_t &changedSegments) {
@@ -541,23 +593,23 @@ void flushSegment(std::vector<MInstr> &out,
     segment.clear();
 }
 
+/// @brief State machine protecting unwind-described Win64 prologue saves.
 enum class Win64PrologueScan {
+    /// No prologue pattern is being recognized.
     Inactive,
+    /// Entry block has not yet been checked for PUSH RBP.
     ExpectPush,
+    /// PUSH RBP matched; expect the RBP-from-RSP setup.
     ExpectFramePointer,
+    /// Accept stack setup/probe operations or the first frame save.
     ExpectSetupOrSave,
+    /// Keep a contiguous run of recognized nonvolatile saves unscheduled.
     InSaveRun,
 };
 
 } // namespace
 
-/// @brief Schedule every block of @p fn, splitting at boundary instructions.
-/// @details For each block, walks instructions linearly and accumulates a
-///          schedulable segment until a boundary instruction is reached.
-///          Each segment is reordered independently. Boundary instructions
-///          themselves are appended verbatim.
-/// @param fn Machine function rewritten in place.
-/// @return Number of segments whose order changed (useful for stats).
+/// @copydoc scheduleFunction
 std::size_t scheduleFunction(MFunction &fn) {
     std::size_t changedSegments = 0;
 
@@ -622,8 +674,7 @@ std::size_t scheduleFunction(MFunction &fn) {
     return changedSegments;
 }
 
-/// @brief Schedule every function in @p mir.
-/// @details Wraps @ref scheduleFunction over the module's function list.
+/// @copydoc scheduleModule
 std::size_t scheduleModule(std::vector<MFunction> &mir) {
     std::size_t changed = 0;
     for (auto &fn : mir)

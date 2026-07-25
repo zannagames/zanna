@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/DeadStripPass.hpp
+// File: src/codegen/common/linker/DeadStripPass.hpp
 // Purpose: Dead code/data stripping pass for the native linker.
 //          Performs mark-and-sweep GC over input sections to remove
 //          unreferenced functions and data from the output.
@@ -20,6 +20,11 @@
 //        codegen/common/linker/LinkTypes.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file DeadStripPass.hpp
+ * @brief Declares section-level mark-and-sweep garbage collection for native links.
+ */
 
 #pragma once
 
@@ -36,17 +41,26 @@ namespace zanna::codegen::linker {
 struct ObjFile;
 struct GlobalSymEntry;
 
-/// Perform dead section stripping on the linked object files.
-/// Sections not reachable from root sections are cleared (data emptied,
-/// relocations removed) so they contribute zero bytes to the output.
-///
-/// @param allObjects       All object files (user + archive extracts + stubs).
-/// @param userObjCount     Number of leading objects that are user-provided
-///                         (not from archives). These are always live.
-/// @param globalSyms       Global symbol table (used to find entry point).
-/// @param entrySymbol      Entry point symbol name (e.g., "main").
-/// @param preserveDebugSections Keep non-alloc debug sections rooted.
-/// @param err              Diagnostic output.
+/// @brief Removes input sections that are unreachable from linker roots.
+/// @details Liveness begins at the entry point, platform-discovered metadata,
+///          explicitly retained sections/symbols, optional debug sections, and
+///          linker-synthetic objects. It propagates through relocations,
+///          associative COMDAT relationships, and Windows unwind associations.
+///          Sweeping clears dead section data, relocations, and memory size and
+///          marks each section stripped.
+/// @param allObjects All object files, including user inputs, archive extracts,
+///                   and linker-generated stubs.
+/// @param userObjCount Number of leading user-provided objects.  Objects at or
+///                     after this index are inspected for synthetic linker
+///                     objects; ordinary sections on either side remain
+///                     eligible for stripping.
+/// @param globalSyms Resolved global symbol table used for entry-point and
+///                   relocation target lookup.
+/// @param entrySymbol Entry-point symbol name, such as `main`.
+/// @param platform Target platform controlling symbol fallback and Windows
+///                 unwind/guard handling.
+/// @param preserveDebugSections Whether non-allocating debug sections are roots.
+/// @param err Stream that receives the dead-strip removal summary.
 void deadStrip(std::vector<ObjFile> &allObjects,
                size_t userObjCount,
                const std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
@@ -55,6 +69,13 @@ void deadStrip(std::vector<ObjFile> &allObjects,
                bool preserveDebugSections,
                std::ostream &err);
 
+/// @brief Runs dead stripping while allowing normal debug-section removal.
+/// @param allObjects All object files to mutate.
+/// @param userObjCount Number of leading user-provided objects.
+/// @param globalSyms Resolved global symbol table.
+/// @param entrySymbol Entry-point symbol name.
+/// @param platform Explicit target platform.
+/// @param err Stream that receives the removal summary.
 inline void deadStrip(std::vector<ObjFile> &allObjects,
                       size_t userObjCount,
                       const std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
@@ -64,6 +85,12 @@ inline void deadStrip(std::vector<ObjFile> &allObjects,
     deadStrip(allObjects, userObjCount, globalSyms, entrySymbol, platform, false, err);
 }
 
+/// @brief Runs dead stripping for the detected host platform with debug removal enabled.
+/// @param allObjects All object files to mutate.
+/// @param userObjCount Number of leading user-provided objects.
+/// @param globalSyms Resolved global symbol table.
+/// @param entrySymbol Entry-point symbol name.
+/// @param err Stream that receives the removal summary.
 inline void deadStrip(std::vector<ObjFile> &allObjects,
                       size_t userObjCount,
                       const std::unordered_map<std::string, GlobalSymEntry> &globalSyms,

@@ -13,7 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
+/// @file NameMangler_OOP.hpp
 /// @brief Re-exports OOP name mangling helpers from the common frontend library.
 /// @details These helpers provide a consistent naming convention for class
 ///          constructors, destructors, and methods so that later lowering
@@ -26,12 +26,17 @@
 
 namespace il::frontends::basic {
 
-// Re-export common OOP name mangling functions for BASIC frontend compatibility
+/// @copydoc ::il::frontends::common::mangleClassCtor
 using ::il::frontends::common::mangleClassCtor;
+/// @copydoc ::il::frontends::common::mangleClassDtor
 using ::il::frontends::common::mangleClassDtor;
+/// @copydoc ::il::frontends::common::mangleIfaceBindThunk
 using ::il::frontends::common::mangleIfaceBindThunk;
+/// @copydoc ::il::frontends::common::mangleIfaceRegThunk
 using ::il::frontends::common::mangleIfaceRegThunk;
+/// @copydoc ::il::frontends::common::mangleMethod
 using ::il::frontends::common::mangleMethod;
+/// @copydoc ::il::frontends::common::mangleOopModuleInit
 using ::il::frontends::common::mangleOopModuleInit;
 
 } // namespace il::frontends::basic

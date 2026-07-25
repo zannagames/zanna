@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/PeepholeCommon.hpp
+// File: src/codegen/aarch64/peephole/PeepholeCommon.hpp
 // Purpose: Shared utility functions and types for AArch64 peephole sub-passes.
 //
 // Key invariants:
@@ -34,6 +34,13 @@
 #include <utility>
 #include <vector>
 
+/// @file
+/// @brief Declares shared operand, liveness, and constant queries for peepholes.
+///
+/// The opcode-specific classifiers in this interface encode AArch64 MIR
+/// operand conventions used by multiple post-allocation rewrites. They must be
+/// reviewed whenever the machine-opcode set or an operand layout changes.
+
 namespace zanna::codegen::aarch64::peephole {
 
 // Bring the shared compaction helper into this namespace scope.
@@ -41,19 +48,27 @@ using zanna::codegen::common::removeMarkedInstructions;
 
 // ---- Register query helpers ------------------------------------------------
 
-/// @brief Check if an operand is a physical register.
+/// @brief Test whether an operand names an allocated physical register.
+/// @param op Machine operand to inspect.
+/// @return `true` only for a register operand whose `isPhys` flag is set.
 [[nodiscard]] inline bool isPhysReg(const MOperand &op) noexcept {
     return op.kind == MOperand::Kind::Reg && op.reg.isPhys;
 }
 
-/// @brief Check if two register operands refer to the same physical register.
+/// @brief Test whether two operands name the same classed physical register.
+/// @param a First operand.
+/// @param b Second operand.
+/// @return `true` when both operands are physical registers with equal register
+///         classes and identifiers.
 [[nodiscard]] inline bool samePhysReg(const MOperand &a, const MOperand &b) noexcept {
     if (!isPhysReg(a) || !isPhysReg(b))
         return false;
     return a.reg.cls == b.reg.cls && a.reg.idOrPhys == b.reg.idOrPhys;
 }
 
-/// @brief Check if a register is an argument-passing register (x0-x7).
+/// @brief Test whether an operand names an integer argument register.
+/// @param reg Operand to inspect.
+/// @return `true` for physical GPRs X0--X7.
 [[nodiscard]] inline bool isArgReg(const MOperand &reg) noexcept {
     if (!isPhysReg(reg) || reg.reg.cls != RegClass::GPR)
         return false;
@@ -61,7 +76,9 @@ using zanna::codegen::common::removeMarkedInstructions;
     return pr <= PhysReg::X7;
 }
 
-/// @brief Check if a register is an ABI register (GPR x0-x7 or FPR v0-v7).
+/// @brief Test whether an operand names a modeled ABI argument/result register.
+/// @param reg Operand to inspect.
+/// @return `true` for physical GPRs X0--X7 or FPRs V0--V7.
 [[nodiscard]] inline bool isABIReg(const MOperand &reg) noexcept {
     if (!isPhysReg(reg))
         return false;
@@ -73,12 +90,18 @@ using zanna::codegen::common::removeMarkedInstructions;
     return false;
 }
 
-/// @brief Check if an operand is an immediate with a given value.
+/// @brief Test whether an operand is an immediate equal to a requested value.
+/// @param op Operand to inspect.
+/// @param value Signed immediate value to compare.
+/// @return `true` when @p op is an immediate whose payload equals @p value.
 [[nodiscard]] inline bool isImmValue(const MOperand &op, long long value) noexcept {
     return op.kind == MOperand::Kind::Imm && op.imm == value;
 }
 
-/// @brief Get a unique key for a physical register (for use in maps).
+/// @brief Pack a physical register's class and identifier into a map key.
+/// @param op Operand expected to name a physical register.
+/// @return A key with the register class in the high 16 bits and physical
+///         identifier in the low 16 bits, or `UINT32_MAX` for other operands.
 [[nodiscard]] inline uint32_t regKey(const MOperand &op) noexcept {
     if (op.kind != MOperand::Kind::Reg || !op.reg.isPhys)
         return UINT32_MAX;
@@ -94,23 +117,47 @@ using zanna::codegen::common::removeMarkedInstructions;
 ///          group has different operand-index semantics (e.g., LDP defines both
 ///          ops[0] and ops[1]), which is why a generic "dest is ops[0]" table
 ///          is insufficient.
+/// @param instr Instruction whose explicit definitions are inspected.
+/// @param reg Physical register to query.
+/// @return `true` when a recognized explicit destination of @p instr matches
+///         @p reg. Implicit call clobbers are not modeled here.
 [[nodiscard]] bool definesReg(const MInstr &instr, const MOperand &reg) noexcept;
 
-/// @brief Check if an instruction uses a given physical register as a source.
+/// @brief Test whether an instruction explicitly reads a physical register.
+/// @param instr Instruction whose explicit source operands are inspected.
+/// @param reg Physical register to query.
+/// @return `true` when a recognized source operand of @p instr matches @p reg.
+/// @note Implicit ABI operands of calls and returns are not modeled.
 [[nodiscard]] bool usesReg(const MInstr &instr, const MOperand &reg) noexcept;
 
-/// @brief Classify an operand as use, def, or both.
+/// @brief Classify one opcode operand position as an explicit use and/or definition.
+/// @param instr Instruction supplying the opcode-specific operand convention.
+/// @param idx Zero-based operand index to classify.
+/// @return Pair `{isUse, isDef}`. Unknown opcodes use the conventional
+///         destination-at-zero fallback.
 [[nodiscard]] std::pair<bool, bool> classifyOperand(const MInstr &instr, std::size_t idx) noexcept;
 
 // ---- Constant tracking -----------------------------------------------------
 
-/// @brief Map of registers to their known constant values from MovRI.
+/// @brief Maps physical GPR identifiers to values established by `MovRI`.
 using RegConstMap = std::unordered_map<uint16_t, long long>;
 
-/// @brief Update register constant tracking based on an instruction.
+/// @brief Transfer one instruction through the local known-constant state.
+///
+/// A well-formed `MovRI` records its immediate. Recognized explicit
+/// destinations, jump-table scratch clobbers, and caller-saved GPRs at calls
+/// invalidate affected entries.
+///
+/// @param instr Instruction whose definitions update the state.
+/// @param[in,out] knownConsts Physical-GPR constants valid before and then
+///                            after @p instr.
 void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts);
 
-/// @brief Get constant value for a register if known.
+/// @brief Query a tracked constant for a physical GPR operand.
+/// @param reg Operand whose value is requested.
+/// @param knownConsts Current physical-GPR constant map.
+/// @return The known signed value, or `std::nullopt` for non-GPR, virtual,
+///         untracked, or unknown operands.
 [[nodiscard]] inline std::optional<long long> getConstValue(const MOperand &reg,
                                                             const RegConstMap &knownConsts) {
     if (!isPhysReg(reg) || reg.reg.cls != RegClass::GPR)
@@ -123,10 +170,24 @@ void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts);
 
 // ---- Side-effect / def queries ---------------------------------------------
 
-/// @brief Check if an instruction has side effects and cannot be removed.
+/// @brief Test whether the peephole DCE policy must retain an instruction.
+///
+/// This is deliberately broader than language-level side effects: memory
+/// loads, address materialization, comparisons, control flow, stack changes,
+/// and moves into ABI registers are all treated as observable for conservative
+/// post-allocation elimination.
+///
+/// @param instr Instruction to classify.
+/// @return `true` when local DCE must not remove @p instr solely because its
+///         explicit destination is dead.
 [[nodiscard]] bool hasSideEffects(const MInstr &instr) noexcept;
 
-/// @brief Get the physical register defined by an instruction, if any.
+/// @brief Return the primary explicit physical-register destination.
+/// @param instr Instruction whose destination is requested.
+/// @return Operand zero for recognized destination-producing opcodes when it
+///         is physical; `std::nullopt` otherwise.
+/// @note Pair loads define two registers, but this convenience query returns
+///       only their first destination. Use @ref classifyOperand for all defs.
 [[nodiscard]] std::optional<MOperand> getDefinedReg(const MInstr &instr) noexcept;
 
 } // namespace zanna::codegen::aarch64::peephole

@@ -16,10 +16,19 @@
 //   - Fast-path output must be semantically identical to generic lowering.
 // Ownership/Lifetime:
 //   - Borrows the caller's MFunction as a seed; returns an owned copy on success.
-// Links: codegen/aarch64/FastPaths.hpp,
-//        codegen/aarch64/fastpaths/FastPathsInternal.hpp
+// Links: src/codegen/aarch64/FastPaths.hpp,
+//        src/codegen/aarch64/fastpaths/FastPathsInternal.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Implements ordered, transactional AArch64 fast-path probes.
+ *
+ * Memory and cast patterns are tried before progressively broader arithmetic,
+ * call, and return patterns. Every probe receives an isolated machine function
+ * and frame builder so only a successful returned value can escape.
+ */
 
 #include "FastPaths.hpp"
 #include "fastpaths/FastPathsInternal.hpp"
@@ -58,6 +67,14 @@ std::optional<MFunction> tryFastPathAttempt(
 
 } // namespace
 
+/// @brief Try all specialized lowering categories in specificity order.
+/// @param fn Source IL function.
+/// @param ti Target ABI and register description.
+/// @param fb Caller frame builder; intentionally left unchanged.
+/// @param mf Seed machine function copied for each category.
+/// @param stringLiteralByteLengths Optional string-literal size metadata.
+/// @param knownVarArgNamedArgCounts Optional fixed-prefix arities for variadic callees.
+/// @return First complete fast-path result, or `std::nullopt`.
 std::optional<MFunction> tryFastPaths(
     const il::core::Function &fn,
     const TargetInfo &ti,

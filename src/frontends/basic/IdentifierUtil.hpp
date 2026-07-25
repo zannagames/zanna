@@ -11,24 +11,25 @@
 // BASIC Identifier Rules:
 // BASIC is a case-insensitive language where identifiers like "Counter",
 // "COUNTER", and "counter" all refer to the same variable. The frontend
-// canonicalizes all identifiers to lowercase for consistent symbol table
-// lookups and IL name generation.
+// canonicalizes identifiers through the C character-classification APIs for
+// consistent symbol table lookups and IL name generation.
 //
 // Key Utilities:
-// - canonicalizeIdentifier: Converts a single identifier to lowercase,
-//   validating that it contains only [A-Za-z0-9_]
-// - qualifiedName: Joins namespace/module segments with '.' separator
-// - validateIdentifier: Checks identifier validity without conversion
+// - CanonicalizeIdent / Canon: validate and case-fold one identifier
+// - JoinQualified / JoinDots: join segments with '.' separators
+// - CanonicalizeQualified / CanonJoin: canonicalize and join segments
+// - SplitDots: split qualified names while preserving empty segments
+// - StripTypeSuffix: remove one trailing BASIC type suffix
 //
 // Canonicalization:
-// All identifiers are canonicalized to ASCII lowercase for:
+// Accepted identifier bytes are folded with std::tolower for:
 // - Symbol table lookups (case-insensitive matching)
 // - IL name generation (deterministic output)
 // - Namespace resolution (consistent qualified names)
 //
 // Validation:
-// Identifiers must contain only [A-Za-z0-9_] characters. Type suffixes
-// (%, &, !, #, $) are handled separately and not part of the base identifier.
+// The first byte must satisfy std::isalpha or be '_'; later bytes must satisfy
+// std::isalnum or be '_'. Type suffixes are handled separately.
 //
 // Qualified Names:
 // For namespace support (NAMESPACE...END NAMESPACE), qualified names use
@@ -53,6 +54,16 @@
 // - Validation failures return empty string for caller handling
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file IdentifierUtil.hpp
+ * @brief Defines BASIC identifier validation, case folding, and path utilities.
+ *
+ * The header contains stateless, owning transformations. Character validity and
+ * case conversion follow `std::isalpha`, `std::isalnum`, and `std::tolower`
+ * after conversion to unsigned char.
+ */
+
 #pragma once
 
 #include <cctype>
@@ -62,9 +73,11 @@
 
 namespace il::frontends::basic {
 
-/// @brief Canonicalize a single identifier to lowercase ASCII.
-/// @details Validates characters against [A-Za-z0-9_]. On validation failure,
-///          returns an empty string to signal invalid input to the caller.
+/// @brief Canonicalize a single identifier through locale-aware byte folding.
+/// @details The first byte must satisfy `std::isalpha` or be `_`; remaining
+///          bytes must satisfy `std::isalnum` or be `_`. Accepted bytes are
+///          folded with `std::tolower`. Empty input and validation failure both
+///          return an empty string.
 /// @param ident Input identifier text.
 /// @return Lowercased identifier or empty on invalid characters.
 inline std::string CanonicalizeIdent(std::string_view ident) {
@@ -86,11 +99,15 @@ inline std::string CanonicalizeIdent(std::string_view ident) {
 }
 
 /// @brief Canonicalize a single identifier (alias of CanonicalizeIdent).
+/// @param ident Identifier bytes to validate and fold.
+/// @return CanonicalizeIdent(@p ident).
 inline std::string Canon(std::string_view ident) {
     return CanonicalizeIdent(ident);
 }
 
 /// @brief Join qualified name segments with '.' separators.
+/// @details Does not validate or canonicalize segments and preserves empty
+///          segments as adjacent, leading, or trailing dots.
 /// @param parts Qualified path segments in declaration order.
 /// @return Dot-joined name; empty when @p parts is empty.
 inline std::string JoinQualified(const std::vector<std::string> &parts) {
@@ -111,15 +128,18 @@ inline std::string JoinQualified(const std::vector<std::string> &parts) {
 }
 
 /// @brief Join qualified name segments with '.' (alias of JoinQualified).
+/// @param parts Path segments to join verbatim.
+/// @return JoinQualified(@p parts).
 inline std::string JoinDots(const std::vector<std::string> &parts) {
     return JoinQualified(parts);
 }
 
 /// @brief Canonicalize each segment then join as a fully-qualified name.
-/// @details Each segment is validated via @ref CanonicalizeIdent. If any
-///          segment is invalid, returns an empty string.
+/// @details Each nonempty segment is validated via @ref CanonicalizeIdent.
+///          Empty segments are accepted and preserved by JoinQualified().
 /// @param parts Qualified path segments in declaration order.
-/// @return Lowercased, dot-joined name or empty when validation fails.
+/// @return Folded, dot-joined name; empty when a nonempty segment is invalid or
+///         when @p parts itself is empty.
 inline std::string CanonicalizeQualified(const std::vector<std::string> &parts) {
     std::vector<std::string> canon;
     canon.reserve(parts.size());
@@ -135,13 +155,16 @@ inline std::string CanonicalizeQualified(const std::vector<std::string> &parts) 
 
 /// @brief Canonicalize each segment and join with '.' separators.
 /// @details Equivalent to CanonicalizeQualified.
+/// @param parts Qualified path segments.
+/// @return CanonicalizeQualified(@p parts).
 inline std::string CanonJoin(const std::vector<std::string> &parts) {
     return CanonicalizeQualified(parts);
 }
 
 /// @brief Split a dot-joined string into segments, preserving empty segments.
 /// @param dotted Qualified path like "A.B.C".
-/// @return Vector of segments in order; malformed paths such as "A..B" contain an empty segment.
+/// @return Vector of segments in order. Empty input returns one empty segment;
+///         adjacent, leading, and trailing dots also produce empty segments.
 inline std::vector<std::string> SplitDots(std::string_view dotted) {
     std::vector<std::string> out;
     std::string cur;
@@ -160,6 +183,7 @@ inline std::vector<std::string> SplitDots(std::string_view dotted) {
 /// @brief Strip BASIC type suffix from an identifier.
 /// @details Removes trailing %, &, !, #, or $ if present.
 ///          These suffixes denote types in BASIC (Integer, Long, Single, Double, String).
+///          At most one byte is removed and the remaining text is not validated.
 /// @param ident Input identifier with possible type suffix.
 /// @return Identifier without the type suffix.
 inline std::string StripTypeSuffix(std::string_view ident) {

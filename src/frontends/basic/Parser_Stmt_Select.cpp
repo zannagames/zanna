@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file Parser_Stmt_Select.cpp
+/// @brief Implements SELECT CASE syntax parsing, lowering, and validation.
+/// @details The parser first captures token-oriented CASE syntax, then converts
+///          it into numeric, string, range, and relational AST labels before
+///          building the normalized SelectModel. Inline and block bodies share
+///          StatementSequencer-based collection.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/BasicDiagnosticMessages.hpp"
 #include "frontends/basic/IdentifierUtil.hpp"
@@ -38,10 +45,9 @@ namespace {
 
 /// @brief Parse a CASE numeric label token with full validation.
 /// @details Requires every character in @p text to be consumed and rejects
-///          overflow. SELECT CASE labels participate in duplicate and range
-///          checks, so preserving the exact parsed integer is important for
-///          later semantic diagnostics.
-/// @param text Token lexeme containing an optional sign and decimal digits.
+///          overflow. Optional `%`/`&` suffixes, unary signs, and BASIC/modern
+///          hexadecimal or binary prefixes are recognized before conversion.
+/// @param text Complete CASE token spelling.
 /// @return Parsed integer, or @c std::nullopt if the text is invalid.
 std::optional<int64_t> parseCaseIntegerLiteral(std::string_view text) noexcept {
     if (!text.empty()) {
@@ -103,6 +109,7 @@ Parser::SelectParseState Parser::parseSelectHeader() {
     state.stmt->range.begin = state.selectLoc;
     state.stmt->range.end = headerEnd.loc;
 
+    /// Forward SELECT diagnostics to the emitter or a stderr fallback.
     state.diagnose = [&](il::support::SourceLoc diagLoc,
                          uint32_t length,
                          std::string_view message,
@@ -218,6 +225,7 @@ StmtPtr Parser::parseSelectCaseStatement() {
     parseSelectArms(state);
 
     // Finalize the SELECT model and diagnose missing END SELECT in one place.
+    /// Build the normalized model and report an unconsumed END SELECT requirement.
     auto finalizeSelectCase = [&](SelectParseState &st) -> void {
         SelectModelBuilder builder(st.diagnose);
         st.stmt->model = builder.build(*st.stmt);
@@ -243,6 +251,7 @@ StmtPtr Parser::parseSelectCaseStatement() {
 Parser::SelectBodyResult Parser::collectSelectBody() {
     SelectBodyResult result;
     auto bodyCtx = statementSequencer();
+    /// Stop a CASE body before the next CASE or END SELECT directive.
     auto predicate = [&](int, il::support::SourceLoc) {
         if (at(TokenKind::KeywordCase))
             return true;
@@ -250,6 +259,7 @@ Parser::SelectBodyResult Parser::collectSelectBody() {
             return true;
         return false;
     };
+    /// Preserve the location of the directive left for the outer parser.
     auto consumer = [&](int, il::support::SourceLoc, StatementSequencer::TerminatorInfo &info) {
         info.loc = peek().loc;
     };
@@ -257,6 +267,11 @@ Parser::SelectBodyResult Parser::collectSelectBody() {
     return result;
 }
 
+/// @brief Collect colon-separated CASE body statements on the header line.
+/// @details Parses statements until end-of-line or the next CASE/END SELECT
+///          directive, preserving optional numeric-line metadata. The closing
+///          end-of-line token is consumed and returned for range tracking.
+/// @return Inline body statements and the consumed end-of-line token.
 Parser::SelectInlineBodyResult Parser::collectInlineSelectBody() {
     SelectInlineBodyResult result;
     auto inlineCtx = statementSequencer();
@@ -271,6 +286,7 @@ Parser::SelectInlineBodyResult Parser::collectInlineSelectBody() {
         }
 
         int line = 0;
+        /// Capture an optional line number supplied by the sequencer.
         inlineCtx.withOptionalLineNumber(
             [&](int currentLine, il::support::SourceLoc) { line = currentLine; });
 
@@ -410,26 +426,51 @@ std::pair<std::vector<StmtPtr>, il::support::SourceLoc> Parser::parseCaseElseBod
     return {std::move(body), elseEol.loc};
 }
 
+/// @brief Token-oriented intermediate storage for one CASE arm.
+/// @details The cursor owns copied tokens until the syntax is lowered into a
+///          CaseArm, allowing validation and diagnostics to retain source ranges.
 struct Parser::Cursor {
+    /// @brief Relational CASE operator, sign, and right-hand token.
     struct Relation {
+        /// Parsed relational operator.
         CaseArm::CaseRel::Op op{CaseArm::CaseRel::Op::EQ};
+        /// Unary sign applied to @ref valueTok.
         int sign = 1;
+        /// Numeric right-hand-side token.
         Token valueTok;
     };
 
+    /// Opening CASE keyword token.
     Token caseTok;
+    /// Header terminator token used for source-range tracking.
     Token caseEol;
+    /// Whether a colon introduced statements on the CASE header line.
     bool hasInlineBody = false;
+    /// Literal or folded string label tokens.
     std::vector<Token> stringLabels;
+    /// Individual numeric label tokens.
     std::vector<Token> numericLabels;
+    /// Inclusive numeric range endpoint token pairs.
     std::vector<std::pair<Token, Token>> ranges;
+    /// Relational label records.
     std::vector<Relation> relations;
 };
 
+/// @brief Successful syntax handle borrowing the caller-owned cursor.
 struct Parser::CaseArmSyntax {
+    /// Non-owning cursor populated by @ref parseCaseArmSyntax.
     Cursor *cursor = nullptr;
 };
 
+/// @brief Parse one CASE header into token-oriented intermediate storage.
+/// @details Supports `CASE IS <op>`, numeric and string literals, numeric
+///          ranges, tracked integer/string CONST names, and foldable CHR/CHR$
+///          labels when enabled. A colon marks an inline body; otherwise the
+///          header's end-of-line is consumed. Malformed labels emit diagnostics
+///          and the successfully captured prefix is retained.
+/// @param cursor Caller-owned storage cleared and populated by this invocation.
+/// @return Syntax handle borrowing @p cursor.
+/// @pre @p cursor outlives the returned handle and every use of that handle.
 il::support::Expected<Parser::CaseArmSyntax> Parser::parseCaseArmSyntax(Cursor &cursor) {
     cursor.stringLabels.clear();
     cursor.numericLabels.clear();
@@ -699,6 +740,13 @@ il::support::Expected<Parser::CaseArmSyntax> Parser::parseCaseArmSyntax(Cursor &
     return syntax;
 }
 
+/// @brief Convert captured CASE tokens into typed AST label collections.
+/// @details Fully parses numeric labels and ranges, applies relation signs, and
+///          decodes string token contents. Invalid entries are diagnosed and
+///          omitted while other captured labels continue lowering.
+/// @param syntax Syntax handle produced by @ref parseCaseArmSyntax.
+/// @return Lowered CASE arm containing labels and header source range.
+/// @pre @p syntax refers to a live non-null Cursor.
 il::support::Expected<CaseArm> Parser::lowerCaseArm(const CaseArmSyntax &syntax) {
     const Cursor &cursor = *syntax.cursor;
 
@@ -751,6 +799,12 @@ il::support::Expected<CaseArm> Parser::lowerCaseArm(const CaseArmSyntax &syntax)
     return arm;
 }
 
+/// @brief Require a CASE arm to contain at least one valid label.
+/// @details Emits the catalogued empty-label diagnostic through the configured
+///          emitter or stderr fallback and returns the same structured error.
+/// @param arm Lowered CASE arm to inspect.
+/// @return Success when any numeric, string, range, or relational label exists;
+///         otherwise a structured empty-label error.
 Parser::ErrorOr<void> Parser::validateCaseArm(const CaseArm &arm) {
     if (!arm.labels.empty() || !arm.str_labels.empty() || !arm.ranges.empty() ||
         !arm.rels.empty()) {
@@ -777,8 +831,10 @@ Parser::ErrorOr<void> Parser::validateCaseArm(const CaseArm &arm) {
 ///
 /// @details Handles relational forms (`CASE IS`), string literals, numeric
 ///          literals, and ranges while emitting diagnostics for malformed
-///          entries.  The function then collects the arm body statements using
-///          @ref collectSelectBody and records the source range.
+///          entries. After successful non-empty-label validation, it merges an
+///          optional inline body with the following block body. Syntax/lowering
+///          failure synchronizes and returns an empty arm; validation failure
+///          returns the partial arm without collecting its body.
 ///
 /// @return Parsed case arm with labels, ranges, and body statements populated.
 CaseArm Parser::parseCaseArm() {

@@ -1,0 +1,140 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/player_animation.zia
+// Purpose: Defines the release player-animation sheet and timer mappings.
+// Key invariants:
+//   - Run has six frames, turn three, landing four, and shooting four.
+//   - Every ability, hurt, death, and acquisition state has a distinct pose set.
+// Ownership/Lifetime:
+//   - Constants/functions are pure and own no image or mutable gameplay state.
+// Links: player.zia, sprites.zia, renderer.zia, mechanics_probe.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+
+module player_animation;
+
+final PLAYER_ANIM_IDLE = 0;
+final PLAYER_ANIM_RUN = 1;
+final PLAYER_ANIM_JUMP = 2;
+final PLAYER_ANIM_FALL = 3;
+final PLAYER_ANIM_DOUBLE_JUMP = 4;
+final PLAYER_ANIM_WALL_SLIDE = 5;
+final PLAYER_ANIM_HURT = 6;
+final PLAYER_ANIM_DEATH = 7;
+final PLAYER_ANIM_TURN = 8;
+final PLAYER_ANIM_LAND = 9;
+final PLAYER_ANIM_SHOOT = 10;
+final PLAYER_ANIM_CHARGE = 11;
+final PLAYER_ANIM_DASH = 12;
+final PLAYER_ANIM_GRAPPLE = 13;
+final PLAYER_ANIM_POUND = 14;
+final PLAYER_ANIM_ACQUIRE = 15;
+
+final PLAYER_FRAME_IDLE_BASE = 0;
+final PLAYER_FRAME_RUN_BASE = 2;
+final PLAYER_FRAME_JUMP_BASE = 8;
+final PLAYER_FRAME_FALL_BASE = 9;
+final PLAYER_FRAME_DOUBLE_JUMP_BASE = 10;
+final PLAYER_FRAME_WALL_SLIDE_BASE = 11;
+final PLAYER_FRAME_HURT_BASE = 12;
+final PLAYER_FRAME_DEATH_BASE = 14;
+final PLAYER_FRAME_TURN_BASE = 18;
+final PLAYER_FRAME_LAND_BASE = 21;
+final PLAYER_FRAME_SHOOT_BASE = 25;
+final PLAYER_FRAME_CHARGE_BASE = 29;
+final PLAYER_FRAME_DASH_BASE = 31;
+final PLAYER_FRAME_GRAPPLE_BASE = 33;
+final PLAYER_FRAME_POUND_BASE = 35;
+final PLAYER_FRAME_ACQUIRE_BASE = 37;
+final PLAYER_RELEASE_FRAME_COUNT = 41;
+
+final PLAYER_TURN_ANIM_MS = 144;
+final PLAYER_LAND_ANIM_MS = 176;
+final PLAYER_SHOOT_ANIM_MS = 176;
+final PLAYER_ACQUIRE_ANIM_MS = 700;
+
+/// @brief Return the authored frame count for one player animation family.
+///
+/// @param animation One `PLAYER_ANIM_*` id.
+/// @return Positive frame count, or zero for invalid ids.
+func playerAnimationFrameCount(animation: Integer) -> Integer {
+    if animation == PLAYER_ANIM_IDLE { return 2; }
+    if animation == PLAYER_ANIM_RUN { return 6; }
+    if animation == PLAYER_ANIM_JUMP { return 1; }
+    if animation == PLAYER_ANIM_FALL { return 1; }
+    if animation == PLAYER_ANIM_DOUBLE_JUMP { return 1; }
+    if animation == PLAYER_ANIM_WALL_SLIDE { return 1; }
+    if animation == PLAYER_ANIM_HURT { return 2; }
+    if animation == PLAYER_ANIM_DEATH { return 4; }
+    if animation == PLAYER_ANIM_TURN { return 3; }
+    if animation == PLAYER_ANIM_LAND { return 4; }
+    if animation == PLAYER_ANIM_SHOOT { return 4; }
+    if animation == PLAYER_ANIM_CHARGE { return 2; }
+    if animation == PLAYER_ANIM_DASH { return 2; }
+    if animation == PLAYER_ANIM_GRAPPLE { return 2; }
+    if animation == PLAYER_ANIM_POUND { return 2; }
+    if animation == PLAYER_ANIM_ACQUIRE { return 4; }
+    return 0;
+}
+
+/// @brief Return the first sheet index for one animation family.
+///
+/// @param animation One `PLAYER_ANIM_*` id.
+/// @return Nonnegative base index, or zero for invalid ids.
+func playerAnimationFrameBase(animation: Integer) -> Integer {
+    if animation == PLAYER_ANIM_IDLE { return PLAYER_FRAME_IDLE_BASE; }
+    if animation == PLAYER_ANIM_RUN { return PLAYER_FRAME_RUN_BASE; }
+    if animation == PLAYER_ANIM_JUMP { return PLAYER_FRAME_JUMP_BASE; }
+    if animation == PLAYER_ANIM_FALL { return PLAYER_FRAME_FALL_BASE; }
+    if animation == PLAYER_ANIM_DOUBLE_JUMP { return PLAYER_FRAME_DOUBLE_JUMP_BASE; }
+    if animation == PLAYER_ANIM_WALL_SLIDE { return PLAYER_FRAME_WALL_SLIDE_BASE; }
+    if animation == PLAYER_ANIM_HURT { return PLAYER_FRAME_HURT_BASE; }
+    if animation == PLAYER_ANIM_DEATH { return PLAYER_FRAME_DEATH_BASE; }
+    if animation == PLAYER_ANIM_TURN { return PLAYER_FRAME_TURN_BASE; }
+    if animation == PLAYER_ANIM_LAND { return PLAYER_FRAME_LAND_BASE; }
+    if animation == PLAYER_ANIM_SHOOT { return PLAYER_FRAME_SHOOT_BASE; }
+    if animation == PLAYER_ANIM_CHARGE { return PLAYER_FRAME_CHARGE_BASE; }
+    if animation == PLAYER_ANIM_DASH { return PLAYER_FRAME_DASH_BASE; }
+    if animation == PLAYER_ANIM_GRAPPLE { return PLAYER_FRAME_GRAPPLE_BASE; }
+    if animation == PLAYER_ANIM_POUND { return PLAYER_FRAME_POUND_BASE; }
+    if animation == PLAYER_ANIM_ACQUIRE { return PLAYER_FRAME_ACQUIRE_BASE; }
+    return 0;
+}
+
+/// @brief Map a remaining-duration timer to a bounded forward frame index.
+///
+/// @param remainingMs Remaining nonnegative animation time.
+/// @param totalMs Positive full animation duration.
+/// @param frameCount Positive number of frames.
+/// @return Local frame index in 0..frameCount-1, or zero for invalid inputs.
+func playerTimedAnimationFrame(remainingMs: Integer, totalMs: Integer,
+                               frameCount: Integer) -> Integer {
+    if totalMs <= 0 or frameCount <= 0 { return 0; }
+    var remaining = remainingMs;
+    if remaining < 0 { remaining = 0; }
+    if remaining > totalMs { remaining = totalMs; }
+    var elapsed = totalMs - remaining;
+    var frame = elapsed * frameCount / totalMs;
+    if frame >= frameCount { frame = frameCount - 1; }
+    return frame;
+}
+
+/// @brief Build an absolute sheet index from animation and local frame.
+///
+/// @param animation One `PLAYER_ANIM_*` id.
+/// @param localFrame Candidate local frame index.
+/// @return Valid absolute sheet index, clamping invalid local values.
+func playerSheetFrame(animation: Integer, localFrame: Integer) -> Integer {
+    var count = playerAnimationFrameCount(animation);
+    if count <= 0 { return PLAYER_FRAME_IDLE_BASE; }
+    var frame = localFrame;
+    if frame < 0 { frame = 0; }
+    if frame >= count { frame = count - 1; }
+    return playerAnimationFrameBase(animation) + frame;
+}

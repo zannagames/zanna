@@ -12,7 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @file
+/// @file Parser.cpp
 /// @brief Houses high-level orchestration logic for the BASIC parser.
 /// @details Initialises the token buffer, constructs statement parser
 ///          registries, and exposes the top-level parse routine that produces
@@ -59,7 +59,12 @@ std::string canonicalLabelKey(std::string_view name) {
 ///          one token is buffered before processing productions.
 /// @param src Full BASIC source to parse.
 /// @param file_id Identifier for diagnostics.
-/// @param emitter Destination for emitted diagnostics.
+/// @param emitter Optional borrowed destination for structured diagnostics.
+/// @param sm Optional borrowed source manager required by `ADDFILE`.
+/// @param includeStack Optional borrowed canonical-path stack for include-cycle checks.
+/// @param suppressUndefinedLabelCheck Skip the final undefined named-label pass
+///        when this parser represents an included file.
+/// @pre @p src and every non-null borrowed pointer remain valid while parsing.
 Parser::Parser(std::string_view src,
                uint32_t file_id,
                DiagnosticEmitter *emitter,
@@ -79,6 +84,14 @@ Parser::Parser(std::string_view src,
     prescanProcedureNames(src, file_id);
 }
 
+/// @brief Pre-register SUB and FUNCTION names for call disambiguation.
+/// @details Runs an independent lexer over the complete source so calls that
+///          precede their declarations can be recognized without parentheses.
+///          Each following identifier has its type suffix stripped and is
+///          canonicalized when possible before insertion.
+/// @param src Complete source text scanned independently of the parser token buffer.
+/// @param file_id Source identifier assigned to tokens produced by the scan.
+/// @pre @p src remains valid for the duration of this scan.
 void Parser::prescanProcedureNames(std::string_view src, uint32_t file_id) {
     Lexer scanner(src, file_id);
     Token tok = scanner.next();
@@ -233,6 +246,7 @@ void Parser::noteNumericLabelUsage(int labelNumber) {
 ///          control-flow, runtime, and I/O).  The registry is returned by value
 ///          so callers can store it in static storage without exposing
 ///          construction details.
+/// @return Registry containing core, control-flow, runtime, I/O, and OOP handlers.
 Parser::StatementParserRegistry Parser::buildStatementRegistry() {
     StatementParserRegistry registry;
     registerCoreParsers(registry);
@@ -298,6 +312,8 @@ const Parser::StatementParserRegistry &Parser::statementRegistry() {
 /// @details Stores the callback in the registry entry associated with @p kind.
 ///          The registry distinguishes between handlers that consume prefixed
 ///          line numbers and those that do not.
+/// @param kind Leading token kind used as the registry-table index.
+/// @param handler Parser member-function callback installed in the no-line slot.
 void Parser::StatementParserRegistry::registerHandler(TokenKind kind, NoArgHandler handler) {
     entries_[static_cast<std::size_t>(kind)].first = handler;
 }
@@ -305,6 +321,8 @@ void Parser::StatementParserRegistry::registerHandler(TokenKind kind, NoArgHandl
 /// @brief Install a statement handler that receives the parsed line number.
 /// @details Complements the no-argument registration to support statements that
 ///          require awareness of their source line during parsing.
+/// @param kind Leading token kind used as the registry-table index.
+/// @param handler Parser member-function callback installed in the line-aware slot.
 void Parser::StatementParserRegistry::registerHandler(TokenKind kind, WithLineHandler handler) {
     entries_[static_cast<std::size_t>(kind)].second = handler;
 }
@@ -316,6 +334,8 @@ std::pair<Parser::StatementParserRegistry::NoArgHandler,
 ///          `{nullptr, nullptr}` when the registry lacks an entry.  The helper
 ///          performs bounds checking to keep invalid token kinds from indexing
 ///          past the table.
+/// @param kind Token kind whose no-line and line-aware callbacks are requested.
+/// @return Registered callback pair, or two null pointers when @p kind is out of range.
 Parser::StatementParserRegistry::lookup(TokenKind kind) const {
     const auto index = static_cast<std::size_t>(kind);
     if (index >= entries_.size())
@@ -326,6 +346,8 @@ Parser::StatementParserRegistry::lookup(TokenKind kind) const {
 /// @brief Test whether any handler exists for the token kind.
 /// @details Uses @ref lookup to fetch the callback pair and reports true when at
 ///          least one handler is registered.
+/// @param kind Token kind to query.
+/// @return `true` when either callback slot contains a handler.
 bool Parser::StatementParserRegistry::contains(TokenKind kind) const {
     const auto [noArg, withLine] = lookup(kind);
     return noArg != nullptr || withLine != nullptr;
@@ -389,6 +411,17 @@ std::unique_ptr<Program> Parser::parseProgram() {
 // ADDFILE handling
 // -----------------------------------------------------------------------------
 
+/// @brief Parse, load, and recursively parse one consumed `ADDFILE` directive.
+/// @details Consumes the required string path and the rest of its source line,
+///          resolves a relative path against the including file, enforces the
+///          include-depth, cycle, 64-MiB, and source-ID limits, and parses the
+///          included contents with undefined-label checking deferred to the
+///          parent. On success, the returned value carries the child program
+///          plus array, namespace, constant, and label state for merging.
+/// @param kw Already-consumed `ADDFILE` token identifying the including file.
+/// @return A result whose `success` flag is true only after the child program
+///         and mergeable child state have been produced.
+/// @pre The parser has non-null source-manager and diagnostic-emitter pointers.
 Parser::AddFileResult Parser::processAddFileInclude(const Token &kw) {
     AddFileResult result;
 
@@ -415,8 +448,11 @@ Parser::AddFileResult Parser::processAddFileInclude(const Token &kw) {
     const std::string canonStr = zanna::filesystem::pathToUtf8(nativeCanonical);
 
     // Check include depth and cycles.
+    /// @brief Restores the caller-owned include stack on every return path.
     struct IncludeStackGuard {
+        /// Borrowed stack from which the active include is removed.
         std::vector<std::string> *stack = nullptr;
+        /// Whether this invocation pushed an entry that must be removed.
         bool active = false;
 
         /// @brief Pop the include stack when an include exits through any path.
@@ -495,6 +531,14 @@ Parser::AddFileResult Parser::processAddFileInclude(const Token &kw) {
     return result;
 }
 
+/// @brief Handle an `ADDFILE` directive in top-level program context.
+/// @details After a successful child parse, moves its procedures and main
+///          statements into @p prog and merges the child's parser state back
+///          into this parser. Unsupported or failed includes are diagnosed and
+///          still count as handled.
+/// @param prog Program receiving declarations and statements from the included file.
+/// @return `false` when the current token is not `ADDFILE`; otherwise `true`
+///         after consuming and either processing or diagnosing the directive.
 bool Parser::handleTopLevelAddFile(Program &prog) {
     if (!at(TokenKind::KeywordAddfile))
         return false;
@@ -535,6 +579,13 @@ bool Parser::handleTopLevelAddFile(Program &prog) {
     return true;
 }
 
+/// @brief Handle an `ADDFILE` directive inside a statement destination.
+/// @details Moves both child procedures and child main statements into @p dst,
+///          then merges array, namespace, constant, and label state. Unsupported
+///          or failed includes are diagnosed and still count as handled.
+/// @param dst Owning statement vector receiving all nodes from the included program.
+/// @return `false` when the current token is not `ADDFILE`; otherwise `true`
+///         after consuming and either processing or diagnosing the directive.
 bool Parser::handleAddFileInto(std::vector<StmtPtr> &dst) {
     if (!at(TokenKind::KeywordAddfile))
         return false;
@@ -579,6 +630,15 @@ bool Parser::handleAddFileInto(std::vector<StmtPtr> &dst) {
 // Error Reporting Helpers
 // ============================================================================
 
+/// @brief Emit one parser diagnostic through the configured sink or stderr.
+/// @details A configured emitter receives the supplied severity, code, range,
+///          and message. Without an emitter, the method prints a simplified
+///          `Warning` or `Error` prefix and message to standard error.
+/// @param sev Diagnostic severity.
+/// @param code Stable diagnostic identifier.
+/// @param loc Start of the source range.
+/// @param len Length of the highlighted source range in bytes.
+/// @param message Human-readable message transferred to the diagnostic sink.
 void Parser::emitDiagnostic(il::support::Severity sev,
                             std::string_view code,
                             il::support::SourceLoc loc,
@@ -592,6 +652,10 @@ void Parser::emitDiagnostic(il::support::Severity sev,
     }
 }
 
+/// @brief Emit an error covering the supplied token lexeme.
+/// @param code Stable diagnostic identifier.
+/// @param tok Token providing the location and byte length.
+/// @param message Human-readable message forwarded to @ref emitDiagnostic.
 void Parser::emitError(std::string_view code, const Token &tok, std::string message) {
     emitDiagnostic(il::support::Severity::Error,
                    code,
@@ -600,10 +664,18 @@ void Parser::emitError(std::string_view code, const Token &tok, std::string mess
                    std::move(message));
 }
 
+/// @brief Emit a zero-length error range at an explicit source location.
+/// @param code Stable diagnostic identifier.
+/// @param loc Location at which to anchor the diagnostic.
+/// @param message Human-readable message forwarded to @ref emitDiagnostic.
 void Parser::emitError(std::string_view code, il::support::SourceLoc loc, std::string message) {
     emitDiagnostic(il::support::Severity::Error, code, loc, 0, std::move(message));
 }
 
+/// @brief Emit a warning covering the supplied token lexeme.
+/// @param code Stable diagnostic identifier.
+/// @param tok Token providing the location and byte length.
+/// @param message Human-readable message forwarded to @ref emitDiagnostic.
 void Parser::emitWarning(std::string_view code, const Token &tok, std::string message) {
     emitDiagnostic(il::support::Severity::Warning,
                    code,

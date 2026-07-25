@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/RodataPool.cpp
+// File: src/codegen/aarch64/RodataPool.cpp
 // Purpose: Read-only data pool — string literal deduplication and emission
 //          for AArch64 assembly output.
 //
@@ -17,8 +17,8 @@
 // Ownership/Lifetime:
 //   - See RodataPool.hpp.
 //
-// Links: codegen/aarch64/RodataPool.hpp,
-//        il/core/Module.hpp
+// Links: src/codegen/aarch64/RodataPool.hpp,
+//        src/il/core/Module.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,12 +31,31 @@
 
 #include <cstdint>
 
+/**
+ * @file
+ * @brief Implements AArch64 literal pooling and target-specific global-data assembly.
+ *
+ * The collection path shares scalar layout and initializer conversion with
+ * other native backends. Emission is selected from the requested `TargetInfo`
+ * rather than compile-host macros, preserving cross-compilation behavior.
+ */
+
 namespace zanna::codegen::aarch64 {
 
+/**
+ * @brief Formats a deterministic label from a string's pool index.
+ * @param index Zero-based unique-content insertion index.
+ * @return Label of the form `L.str.<index>`.
+ */
 std::string RodataPool::makeLabel(std::size_t index) {
     return std::string("L.str.") + std::to_string(index);
 }
 
+/**
+ * @brief Escapes arbitrary bytes for an assembler `.asciz` operand.
+ * @param bytes Raw bytes to encode.
+ * @return Escaped contents without quotes or a terminating null.
+ */
 std::string RodataPool::escapeAsciz(std::string_view bytes) {
     std::string s;
     s.reserve(bytes.size());
@@ -67,6 +86,11 @@ std::string RodataPool::escapeAsciz(std::string_view bytes) {
     return s;
 }
 
+/**
+ * @brief Interns string contents and associates an IL global name with the label.
+ * @param ilName Global name to record or replace in the name map.
+ * @param bytes Raw contents to intern.
+ */
 void RodataPool::addString(const std::string &ilName, const std::string &bytes) {
     auto it = contentToLabel_.find(bytes);
     if (it == contentToLabel_.end()) {
@@ -79,6 +103,12 @@ void RodataPool::addString(const std::string &ilName, const std::string &bytes) 
     }
 }
 
+/**
+ * @brief Appends supported globals from an IL module to the pool.
+ * @param mod Module whose globals are scanned in storage order.
+ * @post String references are copied and scalar initializers have owned
+ *       little-endian object bytes.
+ */
 void RodataPool::buildFromModule(const il::core::Module &mod) {
     using Kind = il::core::Type::Kind;
     for (const auto &g : mod.globals) {
@@ -106,6 +136,11 @@ void RodataPool::buildFromModule(const il::core::Module &mod) {
     }
 }
 
+/**
+ * @brief Writes writable scalar globals using target-specific assembly syntax.
+ * @param[in,out] os Destination assembly stream.
+ * @param target ABI selecting section names and external symbol spelling.
+ */
 void RodataPool::emitData(std::ostream &os, const TargetInfo &target) const {
     if (dataGlobals_.empty())
         return;
@@ -141,6 +176,11 @@ void RodataPool::emitData(std::ostream &os, const TargetInfo &target) const {
     os << "\n";
 }
 
+/**
+ * @brief Writes unique string contents to the target's read-only data section.
+ * @param[in,out] os Destination assembly stream.
+ * @param target ABI selecting the read-only section directive.
+ */
 void RodataPool::emit(std::ostream &os, const TargetInfo &target) const {
     if (ordered_.empty())
         return;

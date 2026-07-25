@@ -15,6 +15,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file Environment.hpp
+ * @brief Provides owned UTF-8 snapshots of process environment variables.
+ *
+ * The Windows implementation converts names to UTF-16 and reads values through
+ * the wide-character environment API. Other hosts copy the bytes returned by
+ * `std::getenv`. In every case, successful results own their storage.
+ */
+
 #pragma once
 
 #include "PlatformCapabilities.hpp"
@@ -36,7 +45,17 @@ namespace zanna::environment {
 /// @brief Return an owned UTF-8 snapshot of one process environment value.
 /// @details An empty but defined value is returned as an engaged empty string.
 ///          Invalid names, malformed Windows UTF-16, native failures, and absent
-///          variables return `std::nullopt`.
+///          variables return `std::nullopt`. On Windows, the value buffer is
+///          retried up to eight times if concurrent environment changes make
+///          the first reported capacity insufficient. On non-Windows hosts,
+///          the native environment bytes are copied without transcoding.
+/// @param name Variable name without an equals sign or embedded NUL. On
+///             Windows, the supplied bytes must also be valid UTF-8 and fit the
+///             native conversion API's signed length limit.
+/// @return An owning string containing the value when the variable exists and
+///         can be read, including an empty string for a defined empty value;
+///         otherwise `std::nullopt`.
+/// @note The returned snapshot is independent of later environment updates.
 inline std::optional<std::string> getUtf8(std::string_view name) {
     if (name.empty() || name.find('\0') != std::string_view::npos ||
         name.find('=') != std::string_view::npos) {

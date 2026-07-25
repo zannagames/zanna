@@ -5,17 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/peephole/MemoryOpt.cpp
+// File: src/codegen/x86_64/peephole/MemoryOpt.cpp
 // Purpose: x86-64 memory access peephole optimizations: dead frame store
 //          elimination and store-to-load forwarding.
 // Key invariants:
 //   - Only frame-relative (RBP-based) memory accesses are considered.
-//   - Memory barriers (CALL, JMP, JCC, RET) flush all forwarding state.
+//   - Control-flow boundaries and unknown memory accesses flush tracking state.
 // Ownership/Lifetime:
 //   - Stateless; all state is owned by the caller.
-// Links: codegen/x86_64/peephole/MemoryOpt.hpp,
-//        codegen/x86_64/peephole/PeepholeCommon.hpp,
-//        codegen/x86_64/OperandRoles.hpp
+// Links: src/codegen/x86_64/peephole/MemoryOpt.hpp,
+//        src/codegen/x86_64/peephole/PeepholeCommon.hpp,
+//        src/codegen/x86_64/OperandRoles.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +28,9 @@
 #include <optional>
 #include <unordered_map>
 #include <vector>
+
+/// @file
+/// @brief Implements conservative frame-slot store tracking within basic blocks.
 
 namespace zanna::codegen::x64::peephole {
 namespace {
@@ -43,6 +46,7 @@ struct FrameAccess {
 ///          pure base+disp memory operand whose base is the architectural
 ///          frame pointer. Anything more exotic (indexed, RIP-relative,
 ///          RSP-relative) is rejected to keep the analysis conservative.
+/// @param instr Candidate machine instruction.
 /// @return The frame slot descriptor on success, @c std::nullopt otherwise.
 std::optional<FrameAccess> frameLoad(const MInstr &instr) {
     if (instr.opcode != MOpcode::MOVmr && instr.opcode != MOpcode::MOVSDmr)
@@ -59,6 +63,8 @@ std::optional<FrameAccess> frameLoad(const MInstr &instr) {
 /// @brief Companion to @ref frameLoad — decodes a frame-slot store.
 /// @details Recognises @c MOVrm / @c MOVSDrm into a pure base+disp address
 ///          whose base is %rbp.
+/// @param instr Candidate machine instruction.
+/// @return Frame displacement and register class, or @c std::nullopt.
 std::optional<FrameAccess> frameStore(const MInstr &instr) {
     if (instr.opcode != MOpcode::MOVrm && instr.opcode != MOpcode::MOVSDrm)
         return std::nullopt;
@@ -75,6 +81,9 @@ std::optional<FrameAccess> frameStore(const MInstr &instr) {
 /// @details Used by the store-forwarding logic to detect when the source
 ///          register of a recorded store has been clobbered before the
 ///          subsequent load can reuse it.
+/// @param instr Machine instruction whose defining operand roles are inspected.
+/// @param regOperand Previously stored physical-register operand.
+/// @return @c true when @p instr defines that same register and class.
 bool definesOperandReg(const MInstr &instr, const Operand &regOperand) {
     const auto *reg = std::get_if<OpReg>(&regOperand);
     if (!reg || !reg->isPhys)
@@ -97,6 +106,8 @@ bool definesOperandReg(const MInstr &instr, const Operand &regOperand) {
 ///          frame load or frame store. The conservative treatment of
 ///          unknown memory ops keeps optimisations sound in the presence
 ///          of aliasing.
+/// @param instr Machine instruction to classify.
+/// @return @c true when tracked store state must be cleared before continuing.
 bool isMemoryBarrier(const MInstr &instr) {
     if (instr.opcode == MOpcode::CALL || instr.opcode == MOpcode::JMP ||
         instr.opcode == MOpcode::JCC || instr.opcode == MOpcode::RET ||
@@ -124,23 +135,36 @@ bool isMemoryBarrier(const MInstr &instr) {
 
 /// @brief Value available for forwarding from a frame store.
 struct TrackedFrameStore {
+    /// @brief Register operand whose current value equals the tracked slot.
     Operand storedReg;
 };
 
 /// @brief Per-register-class frame forwarding state, keyed by RBP displacement.
 using FrameStoreMap = std::unordered_map<int32_t, TrackedFrameStore>;
 
+/// @brief Selects the forwarding map for a register class.
+/// @param cls Class of the frame access.
+/// @param gprStores GPR-valued slot state.
+/// @param xmmStores XMM-valued slot state.
+/// @return Mutable map corresponding to @p cls.
 FrameStoreMap &trackedMapFor(RegClass cls,
                              FrameStoreMap &gprStores,
                              FrameStoreMap &xmmStores) noexcept {
     return cls == RegClass::XMM ? xmmStores : gprStores;
 }
 
+/// @brief Forgets both class interpretations of one frame displacement.
+/// @param disp RBP-relative displacement being overwritten.
+/// @param gprStores GPR-valued slot state.
+/// @param xmmStores XMM-valued slot state.
 void eraseTrackedAddress(int32_t disp, FrameStoreMap &gprStores, FrameStoreMap &xmmStores) {
     gprStores.erase(disp);
     xmmStores.erase(disp);
 }
 
+/// @brief Forgets stores whose source register is redefined by an instruction.
+/// @param instr Instruction whose definitions are inspected.
+/// @param stores Forwarding state filtered in place.
 void eraseStoresClobberedBy(const MInstr &instr, FrameStoreMap &stores) {
     for (auto it = stores.begin(); it != stores.end();) {
         if (definesOperandReg(instr, it->second.storedReg))
@@ -166,6 +190,9 @@ std::size_t eliminateDeadFrameStores(std::vector<MInstr> &instrs, PeepholeStats 
     std::unordered_map<int32_t, std::size_t> lastXmmStore;
     std::vector<bool> remove(instrs.size(), false);
 
+    /// @brief Selects the unread-store index map for @p cls.
+    /// @param cls Register class stored in the slot.
+    /// @return Mutable GPR or XMM tracking map.
     auto mapFor = [&](RegClass cls) -> std::unordered_map<int32_t, std::size_t> & {
         return cls == RegClass::XMM ? lastXmmStore : lastGprStore;
     };
@@ -210,15 +237,14 @@ std::size_t eliminateDeadFrameStores(std::vector<MInstr> &instrs, PeepholeStats 
 }
 
 /// @brief Replace subsequent loads of a frame slot with the stored register.
-/// @details For each frame store, scans forward looking for a same-slot load.
-///          When found and the source register is still live (not clobbered
-///          and no memory barrier was crossed), the load is rewritten to a
-///          register-to-register move and removed if it becomes a no-op.
-///          Bails out on memory barriers, aliasing later stores, or
-///          redefinitions of the stored register.
+/// @details Tracks the most recent store for each displacement and register
+///          class. A matching load is replaced by a register-to-register move
+///          while the stored source remains unclobbered. Barriers discard all
+///          state; later stores invalidate both class interpretations of the
+///          overlapping address.
 /// @param instrs Block instructions, mutated in place.
 /// @param stats Pass-wide statistics accumulator.
-/// @return Number of loads eliminated through forwarding.
+/// @return Number of memory loads rewritten through forwarding.
 std::size_t forwardFrameStoreLoads(std::vector<MInstr> &instrs, PeepholeStats &stats) {
     std::size_t forwarded = 0;
     FrameStoreMap lastGprStore;

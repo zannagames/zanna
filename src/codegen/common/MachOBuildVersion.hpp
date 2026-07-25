@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/MachOBuildVersion.hpp
+// File: src/codegen/common/MachOBuildVersion.hpp
 // Purpose: Shared Mach-O LC_BUILD_VERSION defaults and environment overrides
 //          for object and executable writers.
 // Key invariants:
@@ -29,6 +29,9 @@
 #include <cstdlib>
 #include <optional>
 #include <string_view>
+
+/// @file
+/// @brief Provides packed Mach-O build-version parsing and environment overrides.
 
 namespace zanna::codegen::macho {
 
@@ -120,6 +123,7 @@ inline constexpr uint32_t kDefaultMacOSSDKVersion = 0x000F0000; ///< macOS SDK 1
 /// @brief Return the LC_BUILD_VERSION minimum macOS version.
 /// @details Defaults to macOS 14.0.0 and can be overridden with
 ///          ZANNA_MACHO_MINOS=major.minor.patch for tests or SDK targeting.
+/// @return Packed `major << 16 | minor << 8 | patch` version word.
 [[nodiscard]] inline uint32_t minimumMacOSVersion() noexcept {
     return versionFromEnvironment("ZANNA_MACHO_MINOS", kDefaultMacOSMinVersion);
 }
@@ -127,6 +131,7 @@ inline constexpr uint32_t kDefaultMacOSSDKVersion = 0x000F0000; ///< macOS SDK 1
 /// @brief Return the LC_BUILD_VERSION SDK version.
 /// @details Defaults to macOS SDK 15.0.0 and can be overridden with
 ///          ZANNA_MACHO_SDK=major.minor.patch for tests or SDK targeting.
+/// @return Packed `major << 16 | minor << 8 | patch` version word.
 [[nodiscard]] inline uint32_t macOSSDKVersion() noexcept {
     return versionFromEnvironment("ZANNA_MACHO_SDK", kDefaultMacOSSDKVersion);
 }

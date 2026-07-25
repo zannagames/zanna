@@ -24,6 +24,7 @@
 module scene_asset_browser;
 
 bind "../core/project_manager";
+bind "../services/asset_library";
 bind "../services/safe_io";
 
 bind GUI = Zanna.GUI;
@@ -33,6 +34,7 @@ bind File = Zanna.IO.File;
 bind Str = Zanna.String;
 bind Seq = Zanna.Collections.Seq;
 bind Obj = Zanna.Core.Object;
+bind Parse = Zanna.Core.Parse;
 
 // ============================================================================
 // MODULE: scene_asset_browser
@@ -163,6 +165,19 @@ class SceneAssetBrowser {
     expose Integer realizedCount;
     expose Integer matchedCount;
     expose Boolean resultTruncated;
+    expose GUI.Button libraryOnlyButton;
+    expose GUI.TextInput tagFilterInput;
+    expose GUI.TextInput entryTagsInput;
+    expose GUI.TextInput entryTileWidthInput;
+    expose GUI.TextInput entryTileHeightInput;
+    expose GUI.Button saveEntryButton;
+    expose GUI.Button removeEntryButton;
+    expose GUI.Label libraryStatusLabel;
+    hide asset_library.AssetLibrary library;
+    hide asset_library.AssetLibrarySession librarySession;
+    hide String libraryRoot;
+    hide Boolean libraryOnly;
+    hide String tagFilterText;
     hide String normalizedExtensions;
     hide String filterText;
     hide Integer cacheGeneration;
@@ -172,6 +187,19 @@ class SceneAssetBrowser {
     hide String selectedLabel;
 
     expose func init() {
+        libraryOnlyButton = null;
+        tagFilterInput = null;
+        entryTagsInput = null;
+        entryTileWidthInput = null;
+        entryTileHeightInput = null;
+        saveEntryButton = null;
+        removeEntryButton = null;
+        libraryStatusLabel = null;
+        library = new asset_library.AssetLibrary();
+        librarySession = new asset_library.AssetLibrarySession();
+        libraryRoot = "";
+        libraryOnly = false;
+        tagFilterText = "";
         openButton = null;
         group = null;
         filterInput = null;
@@ -219,6 +247,17 @@ class SceneAssetBrowser {
         clearFilterButton = GUI.Button.New(filterRow, "Clear");
         clearFilterButton.SetAccessibleName("Clear project asset filter");
 
+        var libraryRow = GUI.HBox.New();
+        libraryRow.SetSpacing(4.0);
+        group.AddChild(libraryRow);
+        tagFilterInput = GUI.TextInput.New(libraryRow);
+        tagFilterInput.SetFlex(1.0);
+        tagFilterInput.SetPlaceholder("Filter by library tag");
+        tagFilterInput.SetAccessibleName("Filter assets by library tag");
+        libraryOnlyButton = GUI.Button.New(libraryRow, "Library: all");
+        libraryOnlyButton.SetTooltip(
+            "Toggle between all discovered assets and library entries only");
+
         statusLabel = GUI.Label.New(group, "Open a workspace folder to browse assets.");
         statusLabel.SetWordWrap(true);
         assetList = GUI.ListBox.New(group);
@@ -235,6 +274,21 @@ class SceneAssetBrowser {
         previewImage.SetVisible(false);
         selectionLabel = GUI.Label.New(group, "Select an asset to inspect it.");
         selectionLabel.SetWordWrap(true);
+        libraryStatusLabel = GUI.Label.New(group, "");
+        libraryStatusLabel.SetWordWrap(true);
+        var entryRow = GUI.HBox.New();
+        entryRow.SetSpacing(4.0);
+        group.AddChild(entryRow);
+        entryTagsInput = GUI.TextInput.New(entryRow);
+        entryTagsInput.SetFlex(1.0);
+        entryTagsInput.SetPlaceholder("Library tags (comma-separated)");
+        entryTagsInput.SetAccessibleName("Selected asset library tags");
+        entryTileWidthInput = GUI.TextInput.New(entryRow);
+        entryTileWidthInput.SetPlaceholder("tile w");
+        entryTileWidthInput.SetAccessibleName("Library entry tile width");
+        entryTileHeightInput = GUI.TextInput.New(entryRow);
+        entryTileHeightInput.SetPlaceholder("tile h");
+        entryTileHeightInput.SetAccessibleName("Library entry tile height");
 
         var actions = GUI.Flex.New();
         actions.SetDirection(GUI.FlexDirection.Row);
@@ -243,6 +297,12 @@ class SceneAssetBrowser {
         group.AddChild(actions);
         useButton = GUI.Button.New(actions, useLabel);
         useButton.SetAccessibleName(useLabel);
+        saveEntryButton = GUI.Button.New(actions, "Save Entry");
+        saveEntryButton.SetTooltip(
+            "Create or update this asset's library tags and grid");
+        removeEntryButton = GUI.Button.New(actions, "Remove Entry");
+        removeEntryButton.SetTooltip(
+            "Remove this asset's library entry; the file is untouched");
         refreshButton = GUI.Button.New(actions, "Refresh");
         refreshButton.SetAccessibleName("Refresh project asset index");
         closeButton = GUI.Button.New(actions, "Close");
@@ -307,6 +367,22 @@ class SceneAssetBrowser {
             ResetRows();
             filterInput.Focus();
         }
+        if libraryOnlyButton.WasClicked() {
+            libraryOnly = libraryOnly == false;
+            if libraryOnly {
+                libraryOnlyButton.SetText("Library: only");
+            } else {
+                libraryOnlyButton.SetText("Library: all");
+            }
+            ResetRows();
+        }
+        var nextTagFilter =
+            Str.ToLower(Str.Trim(tagFilterInput.get_Text()));
+        if nextTagFilter != tagFilterText {
+            tagFilterText = nextTagFilter;
+            ResetRows();
+        }
+        PumpLibraryEntryActions();
 
         PumpRows(projectManager);
         RefreshStatus(projectManager);
@@ -328,6 +404,174 @@ class SceneAssetBrowser {
             return SelectedPath();
         }
         return "";
+    }
+
+    /// @brief Point the browser at one workspace root's asset library.
+    /// @details Reloading is cheap and bounded; an unchanged root keeps the
+    ///          published entries and file history.
+    expose func SetLibraryRoot(root: String) {
+        var clean = Str.Trim(root);
+        if clean == libraryRoot { return; }
+        libraryRoot = clean;
+        var libraryPath = asset_library.PathForRoot(libraryRoot);
+        librarySession.Load(libraryPath);
+        library = asset_library.LoadPath(libraryPath);
+        ResetRows();
+        RefreshLibraryStatus("");
+    }
+
+    /// @brief Return the library entry for one absolute asset path, or null.
+    expose func LibraryEntryForAbsolutePath(
+        path: String) -> asset_library.AssetLibraryEntry {
+        if library == null or library.valid == false { return null; }
+        var relative = LibraryRelativePath(path);
+        if relative == "" { return null; }
+        return library.EntryForPath(relative);
+    }
+
+    /// @brief Convert one absolute path to a root-relative library path.
+    hide func LibraryRelativePath(path: String) -> String {
+        if libraryRoot == "" or path == "" { return ""; }
+        var normalizedRoot =
+            PortableSeparators(Path.Normalize(Path.Absolute(libraryRoot)));
+        var normalizedPath =
+            PortableSeparators(Path.Normalize(Path.Absolute(path)));
+        var prefix = normalizedRoot + "/";
+        if Str.StartsWith(normalizedPath, prefix) == false { return ""; }
+        return Str.MidLen(
+            normalizedPath,
+            Str.get_Length(prefix) + 1,
+            Str.get_Length(normalizedPath) - Str.get_Length(prefix));
+    }
+
+    /// @brief Return whether library-only and tag filters accept one path.
+    hide func LibraryAllowsPath(path: String) -> Boolean {
+        if libraryOnly == false and tagFilterText == "" { return true; }
+        var entry = LibraryEntryForAbsolutePath(path);
+        if entry == null { return false; }
+        if tagFilterText != "" and entry.HasTag(tagFilterText) == false {
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Append library tags to one realized row label.
+    hide func LibraryBadgedLabel(label: String, path: String) -> String {
+        var entry = LibraryEntryForAbsolutePath(path);
+        if entry == null or entry.tags.count() == 0 { return label; }
+        var out = label + "  [";
+        var index = 0;
+        while index < entry.tags.count() {
+            if index > 0 { out = out + ", "; }
+            out = out + entry.tags.get(index);
+            index = index + 1;
+        }
+        return out + "]";
+    }
+
+    /// @brief Apply one Save Entry or Remove Entry intent transactionally.
+    hide func PumpLibraryEntryActions() {
+        var selected = SelectedPath();
+        var relative = LibraryRelativePath(selected);
+        var editable = relative != "" and librarySession.path != "";
+        saveEntryButton.SetEnabled(editable);
+        removeEntryButton.SetEnabled(
+            editable and library != null
+            and library.EntryForPath(relative) != null);
+        if editable == false { return; }
+        if saveEntryButton.WasClicked() {
+            var tileWidth = ParseGridDraft(entryTileWidthInput.get_Text());
+            var tileHeight = ParseGridDraft(entryTileHeightInput.get_Text());
+            if tileWidth < 0 or tileHeight < 0 {
+                RefreshLibraryStatus(
+                    "Grid dimensions must be whole numbers from 1 to 4096.");
+                return;
+            }
+            var errors: List[String] = [];
+            var next = asset_library.UpsertEntryText(
+                librarySession.currentText,
+                relative,
+                entryTagsInput.get_Text(),
+                tileWidth,
+                tileHeight,
+                "",
+                errors);
+            CommitLibraryText(next, errors, "Saved library entry.");
+        }
+        if removeEntryButton.WasClicked() {
+            var errors: List[String] = [];
+            var next = asset_library.RemoveEntryText(
+                librarySession.currentText, relative, errors);
+            CommitLibraryText(next, errors, "Removed library entry.");
+        }
+    }
+
+    /// @brief Persist one validated library text as one file transition.
+    hide func CommitLibraryText(next: String,
+                                errors: List[String],
+                                successText: String) {
+        if next == "" {
+            if errors.count() > 0 {
+                RefreshLibraryStatus(errors.get(0));
+            }
+            return;
+        }
+        if librarySession.Apply(next) == false {
+            RefreshLibraryStatus(librarySession.error);
+            return;
+        }
+        library = asset_library.ParseText(next, librarySession.path);
+        ResetRows();
+        RefreshLibraryStatus(successText);
+    }
+
+    /// @brief Parse one optional grid draft: 0 when blank, -1 when invalid.
+    hide func ParseGridDraft(text: String) -> Integer {
+        var clean = Str.Trim(text);
+        if clean == "" { return 0; }
+        var parsed = Parse.TryInt(clean);
+        if parsed.IsNone { return -1; }
+        var value = parsed.UnwrapI64();
+        if value < 1 or value > 4096 { return -1; }
+        return value;
+    }
+
+    /// @brief Refill the entry drafts from the selected asset's library row.
+    hide func RefreshEntryDrafts(path: String) {
+        if entryTagsInput == null { return; }
+        var entry = LibraryEntryForAbsolutePath(path);
+        if entry == null {
+            entryTagsInput.SetText("");
+            entryTileWidthInput.SetText("");
+            entryTileHeightInput.SetText("");
+            return;
+        }
+        var tags = "";
+        var index = 0;
+        while index < entry.tags.count() {
+            if index > 0 { tags = tags + ", "; }
+            tags = tags + entry.tags.get(index);
+            index = index + 1;
+        }
+        entryTagsInput.SetText(tags);
+        if entry.tileWidth > 0 {
+            entryTileWidthInput.SetText("" + entry.tileWidth);
+            entryTileHeightInput.SetText("" + entry.tileHeight);
+        } else {
+            entryTileWidthInput.SetText("");
+            entryTileHeightInput.SetText("");
+        }
+    }
+
+    /// @brief Publish library validity or action feedback.
+    hide func RefreshLibraryStatus(actionText: String) {
+        if libraryStatusLabel == null { return; }
+        if library != null and library.found and library.valid == false {
+            libraryStatusLabel.SetText(
+                "Asset library error: " + library.error);
+            return;
+        }
+        libraryStatusLabel.SetText(actionText);
     }
 
     /// @brief Absolute data path of the selected row, or empty.
@@ -362,10 +606,12 @@ class SceneAssetBrowser {
             work = work + 1;
             if AssetExtensionAllowed(path, normalizedExtensions) {
                 var label = AssetLabel(projectManager, path);
-                if AssetMatchesFilter(label, path, filterText) {
+                if AssetMatchesFilter(label, path, filterText)
+                   and LibraryAllowsPath(path) {
                     matchedCount = matchedCount + 1;
                     if realizedCount < MAX_VISIBLE_SCENE_ASSETS {
-                        var item = assetList.AddItem(label);
+                        var item =
+                            assetList.AddItem(LibraryBadgedLabel(label, path));
                         GUI.ListBox.ItemSetData(item, path);
                         realizedCount = realizedCount + 1;
                     } else {
@@ -402,6 +648,7 @@ class SceneAssetBrowser {
         ClearPreview();
         selectedUsable = false;
         var path = SelectedPath();
+        RefreshEntryDrafts(path);
         if path == "" {
             selectionLabel.SetText("Select an asset to inspect it.");
             useButton.SetEnabled(false);

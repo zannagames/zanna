@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/LoweringRules.cpp
+// File: src/codegen/x86_64/LoweringRules.cpp
 // Purpose: Assemble the lowering rule registry by bridging declarative table
 //          entries to match and emit thunks.
 // Key invariants:
@@ -14,8 +14,8 @@
 // Ownership/Lifetime:
 //   - Returned registry is stored as a static vector whose lifetime spans the
 //     process.
-// Links: codegen/x86_64/LoweringRules.hpp,
-//        codegen/x86_64/LoweringRuleTable.hpp
+// Links: src/codegen/x86_64/LoweringRules.hpp,
+//        src/codegen/x86_64/LoweringRuleTable.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,6 +26,16 @@
 #include <cstddef>
 #include <utility>
 #include <vector>
+
+/**
+ * @file
+ * @brief Implements thunk generation for the legacy lowering-rule facade.
+ *
+ * Template-generated match and emit functions retain compile-time RuleSpec
+ * indices. A lazily initialized vector packages those thunks with diagnostic
+ * names, while rule selection continues to use the declarative table's indexed
+ * lookup and maps the result back to the parallel vector.
+ */
 
 namespace zanna::codegen::x64 {
 
@@ -54,13 +64,12 @@ template <std::size_t Index> void emitRuleThunk(const IL::Instr &instr, MIRBuild
     lowering::kLoweringRuleTable[Index].emit(instr, builder);
 }
 
-/// @brief Build the immutable lowering rule registry at compile time.
+/// @brief Build the immutable lowering rule registry from a compile-time index sequence.
 /// @details Uses template parameter packs to transform every entry in the
 ///          declarative rule table into a @ref LoweringRule record containing the
 ///          match and emit thunks.  The resulting vector is stored in static
 ///          storage so subsequent calls reuse the cached registry.
 /// @tparam Indices Compile-time indices spanning the declarative rule table.
-/// @param Unnamed Sequence object carrying the indices.
 /// @return Reference to the lazily initialised registry.
 template <std::size_t... Indices>
 const std::vector<LoweringRule> &makeRules(std::index_sequence<Indices...>) {

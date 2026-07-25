@@ -5,13 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/LowerStmt_Control.hpp
-// Purpose: Declares control-flow lowering helpers for BASIC statements such as
-// Key invariants: Helpers mutate the current block through the active Lowerer
-// Ownership/Lifetime: Declarations are included inside Lowerer to extend its
+// File: src/frontends/basic/LowerStmt_Control.hpp
+// Purpose: Declares structured and unstructured BASIC control-flow lowering.
+// Key invariants: Helpers mutate the current block through the active Lowerer.
+// Ownership/Lifetime: Class-body declarations borrow AST nodes and IL blocks.
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file LowerStmt_Control.hpp
+ * @brief Provides the Lowerer class-body fragment for control-flow statements.
+ *
+ * The declarations cover IF chains, loops, SELECT CASE, jumps, GOSUB/RETURN,
+ * error-handler transfers, and END. All referenced blocks belong to the active
+ * function and remain owned by that function.
+ */
 
 #pragma once
 
@@ -70,7 +79,7 @@ void lowerCondBranch(const Expr &expr,
 /// @param stmt The statement (or block) forming the branch body. May be nullptr
 ///             for empty branches.
 /// @param thenBlk The basic block to emit the body into.
-/// @param exitIdx Index into the IfBlocks exit array for the branch target.
+/// @param exitIdx Stable index of the join block in the active function.
 /// @param loc Source location for diagnostics.
 /// @return True if the branch body falls through (does not terminate).
 bool lowerIfBranch(const Stmt *stmt,
@@ -134,7 +143,8 @@ void lowerForConstStep(const ForStmt &stmt, Value slot, RVal end, RVal step, int
 /// @param stmt The ForStmt AST node.
 /// @param slot The alloca holding the loop counter variable.
 /// @param end The upper/lower bound value.
-/// @param step The step value (evaluated at runtime each iteration).
+/// @param step Step value evaluated before loop construction and reused by
+///             direction checks and increments.
 void lowerForVarStep(const ForStmt &stmt, Value slot, RVal end, RVal step);
 
 /// @brief Emit the IL for a FOR...NEXT loop.

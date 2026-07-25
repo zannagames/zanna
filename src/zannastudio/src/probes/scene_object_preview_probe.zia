@@ -1,0 +1,170 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_object_preview_probe.zia
+// Purpose: Verify object sprite previews, marker fallback, route polylines,
+//          and light halos in the 2D scene canvas.
+// Key invariants:
+//   - `editor.sprite`/`editor.frame` draw the exact authored atlas frame.
+//   - Missing sprites fall back to the existing marker deterministically.
+//   - Route and halo overlays render without changing canonical content.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, document, editor, and PNG fixture.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_tileset_2d.zia,
+//        docs/adr/0179-2d-object-sprite-preview-and-route-conventions.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_object_preview_probe;
+
+// ============================================================================
+// MODULE: scene_object_preview_probe
+// PURPOSE: Pin the ADR 0179 canvas visualization conventions.
+//
+// WHERE-THIS-FITS: scene_editor_2d_probe covers general persistence. This
+//          focused probe owns sprite resolution, fallback, and overlays.
+//
+// TEACHING-NOTE: Assertions sample rendered framePixels directly, proving the
+//          conventions through the production render path instead of through
+//          separate presentation state.
+// ============================================================================
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+
+bind Color = Zanna.Graphics.Color;
+bind File = Zanna.IO.File;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Terminal = Zanna.Terminal;
+
+final SPRITE_FIXTURE: String = "__preview_sprite_probe.png";
+
+func Fail(shell: app_shell.AppShell, reason: String) {
+    File.Delete(SPRITE_FIXTURE);
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func Rgb(pixel: Integer) -> Integer {
+    return pixel % 16777216;
+}
+
+func CellCenter(editor: scene_editor_2d.SceneEditor2D,
+                cell: Integer) -> Integer {
+    return cell * editor.displayCellSize + editor.displayCellSize / 2;
+}
+
+func main() {
+    // Two 16x16 frames: frame 0 solid red, frame 1 solid green.
+    var fixture = Pixels.New(32, 16);
+    fixture.DrawBox(0, 0, 16, 16, Color.RGB(200, 30, 30));
+    fixture.DrawBox(16, 0, 16, 16, Color.RGB(30, 200, 30));
+    if fixture.SavePng(SPRITE_FIXTURE) != 1 {
+        Terminal.Say("RESULT: fail sprite fixture write");
+        return;
+    }
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Object Preview Probe", 1120, 760);
+    var editor = new scene_editor_2d.SceneEditor2D();
+    editor.Setup(shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+
+    if editor.ReplaceScene(10, 8, 16) == false {
+        Fail(shell, "scene fixture");
+        return;
+    }
+
+    // Unselected fallback marker object, then the sprite object.
+    var markerIndex = editor.AddSceneObject("enemy", "marker-1", 96, 96);
+    var spriteIndex = editor.AddSceneObject("enemy", "sprite-1", 32, 32);
+    if markerIndex < 0 or spriteIndex < 0
+       or editor.SetSceneObjectProperty(
+              spriteIndex, "", "editor.sprite", "string",
+              SPRITE_FIXTURE) == false
+       or editor.SetSceneObjectProperty(
+              spriteIndex, "", "editor.frame", "int", "1") == false {
+        Fail(shell, "object fixtures");
+        return;
+    }
+
+    // Route with two waypoints, then a light emitter (selected last).
+    var routeIndex = editor.AddSceneObject("route", "route-1", 16, 96);
+    var waypointA = editor.AddSceneChildObject(
+        routeIndex, "waypoint", "wp-1", 64, 96);
+    var waypointB = editor.AddSceneChildObject(
+        routeIndex, "waypoint", "wp-2", 64, 112);
+    var lightIndex = editor.AddSceneObject("light", "light-1", 128, 32);
+    if routeIndex < 0 or waypointA < 0 or waypointB < 0 or lightIndex < 0
+       or editor.SetSceneObjectProperty(
+              lightIndex, "", "light.radius", "int", "220") == false {
+        Fail(shell, "route and light fixtures");
+        return;
+    }
+
+    var contentBefore = sceneDoc.content;
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if sceneDoc.content != contentBefore {
+        Fail(shell, "rendering mutated canonical content");
+        return;
+    }
+    if editor.framePixels == null {
+        Fail(shell, "no rendered canvas");
+        return;
+    }
+
+    // Sprite object at cell (2, 2) shows authored frame 1 (green).
+    var spritePixel = Rgb(editor.framePixels.GetColor(
+        CellCenter(editor, 2), CellCenter(editor, 2)));
+    if spritePixel != Rgb(Color.RGB(30, 200, 30)) {
+        Fail(shell, "sprite frame pixel " + spritePixel);
+        return;
+    }
+
+    // Marker object at cell (6, 6) falls back to the unselected disc.
+    var markerPixel = Rgb(editor.framePixels.GetColor(
+        CellCenter(editor, 6), CellCenter(editor, 6)));
+    if markerPixel != Rgb(Color.RGB(255, 190, 72)) {
+        Fail(shell, "marker fallback pixel " + markerPixel);
+        return;
+    }
+
+    // Route polyline from (1, 6) toward (4, 6) crosses cell boundary 2-3.
+    var routePixel = Rgb(editor.framePixels.GetColor(
+        2 * editor.displayCellSize + editor.displayCellSize / 2,
+        CellCenter(editor, 6)));
+    if routePixel != Rgb(Color.RGB(120, 132, 150)) {
+        Fail(shell, "route polyline pixel " + routePixel);
+        return;
+    }
+
+    // Light halo ring extends past the cell frame on the horizontal axis.
+    var haloRadius = editor.displayCellSize / 2 + 3;
+    if haloRadius > 24 { haloRadius = 24; }
+    var haloPixel = Rgb(editor.framePixels.GetColor(
+        CellCenter(editor, 8) + haloRadius, CellCenter(editor, 2)));
+    if haloPixel != Rgb(Color.RGB(255, 236, 150)) {
+        Fail(shell, "light halo pixel " + haloPixel);
+        return;
+    }
+
+    File.Delete(SPRITE_FIXTURE);
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

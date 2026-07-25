@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/CoffReader.cpp
+// File: src/codegen/common/linker/CoffReader.cpp
 // Purpose: COFF/PE object file reader for the native linker.
 // Key invariants:
 //   - Machine field at offset 0: 0x8664 (AMD64), 0xAA64 (ARM64)
@@ -15,6 +15,15 @@
 // Links: codegen/common/linker/ObjFileReader.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file CoffReader.cpp
+ * @brief Implements validated parsing of standard and BigObj COFF object files.
+ *
+ * The reader translates Microsoft x64 and ARM64 section, relocation, symbol,
+ * weak-external, common, and COMDAT records into the linker's neutral object
+ * model.  All offsets and aggregate byte counts are checked before access.
+ */
 
 #include "codegen/common/AArch64RelocUtil.hpp"
 #include "codegen/common/linker/ObjFileReader.hpp"
@@ -67,6 +76,7 @@ static constexpr uint8_t IMAGE_COMDAT_SELECT_LARGEST = 6;
 
 #pragma pack(push, 1)
 
+/// @brief Packed standard COFF file-header record.
 struct CoffHeader {
     uint16_t Machine;
     uint16_t NumberOfSections;
@@ -77,6 +87,7 @@ struct CoffHeader {
     uint16_t Characteristics;
 };
 
+/// @brief Packed Microsoft BigObj header with widened section counts.
 struct BigObjHeader {
     uint16_t Sig1;
     uint16_t Sig2;
@@ -93,6 +104,7 @@ struct BigObjHeader {
     uint32_t NumberOfSymbols;
 };
 
+/// @brief Packed COFF section-header record.
 struct SectionHeader {
     char Name[8];
     uint32_t VirtualSize;
@@ -106,12 +118,14 @@ struct SectionHeader {
     uint32_t Characteristics;
 };
 
+/// @brief Packed COFF relocation record.
 struct CoffReloc {
     uint32_t VirtualAddress;
     uint32_t SymbolTableIndex;
     uint16_t Type;
 };
 
+/// @brief Packed standard COFF symbol-table record.
 struct CoffSymbol {
     union {
         char ShortName[8];
@@ -129,6 +143,7 @@ struct CoffSymbol {
     uint8_t NumberOfAuxSymbols;
 };
 
+/// @brief Packed BigObj symbol-table record with a 32-bit section number.
 struct CoffSymbolEx {
     union {
         char ShortName[8];
@@ -146,6 +161,7 @@ struct CoffSymbolEx {
     uint8_t NumberOfAuxSymbols;
 };
 
+/// @brief Packed auxiliary section-definition record used by COMDAT sections.
 struct CoffAuxSectionDefinition {
     uint32_t Length;
     uint16_t NumberOfRelocations;
@@ -157,6 +173,7 @@ struct CoffAuxSectionDefinition {
     int16_t HighNumber;
 };
 
+/// @brief Packed auxiliary weak-external fallback record.
 struct CoffAuxWeakExternal {
     uint32_t TagIndex;
     uint32_t Characteristics;
@@ -167,7 +184,11 @@ struct CoffAuxWeakExternal {
 } // namespace coff
 
 /// @brief Copy a NUL-terminated string out of @p data within the @p len-byte window.
-/// @return false if no NUL is found inside the bounds.
+/// @param data Base of the containing byte buffer.
+/// @param off Offset of the candidate string.
+/// @param len Maximum readable bytes beginning at @p off.
+/// @param out Receives bytes preceding the terminator.
+/// @return `false` if no NUL is found inside the supplied window.
 static bool readBoundedString(const uint8_t *data, size_t off, size_t len, std::string &out) {
     const uint8_t *begin = data + off;
     const void *nul = std::memchr(begin, '\0', len);
@@ -180,6 +201,9 @@ static bool readBoundedString(const uint8_t *data, size_t off, size_t len, std::
 /// @brief Sign-extend the low @p bits of @p value to a 64-bit signed integer.
 /// @details Used to recover signed COFF/AArch64 immediate fields from the raw
 ///          bit pattern of an instruction word.
+/// @param value Unsigned bit pattern containing the encoded immediate.
+/// @param bits Width of the signed field.
+/// @return The sign-extended field value.
 static int64_t signExtend(uint64_t value, unsigned bits) {
     const uint64_t signBit = uint64_t{1} << (bits - 1);
     const uint64_t mask = (uint64_t{1} << bits) - 1;
@@ -188,13 +212,19 @@ static int64_t signExtend(uint64_t value, unsigned bits) {
 }
 
 /// @brief Bounds-checked typed pointer cast at @p offset within a byte buffer.
-/// @return nullptr when reading sizeof(T) bytes at @p offset would exceed @p size.
+/// @tparam T Packed record type to view.
+/// @param data Base of the input buffer.
+/// @param size Total input-buffer size.
+/// @param offset Byte offset of the record.
+/// @return Pointer to the in-buffer record, or `nullptr` when reading
+///         `sizeof(T)` bytes would exceed @p size.
 template <typename T> static const T *coffAt(const uint8_t *data, size_t size, size_t offset) {
     if (offset > size || sizeof(T) > size - offset)
         return nullptr;
     return reinterpret_cast<const T *>(data + offset);
 }
 
+/// @brief Normalized view shared by standard and BigObj COFF symbol records.
 struct CoffSymbolView {
     char shortName[8]{};
     uint32_t longNameZeros = 0;
@@ -206,6 +236,15 @@ struct CoffSymbolView {
     uint8_t auxCount = 0;
 };
 
+/// @brief Reads one raw COFF symbol into the format-neutral symbol view.
+/// @param data Base of the object-file bytes.
+/// @param size Size of the object-file buffer.
+/// @param symbolTableOffset Byte offset of the symbol table.
+/// @param symbolSize Size of one standard or BigObj symbol record.
+/// @param index Raw symbol-table index.
+/// @param bigObj Whether records use the BigObj layout.
+/// @param out Receives the normalized fields.
+/// @return `true` when the complete symbol record is in bounds.
 static bool readCoffSymbolView(const uint8_t *data,
                                size_t size,
                                size_t symbolTableOffset,
@@ -256,6 +295,10 @@ static bool readCoffSymbolView(const uint8_t *data,
     return true;
 }
 
+/// @brief Maps a Microsoft COMDAT selection byte to the neutral linker policy.
+/// @param selection `IMAGE_COMDAT_SELECT_*` value from an auxiliary record.
+/// @return Corresponding selection policy, or `ComdatSelection::None` for an
+///         unrecognized value.
 static ComdatSelection coffComdatSelection(uint8_t selection) {
     switch (selection) {
         case coff::IMAGE_COMDAT_SELECT_NODUPLICATES:
@@ -275,6 +318,10 @@ static ComdatSelection coffComdatSelection(uint8_t selection) {
     }
 }
 
+/// @brief Derives the implicit alignment of a COFF common symbol.
+/// @param size Common-symbol size in bytes.
+/// @return Smallest power of two not less than @p size, capped at 32 bytes;
+///         zero-sized commons use one-byte alignment.
 static size_t coffCommonAlignment(uint32_t size) {
     if (size == 0)
         return 1;
@@ -423,6 +470,19 @@ static bool extractCoffAddend(uint16_t machine,
     }
 }
 
+/// @brief Parses an x64 or ARM64 COFF object into the neutral object model.
+/// @details Supports standard and Microsoft BigObj headers, section-name and
+///          symbol-name string-table references, relocation-overflow records,
+///          inline relocation addends, COMDAT associations, common symbols,
+///          and weak-external fallbacks.  The destination may contain partial
+///          results after failure.
+/// @param data Pointer to the complete object-file byte buffer.
+/// @param size Size of @p data in bytes.
+/// @param name Display name used in diagnostics and stored in @p obj.
+/// @param obj Destination object representation.
+/// @param err Stream that receives the first hard parse diagnostic.
+/// @return `true` when the object is supported and fully parsed; otherwise
+///         `false`.
 bool readCoffObj(
     const uint8_t *data, size_t size, const std::string &name, ObjFile &obj, std::ostream &err) {
     if (size < sizeof(coff::CoffHeader)) {
@@ -504,6 +564,7 @@ bool readCoffObj(
     if (checkedRange(strTabOff, 4, size))
         strTabSize = readLE32(data + strTabOff);
 
+    /// Validates a COFF string-table offset and returns its bounded byte window.
     auto validateStringTableRef = [&](uint32_t offset, size_t &pos, size_t &remain) -> bool {
         if (strTabSize < 4 || offset < 4 || offset >= strTabSize) {
             err << "error: " << name << ": COFF long name references invalid string table offset "
@@ -519,6 +580,7 @@ bool readCoffObj(
         return true;
     };
 
+    /// Reads a NUL-terminated long name from a validated string-table offset.
     auto readLongName = [&](uint32_t offset, std::string &out) -> bool {
         size_t pos = 0;
         size_t remain = 0;
@@ -531,6 +593,7 @@ bool readCoffObj(
         return true;
     };
 
+    /// Decodes either the inline eight-byte name or its string-table reference.
     auto readSymName = [&](const CoffSymbolView &sym, std::string &out) -> bool {
         if (sym.longNameZeros == 0) {
             // Long name: offset into string table.
@@ -751,6 +814,7 @@ bool readCoffObj(
     }
 
     // Parse symbols.
+    /// Computes the checked byte offset of a raw symbol-table record.
     auto symbolRecordOffset = [&](uint32_t index, size_t &offset) -> bool {
         size_t scaled = 0;
         return checkedMul(static_cast<size_t>(index), symbolSize, scaled) &&

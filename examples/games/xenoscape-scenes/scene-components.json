@@ -1,0 +1,59 @@
+{
+  "version": 2,
+  "components": [
+    {
+      "name": "enemy-spawn",
+      "label": "Enemy Spawn",
+      "target": "2d-object",
+      "description": "One enemy spawn record. enemy.type uses the game's stable EnemyType id (see config.zia).",
+      "fields": [
+        {"key": "enemy.type", "label": "Enemy type id", "type": "int", "default": 0}
+      ]
+    },
+    {
+      "name": "pickup",
+      "label": "Pickup",
+      "target": "2d-object",
+      "description": "One pickup record. pickup.type uses the stable PICKUP_* id (0 coin, 1 health, 2 speed, 3 shield, 4 rapid fire, 5 gem, 6 max-HP up, 7 keycard).",
+      "fields": [
+        {"key": "pickup.type", "label": "Pickup type id", "type": "int", "default": 0}
+      ]
+    },
+    {
+      "name": "interaction",
+      "label": "Interaction",
+      "target": "2d-object",
+      "description": "One authored interaction. interaction.type uses INTERACTION_* (1 switch, 2 switch target, 3 locked door, 4 save station, 5 ability shrine, 6 teleporter, 7 lore terminal, 8 region gate).",
+      "fields": [
+        {"key": "interaction.type", "label": "Interaction type id", "type": "int", "default": 4},
+        {"key": "interaction.id", "label": "Stable record id", "type": "int", "default": 0},
+        {"key": "interaction.channel", "label": "Switch channel or requirement", "type": "int", "default": 0},
+        {"key": "interaction.payload", "label": "Payload (lore/ability/region id)", "type": "int", "default": 0}
+      ]
+    },
+    {
+      "name": "boss",
+      "label": "Boss Spawn",
+      "target": "2d-object",
+      "description": "The regional boss arena spawn point.",
+      "fields": [
+        {"key": "boss.type", "label": "Boss enemy type id", "type": "int", "default": 3}
+      ]
+    },
+    {
+      "name": "marker",
+      "label": "Structural Marker",
+      "target": "2d-object",
+      "description": "Column anchor consumed by the HUD, validation, and campaign probes. Position X divided by the tile size is the anchor column.",
+      "fields": [
+        {
+          "key": "marker.kind",
+          "label": "Marker kind",
+          "type": "enum",
+          "choices": ["landmark", "tutorial", "mastery", "setpiece", "secret"],
+          "default": "landmark"
+        }
+      ]
+    }
+  ]
+}

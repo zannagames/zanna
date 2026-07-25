@@ -1,0 +1,13 @@
+# XENOSCAPE development asset manifest v3
+runtime art/title-key-art.png
+runtime art/aria-portrait.png
+runtime sprites/player-release-sheet.png
+runtime README.md
+qa-reference tiles/biome-tile-atlas.png
+qa-reference icons/hud-icon-atlas.png
+qa-reference ui/title-menu-panel.png
+fallback title procedural-menu-parallax
+fallback portrait procedural-aria-hologram
+fallback sprites procedural-sprite-factory
+fallback ui canvas-panel-primitives
+fallback audio procedural-synth-and-musicgen

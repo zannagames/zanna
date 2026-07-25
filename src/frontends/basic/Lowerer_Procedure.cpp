@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
+/// @file Lowerer_Procedure.cpp
 /// @brief Stub for BASIC procedure lowering.
 /// @details Procedure lowering was decomposed into focused modules to keep each
 ///          phase of the lowering pipeline isolated and well-documented:

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/AsmEmitter.hpp
+// File: src/codegen/x86_64/AsmEmitter.hpp
 // Purpose: Declare the x86-64 assembly emitter for Machine IR to AT&T syntax.
 //
 // Assembly format: GNU Assembler (GAS) AT&T syntax only (LOW-2).
@@ -28,6 +28,15 @@
 //        codegen/x86_64/TargetX64.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file AsmEmitter.hpp
+ * @brief Declares AT&T-syntax x86-64 Machine IR and literal-pool emission.
+ *
+ * Encoding-table rows drive ordinary instruction text, while specialized
+ * formatters enforce width, condition, branch, call, and object-format symbol
+ * conventions.
+ */
 
 #pragma once
 
@@ -53,50 +62,71 @@ enum class EncodingFlag : std::uint32_t;
 struct OperandPattern;
 struct EncodingRow;
 
-/// \brief Emits AT&T-style assembly for Machine IR functions and rodata pools.
-/// \details Includes support for trap sequences (UD2) and alignment masks (ANDri).
+/// @brief Emits AT&T-style assembly for Machine IR functions and literal pools.
+/// @details Includes support for synthetic jump tables, trap sequences, narrow
+///          register aliases, runtime-name mapping, and per-format symbol spelling.
 class AsmEmitter {
   public:
-    /// \brief Literal pool owning the module-level .rodata contents.
+    /// @brief Interned module-level string and f64 literal pool.
     class RoDataPool {
       public:
-        /// \brief Add a byte string literal to the pool, returning its index.
+        /// @brief Intern a byte string literal.
+        /// @param bytes Exact payload, including any embedded NUL bytes.
+        /// @return Stable canonical pool index.
         [[nodiscard]] int addStringLiteral(std::string bytes);
 
-        /// \brief Add a 64-bit floating point literal to the pool, returning its index.
+        /// @brief Intern a 64-bit floating-point literal by bit pattern.
+        /// @param value Value to intern.
+        /// @return Stable canonical pool index.
         [[nodiscard]] int addF64Literal(double value);
 
-        /// \brief Retrieve the canonical label for a stored string literal.
+        /// @brief Retrieve the canonical label for a stored string literal.
+        /// @param index Index returned by @ref addStringLiteral.
+        /// @return `.LC_str_<index>`.
         [[nodiscard]] std::string stringLabel(int index) const;
 
-        /// \brief Retrieve the byte length for a stored string literal.
+        /// @brief Retrieve the byte length of a stored string literal.
+        /// @param index Index returned by @ref addStringLiteral.
+        /// @return Exact payload length.
+        /// @throws std::out_of_range for a negative or invalid index.
         [[nodiscard]] std::size_t stringByteLength(int index) const;
 
-        /// \brief Retrieve the canonical label for a stored f64 literal.
+        /// @brief Retrieve the canonical label for a stored f64 literal.
+        /// @param index Index returned by @ref addF64Literal.
+        /// @return `.LC_f64_<index>`.
         [[nodiscard]] std::string f64Label(int index) const;
 
-        /// \brief Emit the .rodata section containing all stored literals.
+        /// @brief Emit the target-format read-only-data section.
+        /// @param os Destination assembly stream.
+        /// @param format Object format selecting section and symbol syntax.
         void emit(std::ostream &os, objfile::ObjFormat format) const;
 
-        /// \brief Determine whether the pool currently holds any literals.
+        /// @brief Determine whether the pool holds no literals.
+        /// @return `true` when both literal sequences are empty.
         [[nodiscard]] bool empty() const noexcept;
 
-        /// \brief Number of string literals in the pool.
+        /// @brief Return the number of canonical string literals.
+        /// @return String-literal count.
         [[nodiscard]] std::size_t stringCount() const noexcept {
             return stringLiterals_.size();
         }
 
-        /// \brief Number of f64 literals in the pool.
+        /// @brief Return the number of canonical f64 literals.
+        /// @return Floating-literal count.
         [[nodiscard]] std::size_t f64Count() const noexcept {
             return f64Literals_.size();
         }
 
-        /// \brief Retrieve the raw bytes for a stored string literal.
+        /// @brief Access raw bytes for a stored string literal.
+        /// @param index Valid nonnegative pool index.
+        /// @return Immutable payload reference.
         [[nodiscard]] const std::string &stringBytes(int index) const {
             return stringLiterals_[static_cast<std::size_t>(index)];
         }
 
-        /// \brief Retrieve the double value for a stored f64 literal.
+        /// @brief Access a stored f64 literal.
+        /// @param index Valid nonnegative pool index.
+        /// @return Stored floating value.
         [[nodiscard]] double f64Value(int index) const {
             return f64Literals_[static_cast<std::size_t>(index)];
         }
@@ -109,20 +139,28 @@ class AsmEmitter {
         std::unordered_map<std::uint64_t, int> f64Lookup_{};
     };
 
-    /// \brief Construct an emitter operating on the provided literal pool.
+    /// @brief Construct an emitter borrowing a literal pool.
+    /// @param pool Pool that must outlive the emitter.
+    /// @param format Object format controlling symbols and section directives.
     explicit AsmEmitter(RoDataPool &pool,
                         objfile::ObjFormat format = objfile::detectHostFormat()) noexcept;
 
-    /// \brief Emit the assembly for the supplied Machine IR function.
+    /// @brief Emit one complete Machine IR function.
+    /// @param os Destination assembly stream.
+    /// @param func Function to emit.
+    /// @param target Target register and ABI information.
     void emitFunction(std::ostream &os, const MFunction &func, const TargetInfo &target) const;
 
-    /// \brief Emit the module-level .rodata section once per translation unit.
+    /// @brief Emit the module-level literal pool when nonempty.
+    /// @param os Destination assembly stream.
     void emitRoData(std::ostream &os) const;
 
-    /// \brief Access the underlying rodata pool.
+    /// @brief Access the borrowed literal pool.
+    /// @return Mutable pool reference.
     [[maybe_unused]] [[nodiscard]] RoDataPool &roDataPool() noexcept;
 
-    /// \brief Access the underlying rodata pool (const overload).
+    /// @brief Access the borrowed literal pool.
+    /// @return Immutable pool reference.
     [[maybe_unused]] [[nodiscard]] const RoDataPool &roDataPool() const noexcept;
 
   private:
@@ -133,6 +171,7 @@ class AsmEmitter {
     /// \param os Output stream for AT&T syntax assembly.
     /// \param block Machine basic block to emit.
     /// \param target Target information for register naming.
+    /// @param format Object format controlling symbol spelling.
     static void emitBlock(std::ostream &os,
                           const MBasicBlock &block,
                           const TargetInfo &target,
@@ -142,6 +181,7 @@ class AsmEmitter {
     /// \param os Output stream for AT&T syntax assembly.
     /// \param instr Machine instruction to emit.
     /// \param target Target information for register naming.
+    /// @param format Object format controlling symbol spelling.
     static void emitInstruction(std::ostream &os,
                                 const MInstr &instr,
                                 const TargetInfo &target,
@@ -152,6 +192,7 @@ class AsmEmitter {
     /// \param operands Instruction operands to format.
     /// \param os Output stream for assembly text.
     /// \param target Target information for register naming.
+    /// @param format Object format controlling symbol spelling.
     static void emit_from_row(const EncodingRow &row,
                               std::span<const Operand> operands,
                               std::ostream &os,
@@ -161,6 +202,7 @@ class AsmEmitter {
     /// \brief Format an operand for AT&T assembly output.
     /// \param operand Operand to format (reg, imm, mem, or label).
     /// \param target Target information for register naming.
+    /// @param format Object format controlling symbol spelling.
     /// \return Formatted string (e.g., "%rax", "$42", "8(%rbp)").
     [[nodiscard]] static std::string formatOperand(const Operand &operand,
                                                    const TargetInfo &target,
@@ -203,12 +245,14 @@ class AsmEmitter {
 
     /// \brief Format a symbolic label operand.
     /// \param label Label operand containing symbol name.
+    /// @param format Object format controlling Darwin underscore prefixing.
     /// \return Label string for use in jumps/calls.
     [[maybe_unused]] [[nodiscard]] static std::string formatLabel(const OpLabel &label,
                                                                   objfile::ObjFormat format);
 
     /// \brief Format a RIP-relative label operand.
     /// \param label RIP-relative label operand.
+    /// @param format Object format controlling Darwin underscore prefixing.
     /// \return RIP-relative format (e.g., "_symbol(%rip)").
     [[nodiscard]] static std::string formatRipLabel(const OpRipLabel &label,
                                                     objfile::ObjFormat format);
@@ -217,6 +261,7 @@ class AsmEmitter {
     /// \details Handles both immediate counts and %cl register counts.
     /// \param operand Shift count (immediate or register).
     /// \param target Target information for register naming.
+    /// @param format Object format controlling any symbolic formatting.
     /// \return Formatted shift count (e.g., "$3", "%cl").
     [[nodiscard]] static std::string formatShiftCount(const Operand &operand,
                                                       const TargetInfo &target,
@@ -225,6 +270,7 @@ class AsmEmitter {
     /// \brief Format the source operand for LEA instructions.
     /// \param operand LEA source (typically memory-style addressing).
     /// \param target Target information for register naming.
+    /// @param format Object format controlling symbol spelling.
     /// \return Formatted LEA source address expression.
     [[nodiscard]] static std::string formatLeaSource(const Operand &operand,
                                                      const TargetInfo &target,
@@ -234,6 +280,7 @@ class AsmEmitter {
     /// \details Handles direct symbols, indirect registers, and memory targets.
     /// \param operand Call target (label, register, or memory).
     /// \param target Target information for register naming.
+    /// @param format Object format controlling symbol spelling.
     /// \return Formatted call target (e.g., "_func", "*%rax").
     [[nodiscard]] static std::string formatCallTarget(const Operand &operand,
                                                       const TargetInfo &target,
@@ -331,7 +378,10 @@ struct EncodingRow {
     EncodingFlag flags{EncodingFlag::None};   ///< ModRM/SIB/immediate/prefix metadata.
 };
 
-/// \brief Locate the encoding row matching an opcode and operand sequence.
+/// @brief Locate the encoding row matching an opcode and operand sequence.
+/// @param op Machine opcode to match.
+/// @param operands Actual operand variants.
+/// @return Matching generated row, or null when no row accepts the shape.
 [[nodiscard]] const EncodingRow *find_encoding(MOpcode op,
                                                std::span<const Operand> operands) noexcept;
 

@@ -5,13 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/Parser_Token.hpp
+// File: src/frontends/basic/Parser_Token.hpp
 // Purpose: Token navigation helpers for BASIC parser.
 // Key invariants: Buffer always holds current token.
 // Ownership/Lifetime: Parser owns lexer and token buffer.
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file Parser_Token.hpp
+/// @brief Declares the token-navigation fragment included inside Parser.
+/// @details This header is intentionally textually included in the private
+///          section of `Parser`; its unqualified declarations and inline static
+///          helpers are Parser members, not namespace-level APIs.
 
 #pragma once
 
@@ -26,7 +32,9 @@ bool at(TokenKind k) const;
 /// @brief Look ahead without consuming tokens.
 /// @param n Number of tokens ahead to inspect; 0 refers to the current token.
 /// @return Reference to the token at the specified lookahead position.
-/// @note Does not advance the parser or alter the token buffer.
+/// @pre @p n is non-negative.
+/// @note Does not advance the logical position, but may lex and append buffered
+///       tokens. Distances above 512 return a synthetic EOF sentinel.
 const Token &peek(int n = 0) const;
 
 /// @brief Consume the current token and advance.
@@ -36,12 +44,13 @@ Token consume();
 
 /// @brief Consume a token of the expected kind or report a mismatch.
 /// @param k Required token kind.
-/// @return The consumed token, even if it did not match @p k.
-/// @note Advances the parser and may emit a diagnostic on mismatch.
+/// @return Consumed matching token, or the original offending token after recovery.
+/// @note A mismatch may consume intervening recovery tokens but leaves a
+///       statement-boundary offender unconsumed.
 Token expect(TokenKind k);
 
 /// @brief Consume an identifier or contextual keyword accepted as an identifier.
-/// @return The consumed token, or the offending token after emitting a diagnostic.
+/// @return Consumed matching token, or the original offending token after recovery.
 Token expectSoftIdentifier();
 
 /// @brief Skip tokens until reaching a statement boundary.

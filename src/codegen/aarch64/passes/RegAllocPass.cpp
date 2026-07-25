@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/RegAllocPass.cpp
+// File: src/codegen/aarch64/passes/RegAllocPass.cpp
 // Purpose: Register allocation pass for the AArch64 modular pipeline.
 //          Runs coalescer then linear-scan RA on every MIR function. Functions
 //          are processed in parallel when hardware concurrency ≥ 2.
@@ -35,8 +35,12 @@
 #include <thread>
 #include <vector>
 
+/// @file
+/// @brief Implements copy coalescing and linear-scan allocation for AArch64 MIR.
+
 namespace zanna::codegen::aarch64::passes {
 
+/// @copydoc RegAllocPass::run
 bool RegAllocPass::run(AArch64Module &module, Diagnostics &diags) {
     if (!module.ti) {
         diags.error("RegAllocPass: ti must be non-null");
@@ -46,6 +50,8 @@ bool RegAllocPass::run(AArch64Module &module, Diagnostics &diags) {
     std::string firstError;
     std::mutex errorMutex;
 
+    /// Coalesce and allocate the function at @p index, recording only the first
+    /// allocation exception so concurrent failures produce one stable diagnostic.
     auto allocateOne = [&](std::size_t index) {
         auto &fn = module.mir[index];
         try {
@@ -71,6 +77,7 @@ bool RegAllocPass::run(AArch64Module &module, Diagnostics &diags) {
         std::vector<std::thread> workers;
         workers.reserve(workerCount);
         for (std::size_t worker = 0; worker < workerCount; ++worker) {
+            /// Claim unallocated function indices until the module is exhausted.
             workers.emplace_back([&]() {
                 for (;;) {
                     const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);

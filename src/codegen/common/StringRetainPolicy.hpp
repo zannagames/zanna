@@ -5,14 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/StringRetainPolicy.hpp
+// File: src/codegen/common/StringRetainPolicy.hpp
 // Purpose: Decide when backends may skip the defensive rt_str_retain_maybe on
 //          a string-typed call result.
 // Key invariants:
 //   - Elision is legal only when a direct callee transfers an owned reference:
 //     IL-defined functions do so by convention and registered runtime helpers
 //     do so when classifyRuntimeOwnership reports returnsOwned.
-//   - Unknown registered-runtime and indirect callees keep the retain.
+//   - Indirect callees keep the retain; unregistered direct names follow the
+//     IL-defined-function ownership convention.
 //   - Load-path retains carry ownership only for spending uses such as
 //     consuming callees and returns. Borrow-only loads may elide them when the
 //     backend proves the source slot remains live through the use window.
@@ -20,6 +21,16 @@
 // Links: docs/il/il-passes.md, src/il/runtime/RuntimeOwnership.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file StringRetainPolicy.hpp
+ * @brief Centralizes native-backend decisions for eliding redundant string
+ *        retains.
+ *
+ * These helpers encode the ownership contract shared by native backends and
+ * provide `ZANNA_NO_RETAIN_ELIDE` as a diagnostic escape hatch.
+ */
+
 #pragma once
 
 #include "il/runtime/RuntimeOwnership.hpp"
@@ -39,6 +50,12 @@ namespace zanna::codegen {
 ///          transferred reference already keeps the value alive until the
 ///          frontend's release/consume, and the retain can be dropped.
 ///          `ZANNA_NO_RETAIN_ELIDE=1` restores the unconditional retain.
+/// @param callee Direct callee name.  An empty name represents an indirect
+///               call and is never eligible.
+/// @return `true` for an unregistered direct name, which follows the
+///         IL-defined-function transfer convention, or for a registered
+///         runtime helper classified as returning ownership; otherwise
+///         `false`.
 [[nodiscard]] inline bool shouldElideStringResultRetain(std::string_view callee) {
     if (callee.empty())
         return false;
@@ -55,14 +72,18 @@ namespace zanna::codegen {
     return il::runtime::classifyRuntimeOwnership(callee).returnsOwned;
 }
 
-/// @brief True when @p callee is an explicit string release entry point.
+/// @brief Tests whether a callee is an explicit string-release entry point.
+/// @param callee Direct C ABI or namespace-qualified runtime callee name.
+/// @return `true` when @p callee is one of the recognized release aliases.
 [[nodiscard]] inline bool isStringReleaseCallee(std::string_view callee) {
     return callee == "rt_str_release_maybe" || callee == "rt_str_release" ||
            callee == "rt_memory_release_str" || callee == "Zanna.String.ReleaseMaybe" ||
            callee == "Zanna.Memory.ReleaseStr" || callee == "Zanna.Runtime.Unsafe.ReleaseStr";
 }
 
-/// @brief True when @p callee explicitly creates another owned string reference.
+/// @brief Tests whether a callee explicitly creates another owned string reference.
+/// @param callee Direct C ABI or namespace-qualified runtime callee name.
+/// @return `true` when @p callee is one of the recognized retain aliases.
 [[nodiscard]] inline bool isStringRetainCallee(std::string_view callee) {
     return callee == "rt_str_retain" || callee == "rt_str_retain_maybe" ||
            callee == "rt_memory_retain_str" || callee == "Zanna.String.RetainMaybe" ||
@@ -77,6 +98,8 @@ namespace zanna::codegen {
 ///          silently keeps the displaced value alive forever; skipping the
 ///          retain lets the frontend's release actually free it. Any other
 ///          use keeps the retain.
+/// @return `true` unless retain elision has been disabled through the
+///         `ZANNA_NO_RETAIN_ELIDE` environment variable.
 [[nodiscard]] inline bool shouldElideLoadRetainForRelease() {
     return std::getenv("ZANNA_NO_RETAIN_ELIDE") == nullptr;
 }

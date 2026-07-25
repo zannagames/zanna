@@ -11,15 +11,35 @@
 //   - Standalone translation unit; no cross-layer dependencies.
 // Ownership/Lifetime:
 //   - No long-lived state; all allocations are scoped to the run.
-// Links: docs/codemap.md
+// Links: examples/il/benchmarks/branch_stress.il, docs/internals/testing.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file misc/benchmarks/reference/c/branch_stress.c
+ * @brief Native reference implementation of the branch-stress benchmark.
+ *
+ * @details
+ * Each iteration evaluates four independent divisibility branches for the
+ * primes 2, 3, 5, and 7 and adds a distinct weight for every match. The low
+ * byte of the final count provides a compact checksum compatible with the
+ * equivalent IL workload.
+ */
 
 /* branch_stress.c — Branch-heavy loop benchmark (20M iterations).
    Equivalent to examples/il/benchmarks/branch_stress.il */
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * @brief Execute the divisibility-branch kernel and return its checksum.
+ * @param argc Hosted argument count. Each user argument adds one iteration.
+ * @param argv Hosted argument vector; its contents are intentionally unused.
+ * @return The weighted match count reduced to its least-significant eight bits.
+ *
+ * @pre `argc >= 1`, as required for a hosted C implementation.
+ * @pre The derived iteration count and accumulated weights fit in `int64_t`.
+ */
 int main(int argc, char **argv)
 {
     (void)argv;

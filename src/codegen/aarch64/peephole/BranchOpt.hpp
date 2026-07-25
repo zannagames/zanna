@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/peephole/BranchOpt.hpp
+// File: src/codegen/aarch64/peephole/BranchOpt.hpp
 // Purpose: Declarations for branch optimizations: CBZ/CBNZ fusion, cset
 //          branch fusion, branch inversion, block reordering, and
 //          branch-to-next removal.
@@ -30,38 +30,85 @@
 #include <string>
 #include <vector>
 
+/// @file
+/// @brief Declares local branch fusion and safe cold-block layout transforms.
+
 namespace zanna::codegen::aarch64::peephole {
 
-/// @brief Invert AArch64 condition code string.
+/// @brief Obtain the logical inverse of a supported AArch64 condition code.
+/// @param cond Null-terminated lowercase condition mnemonic, or null.
+/// @return A pointer to a static inverse mnemonic, or null when @p cond is null
+///         or is not one of the supported condition codes.
 [[nodiscard]] const char *invertCondition(const char *cond) noexcept;
 
-/// @brief Check if an instruction is an unconditional branch to a specific label.
+/// @brief Test whether an instruction is an unconditional branch to a label.
+/// @param instr Machine instruction to inspect.
+/// @param label Exact target label expected in the branch operand.
+/// @return `true` only for a well-formed `Br` instruction targeting @p label.
 [[nodiscard]] bool isBranchTo(const MInstr &instr, const std::string &label) noexcept;
 
-/// @brief Try to fuse cmp+bcond into cbz/cbnz.
+/// @brief Fuse a zero comparison and conditional branch into `CBZ` or `CBNZ`.
+///
+/// Recognizes adjacent `CmpRI reg, 0` or `TstRR reg, reg` followed by `B.eq`
+/// or `B.ne`. On success the compare is replaced by the fused branch and the
+/// original conditional branch is erased.
+///
+/// @param[in,out] instrs Instruction sequence being rewritten.
+/// @param idx Index of the compare candidate.
+/// @param[in,out] stats Statistics updated when a fusion succeeds.
+/// @return `true` when the sequence at @p idx was fused.
 [[nodiscard]] bool tryCbzCbnzFusion(std::vector<MInstr> &instrs,
                                     std::size_t idx,
                                     PeepholeStats &stats);
 
-/// @brief Try to fuse a single-bit and+cbz/cbnz into tbz/tbnz.
-/// @param carriedExitRegs Optional sorted list of physical registers carried
-///        live across the enclosing block's exit (see tryCsetBranchFusion).
+/// @brief Fuse a single-bit mask and zero test into `TBZ` or `TBNZ`.
+///
+/// The scan accepts either an existing `CBZ`/`CBNZ` consumer or the
+/// `TstRR` plus `B.eq`/`B.ne` form emitted for boolean branches. It stops when
+/// control flow, flag writes, or definitions of involved registers make the
+/// rewrite unsafe. The mask result must be dead after its branch.
+///
+/// @param[in,out] instrs Instruction sequence being rewritten.
+/// @param idx Index of the `AndRI` candidate.
+/// @param[in,out] stats Statistics updated when a fusion succeeds.
+/// @param carriedExitRegs Optional sorted physical-register identifiers carried
+///        live across the enclosing block's exit. A carried mask destination
+///        prevents fusion because its successor use is invisible locally.
+/// @return `true` when the mask and branch were replaced by a bit-test branch.
 [[nodiscard]] bool tryTbzTbnzFusion(std::vector<MInstr> &instrs,
                                     std::size_t idx,
                                     PeepholeStats &stats,
                                     const std::vector<uint16_t> *carriedExitRegs = nullptr);
 
-/// @brief Try to fuse cset+cbnz/cbz into a single b.cond instruction.
+/// @brief Fold a materialized condition and zero branch into `B.cond`.
+///
+/// Scans forward from `Cset` to a matching `CBZ` or `CBNZ` while requiring
+/// NZCV and the materialized register to remain valid. `CBZ` uses the inverse
+/// of the `Cset` condition; `CBNZ` reuses it directly. The `Cset` destination
+/// must have no later observable use.
+///
+/// @param[in,out] instrs Instruction sequence being rewritten.
+/// @param idx Index of the `Cset` candidate.
+/// @param[in,out] stats Statistics updated when a fusion succeeds.
 /// @param carriedExitRegs Optional sorted list of physical registers carried
 ///        live across the enclosing block's exit without any in-block use
 ///        (MBasicBlock::carriedExitRegs); a CSET into such a register is
 ///        never fused away.
+/// @return `true` when the materialization and zero branch were folded.
 [[nodiscard]] bool tryCsetBranchFusion(std::vector<MInstr> &instrs,
                                        std::size_t idx,
                                        PeepholeStats &stats,
                                        const std::vector<uint16_t> *carriedExitRegs = nullptr);
 
-/// @brief Reorder blocks for better code layout (move cold blocks to end).
+/// @brief Move safely relocatable trap and error blocks to the function tail.
+///
+/// Coldness is inferred from bounded label tokens and known no-return helpers.
+/// A block is moved only when neither its incoming predecessor nor its own exit
+/// relies on layout fallthrough. Relative order is preserved within the hot and
+/// moved-cold partitions.
+///
+/// @param[in,out] fn Function whose owned block vector may be reordered.
+/// @return Number of cold blocks moved.
 std::size_t reorderBlocks(MFunction &fn);
 
 } // namespace zanna::codegen::aarch64::peephole

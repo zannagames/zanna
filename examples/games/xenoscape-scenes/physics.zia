@@ -1,0 +1,769 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/physics.zia
+// Purpose: Resolves deterministic tile collision and environmental probes.
+// Key invariants:
+//   - Positions and velocities use signed centipixels at the collision boundary.
+//   - Axis-separated resolution reuses scratch results without frame allocations.
+// Ownership/Lifetime:
+//   - Each owner keeps one PhysicsHelper for reusable rectangles and MoveResult.
+// Links: level.zia, player.zia, environment.zia, enemy.zia,
+//        misc/plans/demos/xenoscape-release-upgrade.md
+//
+//===----------------------------------------------------------------------===//
+//
+// TUTORIAL — HOW A 2D PLATFORMER ACTUALLY MOVES
+// ---------------------------------------------
+// If you only read one file in Xenoscape to understand how a 2D
+// platformer works, read this one.  The whole "feel" of a
+// platformer — the crispness of landings, the readability of
+// wall bumps, the satisfaction of air control — comes from a
+// tiny set of idioms that *every* good 2D platformer uses.
+// This file is the canonical form of those idioms in Zia.
+//
+// 1. FIXED-POINT "CENTIPIXEL" COORDINATES
+// ----------------------------------------
+// All positions and velocities are stored in **×100 fixed-point**:
+//
+//     x = 12345  means  123.45 pixels
+//     vx = 525   means  5.25 pixels/frame (at 60 fps)
+//
+// Why?  Because sub-pixel precision matters for smooth motion
+// but floats introduce nondeterminism that's poisonous for a
+// physics step.  Integers give us the precision (1/100 pixel)
+// and guarantee bit-identical results across platforms.
+// Sub-pixel sums accumulate naturally; we divide by 100 only
+// when converting to pixels for rendering.
+//
+// Every `to-pixels` hop in this file is a `/ 100`; every
+// `from-pixels` is a `* 100`.
+//
+// 2. AXIS-SEPARATED COLLISION RESOLUTION
+// --------------------------------------
+// `moveAndCollide` resolves the X axis *first*, then the Y axis.
+// Never both at once.  This is the single most important rule
+// of tile-based collision:
+//
+//     a. Move horizontally.  If you hit a wall, stop at its edge.
+//     b. Move vertically.  If you hit the floor, stop on top.
+//
+// Doing X first eliminates the classic "corner snag" where a
+// diagonal movement snaps the character onto the top of a wall.
+// Do them simultaneously and you get non-deterministic corner
+// behaviour that changes based on the velocity ratio.
+//
+// 3. LEADING-EDGE TILE SAMPLING
+// -----------------------------
+// For each axis we compute a *leading edge*:
+//
+//     moving right: leadX = newX + (width - 1)
+//     moving left:  leadX = newX
+//     moving down:  leadY = newY + (height - 1)
+//     moving up:    leadY = newY
+//
+// Then we convert that edge to a tile column (or row) and scan
+// the *entire height* (or width) of the entity against solid
+// tiles there.  When any one is solid, we snap the entity's
+// position to that tile's boundary and set the corresponding
+// collision flag.  This handles tall entities crossing multi-
+// tile ledges correctly.
+//
+// 4. GRAVITY WITH APEX HANG
+// -------------------------
+// Real platformers don't use constant gravity.  `applyGravity`
+// reduces gravity to 60 % when the entity is near the apex of
+// a jump (|vy| < 2 px/frame), giving a brief "floaty" moment.
+// Players feel this as "my jump feels good" without being able
+// to articulate why — Mario games have done this since 1985.
+//
+// 5. REUSABLE COLLISION RECTS
+// ---------------------------
+// `Zanna.Game.CollisionRect` is a lightweight AABB with an
+// `Overlaps(other)` method.  Two long-lived instances (`rectA`,
+// `rectB`) are allocated once in `init`; `rectOverlapPx` just
+// writes into them and calls `Overlaps`.  That's the right way
+// to use this kind of helper — constructing a new rect per
+// overlap test (hundreds per frame) would thrash the heap.
+//
+// 6. SMART GROUND / WALL / HAZARD QUERIES
+// ---------------------------------------
+// `isOnGround`, `isTouchingWall`, `isOnHazard` are all the
+// same pattern: project the entity's edge slightly past the
+// hitbox (+50 in ×100 = half a pixel), convert to tile
+// coordinates, and ask the level about each tile.  That half-
+// pixel offset is important: without it, a character landed
+// *exactly* on a tile boundary would read as both on and not-
+// on the ground depending on floating-point error in the
+// velocity integration.
+//
+// 7. TILE PROPERTIES (ICE, CONVEYORS, STEAM, ...)
+// -----------------------------------------------
+// `checkHazardTile`, `isOnIce`, `getConveyorDir`,
+// `isOnSteamVent`, `isNearSaveStation`, `isNearLoreTerminal`,
+// `isCrumblingTile` are all thin wrappers over
+// `level.getTilePropertyAt(x, y, propName, default)`.
+// The level stores tile *properties* as a string-keyed map,
+// so adding a new environmental interaction is:
+//
+//     level-data side:  tag tiles with "my_new_prop"
+//     physics side:     add a `isMyNewProp` method that reads it
+//     gameplay side:    check the new query in the movement loop
+//
+// This is how to add gameplay variety without touching
+// collision math.  Adding "sticky goo" tiles that slow the
+// player?  Property "stickiness", `isOnGoo` helper, friction
+// tweak in `player.update`.  Three files; no physics changes.
+//
+// WHERE THIS FITS
+// ---------------
+//     game.zia   ──►  owns one PhysicsHelper, hands it to
+//                     player/enemy update paths.
+//     player.zia ──►  calls moveAndCollide, isOnGround, etc.
+//     enemy.zia  ──►  same (AI uses these for navigation).
+//
+// HOW TO READ THIS FILE
+// ---------------------
+//   1. `MoveResult` — the clean multi-return for
+//      moveAndCollide.
+//   2. `PhysicsHelper.init` — allocate reusable rects.
+//   3. `moveAndCollide` — the X-then-Y two-phase core.
+//   4. Query helpers: `isOnGround`, `isTouchingWall`,
+//      `isOnHazard`, AABB overlap.
+//   5. `applyGravity` — apex-hang gravity curve.
+//   6. `toTileCoord` — centipixel → tile-index conversion.
+//   7. Tile-property queries (ice, conveyor, steam, save, lore,
+//      crumble).
+//
+// =============================================================================
+
+module physics;
+
+bind Zanna.Game;
+bind "./config";
+bind "./environment";
+bind "./level";
+
+final CORNER_CORRECTION_MAX_PX = 6;
+
+//=============================================================================
+// COLLISION RESULT
+//=============================================================================
+
+/// @brief Multi-value return from `moveAndCollide`.
+///
+/// Carries the resolved position plus four collision flags,
+/// one per axis direction.  Callers use the flags to trigger
+/// game logic: hitting the floor transitions the player from
+/// JUMPING to STANDING, hitting a ceiling zeroes vy, etc.
+///
+/// NOTE: this stays a heap class (not a struct) because the
+/// native-linked macOS demo binary currently miscompiles
+/// aggregate returns.  Once that backend bug is fixed, this
+/// could collapse to a lightweight record type.
+class MoveResult {
+    expose Integer x;             // resolved x (×100)
+    expose Integer y;             // resolved y (×100)
+    expose Boolean hitFloor;      // moved down into a solid tile
+    expose Boolean hitCeiling;    // moved up into a solid tile
+    expose Boolean hitLeft;       // moved left into a solid tile
+    expose Boolean hitRight;      // moved right into a solid tile
+
+    /// @brief Construct a fresh MoveResult.  Used once at
+    ///        PhysicsHelper init time; subsequent uses go
+    ///        through `set` to avoid allocation.
+    expose func init(px: Integer, py: Integer,
+                     floor: Boolean, ceiling: Boolean,
+                     left: Boolean, right: Boolean) {
+        x = px;
+        y = py;
+        hitFloor = floor;
+        hitCeiling = ceiling;
+        hitLeft = left;
+        hitRight = right;
+    }
+
+    /// @brief In-place overwrite.  Called every `moveAndCollide`
+    ///        invocation.  The MoveResult instance is reused —
+    ///        callers must copy out any fields they need to
+    ///        keep across calls.
+    expose func set(px: Integer, py: Integer,
+                    floor: Boolean, ceiling: Boolean,
+                    left: Boolean, right: Boolean) {
+        x = px;
+        y = py;
+        hitFloor = floor;
+        hitCeiling = ceiling;
+        hitLeft = left;
+        hitRight = right;
+    }
+}
+
+//=============================================================================
+// PHYSICS HELPER
+//=============================================================================
+
+/// @brief All of the platformer's collision + motion helpers,
+///        grouped on one object so callers only need one
+///        import.  Stateless — the cached `rectA`/`rectB`/
+///        `moveResult` are pure scratch space.
+class PhysicsHelper {
+
+    // Scratch rects reused for every AABB overlap check.
+    // Allocating new CollisionRects per check would be
+    // dozens of allocations per frame.
+    hide CollisionRect rectA;
+    hide CollisionRect rectB;
+
+    // Single reusable MoveResult.  See note on MoveResult.
+    hide MoveResult moveResult;
+
+    /// @brief Allocate scratch space once at construction.
+    expose func init() {
+        rectA = CollisionRect.New(0.0, 0.0, 1.0, 1.0);
+        rectB = CollisionRect.New(0.0, 0.0, 1.0, 1.0);
+        moveResult = new MoveResult(0, 0, false, false, false, false);
+    }
+
+    /// @brief Move (x, y) by (vx, vy) and snap to any tiles
+    ///        we collided with.  Everything in ×100 centipixels.
+    ///
+    /// Returns a `MoveResult` with the post-resolution position
+    /// and collision flags.  See the file header for the
+    /// reasoning behind X-then-Y resolution and leading-edge
+    /// tile sampling.
+    ///
+    /// Algorithm:
+    ///
+    ///   1. Propose `newX = x + vx`.  If vx != 0, compute the
+    ///      leading-X edge (right edge when moving right, left
+    ///      edge when moving left), map to a tile column, and
+    ///      scan every tile from `topTile` to `botTile` in that
+    ///      column.  If any is solid, snap newX to that tile's
+    ///      boundary and set hitLeft/hitRight.
+    ///
+    ///   2. Same for Y axis, but scan the `leftTile..rightTile`
+    ///      *range* of the *new* X position (not the original
+    ///      X).  Using newX here means the Y check "knows" we
+    ///      already pushed back against a wall, so a
+    ///      diagonally-moving character doesn't tunnel.
+    ///
+    ///   3. Write results into the reusable `moveResult` and
+    ///      return it.
+    expose func moveAndCollide(
+        x: Integer, y: Integer, vx: Integer, vy: Integer,
+        w: Integer, h: Integer, level: Level
+    ) -> MoveResult {
+        return moveAndCollideInternal(x, y, vx, vy, w, h, level,
+                                      false, false);
+    }
+
+    /// @brief Resolve player motion while honoring an active drop-through window.
+    ///
+    /// This is the player-specific entry point for the same axis-separated
+    /// collision solver used by enemies. Ordinary solid tiles always collide;
+    /// one-way tiles collide only on a downward crossing from above and are
+    /// ignored while `droppingThroughOneWay` is true.
+    ///
+    /// @param x Current left coordinate in centipixels.
+    /// @param y Current top coordinate in centipixels.
+    /// @param vx Horizontal displacement for this simulation step.
+    /// @param vy Vertical displacement for this simulation step.
+    /// @param w Hitbox width in whole pixels.
+    /// @param h Hitbox height in whole pixels.
+    /// @param level Active level queried for collision and tile identity.
+    /// @param droppingThroughOneWay True during the 180 ms down+jump window.
+    /// @return Reused `MoveResult`; callers must copy fields before another call.
+    expose func movePlayerAndCollide(
+        x: Integer, y: Integer, vx: Integer, vy: Integer,
+        w: Integer, h: Integer, level: Level,
+        droppingThroughOneWay: Boolean
+    ) -> MoveResult {
+        return moveAndCollideInternal(x, y, vx, vy, w, h, level,
+                                      droppingThroughOneWay, true);
+    }
+
+    /// @brief Shared axis-separated solver for ordinary and player motion.
+    ///
+    /// Horizontal resolution considers only fully solid tiles. Vertical
+    /// resolution additionally treats a one-way tile as a floor when the body
+    /// sweeps downward across its top from above. The cached result makes the
+    /// method non-reentrant on one helper instance but allocation-free.
+    ///
+    /// @param x Current left coordinate in centipixels.
+    /// @param y Current top coordinate in centipixels.
+    /// @param vx Horizontal displacement for this simulation step.
+    /// @param vy Vertical displacement for this simulation step.
+    /// @param w Hitbox width in whole pixels.
+    /// @param h Hitbox height in whole pixels.
+    /// @param level Active collision level.
+    /// @param droppingThroughOneWay Whether one-way floor checks are suppressed.
+    /// @param allowCornerCorrection Whether upward collisions may nudge <=6 px.
+    /// @return The helper-owned reusable collision result.
+    hide func moveAndCollideInternal(
+        x: Integer, y: Integer, vx: Integer, vy: Integer,
+        w: Integer, h: Integer, level: Level,
+        droppingThroughOneWay: Boolean, allowCornerCorrection: Boolean
+    ) -> MoveResult {
+        var newX = x + vx;
+        var newY = y + vy;
+        var floor = false;
+        var ceiling = false;
+        var left = false;
+        var right = false;
+
+        var w100 = w * 100;
+        var h100 = h * 100;
+
+        //---------------- X axis ----------------
+        if vx != 0 {
+            // Leading edge: rightmost column when moving right,
+            // leftmost when moving left.  Subtract 1 on the
+            // right so the edge lies just inside the hitbox.
+            var leadX = newX;
+            if vx > 0 { leadX = newX + w100 - 1; }
+
+            var tileX = toTileCoord(leadX);
+            var topTile = toTileCoord(y);
+            var botTile = toTileCoord(y + h100 - 1);
+
+            for ty in topTile..=botTile {
+                if level.isSolid(tileX, ty) {
+                    if vx > 0 {
+                        // Snap to the left face of the tile.
+                        newX = tileX * TILE_SIZE * 100 - w100;
+                        right = true;
+                    } else {
+                        // Snap to the right face.
+                        newX = (tileX + 1) * TILE_SIZE * 100;
+                        left = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        //---------------- Y axis ----------------
+        if vy != 0 {
+            var leadY = newY;
+            if vy > 0 { leadY = newY + h100 - 1; }
+
+            var tileY = toTileCoord(leadY);
+            // Use newX (post-resolution), not the original x,
+            // so a diagonal path correctly snaps onto a wall
+            // *then* the floor.
+            var leftTile = toTileCoord(newX);
+            var rightTile = toTileCoord(newX + w100 - 1);
+
+            for tx in leftTile..=rightTile {
+                var blocks = level.isSolid(tx, tileY);
+                if blocks == false and level.getTile(tx, tileY) == TILE_ONE_WAY {
+                    blocks = environmentalOneWayBlocks(
+                        y + h100, newY + h100,
+                        tileY * TILE_SIZE * 100,
+                        droppingThroughOneWay);
+                }
+                if blocks {
+                    if vy > 0 {
+                        newY = tileY * TILE_SIZE * 100 - h100;
+                        floor = true;
+                    } else {
+                        var correctedX = newX;
+                        if allowCornerCorrection {
+                            correctedX = findUpwardCornerCorrection(
+                                newX, newY, w100, h100, level);
+                        }
+                        if correctedX != newX {
+                            newX = correctedX;
+                        } else {
+                            newY = (tileY + 1) * TILE_SIZE * 100;
+                            ceiling = true;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        moveResult.set(newX, newY, floor, ceiling, left, right);
+        return moveResult;
+    }
+
+    /// @brief Find the smallest safe horizontal nudge for an upward corner hit.
+    ///
+    /// Left and right candidates are tested one pixel at a time through the exact
+    /// six-pixel release limit. A candidate must leave the player's entire swept
+    /// rectangle clear of ordinary solid tiles, preventing correction through a
+    /// neighboring wall. One-way floors never block upward travel.
+    ///
+    /// @param x Proposed left coordinate in centipixels.
+    /// @param y Proposed top coordinate in centipixels.
+    /// @param w100 Hitbox width in centipixels.
+    /// @param h100 Hitbox height in centipixels.
+    /// @param level Active collision level.
+    /// @return Corrected X, or the original X when no <=6 px correction is safe.
+    hide func findUpwardCornerCorrection(x: Integer, y: Integer,
+                                         w100: Integer, h100: Integer,
+                                         level: Level) -> Integer {
+        var distance = 1;
+        while distance <= CORNER_CORRECTION_MAX_PX {
+            var leftX = x - distance * 100;
+            if rectangleHasSolid(leftX, y, w100, h100, level) == false {
+                return leftX;
+            }
+            var rightX = x + distance * 100;
+            if rectangleHasSolid(rightX, y, w100, h100, level) == false {
+                return rightX;
+            }
+            distance = distance + 1;
+        }
+        return x;
+    }
+
+    /// @brief Test a centipixel rectangle against every overlapped solid tile.
+    ///
+    /// @param x Candidate left coordinate in centipixels.
+    /// @param y Candidate top coordinate in centipixels.
+    /// @param w100 Candidate width in centipixels.
+    /// @param h100 Candidate height in centipixels.
+    /// @param level Active collision level.
+    /// @return True for an out-of-bounds/solid overlap, otherwise false.
+    hide func rectangleHasSolid(x: Integer, y: Integer,
+                                w100: Integer, h100: Integer,
+                                level: Level) -> Boolean {
+        if x < 0 or y < 0 { return true; }
+        var leftTile = toTileCoord(x);
+        var rightTile = toTileCoord(x + w100 - 1);
+        var topTile = toTileCoord(y);
+        var bottomTile = toTileCoord(y + h100 - 1);
+        if rightTile >= level.levelWidth or bottomTile >= level.levelHeight {
+            return true;
+        }
+        var ty = topTile;
+        while ty <= bottomTile {
+            var tx = leftTile;
+            while tx <= rightTile {
+                if level.isSolid(tx, ty) { return true; }
+                tx = tx + 1;
+            }
+            ty = ty + 1;
+        }
+        return false;
+    }
+
+    /// @brief "Am I standing on something solid?"
+    ///
+    /// Checks one pixel below the entity's feet.  The +50 in
+    /// ×100 space is half a pixel — just enough to avoid the
+    /// "exactly on the seam" ambiguity you get if you test at
+    /// the seam itself.  Scans every tile column under the
+    /// entity's width.
+    expose func isOnGround(x: Integer, y: Integer, w: Integer, h: Integer, level: Level) -> Boolean {
+        var w100 = w * 100;
+        var h100 = h * 100;
+        var feetY = y + h100 + 50;
+        var tileY = toTileCoord(feetY);
+        var leftTile = toTileCoord(x);
+        var rightTile = toTileCoord(x + w100 - 1);
+
+        for tx in leftTile..=rightTile {
+            if level.isSolid(tx, tileY) or level.getTile(tx, tileY) == TILE_ONE_WAY {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// @brief "Is there a wall to my left (dir=-1) or right
+    ///        (dir=+1)?"
+    ///
+    /// Used by wall-jump and wall-slide mechanics in player.zia.
+    /// Same half-pixel probe trick as `isOnGround`.
+    expose func isTouchingWall(x: Integer, y: Integer, w: Integer, h: Integer,
+                               dir: Integer, level: Level) -> Boolean {
+        var w100 = w * 100;
+        var h100 = h * 100;
+        var checkX = x - 50;
+        if dir > 0 {
+            checkX = x + w100 + 50;
+        }
+
+        var tileX = toTileCoord(checkX);
+        var topTile = toTileCoord(y);
+        var botTile = toTileCoord(y + h100 - 1);
+
+        for ty in topTile..=botTile {
+            if level.isSolid(tileX, ty) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// @brief "Am I standing on spikes or lava?"
+    ///
+    /// Like `isOnGround`, but probes `level.isHazard` instead
+    /// of `level.isSolid`.  Checks both the row under the feet
+    /// AND one row up (so lava's "top" face registers even when
+    /// the hitbox just barely dips in).
+    expose func isOnHazard(x: Integer, y: Integer, w: Integer, h: Integer, level: Level) -> Boolean {
+        var w100 = w * 100;
+        var h100 = h * 100;
+        var feetY = y + h100 + 50;
+        var tileY = toTileCoord(feetY);
+        // Inset by 200 (2 px) on each side so grazing the
+        // corner of a lava pit doesn't register as contact.
+        var leftTile = toTileCoord(x + 200);
+        var rightTile = toTileCoord(x + w100 - 200);
+
+        for tx in leftTile..=rightTile {
+            if level.isHazard(tx, tileY) {
+                return true;
+            }
+            if level.isHazard(tx, tileY - 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// @brief AABB overlap using pixel-space rectangles.
+    ///        Uses the scratch `rectA`/`rectB` so there is no
+    ///        per-call allocation.
+    expose func rectOverlapPx(ax: Integer, ay: Integer, aw: Integer, ah: Integer,
+                              bx: Integer, by: Integer, bw: Integer, bh: Integer) -> Boolean {
+        rectA.SetPosition(ax + 0.0, ay + 0.0);
+        rectA.SetSize(aw + 0.0, ah + 0.0);
+        rectB.SetPosition(bx + 0.0, by + 0.0);
+        rectB.SetSize(bw + 0.0, bh + 0.0);
+        return rectA.Overlaps(rectB);
+    }
+
+    /// @brief AABB overlap where inputs are in ×100 centipixels.
+    ///        Normalises to pixels and defers to
+    ///        `rectOverlapPx`.
+    expose func rectOverlap(ax: Integer, ay: Integer, aw: Integer, ah: Integer,
+                            bx: Integer, by: Integer, bw: Integer, bh: Integer) -> Boolean {
+        return rectOverlapPx(ax / 100, ay / 100, aw / 100, ah / 100,
+                            bx / 100, by / 100, bw / 100, bh / 100);
+    }
+
+    /// @brief Advance vertical velocity by one frame of gravity.
+    ///
+    /// Gravity is scaled by `dt / DT_BASE` so a 30-FPS frame
+    /// produces 2× the acceleration of a 60-FPS frame, keeping
+    /// fall speed frame-rate independent.
+    ///
+    /// The apex-hang trick: if |vy| is tiny (< 2 px/frame, i.e.
+    /// 200 in ×100), we reduce gravity to 60 %.  This gives a
+    /// 3-frame window at the top of the jump where the player
+    /// feels slightly weightless.  Everyone who plays good
+    /// platformers unconsciously expects this; they notice when
+    /// it's missing.
+    ///
+    /// `MAX_FALL` caps terminal velocity so falls never get
+    /// uncontrollable (and also so we can't tunnel through
+    /// floors even without raycasting).
+    expose func applyGravity(vy: Integer, dt: Integer) -> Integer {
+        var g = GRAVITY * dt / DT_BASE;
+
+        var absVy = vy;
+        if absVy < 0 { absVy = 0 - absVy; }
+        if absVy < 200 {
+            g = g * 3 / 5;  // 60% gravity at jump apex
+        }
+
+        var newVy = vy + g;
+        if newVy > MAX_FALL { newVy = MAX_FALL; }
+        return newVy;
+    }
+
+    /// @brief Centipixel → tile-column/row index.
+    ///
+    /// The negative branch is important: Zia (like C) truncates
+    /// toward zero, so `-50 / 32 == -1` would miss the fact that
+    /// -50 px is *inside* tile -2 on a 32-pixel grid.  Forcing
+    /// floor-division by subtracting `TILE_SIZE - 1` first
+    /// keeps negative coordinates correct.
+    hide func toTileCoord(pos100: Integer) -> Integer {
+        var px = pos100 / 100;
+        if pos100 < 0 {
+            return (px - TILE_SIZE + 1) / TILE_SIZE;
+        }
+        return px / TILE_SIZE;
+    }
+
+    //=========================================================================
+    // TILE-PROPERTY QUERIES
+    //=========================================================================
+    //
+    // Each of these is a shallow wrapper around
+    // `level.getTilePropertyAt(tx, ty, "<prop>", default)`.
+    // They look slightly different (some probe just under the
+    // feet, some probe the body) because gameplay differs:
+    //   * hazards and crumble should register at floor contact,
+    //   * save-stations and lore-terminals should register when
+    //     the player *overlaps* the terminal (body centre),
+    //   * conveyors / ice / steam are floor-contact too.
+
+    /// @brief Hazard-tile id currently under the player's feet,
+    ///        or 0 if none.  `game.zia` maps the returned id to
+    ///        different damage / knockback responses.
+    expose func checkHazardTile(x100: Integer, y100: Integer,
+                                 w: Integer, h: Integer,
+                                 level: Level) -> Integer {
+        var px = x100 / 100;
+        var py = y100 / 100;
+        var tileX = (px + w / 2) / TILE_SIZE;
+        var tileY = (py + h) / TILE_SIZE;
+        if tileX >= 0 and tileX < level.levelWidth and tileY >= 0 and tileY < level.levelHeight {
+            var h1 = level.getTilePropertyAt(tileX, tileY, "hazard", 0);
+            if h1 != 0 { return h1; }
+        }
+        // Also probe one row up — lava's "top" is the lit face.
+        var tileY2 = (py + h - TILE_SIZE / 2) / TILE_SIZE;
+        if tileY2 >= 0 and tileY2 < level.levelHeight {
+            var h2 = level.getTilePropertyAt(tileX, tileY2, "hazard", 0);
+            if h2 != 0 { return h2; }
+        }
+        return 0;
+    }
+
+    /// @brief "Is the floor slippery?" — used by player friction.
+    expose func isOnIce(x100: Integer, y100: Integer,
+                         w: Integer, h: Integer, level: Level) -> Boolean {
+        var px = x100 / 100;
+        var py = y100 / 100;
+        var tileX = (px + w / 2) / TILE_SIZE;
+        var tileY = (py + h + 2) / TILE_SIZE;
+        if tileX >= 0 and tileX < level.levelWidth and tileY >= 0 and tileY < level.levelHeight {
+            return level.getTilePropertyAt(tileX, tileY, "surface", 0) == 1;
+        }
+        return false;
+    }
+
+    /// @brief Test whether the player's center foot probe overlaps quicksand.
+    ///
+    /// Quicksand remains a solid walkable surface; Player uses this semantic
+    /// property to select the 55-percent speed cap and 80-percent jump impulse.
+    ///
+    /// @param x100 Player left coordinate in centipixels.
+    /// @param y100 Player top coordinate in centipixels.
+    /// @param w Player hitbox width in pixels.
+    /// @param h Player hitbox height in pixels.
+    /// @param level Active level containing semantic tile properties.
+    /// @return True only when the center foot probe is on authored quicksand.
+    expose func isInQuicksand(x100: Integer, y100: Integer,
+                              w: Integer, h: Integer,
+                              level: Level) -> Boolean {
+        var px = x100 / 100;
+        var py = y100 / 100;
+        var tileX = (px + w / 2) / TILE_SIZE;
+        var tileY = (py + h + 2) / TILE_SIZE;
+        if tileX >= 0 and tileX < level.levelWidth and
+           tileY >= 0 and tileY < level.levelHeight {
+            return level.getTilePropertyAt(tileX, tileY, "quicksand", 0) == 1;
+        }
+        return false;
+    }
+
+    /// @brief Test whether the center of the hitbox stands on a one-way tile.
+    ///
+    /// This query is intentionally narrower than `isOnGround`: Player uses it
+    /// only to decide whether down+jump should start the temporary pass-through
+    /// window. Down+jump on ordinary solid ground remains an ordinary jump.
+    ///
+    /// @param x100 Player left coordinate in centipixels.
+    /// @param y100 Player top coordinate in centipixels.
+    /// @param w Player hitbox width in pixels.
+    /// @param h Player hitbox height in pixels.
+    /// @param level Active level queried for tile identity.
+    /// @return True when the center foot probe lies on `TILE_ONE_WAY`.
+    expose func isOnOneWay(x100: Integer, y100: Integer,
+                           w: Integer, h: Integer,
+                           level: Level) -> Boolean {
+        var px = x100 / 100;
+        var py = y100 / 100;
+        var tileX = (px + w / 2) / TILE_SIZE;
+        var tileY = (py + h + 2) / TILE_SIZE;
+        return level.getTile(tileX, tileY) == TILE_ONE_WAY;
+    }
+
+    /// @brief Conveyor direction under the feet: -1 left, +1
+    ///        right, 0 none.  Player adds this to their vx
+    ///        each frame they're on it.
+    expose func getConveyorDir(x100: Integer, y100: Integer,
+                                w: Integer, h: Integer, level: Level) -> Integer {
+        var px = x100 / 100;
+        var py = y100 / 100;
+        var tileX = (px + w / 2) / TILE_SIZE;
+        var tileY = (py + h + 2) / TILE_SIZE;
+        if tileX >= 0 and tileX < level.levelWidth and tileY >= 0 and tileY < level.levelHeight {
+            return level.getTilePropertyAt(tileX, tileY, "conveyor", 0);
+        }
+        return 0;
+    }
+
+    /// @brief "Am I standing on a steam vent?"  Triggers an
+    ///        upward launch in player's update loop.
+    expose func isOnSteamVent(x100: Integer, y100: Integer,
+                               w: Integer, h: Integer, level: Level) -> Boolean {
+        var px = x100 / 100;
+        var py = y100 / 100;
+        var tileX = (px + w / 2) / TILE_SIZE;
+        var tileY = (py + h + 2) / TILE_SIZE;
+        if tileX >= 0 and tileX < level.levelWidth and tileY >= 0 and tileY < level.levelHeight {
+            return level.getTilePropertyAt(tileX, tileY, "steam", 0) == 1;
+        }
+        return false;
+    }
+
+    /// @brief "Am I standing in a save station tile?"
+    ///        Body-centre probe, not feet — the player doesn't
+    ///        have to land perfectly on a save station.
+    expose func isNearSaveStation(x100: Integer, y100: Integer,
+                                   w: Integer, h: Integer, level: Level) -> Boolean {
+        var px = x100 / 100;
+        var py = y100 / 100;
+        var tileX = (px + w / 2) / TILE_SIZE;
+        var tileY = (py + h / 2) / TILE_SIZE;
+        if tileX >= 0 and tileX < level.levelWidth and tileY >= 0 and tileY < level.levelHeight {
+            return level.getTilePropertyAt(tileX, tileY, "save", 0) == 1;
+        }
+        return false;
+    }
+
+    /// @brief "Am I next to a lore terminal?  Which one?"
+    ///
+    /// Returns the lore-index derived from the tile coordinates
+    /// (`tileX + tileY * width`).  Using coordinates as the key
+    /// means every terminal is unique without needing a
+    /// separate id field on the tile.
+    expose func isNearLoreTerminal(x100: Integer, y100: Integer,
+                                    w: Integer, h: Integer, level: Level) -> Integer {
+        var px = x100 / 100;
+        var py = y100 / 100;
+        var tileX = (px + w / 2) / TILE_SIZE;
+        var tileY = (py + h / 2) / TILE_SIZE;
+        if tileX >= 0 and tileX < level.levelWidth and tileY >= 0 and tileY < level.levelHeight {
+            if level.getTilePropertyAt(tileX, tileY, "lore", 0) == 1 {
+                return tileX + tileY * level.levelWidth;
+            }
+        }
+        return -1;
+    }
+
+    /// @brief "Is the tile at (tx, ty) a crumbling platform?"
+    ///        The player's update loop uses this to start a
+    ///        "break after N frames" timer on contact.
+    expose func isCrumblingTile(tileX: Integer, tileY: Integer, level: Level) -> Boolean {
+        if tileX >= 0 and tileX < level.levelWidth and tileY >= 0 and tileY < level.levelHeight {
+            return level.getTilePropertyAt(tileX, tileY, "crumble", 0) == 1;
+        }
+        return false;
+    }
+}

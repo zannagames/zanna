@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/LowererContext.hpp
+// File: src/frontends/basic/LowererContext.hpp
 // Purpose: Defines helper context structures embedded in the Lowerer for
 //          procedure-scoped state: block naming, loop tracking, error handlers,
 //          and GOSUB return-address management.
@@ -15,6 +15,15 @@
 // Links: docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file LowererContext.hpp
+ * @brief Defines procedure-local naming, loop, EH, and GOSUB state.
+ *
+ * All stored function and block pointers are non-owning. Block indexes are
+ * preferred for state that must survive vector reallocation, while live block
+ * pointers are refreshed by the lowering routines when necessary.
+ */
 
 #pragma once
 
@@ -286,7 +295,9 @@ struct ProcedureContext {
         }
 
       private:
+        /// Source/virtual line to active-function block index.
         std::unordered_map<int, size_t> lineBlocks_;
+        /// Procedure-scoped label generator, absent before skeleton setup.
         std::unique_ptr<BlockNamer> namer_;
     };
 
@@ -353,8 +364,11 @@ struct ProcedureContext {
         }
 
       private:
+        /// Active function owning every exit target.
         Function *function_{nullptr};
+        /// Nested exit block pointers from outermost to innermost loop.
         std::vector<BasicBlock *> exitTargets_;
+        /// Per-loop flag set when an EXIT branch was emitted.
         std::vector<bool> exitTaken_;
     };
 
@@ -433,10 +447,15 @@ struct ProcedureContext {
         }
 
       private:
+        /// Whether ON ERROR currently routes failures to a handler.
         bool active_{false};
+        /// Stable index of the active handler block.
         std::optional<size_t> activeIndex_{};
+        /// BASIC line targeted by the active handler.
         std::optional<int> activeLine_{};
+        /// Target line to handler block index.
         std::unordered_map<int, size_t> blocks_;
+        /// Handler block index to target line.
         std::unordered_map<size_t, int> handlerTargets_;
     };
 
@@ -521,10 +540,15 @@ struct ProcedureContext {
         }
 
       private:
+        /// Whether stack-pointer and stack-array slots were emitted.
         bool hasPrologue_{false};
+        /// Stack pointer alloca.
         Value spSlot_{};
+        /// Fixed-depth continuation-index array alloca.
         Value stackSlot_{};
+        /// Continuation block indexes in registration order.
         std::vector<size_t> continuationBlocks_{};
+        /// GOSUB statement identity to continuation ordinal.
         std::unordered_map<const GosubStmt *, unsigned> stmtToIndex_{};
     };
 
@@ -593,6 +617,7 @@ struct ProcedureContext {
 
     /// @brief Set the current basic block by its index within the function.
     /// @param idx Zero-based block index.
+    /// @pre An active function exists and @p idx is within its block vector.
     void setCurrentByIndex(size_t idx) noexcept {
         auto *f = function();
         setCurrent(&f->blocks[idx]);
@@ -689,14 +714,23 @@ struct ProcedureContext {
     }
 
   private:
+    /// Active function borrowed from the module being emitted.
     Function *function_{nullptr};
+    /// Current insertion block borrowed from @ref function_.
     BasicBlock *current_{nullptr};
+    /// Stable index of the synthetic exit block.
     size_t exitIndex_{0};
+    /// Next SSA temporary identifier.
     unsigned nextTemp_{0};
+    /// Next unique bounds-check label identifier.
     unsigned boundsCheckId_{0};
+    /// Procedure block names and line mapping.
     BlockNameState blockNames_{};
+    /// Nested loop exits.
     LoopState loopState_{};
+    /// ON ERROR/RESUME mappings.
     ErrorHandlerState errorHandlers_{};
+    /// GOSUB stack and continuation metadata.
     GosubState gosub_{};
 };
 

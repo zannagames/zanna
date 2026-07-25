@@ -1,0 +1,80 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/xenoscape-scenes/playthrough_probe.zia
+// Purpose: Gates the clean-profile title-to-first-boss vertical slice.
+// Key invariants:
+//   - Crash Site and Fungal Caverns are physically traversable at baseline.
+//   - The first boss grants Dash and that reward opens the Crystal route.
+// Ownership/Lifetime:
+//   - Probe owns temporary levels, graph, validator, and ability state only.
+// Links: level_validation.zia, world_graph.zia, campaign_content.zia,
+//        docs/internals/testing.md
+//
+//===----------------------------------------------------------------------===//
+
+module playthrough_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "./abilities";
+bind "./campaign_content";
+bind "./level";
+bind "./level_validation";
+bind "./palette";
+bind "./world_graph";
+
+/// @brief Emit one deterministic vertical-slice failure.
+/// @param message Stable violated invariant.
+/// @return Nothing. Omits the success marker.
+func fail(message: String) { Terminal.Say("RESULT: fail " + message); }
+
+/// @brief Prove the first route, physical gateways, boss reward, and next gate.
+///
+/// This is a state-path gate rather than input playback: production levels are
+/// traversed by the geometry validator, while graph and reward transitions use
+/// the same authoritative functions as Game.
+///
+/// @return Nothing. Prints `RESULT: ok` only after the complete slice passes.
+func main() {
+    var validator = new LevelValidator();
+    var report = validator.validateGoldSlice(false);
+    if report.ok() == false or report.checkedLevels != 2 or
+       report.reachableLevels != 2 or report.criticalPointsChecked < 20 {
+        fail("gold-slice traversal"); return;
+    }
+
+    var graph = new WorldGraph();
+    var firstEdge = graph.findEdge(0, 1);
+    var crystalEdge = graph.findEdge(1, 2);
+    if firstEdge < 0 or crystalEdge < 0 { fail("gold-slice topology"); return; }
+
+    var crash = new Level();
+    crash.loadLevel(1);
+    var fungal = new Level();
+    fungal.loadLevel(2);
+    if crash.findInteractionRecord(INTERACTION_REGION_GATE, firstEdge) < 0 or
+       fungal.findInteractionRecord(INTERACTION_REGION_GATE, firstEdge) < 0 or
+       fungal.findInteractionRecord(INTERACTION_REGION_GATE, crystalEdge) < 0 {
+        fail("physical regional gateways"); return;
+    }
+
+    var pal = new Palette();
+    var abilities = new AbilityManager();
+    abilities.initAbilities(pal);
+    if graph.canTraverse(0, 1, abilities.getMask()) == false or
+       graph.canTraverse(1, 2, abilities.getMask()) {
+        fail("first route gating"); return;
+    }
+    var reward = regionAbilityReward(1);
+    if reward != ABILITY_DASH { fail("first boss reward"); return; }
+    abilities.grant(reward);
+    if graph.canTraverse(1, 2, abilities.getMask()) == false {
+        fail("post-boss route remains locked"); return;
+    }
+
+    Terminal.Say("RESULT: ok");
+}

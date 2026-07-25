@@ -1,0 +1,159 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/asset_library_probe.zia
+// Purpose: Verify asset-library parsing, entry editing, unknown-member
+//          preservation, and the conflict-safe session history.
+// Key invariants:
+//   - Malformed libraries fail closed with no partial entries.
+//   - Upsert/remove produce complete parser-validated texts.
+//   - The session refuses stale applies and owns exact undo/redo.
+// Ownership/Lifetime:
+//   - The probe owns one temporary fixture directory it removes on exit.
+// Links: zannastudio/src/services/asset_library.zia,
+//        docs/adr/0180-workspace-asset-library.md
+//
+//===----------------------------------------------------------------------===//
+
+module asset_library_probe;
+
+// ============================================================================
+// MODULE: asset_library_probe
+// PURPOSE: Pin the ADR 0180 library format and transaction contracts without
+//          a display: this is pure parsing and file logic.
+//
+// WHERE-THIS-FITS: Browser filtering/badges ride on this validated service.
+//
+// TEACHING-NOTE: The external-conflict case rewrites the file behind the
+//          session, proving expected-bytes guards refuse stale applies.
+// ============================================================================
+
+bind "../services/asset_library";
+
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+final FIXTURE_ROOT: String = "__asset_library_probe";
+
+func fail(reason: String) {
+    try { Dir.RemoveAll(FIXTURE_ROOT); } catch {}
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var valid = asset_library.ParseText(
+        "{\"version\":1,\"vendor\":true,\"entries\":["
+        + "{\"path\":\"assets/tiles/atlas.png\","
+        + "\"tags\":[\"tileset\",\"release\"],"
+        + "\"tileWidth\":64,\"tileHeight\":64,"
+        + "\"custom\":\"keep\"},"
+        + "{\"path\":\"assets/audio/theme.wav\"}"
+        + "]}",
+        "memory");
+    if valid.valid == false or valid.entries.count() != 2 {
+        fail("valid library rejected: " + valid.error);
+        return;
+    }
+    var atlas = valid.EntryForPath("Assets/Tiles/Atlas.png");
+    if atlas == null or atlas.tileWidth != 64
+       or atlas.HasTag("Release") == false
+       or valid.EntryForPath("missing.png") != null {
+        fail("entry lookup lost case-insensitive identity");
+        return;
+    }
+
+    var dupPath = asset_library.ParseText(
+        "{\"version\":1,\"entries\":[{\"path\":\"a.png\"},"
+        + "{\"path\":\"A.PNG\"}]}",
+        "memory");
+    var absolutePath = asset_library.ParseText(
+        "{\"version\":1,\"entries\":[{\"path\":\"/tmp/a.png\"}]}",
+        "memory");
+    var halfGrid = asset_library.ParseText(
+        "{\"version\":1,\"entries\":[{\"path\":\"a.png\","
+        + "\"tileWidth\":32}]}",
+        "memory");
+    var badVersion = asset_library.ParseText(
+        "{\"version\":2,\"entries\":[]}", "memory");
+    if dupPath.valid or dupPath.entries.count() != 0
+       or absolutePath.valid or halfGrid.valid or badVersion.valid {
+        fail("invalid libraries were not rejected fail-closed");
+        return;
+    }
+
+    // Upsert creates a complete file, preserves unknown members, and removes.
+    var errors: List[String] = [];
+    var created = asset_library.UpsertEntryText(
+        "", "art/hero.png", "sprite, hero", 16, 16, "", errors);
+    if created == "" or Str.Contains(created, "\"version\": 1") == false
+       or Str.Contains(created, "\"art/hero.png\"") == false {
+        fail("upsert did not create a valid library");
+        return;
+    }
+    var vendorText =
+        "{\"version\":1,\"vendor\":true,\"entries\":["
+        + "{\"path\":\"art/hero.png\",\"tags\":[\"old\"],"
+        + "\"custom\":\"keep\"}]}";
+    var updated = asset_library.UpsertEntryText(
+        vendorText, "art/hero.png", "sprite", 0, 0, "", errors);
+    if updated == ""
+       or Str.Contains(updated, "\"vendor\": true") == false
+       or Str.Contains(updated, "\"custom\": \"keep\"") == false
+       or Str.Contains(updated, "\"old\"")
+       or Str.Contains(updated, "\"sprite\"") == false {
+        fail("upsert lost unknown members or stale tags");
+        return;
+    }
+    var removed = asset_library.RemoveEntryText(
+        updated, "art/hero.png", errors);
+    if removed == "" or Str.Contains(removed, "hero.png") {
+        fail("entry removal failed");
+        return;
+    }
+    var removeMissing = asset_library.RemoveEntryText(
+        removed, "art/hero.png", errors);
+    if removeMissing != "" {
+        fail("removing an absent entry did not refuse");
+        return;
+    }
+
+    // Session: apply, undo/redo, and external-conflict refusal.
+    Dir.MakeAll(FIXTURE_ROOT);
+    var session = new asset_library.AssetLibrarySession();
+    if session.Load(
+           asset_library.PathForRoot(FIXTURE_ROOT)) == false {
+        fail("session load: " + session.error);
+        return;
+    }
+    if session.Apply(created) == false
+       or File.Exists(session.path) == false
+       or session.CanUndo() == false {
+        fail("session apply: " + session.error);
+        return;
+    }
+    var second = asset_library.UpsertEntryText(
+        session.currentText, "art/foe.png", "sprite", 0, 0, "", errors);
+    if session.Apply(second) == false
+       or session.Undo() == false
+       or Str.Contains(session.currentText, "foe.png")
+       or session.Redo() == false
+       or Str.Contains(session.currentText, "foe.png") == false {
+        fail("session history was not exact: " + session.error);
+        return;
+    }
+    File.WriteAllText(session.path, "{\"version\":1,\"entries\":[]}");
+    if session.Apply(created) or session.Undo() {
+        fail("an external change did not refuse apply and undo");
+        return;
+    }
+
+    try { Dir.RemoveAll(FIXTURE_ROOT); } catch {}
+    Terminal.Say("RESULT: ok");
+}

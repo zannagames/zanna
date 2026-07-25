@@ -24,8 +24,8 @@
 // - StmtBase/StmtControl/StmtDecl/StmtExpr: Statement base classes and variants
 //
 // Design Philosophy:
-// - AST nodes are immutable after construction, ensuring thread-safety and
-//   simplifying analysis passes
+// - AST nodes support both read-only and mutable visitor dispatch so analysis
+//   and rewriting passes can share one hierarchy
 // - Nodes are allocated on the heap and managed via std::unique_ptr to enable
 //   polymorphic storage and clear ownership semantics
 // - Each node carries source location information for precise diagnostic reporting
@@ -42,10 +42,26 @@
 // "AST.hpp" to access all node types.
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file AST.hpp
+ * @brief Aggregates the complete public BASIC abstract-syntax-tree model.
+ *
+ * This compatibility umbrella supplies shared BASIC types, forward
+ * declarations, declaration nodes, expression nodes, and every statement-node
+ * family through one include. Concrete behavior and ownership contracts remain
+ * documented in the family headers.
+ */
+
 #pragma once
 
+/// Shared source ranges, tokens, and BASIC frontend value types.
 #include "frontends/basic/BasicTypes.hpp"
+/// Program and declaration node definitions.
 #include "frontends/basic/ast/DeclNodes.hpp"
+/// Expression base classes, visitors, and concrete expression nodes.
 #include "frontends/basic/ast/ExprNodes.hpp"
+/// Forward declarations for AST node and visitor types.
 #include "frontends/basic/ast/NodeFwd.hpp"
+/// Statement base classes, visitors, and every concrete statement family.
 #include "frontends/basic/ast/StmtNodesAll.hpp"

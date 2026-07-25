@@ -17,11 +17,21 @@
 //   - Each cross-block temp receives exactly one spill slot.
 // Ownership/Lifetime:
 //   - Returns LivenessInfo by value; borrows fn and fb only during the call.
-// Links: codegen/aarch64/LivenessAnalysis.hpp,
-//        codegen/aarch64/LowerILToMIR.cpp (usage),
-//        codegen/aarch64/FrameBuilder.cpp (spill allocation)
+// Links: src/codegen/aarch64/LivenessAnalysis.hpp,
+//        src/codegen/aarch64/LowerILToMIR.cpp (usage),
+//        src/codegen/aarch64/FrameBuilder.cpp (spill allocation)
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file
+ * @brief Implements cross-block temporary discovery and spill reservation.
+ *
+ * Definitions are collected first, then every instruction operand and branch
+ * argument is compared with its use block. Cross-block values receive stable
+ * frame offsets through `FrameBuilder`; alloca temporaries are omitted because
+ * their addresses are recomputed from the frame pointer.
+ */
 
 #include "LivenessAnalysis.hpp"
 #include "LoweringContext.hpp"
@@ -29,6 +39,11 @@
 
 namespace zanna::codegen::aarch64 {
 
+/// @brief Analyze cross-block IL temporary uses and allocate their spill slots.
+/// @param fn Function whose block-local definitions and uses are scanned.
+/// @param allocaTemps Recomputable frame-address temporaries to exclude.
+/// @param fb Frame builder that owns resulting spill assignments.
+/// @return Self-contained definition, cross-block, and spill-offset maps.
 LivenessInfo analyzeCrossBlockLiveness(const il::core::Function &fn,
                                        const std::unordered_set<unsigned> &allocaTemps,
                                        FrameBuilder &fb) {

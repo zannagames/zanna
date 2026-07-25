@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/RelocApplier.hpp
+// File: src/codegen/common/linker/RelocApplier.hpp
 // Purpose: Apply relocations to merged section data, patching machine code
 //          with resolved symbol addresses.
 // Key invariants:
@@ -20,6 +20,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file RelocApplier.hpp
+ * @brief Declares checked cross-format relocation application for merged layouts.
+ */
+
 #pragma once
 
 #include "codegen/common/linker/LinkTypes.hpp"
@@ -32,14 +37,20 @@
 
 namespace zanna::codegen::linker {
 
-/// Apply all relocations across merged sections.
-/// @param objects      All object files.
-/// @param layout       The link layout with merged sections and resolved symbols.
-/// @param dynamicSyms  Symbols expected from shared libraries (generate stubs).
-/// @param platform     Target platform.
-/// @param arch         Target architecture.
-/// @param err          Error output.
-/// @return true on success.
+/// @brief Resolves symbol addresses and applies every relocation to merged bytes.
+/// @details Builds input-to-output placement maps, finalizes global addresses,
+///          resolves local/global/GOT and dynamic targets, validates patch-site
+///          bounds and instruction forms, records loader bind/rebase entries
+///          where static patching is inappropriate, and performs target-specific
+///          postprocessing such as Windows `.pdata` ordering.
+/// @param objects Parsed input objects whose relocation records are consumed.
+/// @param layout Merged layout modified in place, including section bytes,
+///               resolved symbols, and loader fixup lists.
+/// @param dynamicSyms Symbols expected to resolve through shared libraries.
+/// @param platform Target executable ABI and object naming policy.
+/// @param arch Target instruction-set architecture.
+/// @param err Stream that receives the first relocation diagnostic.
+/// @return `true` after all relocations and postprocessing succeed.
 bool applyRelocations(const std::vector<ObjFile> &objects,
                       LinkLayout &layout,
                       const std::unordered_set<std::string> &dynamicSyms,

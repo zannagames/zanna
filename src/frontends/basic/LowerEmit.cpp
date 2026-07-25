@@ -11,6 +11,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file LowerEmit.cpp
+ * @brief Implements staged emission of the synthetic BASIC @c main function.
+ *
+ * This translation unit pre-emits procedure bodies, constructs one block for
+ * each distinct virtual main-body line, discovers and allocates symbols, and
+ * finally emits the main statements plus resource-release epilogue.
+ */
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/LineUtils.hpp"
 #include "frontends/basic/Lowerer.hpp"
@@ -26,13 +35,15 @@ namespace il::frontends::basic {
 
 /// @brief Predeclare procedures and gather main-body statement handles.
 ///
-/// @details The pass first registers all procedure signatures so forward calls
-///          resolve correctly, then lowers each declaration stub (functions and
-///          subs) to seed the IR with symbol metadata.  Finally it snapshots the
-///          main statement list into the emit context for later phases.
+/// @details The pass first registers procedure signatures so forward calls
+///          resolve correctly, then fully lowers procedure declarations from
+///          both the dedicated procedure list and recursively nested namespace
+///          bodies. Finally it borrows raw pointers to the top-level main
+///          statements for the remaining stages.
 ///
 /// @param prog Parsed BASIC program.
-/// @return Emission context populated with declaration state and main sequence.
+/// @return Emission context containing non-owning main-statement pointers.
+/// @pre @p prog and its statement nodes must outlive all consumers of the result.
 Lowerer::ProgramEmitContext Lowerer::collectProgramDeclarations(const Program &prog) {
     collectProcedureSignatures(prog);
     for (const auto &s : prog.procs) {
@@ -44,6 +55,7 @@ Lowerer::ProgramEmitContext Lowerer::collectProgramDeclarations(const Program &p
 
     // Also predeclare and lower procedures declared inside namespace blocks in the main body
     // so fully-qualified calls can resolve at runtime.
+    /// Recursively lower procedure declarations contained in namespace bodies.
     std::function<void(const std::vector<StmtPtr> &)> scan;
     scan = [&](const std::vector<StmtPtr> &stmts) {
         for (const auto &stmtPtr : stmts) {
@@ -85,6 +97,9 @@ Lowerer::ProgramEmitContext Lowerer::collectProgramDeclarations(const Program &p
 ///             epilogue emission.
 ///
 /// @param state Mutable emission context storing block references.
+/// @pre @p state contains valid main-statement pointers.
+/// @post @p state names the new function and its entry block; the procedure
+///       context records the synthetic exit block.
 void Lowerer::buildMainFunctionSkeleton(ProgramEmitContext &state) {
     // BUG-063 fix: Clear any deferred temps from prior procedures
     clearDeferredTemps();
@@ -126,6 +141,8 @@ void Lowerer::buildMainFunctionSkeleton(ProgramEmitContext &state) {
 ///          body so storage can be allocated before emission.
 ///
 /// @param state Emission context containing the main statement list.
+/// @post Previously collected symbol state has been replaced with symbols
+///       reachable from @p state.mainStmts.
 void Lowerer::collectMainVariables(ProgramEmitContext &state) {
     resetSymbolState();
     collectVars(state.mainStmts);
@@ -133,12 +150,12 @@ void Lowerer::collectMainVariables(ProgramEmitContext &state) {
 
 /// @brief Assign storage slots for main-function locals and parameters.
 ///
-/// @details Ensures the skeleton builder has produced an entry block, switches
-///          the procedure context to that block, and invokes the slot allocator
-///          with parameter inclusion enabled so `@main` mirrors BASIC calling
-///          conventions.
+/// @details Asserts that skeleton construction produced an entry block, selects
+///          it as the current insertion point, and invokes the normal slot
+///          allocator with an empty parameter-name set.
 ///
 /// @param state Emission context seeded by @ref buildMainFunctionSkeleton.
+/// @pre @p state.entry is non-null.
 void Lowerer::allocateMainLocals(ProgramEmitContext &state) {
     ProcedureContext &ctx = context();
     assert(state.entry && "buildMainFunctionSkeleton must run before allocateMainLocals");
@@ -148,14 +165,16 @@ void Lowerer::allocateMainLocals(ProgramEmitContext &state) {
 
 /// @brief Lower the main statement list and append a terminating epilogue.
 ///
-/// @details When no statements exist the routine emits a trivial `ret 0`.  For
-///          non-empty programs it iterates the cached statement pointers,
-///          lowering each while updating the current source location so
-///          diagnostics remain accurate.  Afterward it moves to the exit block,
-///          releases temporary runtime allocations, and emits the canonical
-///          return instruction.
+/// @details An empty main body receives a return in its entry block. For a
+///          non-empty body, each cached statement is lowered with its own source
+///          location; unterminated fallthrough and unused preallocated line
+///          blocks are explicitly branched to the exit. In both cases the exit
+///          block releases deferred values plus object, array, and array-parameter
+///          locals before returning zero.
 ///
 /// @param state Emission context describing the main function layout.
+/// @pre @p state.function and its entry/exit block bookkeeping were initialized
+///      by @ref buildMainFunctionSkeleton.
 void Lowerer::emitMainBodyAndEpilogue(ProgramEmitContext &state) {
     ProcedureContext &ctx = context();
     assert(state.function && "buildMainFunctionSkeleton must populate function");
@@ -200,12 +219,14 @@ void Lowerer::emitMainBodyAndEpilogue(ProgramEmitContext &state) {
 
 /// @brief Execute the full lowering pipeline for a BASIC program.
 ///
-/// @details Invokes the program-level passes in their required order:
-///          declaration collection, skeleton creation, variable discovery,
-///          local allocation, and final body emission.  Each stage operates on
-///          the shared @ref ProgramEmitContext assembled in this function.
+/// @details Caches module-level object-array element types before procedure
+///          lowering, then runs declaration collection, skeleton creation, and
+///          variable discovery. The OOP module initializer call is emitted at
+///          the main entry before local slots, after which local allocation and
+///          body/epilogue emission complete the function.
 ///
 /// @param prog BASIC program to lower into IL.
+/// @pre The Lowerer is bound to a live module, builder, and procedure context.
 void Lowerer::emitProgram(const Program &prog) {
     // BUG-097 fix: Cache module-level object array types BEFORE lowering procedures.
     // Procedure bodies may reference global arrays (e.g., g_widgets(i).Update()),

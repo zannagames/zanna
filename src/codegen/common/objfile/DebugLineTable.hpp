@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/DebugLineTable.hpp
+// File: src/codegen/common/objfile/DebugLineTable.hpp
 // Purpose: Collects address→(file,line) mappings and encodes them as a
 //          DWARF v5 .debug_line section.
 // Key invariants:
@@ -16,6 +16,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file DebugLineTable.hpp
+ * @brief Declares a validated DWARF v5 address-to-source line-table builder.
+ *
+ * Callers register source-file slots, append monotonically increasing code
+ * locations, and serialize the result as a complete `.debug_line` section for
+ * an ELF or COFF object.
+ */
+
 #pragma once
 
 #include <cstdint>
@@ -24,7 +33,7 @@
 
 namespace zanna::codegen {
 
-/// A single address-to-line mapping entry.
+/// @brief One row of source-location state at a generated code address.
 struct AddressLineEntry {
     uint64_t address;   ///< Code offset (relative to .text start).
     uint32_t fileIndex; ///< 1-based file index.
@@ -32,31 +41,53 @@ struct AddressLineEntry {
     uint32_t column;    ///< 1-based column number (0 = unknown).
 };
 
-/// Collects address→line mappings and encodes a DWARF v5 .debug_line section.
+/// @brief Collects address/line rows and encodes a DWARF v5 line-table unit.
+/// @details File indices are one-based and entry addresses must be appended in
+///          nondecreasing order, matching the DWARF line-program state machine.
 class DebugLineTable {
   public:
-    /// Register a file path and return its 1-based index.
-    /// If the path was already registered, returns the existing index.
+    /// @brief Register or reuse a source path.
+    /// @param path Source file path stored in the DWARF v5 file table.
+    /// @return One-based index of the existing or newly appended file.
+    /// @throws std::length_error if the file index would exceed 32 bits.
     uint32_t addFile(const std::string &path);
 
-    /// Append a new logical file slot even when the path duplicates an existing entry.
-    /// Used when callers need stable 1-based indices that mirror SourceLoc::file_id.
+    /// @brief Append a distinct logical file slot even when its path is duplicated.
+    /// @details Used when stable one-based slots must mirror `SourceLoc::file_id`.
+    /// @param path Source file path to append.
+    /// @return One-based index of the new slot.
+    /// @throws std::length_error if the file index would exceed 32 bits.
     uint32_t addFileSlot(const std::string &path);
 
-    /// Add an address-to-line mapping (entries must be in address order).
+    /// @brief Append one address-to-source mapping.
+    /// @param address Code offset relative to the object text start.
+    /// @param fileIndex Valid one-based index returned by a file registration method.
+    /// @param line One-based source line number.
+    /// @param column One-based column, or zero when unknown.
+    /// @throws std::runtime_error for invalid indices, line zero, or decreasing addresses.
     void addEntry(uint64_t address, uint32_t fileIndex, uint32_t line, uint32_t column = 0);
 
-    /// Append entries from another table, rebasing addresses by @p addressBias.
+    /// @brief Append another line table while rebasing addresses and file slots.
+    /// @param other Source table whose file slots are copied without deduplication.
+    /// @param addressBias Value added to every source code address.
+    /// @throws std::runtime_error for malformed source file indices.
+    /// @throws std::length_error if a rebased address overflows.
     void append(const DebugLineTable &other, uint64_t addressBias = 0);
 
-    /// Return true if no entries have been recorded.
+    /// @brief Test whether no address rows have been recorded.
+    /// @return `true` when the entry sequence is empty.
     [[nodiscard]] bool empty() const {
         return entries_.empty();
     }
 
-    /// Encode the collected data as a DWARF v5 .debug_line section.
-    /// @param addressSize 4 for 32-bit, 8 for 64-bit.
-    /// @return The complete .debug_line section bytes.
+    /// @brief Encode a complete DWARF v5 `.debug_line` section.
+    /// @details Emits a DWARF32 unit, inline path strings, and compact special
+    ///          opcodes where address/line deltas fit, falling back to standard
+    ///          opcodes otherwise.
+    /// @param addressSize Target address width, either four or eight bytes.
+    /// @return Serialized line-table bytes including the end-sequence opcode.
+    /// @throws std::invalid_argument for unsupported address widths.
+    /// @throws std::length_error for addresses or DWARF32 lengths out of range.
     [[nodiscard]] std::vector<uint8_t> encodeDwarf5(uint8_t addressSize = 8) const;
 
   private:

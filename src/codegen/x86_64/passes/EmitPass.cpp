@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/x86_64/passes/EmitPass.cpp
+// File: src/codegen/x86_64/passes/EmitPass.cpp
 // Purpose: Implement the assembly emission pass for the x86-64 codegen pipeline.
 //          Converts lowered and register-allocated MIR into textual assembly text.
 // Key invariants:
@@ -13,8 +13,8 @@
 //   - Diagnostics are surfaced through the shared Diagnostics sink.
 // Ownership/Lifetime:
 //   - Pass owns CodegenOptions by value; borrows Module for the duration of run().
-// Links: codegen/x86_64/passes/EmitPass.hpp,
-//        codegen/x86_64/Backend.hpp
+// Links: src/codegen/x86_64/passes/EmitPass.hpp,
+//        src/codegen/x86_64/Backend.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,6 +30,9 @@
 #include <string>
 #include <utility>
 
+/// @file
+/// @brief Implements final x86-64 textual assembly and scalar-data emission.
+
 namespace zanna::codegen::x64::passes {
 
 namespace {
@@ -37,6 +40,8 @@ namespace {
 /// @brief Map a backend target-platform enum to its native object-file format.
 /// @details Mirrors Backend.cpp's (anonymous-namespace) targetObjectFormat so the
 ///          assembly-text `.data` directives match the object the linker expects.
+/// @param platform Explicit target platform or @c Host for build-host detection.
+/// @return Mach-O, ELF, or COFF format corresponding to @p platform.
 objfile::ObjFormat emitTargetObjectFormat(CodegenOptions::TargetPlatform platform) {
     switch (platform) {
         case CodegenOptions::TargetPlatform::Darwin:
@@ -51,11 +56,16 @@ objfile::ObjFormat emitTargetObjectFormat(CodegenOptions::TargetPlatform platfor
     return objfile::detectHostFormat();
 }
 
-/// @brief Emit a `.data` section (assembly text) for a module's writable scalar globals.
-/// @details Mirrors the binary path (BinaryEmitPass::buildScalarDataSection) and the
-///          AArch64 RodataPool::emitData asm path so `--system-asm` output is parity
-///          with `-run-native`. Symbol mangling matches AsmEmitter::formatSymbolReference
-///          (leading `_` on Mach-O); section directives follow the object format.
+/// @brief Formats native data-section directives for emittable scalar globals.
+/// @details Uses the shared scalar layout to select alignment and
+///          @c .byte/@c .short/@c .long/@c .quad/@c .double directives.
+///          Mach-O symbols gain the platform-required leading underscore;
+///          section directives otherwise follow @p format. Unsupported global
+///          kinds are skipped, and a module with no scalar globals produces an
+///          empty string.
+/// @param mod Source module whose global declarations are inspected.
+/// @param format Target object format controlling section and symbol spelling.
+/// @return Owned assembly fragment, ending with a blank line when non-empty.
 std::string emitScalarDataSectionAsm(const il::core::Module &mod, objfile::ObjFormat format) {
     std::string out;
     bool wroteHeader = false;
@@ -116,10 +126,11 @@ EmitPass::EmitPass(CodegenOptions options) noexcept : options_(std::move(options
 ///             through @p diags.
 ///          When emission succeeds the resulting @ref CodegenResult is stored on
 ///          the module so later passes (or CLI drivers) can access the assembly
-///          text and object code paths without repeating the expensive work.
+///          text without repeating backend emission.
 /// @param module Code generation module containing lowering outputs.
 /// @param diags Diagnostics sink that records emission failures.
-/// @return True when assembly emission succeeds without diagnostics.
+/// @return @c true when assembly emission succeeds; @c false after reporting
+///         a failed prerequisite or backend diagnostic.
 bool EmitPass::run(Module &module, Diagnostics &diags) {
     if (!module.registersAllocated) {
         diags.error("emit: register allocation has not completed");

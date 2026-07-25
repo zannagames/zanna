@@ -5,9 +5,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Defines the static registry describing BASIC intrinsic functions.  The table
-// enumerates the supported names along with their return types and parameter
-// signatures so semantic analysis can perform quick lookups.
+// File: src/frontends/basic/Intrinsics.cpp
+// Purpose: Define static signatures and exact lookup for selected legacy BASIC
+//          string and conversion intrinsics.
+// Ownership/Lifetime: Descriptors and parameter arrays have static lifetime.
+// Links: src/frontends/basic/Intrinsics.hpp,
+//        src/frontends/basic/BuiltinRegistry.hpp
 //
 //===----------------------------------------------------------------------===//
 //

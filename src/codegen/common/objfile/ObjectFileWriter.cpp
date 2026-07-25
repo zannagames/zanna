@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/ObjectFileWriter.cpp
+// File: src/codegen/common/objfile/ObjectFileWriter.cpp
 // Purpose: Factory for creating object file writers.
 // Key invariants:
 //   - Returns nullptr for unimplemented format/arch combinations
@@ -14,6 +14,11 @@
 // Links: codegen/common/objfile/ObjectFileWriter.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ObjectFileWriter.cpp
+ * @brief Implements shared object-writer dispatch, memory capture, and factory logic.
+ */
 
 #include "codegen/common/objfile/ObjectFileWriter.hpp"
 #include "codegen/common/objfile/CoffWriter.hpp"
@@ -26,6 +31,9 @@
 
 namespace zanna::codegen::objfile {
 
+/// @copydoc ObjectFileWriter::write(const std::string&,
+///                                  const std::vector<CodeSection>&,
+///                                  const CodeSection&, std::ostream&)
 bool ObjectFileWriter::write(const std::string &path,
                              const std::vector<CodeSection> &textSections,
                              const CodeSection &rodata,
@@ -37,6 +45,9 @@ bool ObjectFileWriter::write(const std::string &path,
     return write(path, merged, rodata, err);
 }
 
+/// @copydoc ObjectFileWriter::writeToMemory(std::vector<uint8_t>&,
+///                                          const CodeSection&,
+///                                          const CodeSection&, std::ostream&)
 bool ObjectFileWriter::writeToMemory(std::vector<uint8_t> &output,
                                      const CodeSection &text,
                                      const CodeSection &rodata,
@@ -57,6 +68,9 @@ bool ObjectFileWriter::writeToMemory(std::vector<uint8_t> &output,
     return ok;
 }
 
+/// @copydoc ObjectFileWriter::writeToMemory(std::vector<uint8_t>&,
+///                                          const std::vector<CodeSection>&,
+///                                          const CodeSection&, std::ostream&)
 bool ObjectFileWriter::writeToMemory(std::vector<uint8_t> &output,
                                      const std::vector<CodeSection> &textSections,
                                      const CodeSection &rodata,
@@ -77,6 +91,7 @@ bool ObjectFileWriter::writeToMemory(std::vector<uint8_t> &output,
     return ok;
 }
 
+/// @copydoc ObjectFileWriter::commitOutput
 bool ObjectFileWriter::commitOutput(const std::string &path,
                                     const std::vector<uint8_t> &bytes,
                                     const char *writerName,
@@ -93,6 +108,7 @@ bool ObjectFileWriter::commitOutput(const std::string &path,
     return checkedWriteAll(ofs, bytes, writerName, path, err);
 }
 
+/// @copydoc createObjectFileWriter
 std::unique_ptr<ObjectFileWriter> createObjectFileWriter(ObjFormat format, ObjArch arch) {
     switch (format) {
         case ObjFormat::ELF:

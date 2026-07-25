@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/SymbolResolver.cpp
+// File: src/codegen/common/linker/SymbolResolver.cpp
 // Purpose: Implementation of global symbol resolution.
 //          Iteratively extracts archive members until all symbols resolved.
 // Key invariants:
@@ -15,6 +15,17 @@
 // Links: codegen/common/linker/SymbolResolver.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file SymbolResolver.cpp
+ * @brief Implements global symbol resolution, archive extraction, and COMDAT selection.
+ *
+ * Resolution combines direct objects with lazily extracted archive members,
+ * applies strong/weak/common precedence, validates COFF COMDAT selection rules,
+ * and classifies only allowlisted unresolved names as dynamic imports. The pass
+ * also materializes tentative common definitions and target-specific synthetic
+ * symbols needed by later layout stages.
+ */
 
 #include "codegen/common/linker/SymbolResolver.hpp"
 #include "codegen/common/linker/DynamicSymbolPolicy.hpp"
@@ -45,21 +56,33 @@ static void discardComdatLosers(std::vector<ObjFile> &allObjects,
                                 std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
                                 const std::vector<InputSectionKey> &comdatLosers);
 
+/// @brief Comparable metadata for one non-associative COFF COMDAT definition.
 struct ComdatDefinition {
+    ///< Selection policy governing duplicate definitions.
     ComdatSelection selection = ComdatSelection::None;
+    ///< Linker key shared by equivalent COMDAT groups.
     std::string key;
+    ///< Index of the defining object in the accumulated object vector.
     size_t objIdx = 0;
+    ///< One-based index of the COMDAT leader section.
     uint32_t secIdx = 0;
+    ///< Logical section size used by SAME_SIZE and LARGEST selection.
     size_t size = 0;
+    ///< Content-and-relocation hash used by EXACT_MATCH selection.
     uint64_t hash = 0;
 };
 
+/// @brief Validate an alignment accepted for a materialized common symbol.
+/// @param alignment Requested byte alignment.
+/// @return `true` for a nonzero power of two representable by `uint32_t`.
 static bool isSupportedCommonAlignment(size_t alignment) {
     return alignment != 0 && (alignment & (alignment - 1)) == 0 &&
            alignment <= std::numeric_limits<uint32_t>::max();
 }
 
 /// @brief Return an ASCII-lowercased copy of @p value for Windows archive-name checks.
+/// @param value String to normalize in place.
+/// @return The normalized string; non-ASCII bytes are preserved by `tolower`.
 static std::string asciiLower(std::string value) {
     for (char &ch : value) {
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -71,12 +94,16 @@ static std::string asciiLower(std::string value) {
 /// @details Archive members are named as "path/to/archive.lib(member.obj)".
 ///          Non-archive objects are returned unchanged, which lets the caller
 ///          reject them by basename policy.
+/// @param objectName Object display name, optionally ending in `(member)`.
+/// @return The path portion preceding the archive-member suffix.
 static std::string archivePathFromObjectName(const std::string &objectName) {
     const size_t memberStart = objectName.find('(');
     return memberStart == std::string::npos ? objectName : objectName.substr(0, memberStart);
 }
 
 /// @brief Extract the final path component from @p path using both host separators.
+/// @param path Path that may contain slash or backslash separators.
+/// @return The final component, or @p path itself when it has no separator.
 static std::string basenameFromPath(const std::string &path) {
     const size_t slash = path.find_last_of("/\\");
     return slash == std::string::npos ? path : path.substr(slash + 1);
@@ -87,6 +114,8 @@ static std::string basenameFromPath(const std::string &path) {
 ///          basename such as libzanna_rt_base.a, zanna_rt_core.lib, or
 ///          zanna_runtime.lib is allowed to activate duplicate-runtime shim
 ///          preference.
+/// @param basename Archive filename without directory components.
+/// @return `true` when the normalized stem names a Zanna runtime archive.
 static bool isZannaRuntimeArchiveBasename(const std::string &basename) {
     std::string name = asciiLower(basename);
     if (name.size() > 4 && name.substr(name.size() - 4) == ".lib")
@@ -100,6 +129,11 @@ static bool isZannaRuntimeArchiveBasename(const std::string &basename) {
            name.rfind("zanna-runtime", 0) == 0;
 }
 
+/// @brief Replace a global entry with a concrete object-symbol definition.
+/// @param entry Table entry to overwrite.
+/// @param sym Defined symbol supplying section, offset, and absolute state.
+/// @param objIdx Index of the defining object.
+/// @param binding Resolved strong or weak binding to record.
 static void setEntryFromSymbol(GlobalSymEntry &entry,
                                const ObjSymbol &sym,
                                size_t objIdx,
@@ -116,6 +150,13 @@ static void setEntryFromSymbol(GlobalSymEntry &entry,
     entry.commonAlignment = 1;
 }
 
+/// @brief Merge a tentative common-symbol declaration into a global entry.
+/// @details Common declarations coalesce by retaining the maximum requested
+///          size and alignment until materialization.
+/// @param entry Table entry to update.
+/// @param sym Common symbol declaration.
+/// @param objIdx Index of the declaring object.
+/// @param binding Strong or weak binding to record.
 static void setEntryFromCommon(GlobalSymEntry &entry,
                                const ObjSymbol &sym,
                                size_t objIdx,
@@ -132,6 +173,9 @@ static void setEntryFromCommon(GlobalSymEntry &entry,
     entry.commonAlignment = std::max(entry.commonAlignment, sym.commonAlignment);
 }
 
+/// @brief Compute an FNV-1a-style hash of a byte vector.
+/// @param bytes Bytes to hash in order.
+/// @return Deterministic 64-bit hash value.
 static uint64_t hashBytes(const std::vector<uint8_t> &bytes) {
     uint64_t h = 1469598103934665603ULL;
     for (uint8_t b : bytes) {
@@ -141,6 +185,9 @@ static uint64_t hashBytes(const std::vector<uint8_t> &bytes) {
     return h;
 }
 
+/// @brief Fold an unsigned 64-bit integer into an existing hash.
+/// @param value Value serialized least-significant byte first.
+/// @param h Hash accumulator updated in place.
 static void hashU64(uint64_t value, uint64_t &h) {
     for (unsigned i = 0; i < 8; ++i) {
         h ^= static_cast<uint8_t>(value >> (i * 8));
@@ -148,6 +195,9 @@ static void hashU64(uint64_t value, uint64_t &h) {
     }
 }
 
+/// @brief Fold a length-delimited string into an existing hash.
+/// @param value String bytes to hash.
+/// @param h Hash accumulator updated in place.
 static void hashString(const std::string &value, uint64_t &h) {
     hashU64(value.size(), h);
     for (unsigned char ch : value) {
@@ -156,6 +206,13 @@ static void hashString(const std::string &value, uint64_t &h) {
     }
 }
 
+/// @brief Fold a relocation target's semantic identity into a COMDAT hash.
+/// @details Symbol spelling, binding, offsets, common state, and target-section
+///          COMDAT metadata are included so EXACT_MATCH does not equate
+///          relocations with materially different targets.
+/// @param obj Object that owns both relocation and symbol table.
+/// @param rel Relocation whose target identity is hashed.
+/// @param h Hash accumulator updated in place.
 static void hashRelocTarget(const ObjFile &obj, const ObjReloc &rel, uint64_t &h) {
     if (rel.symIndex >= obj.symbols.size()) {
         hashU64(rel.symIndex, h);
@@ -187,6 +244,10 @@ static void hashRelocTarget(const ObjFile &obj, const ObjReloc &rel, uint64_t &h
     hashU64(targetSec.associativeSection, h);
 }
 
+/// @brief Hash the bytes, storage attributes, and relocations of a COMDAT section.
+/// @param obj Object supplying relocation target symbols.
+/// @param sec Candidate COMDAT section.
+/// @return Deterministic semantic hash for EXACT_MATCH comparison.
 static uint64_t hashComdatSection(const ObjFile &obj, const ObjSection &sec) {
     uint64_t h = hashBytes(sec.data);
     hashU64(objSectionMemSize(sec), h);
@@ -212,6 +273,9 @@ static uint64_t hashComdatSection(const ObjFile &obj, const ObjSection &sec) {
     return h;
 }
 
+/// @brief Determine whether a COFF weak external should trigger archive search.
+/// @param sym Weak-external symbol record to inspect.
+/// @return `true` for legacy, LIBRARY, or ALIAS fallback characteristics.
 static bool weakExternalSearchesFallbackLibrary(const ObjSymbol &sym) {
     // COFF values: 1=NOLIBRARY, 2=LIBRARY, 3=ALIAS. ALIAS must also seed
     // archive extraction; otherwise an archive-only fallback is never loaded.
@@ -223,6 +287,9 @@ static bool weakExternalSearchesFallbackLibrary(const ObjSymbol &sym) {
            sym.weakExternalCharacteristics == 3;
 }
 
+/// @brief Recognize MSVC inline comparison-category constants emitted pick-any.
+/// @param name Decorated COFF symbol name.
+/// @return `true` for supported `std::*_ordering` comparison constants.
 static bool isMsvcStdComparisonCategoryInlineSymbol(const std::string &name) {
     const bool isComparisonConstant =
         name.rfind("?less@", 0) == 0 || name.rfind("?equal@", 0) == 0 ||
@@ -236,30 +303,48 @@ static bool isMsvcStdComparisonCategoryInlineSymbol(const std::string &name) {
            name.find("@partial_ordering@std@@2U") != std::string::npos;
 }
 
+/// @brief Recognize MSVC `std` type-info and virtual-table symbols.
+/// @param name Decorated COFF symbol name.
+/// @return `true` for `std` RTTI or vftable spellings.
 static bool isMsvcStdTypeInfoOrVftableSymbol(const std::string &name) {
     const bool isTypeInfoOrVftable = name.rfind("??_7", 0) == 0 || name.rfind("??_R", 0) == 0;
     return isTypeInfoOrVftable && name.find("@std@@") != std::string::npos;
 }
 
+/// @brief Recognize an MSVC decorated string-literal symbol.
+/// @param name Decorated COFF symbol name.
+/// @return `true` when the name begins with the `??_C@` literal prefix.
 static bool isMsvcDecoratedStringLiteral(const std::string &name) {
     return name.rfind("??_C@", 0) == 0;
 }
 
+/// @brief Recognize MSVC exception metadata associated with `std` types.
+/// @param name Decorated COFF symbol name.
+/// @return `true` for supported catchable-type and throw-info spellings.
 static bool isMsvcStdExceptionMetadataSymbol(const std::string &name) {
     const bool isExceptionMetadata = name.rfind("_CT", 0) == 0 || name.rfind("_TI", 0) == 0;
     return isExceptionMetadata && name.find("@std@@") != std::string::npos;
 }
 
+/// @brief Recognize MSVC inline constant data defined by the standard library.
+/// @param name Decorated COFF symbol name.
+/// @return `true` for the supported `std` inline-constant pattern.
 static bool isMsvcStdInlineConstDataSymbol(const std::string &name) {
     return name.rfind("?", 0) == 0 && name.find("@std@@3") != std::string::npos &&
            name.size() >= 2 && name.compare(name.size() - 2, 2, "@B") == 0;
 }
 
+/// @brief Recognize compiler-generated floating-point and vector constants.
+/// @param name COFF symbol name.
+/// @return `true` for `__real@`, `__xmm@`, or `__ymm@` constants.
 static bool isMsvcGeneratedConstantSymbol(const std::string &name) {
     return name.rfind("__real@", 0) == 0 || name.rfind("__xmm@", 0) == 0 ||
            name.rfind("__ymm@", 0) == 0;
 }
 
+/// @brief Recognize statically supplied MSVC standard-library helper families.
+/// @param name COFF symbol name.
+/// @return `true` when the helper is expected from Zanna's runtime archives.
 static bool isMsvcStaticStdHelperSymbol(const std::string &name) {
     return name.rfind("__std_count_trivial_", 0) == 0 || name.rfind("__std_find_", 0) == 0 ||
            name.rfind("__std_find_end_", 0) == 0 || name.rfind("__std_find_first_", 0) == 0 ||
@@ -271,6 +356,12 @@ static bool isMsvcStaticStdHelperSymbol(const std::string &name) {
            name.rfind("__std_search_", 0) == 0 || name.rfind("__std_system_error_", 0) == 0;
 }
 
+/// @brief Extract duplicate-selection metadata for a symbol's COMDAT leader.
+/// @param obj Object containing the symbol definition.
+/// @param objIdx Index of @p obj in the accumulated object vector.
+/// @param sym Defined global symbol to inspect.
+/// @param out Receives comparable COMDAT metadata on success.
+/// @return `true` for a keyed, non-associative COMDAT definition.
 static bool getComdatDefinition(const ObjFile &obj,
                                 size_t objIdx,
                                 const ObjSymbol &sym,
@@ -296,6 +387,16 @@ static bool getComdatDefinition(const ObjFile &obj,
 ///          @p loser is set to the section of the discarded copy so the caller
 ///          can strip it and its associative group; @p hasLoser is false only
 ///          when both copies are kept (distinct ANY groups sharing a name).
+/// @param obj Object containing the candidate definition, used in diagnostics.
+/// @param sym Candidate symbol definition.
+/// @param objIdx Index of @p obj in the accumulated object vector.
+/// @param existing Metadata for the previously selected definition.
+/// @param candidate Metadata for the new definition.
+/// @param entry Global table entry updated if a larger candidate wins.
+/// @param loser Receives the losing leader's object/section key.
+/// @param hasLoser Receives whether one copy should be stripped.
+/// @param err Stream that receives COMDAT-policy mismatch diagnostics.
+/// @return `true` when the selection policy permits the duplicate.
 static bool selectComdatDuplicate(const ObjFile &obj,
                                   const ObjSymbol &sym,
                                   size_t objIdx,
@@ -363,13 +464,22 @@ static bool selectComdatDuplicate(const ObjFile &obj,
     return false;
 }
 
-/// Add symbols from a single object file into the global table.
-/// @param obj        The object file.
-/// @param objIdx     Its index in allObjects.
-/// @param globalSyms The global symbol table to update.
-/// @param undefined  Set of currently undefined symbol names.
-/// @param err        Error stream.
-/// @return false if multiply-defined symbol error.
+/// @brief Merge one object's symbols into the global resolution state.
+/// @details Applies undefined, weak, strong, common, and COMDAT precedence;
+///          queues newly discovered undefined references for archive search;
+///          and records COMDAT sections that lose duplicate selection.
+/// @param obj Object file whose symbol table is consumed.
+/// @param objIdx Index of @p obj in the accumulated object vector.
+/// @param globalSyms Global symbol table updated in place.
+/// @param comdatDefs Selected COMDAT metadata keyed by global symbol name.
+/// @param undefined Currently unresolved names updated by definitions/references.
+/// @param platform Target symbol spelling and duplicate policy.
+/// @param allowArchiveDefinitionPreference Whether this object belongs to a
+///        trusted runtime archive whose shim duplicates may be ignored.
+/// @param newUndefined Optional work queue receiving newly unresolved names.
+/// @param comdatLosers Optional list receiving discarded COMDAT leader keys.
+/// @param err Stream that receives alignment or multiple-definition diagnostics.
+/// @return `true` when all symbols are compatible with the current table.
 static bool addObjSymbols(const ObjFile &obj,
                           size_t objIdx,
                           std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
@@ -380,6 +490,8 @@ static bool addObjSymbols(const ObjFile &obj,
                           std::vector<std::string> *newUndefined,
                           std::vector<InputSectionKey> *comdatLosers,
                           std::ostream &err) {
+    /// Remove a resolved name and its alternate Mach-O underscore spelling
+    /// from the unresolved work set.
     auto eraseUndefinedVariants = [&](const std::string &name) {
         undefined.erase(name);
         if (platform == LinkPlatform::macOS) {
@@ -396,6 +508,8 @@ static bool addObjSymbols(const ObjFile &obj,
             continue;
 
         if (sym.binding == ObjSymbol::Undefined) {
+            /// Register one unresolved name in both the table and archive-search
+            /// queue unless a platform-equivalent definition already exists.
             auto addUndefined = [&](const std::string &undefName) {
                 auto it = findWithPlatformFallback(globalSyms, undefName, platform);
                 if (it == globalSyms.end() || it->second.binding == GlobalSymEntry::Undefined) {
@@ -547,6 +661,9 @@ static bool addObjSymbols(const ObjFile &obj,
 /// Runtime archives provide Windows compatibility shims for a small set of
 /// formatting functions. Those definitions must participate in archive
 /// resolution instead of being forced down the dynamic-import path.
+/// @param name Unresolved symbol name.
+/// @param platform Target platform.
+/// @return `true` when Windows resolution should prefer a runtime archive definition.
 static bool preferArchiveDefinition(const std::string &name, LinkPlatform platform) {
     if (platform != LinkPlatform::Windows)
         return false;
@@ -582,6 +699,10 @@ static bool preferArchiveDefinition(const std::string &name, LinkPlatform platfo
            name.rfind("__tls_", 0) == 0;
 }
 
+/// @brief Check whether an object comes from a trusted Zanna runtime archive.
+/// @param obj Extracted object whose display name encodes its archive path.
+/// @param platform Target platform.
+/// @return `true` only for Windows objects extracted from recognized runtime archives.
 static bool isPreferredArchiveDefinitionObject(const ObjFile &obj, LinkPlatform platform) {
     if (platform != LinkPlatform::Windows)
         return false;
@@ -595,6 +716,11 @@ static bool isPreferredArchiveDefinitionObject(const ObjFile &obj, LinkPlatform 
 /// MSVC emits some CRT inline-function local statics in every object that uses
 /// the inline helper. Link.exe picks one definition; keep normal user duplicate
 /// strong definitions strict while modeling that pick-any behavior.
+/// @param name Duplicate strong symbol name.
+/// @param platform Target platform.
+/// @param allowArchiveDefinitionPreference Whether the candidate comes from a
+///        trusted runtime archive.
+/// @return `true` when the duplicate may be treated as pick-any.
 static bool allowDuplicateStrongDefinition(const std::string &name,
                                            LinkPlatform platform,
                                            bool allowArchiveDefinitionPreference) {
@@ -617,6 +743,10 @@ static bool allowDuplicateStrongDefinition(const std::string &name,
     return allowArchiveDefinitionPreference && preferArchiveDefinition(name, platform);
 }
 
+/// @copydoc zanna::codegen::linker::resolveSymbols(const std::vector<ObjFile>&,
+/// const std::vector<const Archive*>&,
+/// std::unordered_map<std::string, GlobalSymEntry>&, std::vector<ObjFile>&,
+/// std::unordered_set<std::string>&, std::ostream&, LinkPlatform)
 bool resolveSymbols(const std::vector<ObjFile> &initialObjects,
                     const std::vector<const Archive *> &archives,
                     std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
@@ -810,6 +940,10 @@ bool resolveSymbols(const std::vector<ObjFile> &initialObjects,
     return true;
 }
 
+/// @copydoc zanna::codegen::linker::resolveSymbols(const std::vector<ObjFile>&,
+/// std::vector<Archive>&, std::unordered_map<std::string, GlobalSymEntry>&,
+/// std::vector<ObjFile>&, std::unordered_set<std::string>&, std::ostream&,
+/// LinkPlatform)
 bool resolveSymbols(const std::vector<ObjFile> &initialObjects,
                     std::vector<Archive> &archives,
                     std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
@@ -830,12 +964,21 @@ bool resolveSymbols(const std::vector<ObjFile> &initialObjects,
                           platform);
 }
 
+/// @brief Strip losing COMDAT groups and redirect displaced winner symbols.
+/// @details Each losing leader and its associative sections are made inert.
+///          Global entries still referring to a stripped LARGEST predecessor
+///          are then repointed at same-named definitions in the surviving group.
+/// @param allObjects Accumulated objects modified in place.
+/// @param globalSyms Global entries updated when a selected winner moved.
+/// @param comdatLosers Object/section keys of losing COMDAT leaders.
 static void discardComdatLosers(std::vector<ObjFile> &allObjects,
                                 std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
                                 const std::vector<InputSectionKey> &comdatLosers) {
     if (comdatLosers.empty())
         return;
 
+    /// Remove the file bytes, relocations, and logical allocation of one losing
+    /// section while retaining identity metadata needed to find its winner.
     auto stripSection = [](ObjSection &sec) {
         sec.stripped = true;
         sec.data.clear();
@@ -903,6 +1046,9 @@ static void discardComdatLosers(std::vector<ObjFile> &allObjects,
     }
 }
 
+/// @brief Materialize unresolved MSVC thread-safe-static guards as common data.
+/// @param globalSyms Global table receiving four-byte common definitions.
+/// @param undefined Unresolved set from which synthesized guard names are removed.
 static void synthesizeWindowsThreadSafeStaticGuards(
     std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
     std::unordered_set<std::string> &undefined) {
@@ -936,6 +1082,14 @@ static void synthesizeWindowsThreadSafeStaticGuards(
     }
 }
 
+/// @brief Materialize coalesced common symbols in a synthetic zero-fill object.
+/// @details Common entries are sorted for deterministic layout, aligned within
+///          one `.common` section, converted to concrete symbol definitions,
+///          and appended as a new input object.
+/// @param allObjects Accumulated objects receiving the synthetic common object.
+/// @param globalSyms Common entries rewritten to concrete section definitions.
+/// @param err Stream that receives alignment or section-size diagnostics.
+/// @return `true` when every common allocation fits supported limits.
 static bool materializeCommonSymbols(std::vector<ObjFile> &allObjects,
                                      std::unordered_map<std::string, GlobalSymEntry> &globalSyms,
                                      std::ostream &err) {

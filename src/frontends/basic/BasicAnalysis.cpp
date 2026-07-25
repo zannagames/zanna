@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/BasicAnalysis.cpp
+// File: src/frontends/basic/BasicAnalysis.cpp
 // Purpose: Implementation of partial BASIC compilation for IDE tooling.
 // Key invariants:
 //   - Pipeline runs parse → CollectProcedures → foldConstants → sema
@@ -13,9 +13,16 @@
 //   - Error-tolerant: continues analysis even on parse/sema errors
 // Ownership/Lifetime:
 //   - All returned data is fully owned by BasicAnalysisResult
-// Links: frontends/basic/BasicAnalysis.hpp
+// Links: src/frontends/basic/BasicAnalysis.hpp,
+//        src/frontends/basic/ConstFolder.hpp,
+//        src/frontends/basic/passes/CollectProcs.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file BasicAnalysis.cpp
+ * @brief Implements error-tolerant BASIC parsing and semantic analysis.
+ */
 
 #include "frontends/basic/BasicAnalysis.hpp"
 
@@ -26,14 +33,7 @@
 
 namespace il::frontends::basic {
 
-/// @brief Parse and semantically analyze a BASIC source unit for IDE tooling (no lowering).
-/// @param input Source text plus optional path/file-id.
-/// @param sm Source manager that assigns/owns file ids and source text.
-/// @return An owned result holding the AST, semantic analyzer, diagnostics, and file id.
-/// @details Runs the front half of the pipeline — parse → CollectProcedures → foldConstants →
-///          semantic analysis — and stops before lowering. It is error-tolerant: a registered
-///          file-id exhaustion or parse failure returns early with diagnostics, but sema runs
-///          even when earlier stages produced errors so tooling still gets partial results.
+/// @copydoc parseAndAnalyzeBasic()
 std::unique_ptr<BasicAnalysisResult> parseAndAnalyzeBasic(const BasicCompilerInput &input,
                                                           il::support::SourceManager &sm) {
     auto result = std::make_unique<BasicAnalysisResult>();

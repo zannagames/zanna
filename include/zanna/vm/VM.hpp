@@ -13,7 +13,7 @@
 // Ownership/Lifetime: Runner manages the interpreter lifetime; callers retain
 //                     ownership of modules and optional debug scripts passed in
 //                     via configuration.
-// Links: docs/codemap/vm-runtime.md
+// Links: docs/internals/codemap/vm-runtime.md, src/vm/Runner.cpp
 //
 //===----------------------------------------------------------------------===//
 //
@@ -39,6 +39,22 @@
 // with the VM version in use.
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file include/zanna/vm/VM.hpp
+ * @brief Declares the stable embedding façade for executing IL in the VM.
+ *
+ * @details
+ * `Runner` hides the concrete interpreter behind a private implementation while
+ * exposing whole-program execution, debugger-oriented stepping, breakpoints,
+ * trap snapshots, profiling counters, extern registration, memory watches, and
+ * backtraces. `RunConfig` supplies the initial runtime and debug environment.
+ *
+ * A runner owns its interpreter but borrows the IL module and optional debug
+ * script/frontend objects. Those borrowed objects must remain valid for the
+ * runner lifetime. Individual `Runner` instances are not synchronized for
+ * concurrent method calls.
+ */
 
 #pragma once
 
@@ -67,100 +83,189 @@ namespace il::vm
 class VM; // forward declaration for callbacks in RunConfig
 class DebugFrontend; // forward declaration for the interactive debug driver
 
-/// @brief Ask @p vm's interactive debug frontend to stop at the next instruction
-///        (resumable Pause). Safe to call from a RunConfig poll callback; a no-op
-///        when no frontend is attached. Defined in the VM so callers need only the
-///        forward declaration above.
+/**
+ * @brief Request a resumable debug pause at the next instruction boundary.
+ *
+ * @param vm VM supplied to a `RunConfig::pollCallback`.
+ *
+ * The request is safe from within the polling callback. It sets pending VM
+ * state and returns immediately; execution reports a pause when control reaches
+ * the next applicable instruction boundary.
+ */
 void requestDebugPause(VM &vm);
 
-/// @brief Configuration parameters for executing an IL module.
+/**
+ * @brief Collects initial execution, debugging, and host-integration settings.
+ *
+ * The configuration is passed by value and consumed while constructing a
+ * runner. Pointer fields remain borrowed. Extern descriptors are copied into
+ * the process-global extern registry, and `programArgs` replaces the runtime's
+ * current argument store.
+ */
 struct RunConfig
 {
-    TraceConfig trace;                  ///< Tracing configuration.
-    uint64_t maxSteps = 0;              ///< Step limit; zero disables the limit.
-    DebugCtrl debug;                    ///< Debug controller copied into the VM.
-    DebugScript *debugScript = nullptr; ///< Optional script pointer; not owned.
-    DebugFrontend *frontend = nullptr;  ///< Optional interactive driver; not owned.
-    std::vector<ExternDesc> externs;    ///< Pre-registered extern helpers.
-    /// @brief Per-frame operand stack size in bytes.
-    /// @details Controls the amount of stack storage available for @c alloca
-    ///          operations within each function call. Defaults to 64KB which
-    ///          suffices for typical BASIC programs. Larger values support
-    ///          workloads with bigger local arrays; smaller values can be used
-    ///          for memory-constrained environments or testing.
+    TraceConfig trace;     ///< Trace mode and borrowed source manager.
+    uint64_t maxSteps = 0; ///< Cumulative instruction limit; zero is unlimited.
+    DebugCtrl debug;       ///< Controller state moved into the new interpreter.
+    DebugScript *debugScript = nullptr; ///< Borrowed automation script, or null.
+    DebugFrontend *frontend = nullptr;  ///< Borrowed interactive driver, or null.
+    std::vector<ExternDesc> externs;    ///< Helpers registered process-globally at construction.
+    /**
+     * @brief Per-frame operand-stack capacity in bytes.
+     *
+     * This storage backs IL `alloca` operations within each call frame. The
+     * default is 64 KiB; larger values accommodate larger local allocations,
+     * while smaller values reduce per-frame memory at the cost of earlier stack
+     * exhaustion traps.
+     */
     std::size_t stackBytes = 65536;
-    /// @brief Command-line arguments to seed into the runtime before run().
-    /// @details When non-empty, the Runner seeds the runtime argument store
-    ///          after VM construction so BASIC's ARGC/ARG$/COMMAND$ can read
-    ///          them safely.
+
+    /**
+     * @brief Command-line arguments installed after VM construction.
+     *
+     * The runtime argument store is cleared even when this vector is empty, so
+     * an explicitly configured runner never falls back to a native host argv.
+     * BASIC's `ARGC`, `ARG$`, and `COMMAND$` read this copied data.
+     */
     std::vector<std::string> programArgs;
 
     // Periodic host polling --------------------------------------------------
-    /// @brief Invoke a host callback every N instructions (0 disables).
+    /**
+     * @brief Instruction interval between host polls.
+     *
+     * Zero disables explicit polling unless the
+     * `ZANNA_INTERRUPT_EVERY_N` environment variable provides a valid override.
+     */
     uint32_t interruptEveryN = 0;
-    /// @brief Host callback; return false to request a VM pause.
+
+    /**
+     * @brief Host callback invoked at the configured instruction interval.
+     *
+     * Returning `false` requests a resumable VM pause. The callback is owned by
+     * the runner and receives its concrete VM by reference for the duration of
+     * the call.
+     */
     std::function<bool(VM &)> pollCallback;
 };
 
-/// @brief Lightweight façade owning a VM instance for running IL modules.
+/**
+ * @brief Owns one interpreter instance while borrowing its immutable IL module.
+ *
+ * Execution state persists across `step()`, `stepOver()`, `stepOut()`, and
+ * `continueRun()` calls, enabling a host to inspect and resume a paused program.
+ * A runner is movable but not copyable.
+ *
+ * @invariant A non-moved-from runner has exactly one private interpreter.
+ * @ownership The runner owns VM state and copied configuration. The source
+ *            module, debug script, and debug frontend remain caller-owned.
+ */
 class Runner
 {
   public:
-    /// @brief Construct a runner over @p module with optional @p config.
-    /// @details Builds a VM instance, applies tracing/debug config, and seeds externs/args.
-    /// @param module IL module to execute. Must remain valid for the Runner's lifetime.
-    /// @param config Optional configuration controlling tracing, debugging, and step limits.
+    /**
+     * @brief Construct an interpreter for a module and execution configuration.
+     *
+     * The constructor applies tracing and debug state, registers configured
+     * externs in the process-global registry, configures polling, and replaces
+     * the runtime argument store.
+     *
+     * @param module Borrowed IL module that must outlive the runner.
+     * @param config Configuration consumed by value. Any `debugScript` and
+     *               `frontend` targets remain borrowed and must also outlive the
+     *               runner.
+     */
     Runner(const il::core::Module &module, RunConfig config = {});
 
-    /// @brief Destroy the runner and release owned VM resources.
-    /// @details Destroys the pimpl instance which owns the underlying VM, ensuring
-    ///          clean shutdown of tracing, debug, and runtime bridges.
+    /**
+     * @brief Destroy the private interpreter and its execution state.
+     *
+     * Borrowed module, script, and frontend objects are not destroyed.
+     */
     ~Runner();
 
     Runner(const Runner &) = delete;
     Runner &operator=(const Runner &) = delete;
+
+    /**
+     * @brief Move-construct by transferring the private interpreter.
+     * @param other Runner whose implementation is transferred.
+     * @post `other` is valid only for destruction or move assignment.
+     */
     Runner(Runner &&) noexcept;
+
+    /**
+     * @brief Replace this interpreter with one transferred from `other`.
+     * @param other Runner whose implementation is transferred.
+     * @return `*this`.
+     * @post `other` is valid only for destruction or move assignment.
+     */
     Runner &operator=(Runner &&) noexcept;
 
-    /// @brief Execute the module's entry function.
+    /**
+     * @brief Execute the module's entry function through the whole-run API.
+     * @return The signed 64-bit result produced by the interpreter.
+     */
     [[nodiscard]] int64_t run();
 
-    /// @brief Retrieve the total number of instructions executed by the VM.
+    /**
+     * @brief Retrieve the cumulative number of executed IL instructions.
+     * @return Count accumulated by this interpreter since construction.
+     */
     [[nodiscard]] uint64_t instructionCount() const;
 
-    /// @brief Retrieve the most recent trap message emitted by the VM, if any.
+    /**
+     * @brief Copy the most recent formatted trap message.
+     * @return The message when the VM has recorded a trap; otherwise
+     *         `std::nullopt`.
+     */
     [[nodiscard]] std::optional<std::string> lastTrapMessage() const;
 
     // Opcode counting facade
 
-    /// @brief Read-only view of per-opcode execution counts.
-    /// @return Reference to the internal array of per-opcode counters.
+    /**
+     * @brief Read the execution count indexed by `il::core::Opcode`.
+     * @return Reference to runner-owned counters. When opcode counting was
+     *         disabled at build time, returns a process-lifetime all-zero array.
+     */
     [[nodiscard]] const std::array<uint64_t, il::core::kNumOpcodes> &opcodeCounts() const;
 
-    /// @brief Reset all opcode execution counters to zero.
+    /**
+     * @brief Reset every per-opcode counter to zero.
+     * @note This is a no-op when opcode counting was disabled at build time.
+     */
     void resetOpcodeCounts();
 
-    /// @brief Return the top-N most executed opcodes and their counts.
-    /// @param n Number of top entries to return.
-    /// @return Vector of (opcode index, count) pairs sorted by count descending.
+    /**
+     * @brief Rank the most frequently executed opcodes.
+     * @param n Maximum number of entries to return.
+     * @return Owning `(opcode index, count)` pairs sorted by descending count,
+     *         or an empty vector when opcode counting is unavailable.
+     */
     [[nodiscard]] std::vector<std::pair<int, uint64_t>> topOpcodes(std::size_t n) const;
 
     // Extern registration facade
 
-    /// @brief Register a foreign function helper for name-based resolution.
-    /// @param ext Descriptor for the external function to register.
+    /**
+     * @brief Register a native helper in the process-global extern registry.
+     * @param ext Descriptor copied into global registry storage.
+     *
+     * @note Despite being a runner method, this operation affects other VMs
+     *       that resolve through the global registry.
+     */
     void registerExtern(const ExternDesc &);
 
-    /// @brief Remove a previously registered extern by name.
-    /// @param name Canonical name of the extern to unregister.
-    /// @return True if an entry was removed, false if not found.
+    /**
+     * @brief Remove a helper from the process-global extern registry.
+     * @param name Borrowed name matched case-insensitively for ASCII letters.
+     * @return `true` when an entry was removed; otherwise `false`.
+     */
     bool unregisterExtern(std::string_view name);
 
     //===------------------------------------------------------------------===//
     // Single-step and continue APIs
     //===------------------------------------------------------------------===//
 
-    /// @brief Result status for a single VM step.
+    /// @brief Reason a single-step request returned control to the host.
     enum class StepStatus
     {
         Advanced,      ///< Successfully executed one instruction; can continue.
@@ -170,13 +275,13 @@ class Runner
         Paused         ///< Paused for non-breakpoint reason (e.g., external pause).
     };
 
-    /// @brief Payload returned by a single-step operation.
+    /// @brief Result payload returned by `step()`.
     struct StepResult
     {
         StepStatus status; ///< Final status for this step.
     };
 
-    /// @brief Aggregate status reported by continueRun.
+    /// @brief Reason a multi-step execution request returned to the host.
     enum class RunStatus
     {
         Halted,            ///< Program finished (returned from main).
@@ -186,31 +291,68 @@ class Runner
         StepBudgetExceeded ///< Global step limit reached.
     };
 
-    /// @brief Execute exactly one instruction of the program (initialising on first call).
+    /**
+     * @brief Execute at most one instruction, preparing the entry state lazily.
+     * @return Status distinguishing advancement, halt, breakpoint, trap, or
+     *         resumable pause.
+     *
+     * @note When the module has no `main` function, the lazily prepared empty
+     *       state reports a halt rather than executing an instruction.
+     */
     StepResult step();
 
-    /// @brief Step over: run until the next source line at the same or shallower call depth.
-    /// @details If the current instruction is a call, the callee executes fully
-    ///          before returning control. Returns when a new source line is reached
-    ///          at a call depth <= the initial depth, or on halt/trap/breakpoint.
+    /**
+     * @brief Run to a different source line at the same or shallower call depth.
+     *
+     * If the current instruction calls another function, that callee executes
+     * until it returns unless another stopping condition intervenes.
+     *
+     * @return `Paused` when the step-over target is reached; otherwise the halt,
+     *         trap, breakpoint, or externally requested pause that stopped
+     *         execution first.
+     *
+     * @note Instructions without source-line metadata are skipped until a known,
+     *       changed line or another stop condition is reached.
+     */
     RunStatus stepOver();
 
-    /// @brief Step out: run until the current function returns.
-    /// @details Executes instructions until the call stack depth drops below
-    ///          the depth at the time of the call. Returns on halt/trap/breakpoint
-    ///          if reached first.
+    /**
+     * @brief Run until execution leaves the current call depth.
+     * @return `Paused` after the current function returns to its caller;
+     *         otherwise the halt, trap, breakpoint, or external pause reached
+     *         first.
+     */
     RunStatus stepOut();
 
-    /// @brief Continue running until a terminal state (halt, trap, or breakpoint).
+    /**
+     * @brief Resume repeated stepping until execution stops advancing.
+     * @return The halt, trap, breakpoint, or resumable pause that returned
+     *         control to the host.
+     */
     RunStatus continueRun();
 
-    /// @brief Set a source-line breakpoint using a concrete source location.
+    /**
+     * @brief Add a source-line breakpoint resolved through the source manager.
+     * @param loc File and line to register.
+     *
+     * @note The request is ignored when `loc` lacks a file or line or the debug
+     *       controller has no source manager.
+     */
     void setBreakpoint(const il::support::SourceLoc &);
 
-    /// @brief Clear all configured breakpoints.
+    /**
+     * @brief Reset breakpoint and watch controller state.
+     *
+     * The controller's source-manager pointer is preserved, while label/source
+     * breakpoints, variable watches, memory watches, pending watch events, and
+     * installed class layouts are discarded.
+     */
     void clearBreakpoints();
 
-    /// @brief Update the global step budget (0 disables the limit).
+    /**
+     * @brief Replace the interpreter's cumulative instruction budget.
+     * @param maxSteps Maximum permitted steps, or zero for no limit.
+     */
     void setMaxSteps(uint64_t);
 
     /// @brief Light-weight snapshot of the last trap for diagnostics.
@@ -245,20 +387,46 @@ class Runner
         std::string message;  ///< Formatted human-readable trap message.
     };
 
-    /// @brief Retrieve a pointer to the last trap snapshot, if any; nullptr otherwise.
+    /**
+     * @brief Retrieve a structured snapshot of the most recent VM trap.
+     * @return Pointer to runner-owned cached storage, or null when no trap has
+     *         been recorded.
+     *
+     * @warning The pointer remains valid only until the next call to
+     *          `lastTrap()`, a non-const runner operation that changes the cache,
+     *          or destruction of the runner. Copy the value for longer use.
+     */
     const TrapInfo *lastTrap() const;
 
     // Memory watch façade ----------------------------------------------------
-    /// @brief Register a memory watch range with a tag.
+    /**
+     * @brief Register a tagged half-open memory watch range.
+     * @param addr Borrowed start address reported in matching events.
+     * @param size Number of bytes in `[addr, addr + size)`.
+     * @param tag Owned label copied into the watch record and hit events.
+     *
+     * @pre Address arithmetic for the supplied range must not overflow.
+     * @pre The watched storage remains addressable while VM writes may target it.
+     */
     void addMemWatch(const void *addr, std::size_t size, std::string tag);
 
-    /// @brief Remove a previously registered memory watch range.
+    /**
+     * @brief Remove a watch matching its complete range and tag.
+     * @param addr Original range start.
+     * @param size Original range size.
+     * @param tag Original tag text.
+     * @return `true` when a matching watch was removed.
+     */
     bool removeMemWatch(const void *addr, std::size_t size, std::string_view tag);
 
-    /// @brief Drain pending memory watch hit payloads.
+    /**
+     * @brief Consume all queued memory-watch hit payloads.
+     * @return Events in queue order; the internal pending queue is empty after
+     *         the call.
+     */
     std::vector<MemWatchHit> drainMemWatchHits();
 
-    /// @brief A single frame in the call stack backtrace.
+    /// @brief Host-owned snapshot of one active VM call frame.
     struct BacktraceFrame
     {
         std::string function; ///< Function name.
@@ -267,11 +435,17 @@ class Runner
         int32_t line = -1;    ///< Source line (-1 = unknown).
     };
 
-    /// @brief Walk the VM call stack and return a backtrace.
-    /// @details Returns frames from most-recent (top) to oldest (bottom).
-    ///          When the VM is paused (e.g., after a breakpoint or trap), the
-    ///          backtrace reflects the full call chain at the point of suspension.
-    /// @return Vector of backtrace frames, empty if no active execution.
+    /**
+     * @brief Snapshot the active VM call stack.
+     *
+     * @return Owning frames ordered from the most recent call to the oldest.
+     *         Returns an empty vector before execution state exists; step-mode
+     *         state contributes one frame when the main execution stack is
+     *         otherwise empty.
+     *
+     * When paused after a breakpoint or trap, the snapshot reflects the call
+     * chain retained at that suspension point.
+     */
     [[nodiscard]] std::vector<BacktraceFrame> backtrace() const;
 
   private:
@@ -279,7 +453,12 @@ class Runner
     std::unique_ptr<Impl> impl;
 };
 
-/// @brief Convenience helper to run @p module with @p config and return the exit code.
+/**
+ * @brief Construct a temporary runner and execute a module once.
+ * @param module Borrowed IL module kept alive for the duration of the call.
+ * @param config Configuration consumed by the temporary runner.
+ * @return The signed 64-bit result returned by `Runner::run()`.
+ */
 [[nodiscard]] int64_t runModule(const il::core::Module &module, RunConfig config = {});
 
 } // namespace il::vm

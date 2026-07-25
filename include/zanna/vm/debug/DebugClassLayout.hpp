@@ -23,6 +23,22 @@
 //        docs/adr/0138-debug-class-layout-sidecar.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file include/zanna/vm/debug/DebugClassLayout.hpp
+ * @brief Defines the dependency-light class-layout metadata consumed by the VM
+ *        debugger.
+ *
+ * @details
+ * A frontend or host converts its semantic class layout into these owning data
+ * records before execution. At a debugger stop, the VM looks up the live
+ * object's runtime class identifier and uses each field's byte offset and
+ * storage strategy to create expandable variable data.
+ *
+ * This sidecar deliberately contains no frontend, runtime, or concrete VM
+ * objects. Offsets and storage tags must already reflect the target ABI.
+ */
+
 #pragma once
 
 #include <cstdint>
@@ -32,7 +48,12 @@
 
 namespace il::vm {
 
-/// @brief How the debugger reads a field's storage at (object base + offset).
+/**
+ * @brief Selects how the debugger interprets bytes at an instance-field offset.
+ *
+ * The enumerator describes storage representation rather than source-language
+ * semantics; `DebugFieldLayout::typeName` retains the semantic display label.
+ */
 enum class DebugFieldStorage : uint8_t {
     I64,     ///< 8-byte signed integer.
     I32,     ///< 4-byte signed integer (e.g. Byte fields).
@@ -46,7 +67,14 @@ enum class DebugFieldStorage : uint8_t {
     Opaque,  ///< Inline aggregate or unknown storage; shown as a typed leaf.
 };
 
-/// @brief One instance field of a user class, as the debugger reads it.
+/**
+ * @brief Describes one debugger-visible instance field.
+ *
+ * @invariant `offset` is measured from the object payload address returned by
+ *            the runtime allocator.
+ * @invariant `storage` matches the byte width and ownership representation used
+ *            by generated field accesses.
+ */
 struct DebugFieldLayout {
     std::string name;     ///< Source-level field name.
     std::string typeName; ///< Semantic type label (e.g. "Integer", "List[Str]").
@@ -55,14 +83,24 @@ struct DebugFieldLayout {
     bool boolDisplay = false; ///< Format integer storage as true/false.
 };
 
-/// @brief Field layout of one user class (inherited fields first, then own).
+/**
+ * @brief Owns the debugger-visible instance layout for one user class.
+ *
+ * Fields appear in physical layout order, with inherited fields preceding
+ * fields introduced by the class.
+ */
 struct DebugClassLayout {
     std::string qname;                    ///< Fully-qualified class name.
     std::vector<DebugFieldLayout> fields; ///< Instance fields in layout order.
 };
 
-/// @brief Class id -> layout, for every instantiated class of the debugged
-///        module. Ids match what rt_obj_type_id returns for live instances.
+/**
+ * @brief Maps compiler-assigned runtime class identifiers to owning layouts.
+ *
+ * Keys match `rt_obj_type_id` for live instances. Positive user-class IDs are
+ * expected; negative built-in runtime type IDs are expanded through their
+ * specialized debugger paths instead.
+ */
 using DebugClassLayoutTable = std::unordered_map<int64_t, DebugClassLayout>;
 
 } // namespace il::vm

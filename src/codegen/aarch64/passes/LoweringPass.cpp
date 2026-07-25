@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/aarch64/passes/LoweringPass.cpp
+// File: src/codegen/aarch64/passes/LoweringPass.cpp
 // Purpose: IL→MIR lowering for the AArch64 modular pipeline. Builds the
 //          RodataPool from string globals, lowers each IL function in parallel,
 //          sanitizes block labels, and remaps AdrPage/AddPageOff rodata refs.
@@ -16,9 +16,9 @@
 //   - All block labels are prefixed with "L" for Mach-O local-label semantics.
 // Ownership/Lifetime:
 //   - Stateless pass; mutates AArch64Module::mir and ::rodataPool.
-// Links: codegen/aarch64/passes/LoweringPass.hpp,
-//        codegen/aarch64/LowerILToMIR.hpp,
-//        codegen/aarch64/passes/LegalizePass.cpp (downstream)
+// Links: src/codegen/aarch64/passes/LoweringPass.hpp,
+//        src/codegen/aarch64/LowerILToMIR.hpp,
+//        src/codegen/aarch64/passes/LegalizePass.cpp (downstream)
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,8 +36,23 @@
 #include <unordered_map>
 #include <vector>
 
+/**
+ * @file
+ * @brief Implements parallel IL-to-MIR lowering and module label normalization.
+ *
+ * Each function receives an independent lowerer and result slot. After
+ * lowering, internal block targets are sanitized/uniquified and literal global
+ * references are rewritten to deterministic rodata-pool labels.
+ */
+
 namespace zanna::codegen::aarch64::passes {
 
+/**
+ * @brief Replaces prior codegen products with freshly lowered AArch64 MIR.
+ * @param[in,out] module Module containing IL and target metadata.
+ * @param[in,out] diags Sink receiving the first lowering error.
+ * @return `true` when all indexed output slots are populated successfully.
+ */
 bool LoweringPass::run(AArch64Module &module, Diagnostics &diags) {
     if (!module.ilMod || !module.ti) {
         diags.error("LoweringPass: ilMod and ti must be non-null");
@@ -76,6 +91,10 @@ bool LoweringPass::run(AArch64Module &module, Diagnostics &diags) {
     std::string firstError;
     std::mutex errorMutex;
 
+    /**
+     * @brief Lowers and normalizes one function into its deterministic output slot.
+     * @param index Index shared by `ilMod.functions` and `lowered`.
+     */
     auto lowerOne = [&](std::size_t index) {
         try {
             const auto &fn = ilMod.functions[index];
@@ -106,6 +125,10 @@ bool LoweringPass::run(AArch64Module &module, Diagnostics &diags) {
             // Remap branch target labels to their sanitized names.
             for (auto &bb : mir.blocks) {
                 for (auto &mi : bb.instrs) {
+                    /**
+                     * @brief Rewrites a raw block label when it appears in the local map.
+                     * @param[in,out] lbl Label operand text.
+                     */
                     auto remapBB = [&](std::string &lbl) {
                         auto it = bbMap.find(lbl);
                         if (it != bbMap.end())
@@ -176,6 +199,7 @@ bool LoweringPass::run(AArch64Module &module, Diagnostics &diags) {
         std::vector<std::thread> workers;
         workers.reserve(workerCount);
         for (std::size_t worker = 0; worker < workerCount; ++worker) {
+            /// @brief Claims lowering indices atomically until all functions are assigned.
             workers.emplace_back([&]() {
                 for (;;) {
                     const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);

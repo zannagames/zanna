@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/objfile/ElfWriter.cpp
+// File: src/codegen/common/objfile/ElfWriter.cpp
 // Purpose: Serialize CodeSection data into a valid ELF relocatable object file.
 // Key invariants:
 //   - All multi-byte fields are little-endian
@@ -19,6 +19,17 @@
 //        plans/04-elf-writer.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file ElfWriter.cpp
+ * @brief Implements ELF64 relocatable-object serialization for AMD64 and AArch64.
+ *
+ * The writer constructs deterministic section-name, symbol-name, symbol, and
+ * RELA tables; remaps encoder symbol indices; resolves cross-section targets;
+ * and emits either one combined text section or independently discardable
+ * per-function sections. All output uses little-endian ELF64/DWARF-compatible
+ * layouts and checked file-offset arithmetic.
+ */
 
 #include "codegen/common/objfile/ElfWriter.hpp"
 #include "codegen/common/objfile/ObjFileWriterUtil.hpp"
@@ -108,6 +119,9 @@ static constexpr uint16_t kSecShstrtab = 7;
 
 // Helpers: appendLE16/32/64, alignUp, padTo are provided by ObjFileWriterUtil.hpp.
 
+/// @brief Select the ELF symbol type implied by a logical symbol section.
+/// @param sym Encoder symbol to classify.
+/// @return `STT_FUNC`, `STT_OBJECT`, or `STT_NOTYPE`.
 static uint8_t elfSymbolType(const Symbol &sym) {
     switch (sym.section) {
         case SymbolSection::Text:
@@ -121,7 +135,10 @@ static uint8_t elfSymbolType(const Symbol &sym) {
     }
 }
 
-/// Map RelocKind to ELF relocation type.
+/// @brief Map an encoder relocation kind to an ABI-specific ELF relocation number.
+/// @param kind Architecture-neutral relocation semantics.
+/// @param arch Target architecture.
+/// @return ELF relocation type, or zero when unsupported.
 static uint32_t elfRelocType(RelocKind kind, ObjArch arch) {
     switch (kind) {
         // x86_64
@@ -156,6 +173,12 @@ static uint32_t elfRelocType(RelocKind kind, ObjArch arch) {
 /// Adapter to the shared @ref zanna::codegen::objfile::physicalSymbolValue helper
 /// that pins the writerName to "ElfWriter:" so existing call sites compile
 /// unchanged.
+/// @param section Section supplying logical bias and payload bounds.
+/// @param sym Defined symbol to convert.
+/// @param sectionName Name used to qualify diagnostics.
+/// @param err Stream that receives validation diagnostics.
+/// @param out Receives the physical section-relative symbol value.
+/// @return `true` when @p sym lies within @p section.
 static bool physicalSymbolValue(const CodeSection &section,
                                 const Symbol &sym,
                                 const char *sectionName,
@@ -165,6 +188,12 @@ static bool physicalSymbolValue(const CodeSection &section,
         section, sym, sectionName, "ElfWriter", err, out);
 }
 
+/// @brief Compute the complete ELF file reserve size through the section table.
+/// @param offShtab File offset of the section-header table.
+/// @param numSections Number of fixed-size section headers.
+/// @param err Stream that receives multiplication, addition, or narrowing diagnostics.
+/// @param out Receives the representable native allocation size.
+/// @return `true` when the final file size fits in `size_t`.
 static bool reserveFileBytes(uint64_t offShtab,
                              uint16_t numSections,
                              std::ostream &err,
@@ -182,7 +211,12 @@ static bool reserveFileBytes(uint64_t offShtab,
 // ELF Structs written to the output buffer
 // =============================================================================
 
-/// Write an Elf64_Ehdr (64 bytes).
+/// @brief Append one 64-byte `Elf64_Ehdr`.
+/// @param out Destination file buffer.
+/// @param machine ELF target-machine identifier.
+/// @param shoff File offset of the section-header table.
+/// @param shnum Number of section headers.
+/// @param shstrndx Index of the section-name string table.
 static void writeEhdr(std::vector<uint8_t> &out,
                       uint16_t machine,
                       uint64_t shoff,
@@ -211,7 +245,17 @@ static void writeEhdr(std::vector<uint8_t> &out,
     appendLE16(out, shstrndx);   // e_shstrndx
 }
 
-/// Write an Elf64_Shdr (64 bytes).
+/// @brief Append one 64-byte `Elf64_Shdr`.
+/// @param out Destination section-header table.
+/// @param name Offset of the name in `.shstrtab`.
+/// @param type ELF section type.
+/// @param flags ELF section flags.
+/// @param offset File offset of section contents.
+/// @param size Section byte count.
+/// @param link Type-dependent linked section index.
+/// @param info Type-dependent auxiliary index or count.
+/// @param addralign Required file and virtual alignment.
+/// @param entsize Fixed entry size, or zero for byte streams.
 static void writeShdr(std::vector<uint8_t> &out,
                       uint32_t name,
                       uint32_t type,
@@ -234,7 +278,14 @@ static void writeShdr(std::vector<uint8_t> &out,
     appendLE64(out, entsize);
 }
 
-/// Write an Elf64_Sym (24 bytes).
+/// @brief Append one 24-byte `Elf64_Sym`.
+/// @param out Destination symbol table.
+/// @param name Offset of the name in `.strtab`.
+/// @param info Packed binding and symbol type.
+/// @param other Visibility and reserved bits.
+/// @param shndx Defining section index or `SHN_UNDEF`.
+/// @param value Section-relative symbol value.
+/// @param size Declared symbol size.
 static void writeSym(std::vector<uint8_t> &out,
                      uint32_t name,
                      uint8_t info,
@@ -250,7 +301,11 @@ static void writeSym(std::vector<uint8_t> &out,
     appendLE64(out, size);
 }
 
-/// Write an Elf64_Rela (24 bytes).
+/// @brief Append one 24-byte `Elf64_Rela` relocation with explicit addend.
+/// @param out Destination RELA section.
+/// @param offset Section-relative fixup offset.
+/// @param info Packed symbol index and relocation type.
+/// @param addend Signed relocation addend.
 static void writeRela(std::vector<uint8_t> &out, uint64_t offset, uint64_t info, int64_t addend) {
     appendLE64(out, offset);
     appendLE64(out, info);
@@ -261,6 +316,8 @@ static void writeRela(std::vector<uint8_t> &out, uint64_t offset, uint64_t info,
 // ElfWriter::write
 // =============================================================================
 
+/// @copydoc ElfWriter::write(const std::string&, const CodeSection&,
+///                           const CodeSection&, std::ostream&)
 bool ElfWriter::write(const std::string &path,
                       const CodeSection &text,
                       const CodeSection &rodata,
@@ -326,11 +383,17 @@ bool ElfWriter::write(const std::string &path,
         // For simplicity, treat all defined symbols as globals (they're exported functions).
 
         // Process text section symbols.
+        /// @brief Deferred encoder symbol awaiting ELF local/global ordering.
         struct PendingSym {
+            ///< Original CodeSection symbol index.
             uint32_t origIdx;
+            ///< Non-owning pointer to the encoder symbol.
             const Symbol *sym;
+            ///< Final defining ELF section index.
             uint16_t shndx;
+            ///< Whether the symbol originated in the combined text section.
             bool fromText;        // true = text section
+            ///< Whether it originated in the optional writable data section.
             bool fromData = false; // true = writable .data section (overrides fromText)
         };
 
@@ -500,6 +563,8 @@ bool ElfWriter::write(const std::string &path,
             }
         }
 
+        /// Resolve one encoder relocation to its ELF symbol index and explicit
+        /// addend, including cross-section and exact-offset targets.
         auto resolveRelocSym = [&](const Relocation &rel,
                                    const CodeSection &source,
                                    const std::unordered_map<uint32_t, uint32_t> &sourceMap,
@@ -826,6 +891,8 @@ bool ElfWriter::write(const std::string &path,
 namespace {
 /// @brief Derive a section base-name for each text section: the first global
 ///        Text-bound symbol, or a synthetic `func_<i>` fallback.
+/// @param textSections Function-level code sections to inspect.
+/// @return One deterministic base name per input section.
 std::vector<std::string> collectElfTextFuncNames(const std::vector<CodeSection> &textSections) {
     const size_t n = textSections.size();
     std::vector<std::string> funcNames(n);
@@ -843,6 +910,8 @@ std::vector<std::string> collectElfTextFuncNames(const std::vector<CodeSection> 
 }
 } // namespace
 
+/// @copydoc ElfWriter::write(const std::string&, const std::vector<CodeSection>&,
+///                           const CodeSection&, std::ostream&)
 bool ElfWriter::write(const std::string &path,
                       const std::vector<CodeSection> &textSections,
                       const CodeSection &rodata,
@@ -889,8 +958,10 @@ bool ElfWriter::write(const std::string &path,
         // [2N+4] .strtab
         // [2N+5] .shstrtab
         // [2N+6] .note.GNU-stack
+        /// Convert a zero-based function-section ordinal to its ELF section index.
         auto secText = [](size_t i) -> uint16_t { return static_cast<uint16_t>(i + 1); };
         const uint16_t secRodata = static_cast<uint16_t>(N + 1);
+        /// Convert a function-section ordinal to its corresponding RELA section index.
         [[maybe_unused]] auto secRelaText = [&](size_t i) -> uint16_t {
             return static_cast<uint16_t>(N + 2 + i);
         };
@@ -948,11 +1019,17 @@ bool ElfWriter::write(const std::string &path,
         std::vector<std::unordered_map<uint32_t, uint32_t>> textSymMaps(N);
         std::unordered_map<uint32_t, uint32_t> rodataSymMap;
 
+        /// @brief Deferred symbol awaiting ELF local/global ordering and remapping.
         struct PendingSym {
+            ///< Original CodeSection symbol index.
             uint32_t origIdx;
+            ///< Non-owning pointer to the encoder symbol.
             const Symbol *sym;
+            ///< Final defining ELF section index.
             uint16_t shndx;
+            ///< Index in @p textSections, or `SIZE_MAX` for rodata/data.
             size_t textIdx;        // index into textSections; SIZE_MAX for rodata/data
+            ///< Whether the symbol belongs to the optional writable data section.
             bool fromData = false; // true = writable .data section
         };
 
@@ -1121,6 +1198,8 @@ bool ElfWriter::write(const std::string &path,
             }
         }
 
+        /// Resolve one multi-section relocation to its final ELF symbol index,
+        /// using exact CodeSection identities when text offsets are ambiguous.
         auto resolveRelocSym = [&](const Relocation &rel,
                                    const CodeSection &source,
                                    const std::unordered_map<uint32_t, uint32_t> &sourceMap,

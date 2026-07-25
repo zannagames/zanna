@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: codegen/common/linker/LinuxImportPlanner.cpp
+// File: src/codegen/common/linker/LinuxImportPlanner.cpp
 // Purpose: Linux ELF dynamic import classification for the native linker.
 //          Maps each undefined dynamic symbol to one of a fixed set of libraries
 //          (libc, libm, libdl, libpthread, libX11, libasound) and produces the
@@ -24,6 +24,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file LinuxImportPlanner.cpp
+ * @brief Implements deterministic Linux symbol-to-`DT_NEEDED` classification.
+ */
+
 #include "codegen/common/linker/DynamicSymbolPolicy.hpp"
 #include "codegen/common/linker/PlatformImportPlanner.hpp"
 
@@ -35,6 +40,7 @@
 namespace zanna::codegen::linker {
 namespace {
 
+/// @brief Closed set of shared objects the built-in Linux import policy may request.
 enum class LinuxNeededLib : uint8_t {
     LibC,
     LibM,
@@ -47,6 +53,10 @@ enum class LinuxNeededLib : uint8_t {
     LibASound,
 };
 
+/// @brief Maps an import-library category to its Linux SONAME.
+/// @param lib Library category.
+/// @return Process-lifetime SONAME string; an invalid enum conservatively maps
+///         to `libc.so.6`.
 const char *linuxNeededLibName(LinuxNeededLib lib) {
     switch (lib) {
         case LinuxNeededLib::LibC:
@@ -71,6 +81,9 @@ const char *linuxNeededLibName(LinuxNeededLib lib) {
     return "libc.so.6";
 }
 
+/// @brief Tests the baked-in libm function set.
+/// @param name Normalized ELF symbol name.
+/// @return `true` when libm is the expected provider.
 bool isLinuxMathSymbol(const std::string &name) {
     static const std::unordered_set<std::string> kMath = {
         "acos",  "acosf",  "asin",   "asinf",  "atan",     "atan2",     "atan2f", "atanf",
@@ -85,10 +98,16 @@ bool isLinuxMathSymbol(const std::string &name) {
     return kMath.count(name) != 0;
 }
 
+/// @brief Tests the supported dynamic-loader API names.
+/// @param name Normalized ELF symbol name.
+/// @return `true` for `dlopen`, `dlsym`, `dlclose`, or `dlerror`.
 bool isLinuxDlSymbol(const std::string &name) {
     return name == "dlopen" || name == "dlsym" || name == "dlclose" || name == "dlerror";
 }
 
+/// @brief Tests for known Itanium C++ ABI and libstdc++ symbols.
+/// @param name ELF symbol name, including normal Itanium leading underscores.
+/// @return `true` when libstdc++ is the expected provider.
 bool isLinuxCppRuntimeSymbol(const std::string &name) {
     static const std::unordered_set<std::string> kExact = {
         "__cxa_begin_catch",
@@ -125,6 +144,9 @@ bool isLinuxCppRuntimeSymbol(const std::string &name) {
     return false;
 }
 
+/// @brief Tests for known libgcc/compiler-runtime helper functions.
+/// @param name ELF symbol name.
+/// @return `true` when libgcc_s is the expected provider.
 bool isLinuxCompilerRuntimeSymbol(const std::string &name) {
     static const std::unordered_set<std::string> kExact = {
         "__addtf3",      "__divtf3",     "__eqtf2",     "__extenddftf2", "__fixtfdi",
@@ -135,15 +157,19 @@ bool isLinuxCompilerRuntimeSymbol(const std::string &name) {
     return kExact.count(name) != 0;
 }
 
-// OpenGL uses `gl` + CamelCase (glClear, glGenTextures) and GLX uses `glX`;
-// exclude libc `glob`/`globfree` (gl + lowercase) which are NOT OpenGL.
+/// @brief Tests the constrained OpenGL/GLX `gl` plus uppercase symbol family.
+/// @param name ELF symbol name.
+/// @return `true` for names routed to libGL; lowercase libc names such as
+///         `glob` deliberately do not match.
 bool isLinuxGlSymbol(const std::string &name) {
     return name.size() > 2 && name[0] == 'g' && name[1] == 'l' && name[2] >= 'A' && name[2] <= 'Z';
 }
 
-// X11 uses `X` + CamelCase (XOpenDisplay) plus the Xutf8/Xkb/Xrm families. Match
-// those precisely instead of any `X*` so a stray uppercase-X libc/user symbol is
-// not silently routed to libX11 (which also drags libX11 into non-GUI programs).
+/// @brief Tests constrained X11 symbol families.
+/// @param name ELF symbol name.
+/// @return `true` for `X` plus uppercase, `Xutf8*`, `Xkb*`, or `Xrm*`.
+/// @details Matching narrowly prevents unrelated `X*` user symbols from
+///          silently adding libX11 to non-GUI programs.
 bool isLinuxX11Symbol(const std::string &name) {
     if (name.size() < 2 || name[0] != 'X')
         return false;
@@ -153,6 +179,9 @@ bool isLinuxX11Symbol(const std::string &name) {
            name.rfind("Xrm", 0) == 0;
 }
 
+/// @brief Selects the expected shared-object category for a validated import.
+/// @param name ELF dynamic symbol name.
+/// @return Specialized library category when recognized, otherwise libc.
 LinuxNeededLib classifyLinuxImportLibrary(const std::string &name) {
     if (name.rfind("snd_", 0) == 0)
         return LinuxNeededLib::LibASound;
@@ -177,6 +206,7 @@ LinuxNeededLib classifyLinuxImportLibrary(const std::string &name) {
 
 } // namespace
 
+/// @copydoc planLinuxImports(const std::unordered_set<std::string> &, LinuxImportPlan &, std::ostream &)
 bool planLinuxImports(const std::unordered_set<std::string> &dynamicSyms,
                       LinuxImportPlan &plan,
                       std::ostream &err) {

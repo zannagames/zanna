@@ -5,6 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/Diag.cpp
+// Purpose: Implement standardized BASIC procedure, type, and alias diagnostics.
+// Ownership/Lifetime: Messages are built locally and moved into a borrowed emitter.
+// Links: src/frontends/basic/Diag.hpp,
+//        src/frontends/basic/DiagnosticEmitter.hpp,
+//        src/frontends/basic/IdentifierUtil.hpp
+//
+//===----------------------------------------------------------------------===//
+//
 /// @file
 /// @brief Implements BASIC frontend diagnostic helpers.
 /// @details The helpers in this file construct consistent, actionable error and

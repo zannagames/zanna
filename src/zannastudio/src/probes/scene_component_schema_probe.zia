@@ -131,7 +131,7 @@ func main() {
         + "]}",
         "bad-default");
     var badVersion = scene_component_schema.ParseText(
-        "{\"version\":2,\"components\":[]}", "bad-version");
+        "{\"version\":3,\"components\":[]}", "bad-version");
     if duplicateName.valid or duplicateName.components.count() != 0
        or duplicateKey.valid or duplicateKey.components.count() != 0
        or badDefault.valid or badDefault.components.count() != 0
@@ -144,6 +144,75 @@ func main() {
     if absent.found or absent.valid == false
        or absent.components.count() != 0 {
         fail("absent schema was not a valid empty configuration");
+        return;
+    }
+
+    // ADR 0178: version-2 enum and asset fields parse with full validation.
+    var v2Text =
+        "{"
+        + "\"version\":2,"
+        + "\"components\":[{"
+        + "\"name\":\"spawn\",\"target\":\"both\",\"fields\":["
+        + "{\"key\":\"spawn.archetype\",\"type\":\"enum\","
+        + "\"choices\":[\"grunt\",\"ranged\",\"elite\"],"
+        + "\"default\":\"ranged\"},"
+        + "{\"key\":\"spawn.kind\",\"type\":\"enum\","
+        + "\"choices\":[\"walker\"]},"
+        + "{\"key\":\"spawn.sprite\",\"type\":\"asset\","
+        + "\"assetKinds\":[\"image\"],\"default\":\"art/slime.png\"},"
+        + "{\"key\":\"spawn.cue\",\"type\":\"asset\"}"
+        + "]}]}";
+    var v2 = scene_component_schema.ParseText(v2Text, "memory");
+    if v2.valid == false or v2.version != 2 {
+        fail("valid version-2 schema was rejected: " + v2.error);
+        return;
+    }
+    var spawn = v2.Find("spawn", "2d-object");
+    var archetype = spawn.FieldNamed("spawn.archetype");
+    var kindField = spawn.FieldNamed("spawn.kind");
+    var spriteField = spawn.FieldNamed("spawn.sprite");
+    var cueField = spawn.FieldNamed("spawn.cue");
+    if archetype.kind != "enum"
+       or archetype.choices.count() != 3
+       or archetype.defaultText != "ranged"
+       or archetype.HasChoice("elite") == false
+       or kindField.defaultText != "walker"
+       or spriteField.kind != "asset"
+       or spriteField.assetKinds.count() != 1
+       or spriteField.assetKinds.get(0) != "image"
+       or cueField.assetKinds.get(0) != "any"
+       or scene_component_schema.ValueKind("enum") != "string"
+       or scene_component_schema.ValueKind("asset") != "string"
+       or scene_component_schema.ValueKind("int") != "int" {
+        fail("version-2 enum/asset parsing lost validated structure");
+        return;
+    }
+
+    // Version-1 files must reject version-2 kinds and stay fail-closed.
+    var v1EnumText =
+        "{\"version\":1,\"components\":[{\"name\":\"spawn\","
+        + "\"target\":\"both\",\"fields\":[{\"key\":\"spawn.kind\","
+        + "\"type\":\"enum\",\"choices\":[\"walker\"]}]}]}";
+    var v1Enum = scene_component_schema.ParseText(v1EnumText, "memory");
+    var v2BadDefaultText =
+        "{\"version\":2,\"components\":[{\"name\":\"spawn\","
+        + "\"target\":\"both\",\"fields\":[{\"key\":\"spawn.kind\","
+        + "\"type\":\"enum\",\"choices\":[\"walker\"],"
+        + "\"default\":\"flier\"}]}]}";
+    var v2BadDefault = scene_component_schema.ParseText(v2BadDefaultText, "memory");
+    var dupChoiceText =
+        "{\"version\":2,\"components\":[{\"name\":\"spawn\","
+        + "\"target\":\"both\",\"fields\":[{\"key\":\"spawn.kind\","
+        + "\"type\":\"enum\",\"choices\":[\"walker\",\"Walker\"]}]}]}";
+    var dupChoice = scene_component_schema.ParseText(dupChoiceText, "memory");
+    var badKindText =
+        "{\"version\":2,\"components\":[{\"name\":\"spawn\","
+        + "\"target\":\"both\",\"fields\":[{\"key\":\"spawn.sprite\","
+        + "\"type\":\"asset\",\"assetKinds\":[\"video\"]}]}]}";
+    var badKind = scene_component_schema.ParseText(badKindText, "memory");
+    if v1Enum.valid or v1Enum.components.count() != 0
+       or v2BadDefault.valid or dupChoice.valid or badKind.valid {
+        fail("invalid version-2 content was not rejected fail-closed");
         return;
     }
 
