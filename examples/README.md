@@ -179,12 +179,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_demos_win.ps1 
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_demos_win.ps1 --clean --run
 ```
 
-Native binaries are output to `examples/bin/`. `--run` launches each Windows
-binary from that directory, accepts a clean exit or a healthy timeout, and
-removes artifacts created only by the smoke run. Set `ZANNA_DEMO_TIMEOUT` to a
-positive number of seconds to change the default five-second launch window. The
-Windows driver uses `-O0` for demos affected by the tracked native
-checked-integer optimizer issue so its published binaries remain runnable.
+On Windows, each native binary and its declared assets are output to an owned
+`examples/bin/<demo>/` directory, avoiding cross-demo filename collisions.
+Before publication, Windows validates each staged PE32+ image and its requested
+machine architecture. `--run` copies that stage and only its declared assets
+into a private temporary directory, accepts a clean exit or a healthy timeout,
+and terminates the complete process tree before removing the isolated run directory.
+Set `ZANNA_DEMO_TIMEOUT` to a positive number of seconds to change the default
+five-second launch window. The Windows driver uses `-O0` for demos affected by
+the tracked native checked-integer optimizer issue so its published binaries
+remain runnable.
 
 ### Build a single demo
 

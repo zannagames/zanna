@@ -78,14 +78,30 @@ std::string readHostSource() {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+std::string readInstallerSource(std::string_view name) {
+    const std::filesystem::path path =
+        std::filesystem::path(ZANNA_SOURCE_DIR) / "src" / "tools" / "windows_installer" / name;
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return {};
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 } // namespace
 
 int main() {
     const std::string source = readLifecycleSource();
     const std::string hostSource = readHostSource();
+    const std::string brandSource = readInstallerSource("WindowsInstallerBrandDialog.cpp");
+    const std::string themeSource = readInstallerSource("WindowsInstallerTheme.cpp");
+    const std::string wizardSource = readInstallerSource("WindowsInstallerWizard.cpp");
     expect(!source.empty(), "Windows installer lifecycle source is readable");
     expect(!hostSource.empty(), "Windows installer host source is readable");
-    if (source.empty() || hostSource.empty())
+    expect(!brandSource.empty(), "Windows installer brand-dialog source is readable");
+    expect(!themeSource.empty(), "Windows installer theme source is readable");
+    expect(!wizardSource.empty(), "Windows installer wizard source is readable");
+    if (source.empty() || hostSource.empty() || brandSource.empty() || themeSource.empty() ||
+        wizardSource.empty())
         return 1;
 
     expect(source.find("CompareStringOrdinal") != std::string::npos &&
@@ -192,6 +208,29 @@ int main() {
                    std::string::npos &&
                hostSource.find("parseHandoffProcessId") != std::string::npos,
            "Installer CLI parsing rejects duplicate, empty, and ambiguous internal options");
+    expect(brandSource.find("validateBrandedInstallerPage(instance, page)") != std::string::npos &&
+               brandSource.find("validateBrandedInstallerProgress(") != std::string::npos,
+           "Branded page and progress models are validated before native allocation");
+    expect(themeSource.find("installerWindowClassMatches") != std::string::npos &&
+               brandSource.find("registerVerifiedInstallerWindowClass") != std::string::npos &&
+               wizardSource.find("registerVerifiedInstallerWindowClass") != std::string::npos,
+           "Every custom installer window class rejects foreign class reuse");
+    expect(brandSource.find("case WM_DPICHANGED:") != std::string::npos &&
+               wizardSource.find("case WM_DPICHANGED:") != std::string::npos &&
+               themeSource.find("normalizeInstallerDpi") != std::string::npos,
+           "Branded, progress, and custom pages normalize and react to per-monitor DPI");
+    expect(brandSource.find("if (!dc)") != std::string::npos &&
+               wizardSource.find("if (!dc)") != std::string::npos &&
+               themeSource.find("if (saved == 0)") != std::string::npos,
+           "Installer paint paths fail safely when BeginPaint or SaveDC fails");
+    expect(brandSource.find("PostQuitMessage(static_cast<int>(message.wParam))") !=
+                   std::string::npos &&
+               wizardSource.find("PostQuitMessage(static_cast<int>(message.wParam))") !=
+                   std::string::npos,
+           "Nested installer message loops preserve the process quit request");
+    expect(brandSource.find("statusMessagePosted") != std::string::npos &&
+               brandSource.find("pendingStatus") != std::string::npos,
+           "Progress status updates are bounded and coalesced");
 
     std::cout << testsPassed << "/" << testsRun << " tests passed\n";
     return testsPassed == testsRun ? 0 : 1;

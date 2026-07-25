@@ -139,6 +139,8 @@ void drawCircuitField(HDC dc, const RECT &bounds, const InstallerThemeResources 
     const std::array<InstallerAccent, 3> accents = {
         InstallerAccent::Green, InstallerAccent::Steel, InstallerAccent::Teal};
     const int saved = SaveDC(dc);
+    if (saved == 0)
+        return;
     SetBkMode(dc, TRANSPARENT);
     for (size_t index = 0; index < accents.size(); ++index) {
         const COLORREF color =
@@ -186,6 +188,8 @@ void drawTextLine(HDC dc,
                   COLORREF color,
                   UINT format) noexcept {
     const int saved = SaveDC(dc);
+    if (saved == 0)
+        return;
     SelectObject(dc, font);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, color);
@@ -215,6 +219,7 @@ bool installerBrandPaletteMeetsContrast() noexcept {
            installerContrastRatio(kPalette.green, kPalette.background) >= 4.5 &&
            installerContrastRatio(kPalette.steel, kPalette.background) >= 4.5 &&
            installerContrastRatio(kPalette.teal, kPalette.background) >= 4.5 &&
+           installerContrastRatio(kPalette.warning, kPalette.background) >= 4.5 &&
            installerContrastRatio(kPalette.danger, kPalette.background) >= 4.5;
 }
 
@@ -242,7 +247,7 @@ bool installerHighContrastEnabled() noexcept {
 }
 
 InstallerThemeResources::InstallerThemeResources(UINT dpi)
-    : dpi_(dpi == 0U ? 96U : dpi), highContrast_(installerHighContrastEnabled()) {
+    : dpi_(normalizeInstallerDpi(dpi)), highContrast_(installerHighContrastEnabled()) {
     try {
         const wchar_t *monoFace =
             fontFamilyAvailable(L"Cascadia Mono") ? L"Cascadia Mono" : L"Consolas";
@@ -281,6 +286,127 @@ InstallerThemeResources::~InstallerThemeResources() {
     deleteBrush(backgroundBrush_);
     deleteBrush(raisedBrush_);
     deleteBrush(inputBrush_);
+}
+
+InstallerThemeResources::InstallerThemeResources(InstallerThemeResources &&other) noexcept {
+    *this = std::move(other);
+}
+
+InstallerThemeResources &InstallerThemeResources::operator=(
+    InstallerThemeResources &&other) noexcept {
+    if (this == &other)
+        return *this;
+    deleteFont(bodyFont_);
+    deleteFont(bodyBoldFont_);
+    deleteFont(smallFont_);
+    deleteFont(monoFont_);
+    deleteFont(monoBoldFont_);
+    deleteFont(headingFont_);
+    deleteBrush(backgroundBrush_);
+    deleteBrush(raisedBrush_);
+    deleteBrush(inputBrush_);
+
+    dpi_ = std::exchange(other.dpi_, 96U);
+    highContrast_ = std::exchange(other.highContrast_, false);
+    bodyFont_ = std::exchange(other.bodyFont_, nullptr);
+    bodyBoldFont_ = std::exchange(other.bodyBoldFont_, nullptr);
+    smallFont_ = std::exchange(other.smallFont_, nullptr);
+    monoFont_ = std::exchange(other.monoFont_, nullptr);
+    monoBoldFont_ = std::exchange(other.monoBoldFont_, nullptr);
+    headingFont_ = std::exchange(other.headingFont_, nullptr);
+    backgroundBrush_ = std::exchange(other.backgroundBrush_, nullptr);
+    raisedBrush_ = std::exchange(other.raisedBrush_, nullptr);
+    inputBrush_ = std::exchange(other.inputBrush_, nullptr);
+    return *this;
+}
+
+UINT normalizeInstallerDpi(UINT dpi) noexcept {
+    constexpr UINT kMinimumSupportedDpi = 48U;
+    constexpr UINT kMaximumSupportedDpi = 768U;
+    return dpi >= kMinimumSupportedDpi && dpi <= kMaximumSupportedDpi ? dpi : 96U;
+}
+
+namespace {
+
+bool installerWindowClassMatches(const WNDCLASSEXW &requested) noexcept {
+    WNDCLASSEXW existing{sizeof(existing)};
+    if (!GetClassInfoExW(requested.hInstance, requested.lpszClassName, &existing))
+        return false;
+    return existing.hInstance == requested.hInstance &&
+           existing.lpfnWndProc == requested.lpfnWndProc && existing.style == requested.style &&
+           existing.cbClsExtra == requested.cbClsExtra &&
+           existing.cbWndExtra == requested.cbWndExtra;
+}
+
+struct ChildScaleContext {
+    HWND parent{nullptr};
+    UINT oldDpi{96U};
+    UINT newDpi{96U};
+    bool succeeded{true};
+};
+
+BOOL CALLBACK rescaleInstallerChild(HWND child, LPARAM parameter) {
+    auto &context = *reinterpret_cast<ChildScaleContext *>(parameter);
+    RECT bounds{};
+    if (!GetWindowRect(child, &bounds)) {
+        context.succeeded = false;
+        return TRUE;
+    }
+    POINT origin{bounds.left, bounds.top};
+    if (!ScreenToClient(context.parent, &origin)) {
+        context.succeeded = false;
+        return TRUE;
+    }
+    const LONG width = bounds.right - bounds.left;
+    const LONG height = bounds.bottom - bounds.top;
+    if (width <= 0 || height <= 0) {
+        context.succeeded = false;
+        return TRUE;
+    }
+    if (!SetWindowPos(
+            child,
+            nullptr,
+            MulDiv(origin.x, static_cast<int>(context.newDpi), static_cast<int>(context.oldDpi)),
+            MulDiv(origin.y, static_cast<int>(context.newDpi), static_cast<int>(context.oldDpi)),
+            MulDiv(width, static_cast<int>(context.newDpi), static_cast<int>(context.oldDpi)),
+            MulDiv(height, static_cast<int>(context.newDpi), static_cast<int>(context.oldDpi)),
+            SWP_NOACTIVATE | SWP_NOZORDER)) {
+        context.succeeded = false;
+    }
+    return TRUE;
+}
+
+} // namespace
+
+ATOM registerVerifiedInstallerWindowClass(const WNDCLASSEXW &windowClass) noexcept {
+    if (windowClass.cbSize != sizeof(WNDCLASSEXW) || !windowClass.hInstance ||
+        !windowClass.lpszClassName || !windowClass.lpfnWndProc) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    const ATOM atom = RegisterClassExW(&windowClass);
+    if (atom)
+        return atom;
+    const DWORD registrationError = GetLastError();
+    if (registrationError != ERROR_CLASS_ALREADY_EXISTS ||
+        !installerWindowClassMatches(windowClass)) {
+        SetLastError(registrationError == ERROR_SUCCESS ? ERROR_INVALID_DATA : registrationError);
+        return 0;
+    }
+    return 1;
+}
+
+bool rescaleInstallerChildWindows(HWND parent, UINT oldDpi, UINT newDpi) noexcept {
+    if (!parent)
+        return false;
+    oldDpi = normalizeInstallerDpi(oldDpi);
+    newDpi = normalizeInstallerDpi(newDpi);
+    if (oldDpi == newDpi)
+        return true;
+    ChildScaleContext context{parent, oldDpi, newDpi, true};
+    if (!EnumChildWindows(parent, rescaleInstallerChild, reinterpret_cast<LPARAM>(&context)))
+        return false;
+    return context.succeeded;
 }
 
 COLORREF InstallerThemeResources::backgroundColor() const noexcept {
@@ -363,6 +489,8 @@ void drawInstallerBackdrop(HDC dc,
                            const RECT &bounds,
                            int brandPanelWidth,
                            const InstallerThemeResources &theme) noexcept {
+    if (!dc || bounds.right <= bounds.left || bounds.bottom <= bounds.top)
+        return;
     FillRect(dc, &bounds, theme.raisedBrush());
     const int railHeight = std::max(2, scaled(4, theme.dpi()));
     RECT rail = bounds;
@@ -437,6 +565,8 @@ void drawInstallerBrandMark(HDC dc,
     if (width <= 8 || height <= 8)
         return;
     const int saved = SaveDC(dc);
+    if (saved == 0)
+        return;
     const int bar = std::max(3, height / 5);
     const int slant = std::max(2, width / 10);
     const int inset = std::max(2, width / 8);
@@ -490,6 +620,8 @@ void drawInstallerActionButton(const DRAWITEMSTRUCT &item,
     if (!item.hDC || !item.hwndItem)
         return;
     const int saved = SaveDC(item.hDC);
+    if (saved == 0)
+        return;
     RECT bounds = item.rcItem;
     const bool pressed = (item.itemState & ODS_SELECTED) != 0U;
     const bool disabled = (item.itemState & ODS_DISABLED) != 0U;

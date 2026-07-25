@@ -10,6 +10,7 @@
 # Key invariants:
 #   - Fresh package builds use the canonical Windows build script.
 #   - Installer stages include Zanna Studio unless the caller chose explicitly.
+#   - Packaging runs from a private driver copy outside every relink target.
 #   - All install-package arguments are forwarded as discrete native arguments.
 # Ownership/Lifetime: Build and package outputs are owned by their caller-selected paths.
 # Links: scripts/build_zanna_win.ps1, docs/installer-release.md
@@ -179,6 +180,89 @@ function Assert-ZannaStudioArtifact {
         $fields["SHA256"] -cne $actualHash) {
         throw "The Zanna Studio build metadata SHA-256 does not match the executable."
     }
+}
+
+function Invoke-StagedPackageDriver {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$BuildDirectory,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    $sourceItem = Get-Item -LiteralPath $Source -Force
+    if (($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $sourceItem.Length -le 0) {
+        throw "The Zanna package driver must be a non-empty regular file: $Source"
+    }
+
+    $buildRoot = [IO.Path]::GetFullPath($BuildDirectory)
+    $driverDirectory = Join-Path $buildRoot (
+        ".zanna-installer-driver-" + [Guid]::NewGuid().ToString("N"))
+    $driverPath = Join-Path $driverDirectory "zanna.exe"
+    $rootPrefix = $buildRoot.TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    if (-not $driverDirectory.StartsWith(
+            $rootPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        (Test-Path -LiteralPath $driverDirectory)) {
+        throw "Cannot allocate a confined private Zanna package driver directory."
+    }
+
+    [void][IO.Directory]::CreateDirectory($driverDirectory)
+    $packageExitCode = 1
+    try {
+        $directoryItem = Get-Item -LiteralPath $driverDirectory -Force
+        if (($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The private Zanna package driver directory is an indirect path."
+        }
+
+        $input = [IO.File]::Open(
+            $sourceItem.FullName,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]::Read)
+        try {
+            $output = [IO.File]::Open(
+                $driverPath,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None)
+            try {
+                $input.CopyTo($output)
+                $output.Flush($true)
+            } finally {
+                $output.Dispose()
+            }
+        } finally {
+            $input.Dispose()
+        }
+
+        $driverItem = Get-Item -LiteralPath $driverPath -Force
+        if (($driverItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $driverItem.Length -ne $sourceItem.Length) {
+            throw "The private Zanna package driver copy has an invalid shape."
+        }
+        $sourceHash = (Get-FileHash -LiteralPath $sourceItem.FullName -Algorithm SHA256).Hash
+        $driverHash = (Get-FileHash -LiteralPath $driverPath -Algorithm SHA256).Hash
+        if ($sourceHash -cne $driverHash) {
+            throw "The private Zanna package driver copy failed SHA-256 verification."
+        }
+
+        & $driverPath @Arguments
+        $packageExitCode = $LASTEXITCODE
+    } finally {
+        if (Test-Path -LiteralPath $driverPath) {
+            [IO.File]::Delete($driverPath)
+        }
+        if (Test-Path -LiteralPath $driverDirectory) {
+            $directoryItem = Get-Item -LiteralPath $driverDirectory -Force
+            if (($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing to remove an indirect Zanna package driver directory."
+            }
+            [IO.Directory]::Delete($driverDirectory, $false)
+        }
+    }
+    return $packageExitCode
 }
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -380,5 +464,6 @@ if (-not $usesExistingInput -and -not $hasExplicitBuildDir) {
     )
 }
 $packageArguments += $forwardArguments
-& $zanna @packageArguments
-exit $LASTEXITCODE
+$packageExitCode = Invoke-StagedPackageDriver -Source $zanna -BuildDirectory $buildDir `
+    -Arguments $packageArguments
+exit $packageExitCode

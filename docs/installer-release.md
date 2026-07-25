@@ -41,6 +41,12 @@ byte size, and lowercase SHA-256 of `zannastudio.exe`. Passing
 forms) selects caller-owned input and suppresses the automatic canonical
 build. `--help` is side-effect free.
 
+Before invoking `install-package`, the Windows wrapper copies the selected
+`zanna.exe` into a unique private directory below the build root, verifies its
+size and SHA-256, and removes only that exact file and empty directory after
+the command exits. This keeps an explicit `--build-dir` package operation from
+locking the executable that its internal `cmake --build` may need to relink.
+
 The Windows package version remains numeric for installer identity and upgrade
 ordering, while Studio buildinfo retains the full configured product version
 (including prerelease text such as `-snapshot`). Lifecycle validation obtains

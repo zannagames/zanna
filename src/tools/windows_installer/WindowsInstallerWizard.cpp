@@ -37,7 +37,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cstring>
 #include <cwchar>
 #include <exception>
@@ -67,6 +66,7 @@ constexpr int kIdAssociations = 1109;
 constexpr int kIdShortcuts = 1110;
 constexpr int kIdFirstComponent = 1200;
 constexpr int kIdAccept = IDOK;
+constexpr int kMaximumNativePathUnits = 32767;
 
 constexpr int kWelcomeRecommended = 2001;
 constexpr int kWelcomeComplete = 2002;
@@ -360,10 +360,31 @@ struct CustomDialogContext {
     InstallScope displayedScope{InstallScope::User};
     int virtualWidth{0};
     int virtualHeight{0};
+    int wheelDelta{0};
+    int defaultButtonId{kIdAccept};
 };
 
 int scaled(int value, UINT dpi) {
     return MulDiv(value, static_cast<int>(dpi), 96);
+}
+
+int consumeOptionsWheelSteps(WPARAM value, int &remainder) noexcept {
+    remainder += GET_WHEEL_DELTA_WPARAM(value);
+    const int steps = remainder / WHEEL_DELTA;
+    remainder -= steps * WHEEL_DELTA;
+    return steps;
+}
+
+void applyOptionsDpiBounds(HWND window, const RECT *bounds) noexcept {
+    if (!window || !bounds || bounds->right <= bounds->left || bounds->bottom <= bounds->top)
+        return;
+    SetWindowPos(window,
+                 nullptr,
+                 bounds->left,
+                 bounds->top,
+                 bounds->right - bounds->left,
+                 bounds->bottom - bounds->top,
+                 SWP_NOACTIVATE | SWP_NOZORDER);
 }
 
 void setControlFont(HWND control, HFONT font) {
@@ -400,12 +421,45 @@ HWND createControl(CustomDialogContext &context,
     return control;
 }
 
+void updateOptionsScrollbars(CustomDialogContext &context);
+
+void updateOptionsDpi(CustomDialogContext &context,
+                      UINT requestedDpi,
+                      const RECT *suggestedBounds) noexcept {
+    const UINT newDpi = normalizeInstallerDpi(requestedDpi);
+    const UINT oldDpi = context.theme->dpi();
+    try {
+        auto replacement = std::make_unique<InstallerThemeResources>(newDpi);
+        if (oldDpi != newDpi) {
+            (void)rescaleInstallerChildWindows(context.window, oldDpi, newDpi);
+            context.virtualWidth =
+                MulDiv(context.virtualWidth, static_cast<int>(newDpi), static_cast<int>(oldDpi));
+            context.virtualHeight =
+                MulDiv(context.virtualHeight, static_cast<int>(newDpi), static_cast<int>(oldDpi));
+        }
+        context.theme = std::move(replacement);
+        applyInstallerWindowTheme(context.window, *context.theme);
+        for (HWND child = GetWindow(context.window, GW_CHILD); child;
+             child = GetWindow(child, GW_HWNDNEXT)) {
+            setControlFont(child, context.theme->bodyFont());
+            applyInstallerControlTheme(child, *context.theme);
+        }
+    } catch (...) {
+        return;
+    }
+    applyOptionsDpiBounds(context.window, suggestedBounds);
+    updateOptionsScrollbars(context);
+    InvalidateRect(context.window, nullptr, TRUE);
+}
+
 std::wstring readWindowTextExact(HWND window) {
     for (unsigned attempt = 0; attempt < 8U; ++attempt) {
         SetLastError(ERROR_SUCCESS);
         const int length = GetWindowTextLengthW(window);
         if (length < 0 || (length == 0 && GetLastError() != ERROR_SUCCESS))
             break;
+        if (length > kMaximumNativePathUnits)
+            throw std::runtime_error("installation folder is too long");
         std::wstring text(static_cast<size_t>(length) + 1U, L'\0');
         SetLastError(ERROR_SUCCESS);
         const int copied = GetWindowTextW(window, text.data(), static_cast<int>(text.size()));
@@ -702,27 +756,44 @@ LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam,
         case WM_PAINT: {
             PAINTSTRUCT paint{};
             HDC dc = BeginPaint(window, &paint);
+            if (!dc)
+                return DefWindowProcW(window, message, wParam, lParam);
             RECT client{};
-            GetClientRect(window, &client);
-            drawInstallerBackdrop(dc, client, 0, *context->theme);
-            const UINT dpi = context->theme->dpi();
-            RECT mark{scaled(22, dpi), scaled(11, dpi), scaled(58, dpi), scaled(47, dpi)};
-            drawInstallerBrandMark(dc, mark, *context->theme);
-            const int saved = SaveDC(dc);
-            SetBkMode(dc, TRANSPARENT);
-            SelectObject(dc, context->theme->monoBoldFont());
-            SetTextColor(dc, context->theme->textColor());
-            RECT name{scaled(70, dpi), scaled(8, dpi), scaled(222, dpi), scaled(29, dpi)};
-            DrawTextW(dc, L"ZANNA", -1, &name, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-            SelectObject(dc, context->theme->monoFont());
-            SetTextColor(dc, context->theme->accentColor(InstallerAccent::Green));
-            RECT mode{scaled(70, dpi), scaled(27, dpi), scaled(222, dpi), scaled(49, dpi)};
-            DrawTextW(
-                dc, L"CUSTOM BUILD", -1, &mode, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-            RestoreDC(dc, saved);
+            if (GetClientRect(window, &client)) {
+                drawInstallerBackdrop(dc, client, 0, *context->theme);
+                const UINT dpi = context->theme->dpi();
+                RECT mark{scaled(22, dpi), scaled(11, dpi), scaled(58, dpi), scaled(47, dpi)};
+                drawInstallerBrandMark(dc, mark, *context->theme);
+                const int saved = SaveDC(dc);
+                if (saved != 0) {
+                    SetBkMode(dc, TRANSPARENT);
+                    SelectObject(dc, context->theme->monoBoldFont());
+                    SetTextColor(dc, context->theme->textColor());
+                    RECT name{scaled(70, dpi), scaled(8, dpi), scaled(222, dpi), scaled(29, dpi)};
+                    DrawTextW(dc,
+                              L"ZANNA",
+                              -1,
+                              &name,
+                              DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                    SelectObject(dc, context->theme->monoFont());
+                    SetTextColor(dc, context->theme->accentColor(InstallerAccent::Green));
+                    RECT mode{scaled(70, dpi), scaled(27, dpi), scaled(222, dpi), scaled(49, dpi)};
+                    DrawTextW(dc,
+                              L"CUSTOM BUILD",
+                              -1,
+                              &mode,
+                              DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                    RestoreDC(dc, saved);
+                }
+            }
             EndPaint(window, &paint);
             return 0;
         }
+        case DM_GETDEFID:
+            return MAKELRESULT(context->defaultButtonId, DC_HASDEFID);
+        case DM_SETDEFID:
+            context->defaultButtonId = LOWORD(wParam);
+            return TRUE;
         case WM_DRAWITEM: {
             const auto *item = reinterpret_cast<const DRAWITEMSTRUCT *>(lParam);
             if (!item)
@@ -835,6 +906,9 @@ LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam,
         case WM_SIZE:
             updateOptionsScrollbars(*context);
             return 0;
+        case WM_DPICHANGED:
+            updateOptionsDpi(*context, LOWORD(wParam), reinterpret_cast<const RECT *>(lParam));
+            return 0;
         case WM_VSCROLL:
             handleOptionsScroll(*context, SB_VERT, wParam);
             return 0;
@@ -844,9 +918,9 @@ LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam,
         case WM_MOUSEWHEEL: {
             SCROLLINFO info{sizeof(info), SIF_POS};
             GetScrollInfo(window, SB_VERT, &info);
-            const int steps = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+            const int steps = consumeOptionsWheelSteps(wParam, context->wheelDelta);
             scrollOptionsWindow(
-                *context, SB_VERT, info.nPos - steps * scaled(72, GetDpiForWindow(window)));
+                *context, SB_VERT, info.nPos - steps * scaled(72, context->theme->dpi()));
             return 0;
         }
         case WM_CLOSE:
@@ -863,9 +937,6 @@ LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam,
 }
 
 ATOM registerCustomWindowClass(HINSTANCE instance) {
-    static std::atomic<ATOM> registered{0};
-    if (const ATOM existing = registered.load(); existing != 0)
-        return existing;
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.style = CS_DBLCLKS;
     windowClass.lpfnWndProc = customWindowProcedure;
@@ -880,11 +951,10 @@ ATOM registerCustomWindowClass(HINSTANCE instance) {
     windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = L"ZannaInstallerOptionsWindowV2";
     windowClass.hIconSm = windowClass.hIcon;
-    const ATOM atom = RegisterClassExW(&windowClass);
-    if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+    const ATOM atom = registerVerifiedInstallerWindowClass(windowClass);
+    if (!atom)
         throw std::runtime_error("cannot register the native setup window");
-    registered.store(atom ? atom : 1);
-    return registered.load();
+    return atom;
 }
 
 bool showCustomDialog(HINSTANCE instance,
@@ -894,6 +964,8 @@ bool showCustomDialog(HINSTANCE instance,
                       const std::set<std::string> &initialComponents,
                       bool scopeLocked,
                       HostOptions &options) {
+    if (!instance)
+        throw std::runtime_error("native setup options require a module instance");
     registerCustomWindowClass(instance);
     CustomDialogContext context;
     context.instance = instance;
@@ -904,7 +976,7 @@ bool showCustomDialog(HINSTANCE instance,
     context.initialComponents = initialComponents;
     context.scopeLocked = scopeLocked;
     context.displayedScope = initialScope;
-    const UINT dpi = GetDpiForSystem();
+    const UINT dpi = normalizeInstallerDpi(GetDpiForSystem());
     context.theme = std::make_unique<InstallerThemeResources>(dpi);
 
     struct DialogResources {
@@ -1175,16 +1247,19 @@ bool showCustomDialog(HINSTANCE instance,
     updateOptionsScrollbars(context);
 
     RECT windowRect{};
-    GetWindowRect(context.window, &windowRect);
-    SetWindowPos(context.window,
-                 nullptr,
-                 workArea.left +
-                     ((workArea.right - workArea.left) - (windowRect.right - windowRect.left)) / 2,
-                 workArea.top +
-                     ((workArea.bottom - workArea.top) - (windowRect.bottom - windowRect.top)) / 2,
-                 0,
-                 0,
-                 SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    if (!GetWindowRect(context.window, &windowRect) ||
+        !SetWindowPos(
+            context.window,
+            nullptr,
+            workArea.left +
+                ((workArea.right - workArea.left) - (windowRect.right - windowRect.left)) / 2,
+            workArea.top +
+                ((workArea.bottom - workArea.top) - (windowRect.bottom - windowRect.top)) / 2,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW)) {
+        throw std::runtime_error("cannot position the native setup options window");
+    }
     SetFocus(context.destination);
 
     MSG message{};
@@ -1192,8 +1267,10 @@ bool showCustomDialog(HINSTANCE instance,
         const BOOL result = GetMessageW(&message, nullptr, 0, 0);
         if (result == -1)
             throw std::runtime_error("cannot read the native setup message queue");
-        if (result == 0)
+        if (result == 0) {
+            PostQuitMessage(static_cast<int>(message.wParam));
             break;
+        }
         if (!IsDialogMessageW(context.window, &message)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);

@@ -2255,6 +2255,22 @@ static void test_d3d11_backend_source_contracts(void) {
     EXPECT_TRUE(strstr(source, "D3D11_CREATE_DEVICE_BGRA_SUPPORT") != NULL &&
                     strstr(source, "created_feature_level != requested_feature_level") != NULL,
                 "Device creation requests interop support and confirms Direct3D 11.0");
+    EXPECT_TRUE(strstr(source, "D3D_DRIVER_TYPE_HARDWARE") != NULL &&
+                    strstr(source, "D3D_DRIVER_TYPE_WARP") != NULL &&
+                    strstr(source, "d3d11_release_device_attempt(ctx)") != NULL,
+                "Device creation retries transactionally with WARP for remote and virtual hosts");
+    EXPECT_TRUE(strstr(source, "Begin(frame timestamp)") != NULL &&
+                    strstr(source, "End(frame timestamp)") != NULL,
+                "Timestamp query publication is gated by device-health checks");
+    EXPECT_TRUE(strstr(source, "ctx->fallback_white_tex && ctx->fallback_white_srv") != NULL &&
+                    strstr(source, "ctx->brdf_lut_tex && ctx->brdf_lut_srv") != NULL &&
+                    strstr(source, "new_fallback_white_tex") != NULL,
+                "Fallback textures and the BRDF table publish as one complete resource set");
+    EXPECT_TRUE(strstr(source, "invalid rtt staging descriptor") != NULL &&
+                    strstr(source, "invalid rtt staging payload") != NULL,
+                "Malformed cached RTT staging surfaces are evicted before retry");
+    EXPECT_TRUE(strstr(source, "d3d11_format_log_message") != NULL,
+                "D3D11 diagnostics remain initialized when CRT formatting fails");
     EXPECT_TRUE(strstr(source, "if (hr != S_OK)") != NULL,
                 "Present status codes do not publish an unconfirmed displayed-frame snapshot");
     EXPECT_TRUE(strstr(source, "D3D11_TEXTURE_CACHE_MAX_ENTRIES 4096") != NULL &&

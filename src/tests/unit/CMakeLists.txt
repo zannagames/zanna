@@ -158,6 +158,19 @@ if (WIN32 AND NOT TARGET test_windows_installer_lifecycle_contract)
             installer packaging requires_windows unit)
 endif ()
 
+if (WIN32 AND NOT TARGET test_windows_installer_brand_validation)
+    zanna_add_test(test_windows_installer_brand_validation
+            ${ZANNA_TESTS_DIR}/unit/test_windows_installer_brand_validation.cpp
+            ${CMAKE_SOURCE_DIR}/src/tools/windows_installer/WindowsInstallerBrandValidation.cpp)
+    target_include_directories(test_windows_installer_brand_validation PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/tools/windows_installer
+            ${CMAKE_SOURCE_DIR}/src/tools/common/packaging)
+    zanna_add_ctest(test_windows_installer_brand_validation
+            test_windows_installer_brand_validation)
+    zanna_add_test_labels(test_windows_installer_brand_validation
+            installer unit requires_windows)
+endif ()
+
 if (WIN32 AND NOT TARGET test_windows_installer_cleanup_policy)
     zanna_add_test(test_windows_installer_cleanup_policy
             ${ZANNA_TESTS_DIR}/unit/test_windows_installer_cleanup_policy.cpp

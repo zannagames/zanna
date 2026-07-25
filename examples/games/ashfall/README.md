@@ -42,8 +42,8 @@ then launch it from PowerShell:
 
 ```powershell
 New-Item -ItemType Directory -Force examples/bin | Out-Null
-zanna build examples/games/ashfall --build-profile release -o examples/bin/ashfall.exe
-.\examples\bin\ashfall.exe --windowed
+zanna build examples/games/ashfall --build-profile release -o examples/bin/ashfall/ashfall.exe
+.\examples\bin\ashfall\ashfall.exe --windowed
 ```
 
 Fullscreen is the default. `--windowed` forces a window, `--level 1` through

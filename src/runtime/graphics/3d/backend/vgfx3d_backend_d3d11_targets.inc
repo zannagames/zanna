@@ -835,20 +835,26 @@ static int d3d11_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *
                                                       color_desc.ArraySize,
                                                       color_desc.SampleDesc.Count,
                                                       color_desc.SampleDesc.Quality) ||
-        !vgfx3d_d3d11_is_single_subresource_texture2d(staging_desc.Width,
+        color_desc.Width != (UINT)target->width || color_desc.Height != (UINT)target->height ||
+        color_desc.Format != expected_format || color_desc.Usage != D3D11_USAGE_DEFAULT ||
+        (color_desc.BindFlags & D3D11_BIND_RENDER_TARGET) == 0 || color_desc.CPUAccessFlags != 0 ||
+        color_desc.MiscFlags != 0) {
+        return 0;
+    }
+    if (!vgfx3d_d3d11_is_single_subresource_texture2d(staging_desc.Width,
                                                       staging_desc.Height,
                                                       staging_desc.MipLevels,
                                                       staging_desc.ArraySize,
                                                       staging_desc.SampleDesc.Count,
                                                       staging_desc.SampleDesc.Quality) ||
-        color_desc.Width != (UINT)target->width || color_desc.Height != (UINT)target->height ||
-        color_desc.Format != expected_format || color_desc.Usage != D3D11_USAGE_DEFAULT ||
-        (color_desc.BindFlags & D3D11_BIND_RENDER_TARGET) == 0 || color_desc.CPUAccessFlags != 0 ||
-        color_desc.MiscFlags != 0 || staging_desc.Width != color_desc.Width ||
-        staging_desc.Height != color_desc.Height || staging_desc.Format != expected_format ||
-        staging_desc.Usage != D3D11_USAGE_STAGING || staging_desc.BindFlags != 0 ||
-        staging_desc.CPUAccessFlags != D3D11_CPU_ACCESS_READ || staging_desc.MiscFlags != 0)
-        return 0;
+        staging_desc.Width != color_desc.Width || staging_desc.Height != color_desc.Height ||
+        staging_desc.Format != expected_format || staging_desc.Usage != D3D11_USAGE_STAGING ||
+        staging_desc.BindFlags != 0 || staging_desc.CPUAccessFlags != D3D11_CPU_ACCESS_READ ||
+        staging_desc.MiscFlags != 0) {
+        d3d11_log_hresult("invalid rtt staging descriptor", E_INVALIDARG);
+        staging_failed = 1;
+        goto cleanup;
+    }
     if (!vgfx3d_rendertarget_ensure_color(target))
         return 0;
     if (vgfx3d_rendertarget_is_hdr(target) && !vgfx3d_rendertarget_ensure_hdr_color(target))
@@ -877,11 +883,17 @@ static int d3d11_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *
     if (vgfx3d_rendertarget_is_hdr(target)) {
         size_t hdr_row_bytes;
         size_t rgba_row_bytes;
-        if (mapped.RowPitch > (UINT)INT32_MAX || target->width > INT32_MAX / 4)
+        if (target->width > INT32_MAX / 4)
             goto cleanup;
         if (!vgfx3d_d3d11_compute_row_bytes(target->width, 8, &hdr_row_bytes) ||
-            !vgfx3d_d3d11_compute_row_bytes(target->width, 4, &rgba_row_bytes) ||
-            mapped.RowPitch < hdr_row_bytes || (size_t)target->stride < rgba_row_bytes)
+            !vgfx3d_d3d11_compute_row_bytes(target->width, 4, &rgba_row_bytes))
+            goto cleanup;
+        if (mapped.RowPitch > (UINT)INT32_MAX || mapped.RowPitch < hdr_row_bytes) {
+            d3d11_log_hresult("invalid rtt staging payload", E_INVALIDARG);
+            staging_failed = 1;
+            goto cleanup;
+        }
+        if ((size_t)target->stride < rgba_row_bytes)
             goto cleanup;
         vgfx3d_copy_linear_rgba16f_to_rgba8(target->color_buf,
                                             target->stride,
@@ -900,8 +912,13 @@ static int d3d11_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *
     } else {
         size_t row_bytes;
         if (!vgfx3d_d3d11_compute_row_bytes(target->width, 4, &row_bytes) ||
-            (size_t)target->stride < row_bytes || mapped.RowPitch < row_bytes)
+            (size_t)target->stride < row_bytes)
             goto cleanup;
+        if (mapped.RowPitch < row_bytes) {
+            d3d11_log_hresult("invalid rtt staging payload", E_INVALIDARG);
+            staging_failed = 1;
+            goto cleanup;
+        }
         for (int32_t y = 0; y < target->height; y++) {
             memcpy(&target->color_buf[(size_t)y * (size_t)target->stride],
                    (const uint8_t *)mapped.pData + (size_t)y * mapped.RowPitch,

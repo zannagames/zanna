@@ -24,6 +24,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "WindowsInstallerBrandDialog.hpp"
+#include "WindowsInstallerBrandValidation.hpp"
 #include "WindowsInstallerResources.h"
 
 #include <commctrl.h>
@@ -33,6 +34,7 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <thread>
@@ -57,6 +59,7 @@ constexpr int kIdCancel = IDCANCEL;
 constexpr UINT kMessageProgressText = WM_APP + 41U;
 constexpr UINT kMessageProgressComplete = WM_APP + 42U;
 constexpr UINT_PTR kProgressTimer = 1U;
+constexpr size_t kMaximumProgressStatusUnits = 2048U;
 
 int scaled(int value, UINT dpi) noexcept {
     return MulDiv(value, static_cast<int>(dpi), 96);
@@ -80,25 +83,53 @@ std::wstring windowsEditText(std::wstring_view text) {
     return result;
 }
 
-RECT installerWorkArea() noexcept {
+RECT installerWorkArea() {
     RECT workArea{};
-    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0))
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0)) {
         workArea = {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    }
+    const int64_t width = static_cast<int64_t>(workArea.right) - workArea.left;
+    const int64_t height = static_cast<int64_t>(workArea.bottom) - workArea.top;
+    if (width <= 0 || width > std::numeric_limits<int>::max() || height <= 0 ||
+        height > std::numeric_limits<int>::max()) {
+        throw std::runtime_error("cannot resolve a usable installer work area");
+    }
     return workArea;
 }
 
-void centerAndShow(HWND window, const RECT &workArea) noexcept {
+void centerAndShow(HWND window, const RECT &workArea) {
     RECT bounds{};
     if (!GetWindowRect(window, &bounds))
+        throw std::runtime_error("cannot inspect the branded installer window");
+    if (!SetWindowPos(
+            window,
+            nullptr,
+            workArea.left + ((workArea.right - workArea.left) - (bounds.right - bounds.left)) / 2,
+            workArea.top + ((workArea.bottom - workArea.top) - (bounds.bottom - bounds.top)) / 2,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW)) {
+        throw std::runtime_error("cannot position the branded installer window");
+    }
+}
+
+int consumeWheelSteps(WPARAM value, int &remainder) noexcept {
+    remainder += GET_WHEEL_DELTA_WPARAM(value);
+    const int steps = remainder / WHEEL_DELTA;
+    remainder -= steps * WHEEL_DELTA;
+    return steps;
+}
+
+void applySuggestedDpiBounds(HWND window, const RECT *bounds) noexcept {
+    if (!window || !bounds || bounds->right <= bounds->left || bounds->bottom <= bounds->top)
         return;
-    SetWindowPos(
-        window,
-        nullptr,
-        workArea.left + ((workArea.right - workArea.left) - (bounds.right - bounds.left)) / 2,
-        workArea.top + ((workArea.bottom - workArea.top) - (bounds.bottom - bounds.top)) / 2,
-        0,
-        0,
-        SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    SetWindowPos(window,
+                 nullptr,
+                 bounds->left,
+                 bounds->top,
+                 bounds->right - bounds->left,
+                 bounds->bottom - bounds->top,
+                 SWP_NOACTIVATE | SWP_NOZORDER);
 }
 
 struct PageActionControl {
@@ -119,13 +150,57 @@ struct PageContext {
     int virtualWidth{0};
     int virtualHeight{0};
     int brandPanelWidth{0};
+    int wheelDelta{0};
+    int defaultButtonId{0};
     bool compact{false};
 
     PageContext(HINSTANCE pageInstance, const BrandedInstallerPage &pageModel, UINT dpi)
         : instance(pageInstance), page(pageModel), theme(dpi) {
         result.action = page.closeAction;
+        defaultButtonId = page.defaultAction;
     }
 };
+
+void updatePageScrollbars(PageContext &context) noexcept;
+
+void updatePageDpi(PageContext &context, UINT requestedDpi, const RECT *suggestedBounds) noexcept {
+    const UINT newDpi = normalizeInstallerDpi(requestedDpi);
+    const UINT oldDpi = context.theme.dpi();
+    try {
+        InstallerThemeResources replacement(newDpi);
+        if (oldDpi != newDpi) {
+            (void)rescaleInstallerChildWindows(context.window, oldDpi, newDpi);
+            context.virtualWidth =
+                MulDiv(context.virtualWidth, static_cast<int>(newDpi), static_cast<int>(oldDpi));
+            context.virtualHeight =
+                MulDiv(context.virtualHeight, static_cast<int>(newDpi), static_cast<int>(oldDpi));
+            context.brandPanelWidth =
+                MulDiv(context.brandPanelWidth, static_cast<int>(newDpi), static_cast<int>(oldDpi));
+        }
+        context.theme = std::move(replacement);
+        applyInstallerWindowTheme(context.window, context.theme);
+        setControlFont(GetDlgItem(context.window, kIdEyebrow), context.theme.monoBoldFont());
+        setControlFont(GetDlgItem(context.window, kIdHeading), context.theme.headingFont());
+        setControlFont(GetDlgItem(context.window, kIdBody), context.theme.bodyFont());
+        setControlFont(GetDlgItem(context.window, kIdMetadata), context.theme.monoFont());
+        setControlFont(GetDlgItem(context.window, kIdDetailsLabel), context.theme.monoBoldFont());
+        setControlFont(GetDlgItem(context.window, kIdDetails), context.theme.monoFont());
+        setControlFont(context.verification, context.theme.bodyFont());
+        setControlFont(context.status, context.theme.bodyBoldFont());
+        for (const PageActionControl &action : context.actions)
+            setControlFont(action.window, context.theme.bodyBoldFont());
+        setControlFont(GetDlgItem(context.window, kIdCancel), context.theme.bodyBoldFont());
+        for (HWND child = GetWindow(context.window, GW_CHILD); child;
+             child = GetWindow(child, GW_HWNDNEXT)) {
+            applyInstallerControlTheme(child, context.theme);
+        }
+    } catch (...) {
+        return;
+    }
+    applySuggestedDpiBounds(context.window, suggestedBounds);
+    updatePageScrollbars(context);
+    InvalidateRect(context.window, nullptr, TRUE);
+}
 
 HWND createPageControl(PageContext &context,
                        DWORD exStyle,
@@ -271,6 +346,8 @@ void paintCompactHeader(HDC dc, const RECT &client, const PageContext &context) 
               client.right - scaled(20, context.theme.dpi()),
               top + scaled(28, context.theme.dpi())};
     const int saved = SaveDC(dc);
+    if (saved == 0)
+        return;
     SelectObject(dc, context.theme.monoBoldFont());
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, context.theme.textColor());
@@ -323,13 +400,22 @@ LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, L
         case WM_PAINT: {
             PAINTSTRUCT paint{};
             HDC dc = BeginPaint(window, &paint);
+            if (!dc)
+                return DefWindowProcW(window, message, wParam, lParam);
             RECT client{};
-            GetClientRect(window, &client);
-            drawInstallerBackdrop(dc, client, context->brandPanelWidth, context->theme);
-            paintCompactHeader(dc, client, *context);
+            if (GetClientRect(window, &client)) {
+                drawInstallerBackdrop(dc, client, context->brandPanelWidth, context->theme);
+                paintCompactHeader(dc, client, *context);
+            }
             EndPaint(window, &paint);
             return 0;
         }
+        case DM_GETDEFID:
+            return context->defaultButtonId > 0 ? MAKELRESULT(context->defaultButtonId, DC_HASDEFID)
+                                                : 0;
+        case DM_SETDEFID:
+            context->defaultButtonId = LOWORD(wParam);
+            return TRUE;
         case WM_DRAWITEM: {
             const auto *item = reinterpret_cast<const DRAWITEMSTRUCT *>(lParam);
             if (!item)
@@ -391,6 +477,9 @@ LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, L
         case WM_SIZE:
             updatePageScrollbars(*context);
             return 0;
+        case WM_DPICHANGED:
+            updatePageDpi(*context, LOWORD(wParam), reinterpret_cast<const RECT *>(lParam));
+            return 0;
         case WM_VSCROLL:
             handlePageScroll(*context, SB_VERT, wParam);
             return 0;
@@ -400,7 +489,7 @@ LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, L
         case WM_MOUSEWHEEL: {
             SCROLLINFO info{sizeof(info), SIF_POS};
             GetScrollInfo(window, SB_VERT, &info);
-            const int steps = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+            const int steps = consumeWheelSteps(wParam, context->wheelDelta);
             scrollPage(*context, SB_VERT, info.nPos - steps * scaled(72, context->theme.dpi()));
             return 0;
         }
@@ -419,9 +508,6 @@ LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, L
 }
 
 ATOM registerPageWindowClass(HINSTANCE instance) {
-    static std::atomic<ATOM> registered{0};
-    if (const ATOM existing = registered.load(); existing != 0)
-        return existing;
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.style = CS_DBLCLKS;
     windowClass.lpfnWndProc = pageWindowProcedure;
@@ -436,11 +522,10 @@ ATOM registerPageWindowClass(HINSTANCE instance) {
     windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = kPageClassName;
     windowClass.hIconSm = windowClass.hIcon;
-    const ATOM atom = RegisterClassExW(&windowClass);
-    if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+    const ATOM atom = registerVerifiedInstallerWindowClass(windowClass);
+    if (!atom)
         throw std::runtime_error("cannot register the branded setup page");
-    registered.store(atom ? atom : 1);
-    return registered.load();
+    return atom;
 }
 
 struct ProgressContext {
@@ -459,6 +544,9 @@ struct ProgressContext {
     std::exception_ptr failure;
     std::atomic<bool> cancellationRequested{false};
     std::atomic<bool> completed{false};
+    std::mutex statusMutex;
+    std::wstring pendingStatus;
+    bool statusMessagePosted{false};
     int result{kExitFatalError};
     int brandPanelWidth{0};
     bool compact{false};
@@ -466,6 +554,7 @@ struct ProgressContext {
     int trackTop{0};
     int virtualWidth{0};
     int virtualHeight{0};
+    int wheelDelta{0};
 
     ProgressContext(HINSTANCE progressInstance,
                     UINT dpi,
@@ -478,6 +567,61 @@ struct ProgressContext {
         : instance(progressInstance), theme(dpi), windowTitle(titleText), eyebrow(eyebrowText),
           heading(headingText), body(bodyText), logger(progressLogger), work(progressWork) {}
 };
+
+void postProgressStatus(ProgressContext &context, std::wstring_view message) noexcept {
+    bool shouldPost = false;
+    try {
+        std::wstring bounded(message.substr(0, kMaximumProgressStatusUnits));
+        std::lock_guard lock(context.statusMutex);
+        context.pendingStatus = std::move(bounded);
+        if (!context.statusMessagePosted) {
+            context.statusMessagePosted = true;
+            shouldPost = true;
+        }
+    } catch (...) {
+        return;
+    }
+    if (shouldPost && !PostMessageW(context.window, kMessageProgressText, 0, 0)) {
+        std::lock_guard lock(context.statusMutex);
+        context.statusMessagePosted = false;
+    }
+}
+
+void updateProgressDpi(ProgressContext &context,
+                       UINT requestedDpi,
+                       const RECT *suggestedBounds) noexcept {
+    const UINT newDpi = normalizeInstallerDpi(requestedDpi);
+    const UINT oldDpi = context.theme.dpi();
+    try {
+        InstallerThemeResources replacement(newDpi);
+        if (oldDpi != newDpi) {
+            (void)rescaleInstallerChildWindows(context.window, oldDpi, newDpi);
+            context.virtualWidth =
+                MulDiv(context.virtualWidth, static_cast<int>(newDpi), static_cast<int>(oldDpi));
+            context.virtualHeight =
+                MulDiv(context.virtualHeight, static_cast<int>(newDpi), static_cast<int>(oldDpi));
+            context.brandPanelWidth =
+                MulDiv(context.brandPanelWidth, static_cast<int>(newDpi), static_cast<int>(oldDpi));
+            context.trackTop =
+                MulDiv(context.trackTop, static_cast<int>(newDpi), static_cast<int>(oldDpi));
+        }
+        context.theme = std::move(replacement);
+        applyInstallerWindowTheme(context.window, context.theme);
+        setControlFont(GetDlgItem(context.window, kIdEyebrow), context.theme.monoBoldFont());
+        setControlFont(GetDlgItem(context.window, kIdHeading), context.theme.headingFont());
+        setControlFont(GetDlgItem(context.window, kIdBody), context.theme.bodyFont());
+        setControlFont(context.status, context.theme.bodyFont());
+        setControlFont(context.cancel, context.theme.bodyBoldFont());
+        for (HWND child = GetWindow(context.window, GW_CHILD); child;
+             child = GetWindow(child, GW_HWNDNEXT)) {
+            applyInstallerControlTheme(child, context.theme);
+        }
+    } catch (...) {
+        return;
+    }
+    applySuggestedDpiBounds(context.window, suggestedBounds);
+    InvalidateRect(context.window, nullptr, TRUE);
+}
 
 HWND createProgressControl(ProgressContext &context,
                            const wchar_t *className,
@@ -582,17 +726,20 @@ LRESULT CALLBACK progressWindowProcedure(HWND window, UINT message, WPARAM wPara
         case WM_PAINT: {
             PAINTSTRUCT paint{};
             HDC dc = BeginPaint(window, &paint);
+            if (!dc)
+                return DefWindowProcW(window, message, wParam, lParam);
             RECT client{};
-            GetClientRect(window, &client);
-            drawInstallerBackdrop(dc, client, context->brandPanelWidth, context->theme);
-            if (context->compact) {
-                const int left = scaled(24, context->theme.dpi());
-                const int top = scaled(22, context->theme.dpi());
-                const int size = scaled(52, context->theme.dpi());
-                RECT mark{left, top, left + size, top + size};
-                drawInstallerBrandMark(dc, mark, context->theme);
+            if (GetClientRect(window, &client)) {
+                drawInstallerBackdrop(dc, client, context->brandPanelWidth, context->theme);
+                if (context->compact) {
+                    const int left = scaled(24, context->theme.dpi());
+                    const int top = scaled(22, context->theme.dpi());
+                    const int size = scaled(52, context->theme.dpi());
+                    RECT mark{left, top, left + size, top + size};
+                    drawInstallerBrandMark(dc, mark, context->theme);
+                }
+                paintProgressTrack(dc, client, *context);
             }
-            paintProgressTrack(dc, client, *context);
             EndPaint(window, &paint);
             return 0;
         }
@@ -649,6 +796,9 @@ LRESULT CALLBACK progressWindowProcedure(HWND window, UINT message, WPARAM wPara
             }
             return 0;
         }
+        case WM_DPICHANGED:
+            updateProgressDpi(*context, LOWORD(wParam), reinterpret_cast<const RECT *>(lParam));
+            return 0;
         case WM_VSCROLL:
         case WM_HSCROLL: {
             const int bar = message == WM_VSCROLL ? SB_VERT : SB_HORZ;
@@ -698,7 +848,7 @@ LRESULT CALLBACK progressWindowProcedure(HWND window, UINT message, WPARAM wPara
             SCROLLINFO info{sizeof(info), SIF_ALL};
             if (!GetScrollInfo(window, SB_VERT, &info))
                 return 0;
-            const int steps = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+            const int steps = consumeWheelSteps(wParam, context->wheelDelta);
             const int maximum = std::max(info.nMin, info.nMax - static_cast<int>(info.nPage) + 1);
             const int position = std::clamp(
                 info.nPos - steps * scaled(72, context->theme.dpi()), info.nMin, maximum);
@@ -719,9 +869,14 @@ LRESULT CALLBACK progressWindowProcedure(HWND window, UINT message, WPARAM wPara
             return 0;
         }
         case kMessageProgressText: {
-            std::unique_ptr<std::wstring> text(reinterpret_cast<std::wstring *>(lParam));
-            if (text && context->status)
-                SetWindowTextW(context->status, text->c_str());
+            std::wstring text;
+            {
+                std::lock_guard lock(context->statusMutex);
+                text.swap(context->pendingStatus);
+                context->statusMessagePosted = false;
+            }
+            if (!text.empty() && context->status)
+                SetWindowTextW(context->status, text.c_str());
             return 0;
         }
         case kMessageProgressComplete:
@@ -748,9 +903,6 @@ LRESULT CALLBACK progressWindowProcedure(HWND window, UINT message, WPARAM wPara
 }
 
 ATOM registerProgressWindowClass(HINSTANCE instance) {
-    static std::atomic<ATOM> registered{0};
-    if (const ATOM existing = registered.load(); existing != 0)
-        return existing;
     WNDCLASSEXW windowClass{sizeof(windowClass)};
     windowClass.lpfnWndProc = progressWindowProcedure;
     windowClass.hInstance = instance;
@@ -764,24 +916,20 @@ ATOM registerProgressWindowClass(HINSTANCE instance) {
     windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = kProgressClassName;
     windowClass.hIconSm = windowClass.hIcon;
-    const ATOM atom = RegisterClassExW(&windowClass);
-    if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+    const ATOM atom = registerVerifiedInstallerWindowClass(windowClass);
+    if (!atom)
         throw std::runtime_error("cannot register the branded setup progress window");
-    registered.store(atom ? atom : 1);
-    return registered.load();
+    return atom;
 }
 
 } // namespace
 
 BrandedInstallerPageResult showBrandedInstallerPage(HINSTANCE instance,
                                                     const BrandedInstallerPage &page) {
-    if (page.actions.empty())
-        throw std::runtime_error("branded setup page has no actions");
-    if (page.actions.size() > 12U)
-        throw std::runtime_error("branded setup page has too many actions");
+    validateBrandedInstallerPage(instance, page);
     registerPageWindowClass(instance);
 
-    const UINT dpi = GetDpiForSystem();
+    const UINT dpi = normalizeInstallerDpi(GetDpiForSystem());
     PageContext context(instance, page, dpi);
     const RECT workArea = installerWorkArea();
     const int maximumWidth =
@@ -895,8 +1043,6 @@ BrandedInstallerPageResult showBrandedInstallerPage(HINSTANCE instance,
 
     for (size_t index = 0; index < page.actions.size(); ++index) {
         const BrandedInstallerAction &action = page.actions[index];
-        if (action.id == 0 || action.id == kIdCancel)
-            throw std::runtime_error("branded setup action has a reserved identifier");
         std::wstring label = action.title;
         if (!action.description.empty())
             label += L"\n" + action.description;
@@ -998,8 +1144,10 @@ BrandedInstallerPageResult showBrandedInstallerPage(HINSTANCE instance,
         const BOOL messageResult = GetMessageW(&message, nullptr, 0, 0);
         if (messageResult == -1)
             throw std::runtime_error("cannot read the branded setup message queue");
-        if (messageResult == 0)
+        if (messageResult == 0) {
+            PostQuitMessage(static_cast<int>(message.wParam));
             break;
+        }
         if (!IsDialogMessageW(context.window, &message)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
@@ -1015,8 +1163,9 @@ int runBrandedInstallerProgress(HINSTANCE instance,
                                 std::wstring_view body,
                                 Logger &logger,
                                 const std::function<int()> &work) {
+    validateBrandedInstallerProgress(instance, windowTitle, eyebrow, heading, body, work);
     registerProgressWindowClass(instance);
-    const UINT dpi = GetDpiForSystem();
+    const UINT dpi = normalizeInstallerDpi(GetDpiForSystem());
     ProgressContext context(instance, dpi, windowTitle, eyebrow, heading, body, logger, work);
     const RECT workArea = installerWorkArea();
     const int maximumWidth =
@@ -1036,10 +1185,12 @@ int runBrandedInstallerProgress(HINSTANCE instance,
     RECT bounds{0, 0, scaled(logicalWidth, dpi), scaled(kLogicalHeight, dpi)};
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_SIZEBOX |
                         WS_MAXIMIZEBOX | WS_VSCROLL | WS_HSCROLL;
-    if (!AdjustWindowRectExForDpi(&bounds, style, FALSE, WS_EX_APPWINDOW, dpi))
+    if (!AdjustWindowRectExForDpi(
+            &bounds, style, FALSE, WS_EX_CONTROLPARENT | WS_EX_APPWINDOW, dpi)) {
         throw std::runtime_error("cannot calculate the branded progress window size");
+    }
     context.window =
-        CreateWindowExW(WS_EX_APPWINDOW,
+        CreateWindowExW(WS_EX_CONTROLPARENT | WS_EX_APPWINDOW,
                         kProgressClassName,
                         context.windowTitle.c_str(),
                         style,
@@ -1065,11 +1216,6 @@ int runBrandedInstallerProgress(HINSTANCE instance,
             context.logger.setCancellationCallback({});
             if (context.window && IsWindow(context.window))
                 DestroyWindow(context.window);
-            MSG pending{};
-            while (PeekMessageW(
-                &pending, nullptr, kMessageProgressText, kMessageProgressText, PM_REMOVE)) {
-                delete reinterpret_cast<std::wstring *>(pending.lParam);
-            }
         }
     } guard{context};
 
@@ -1130,16 +1276,12 @@ int runBrandedInstallerProgress(HINSTANCE instance,
                                            kIdCancel,
                                            context.theme.bodyBoldFont());
     centerAndShow(context.window, workArea);
-    SetTimer(context.window, kProgressTimer, 35U, nullptr);
+    if (SetTimer(context.window, kProgressTimer, 35U, nullptr) == 0)
+        throw std::runtime_error("cannot start the branded progress animation timer");
+    SetFocus(context.cancel);
 
-    logger.setProgressCallback([window = context.window](std::wstring_view message) noexcept {
-        auto *text = new (std::nothrow) std::wstring(message);
-        if (!text)
-            return;
-        if (!PostMessageW(window, kMessageProgressText, 0, reinterpret_cast<LPARAM>(text))) {
-            delete text;
-        }
-    });
+    logger.setProgressCallback(
+        [&context](std::wstring_view message) noexcept { postProgressStatus(context, message); });
     logger.setCancellationCallback([&context] { return context.cancellationRequested.load(); });
     const HWND progressWindow = context.window;
     context.worker = std::thread([progressWindow, &context] {
@@ -1157,8 +1299,10 @@ int runBrandedInstallerProgress(HINSTANCE instance,
         const BOOL messageResult = GetMessageW(&message, nullptr, 0, 0);
         if (messageResult == -1)
             throw std::runtime_error("cannot read the branded progress message queue");
-        if (messageResult == 0)
+        if (messageResult == 0) {
+            PostQuitMessage(static_cast<int>(message.wParam));
             break;
+        }
         if (!IsDialogMessageW(context.window, &message)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
