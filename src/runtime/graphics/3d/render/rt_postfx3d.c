@@ -28,6 +28,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements configurable CPU and backend-facing PostFX3D effect chains.
+/// @details The runtime stores ordered effect descriptors, applies color-only and scene-aware
+///   effects to software or HDR framebuffers, manages reusable scratch/history allocations, and
+///   exports validated snapshots for graphics backends.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_postfx3d.h"
@@ -194,6 +200,8 @@ typedef struct {
 } rt_postfx3d;
 
 /// @brief Record a recoverable configuration error on the chain (NULL msg clears).
+/// @param fx PostFX chain whose fixed-size diagnostic buffer is updated; ignored when `NULL`.
+/// @param msg Null-terminated diagnostic text, or `NULL` to clear the current diagnostic.
 static void postfx3d_set_last_error(rt_postfx3d *fx, const char *msg) {
     if (!fx)
         return;
@@ -239,6 +247,8 @@ typedef struct {
     int32_t y1;
 } postfx_band_task_t;
 
+/// @brief Invoke a row-band callback from the thread-pool callback ABI.
+/// @param arg Pointer to a `postfx_band_task_t` describing the callback, context, and row range.
 static void postfx_band_trampoline(void *arg) {
     postfx_band_task_t *task = (postfx_band_task_t *)arg;
     if (task && task->fn)
@@ -246,6 +256,8 @@ static void postfx_band_trampoline(void *arg) {
 }
 
 /// @brief Lazily create (once) and return the chain's worker pool, or NULL.
+/// @param fx PostFX chain that owns the lazily allocated pool.
+/// @return The chain-owned worker pool, or `NULL` when parallel execution is unavailable.
 static void *postfx3d_worker_pool(rt_postfx3d *fx) {
     int64_t workers;
     if (!fx)
@@ -269,6 +281,10 @@ static void *postfx3d_worker_pool(rt_postfx3d *fx) {
 /// @details Falls back to one serial call when no pool exists, the image is
 ///   small, or any submission fails (the failed band runs inline, so every row
 ///   is always processed exactly once).
+/// @param fx PostFX chain providing the optional worker pool.
+/// @param h Total number of image rows.
+/// @param fn Pass callback invoked once for each non-overlapping row band.
+/// @param ctx Opaque pass context forwarded unchanged to @p fn.
 static void postfx_run_bands(rt_postfx3d *fx, int32_t h, postfx_band_fn fn, void *ctx) {
     void *pool;
     postfx_band_task_t tasks[POSTFX3D_MAX_BANDS];
@@ -304,11 +320,15 @@ static void postfx_run_bands(rt_postfx3d *fx, int32_t h, postfx_band_fn fn, void
 }
 
 /// @brief Validate @p obj as a PostFX3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Candidate runtime object.
+/// @return The validated PostFX3D pointer, or `NULL` for a null or wrong-class object.
 static rt_postfx3d *postfx3d_checked(void *obj) {
     return (rt_postfx3d *)rt_g3d_checked_or_null(obj, RT_G3D_POSTFX3D_CLASS_ID);
 }
 
 /// @brief Return a bounded effect count that is safe to iterate.
+/// @param fx PostFX chain whose storage metadata is inspected.
+/// @return The non-negative effect count capped by allocated capacity, or zero for invalid storage.
 static int32_t postfx3d_safe_effect_count(const rt_postfx3d *fx) {
     if (!fx || !fx->effects || fx->effect_count <= 0 || fx->effect_capacity <= 0)
         return 0;
@@ -316,6 +336,7 @@ static int32_t postfx3d_safe_effect_count(const rt_postfx3d *fx) {
 }
 
 /// @brief Repair corrupted count/capacity metadata before appending to the effect array.
+/// @param fx PostFX chain to normalize; ignored when `NULL`.
 static void postfx3d_repair_effect_storage(rt_postfx3d *fx) {
     if (!fx)
         return;
@@ -344,6 +365,10 @@ static void postfx3d_repair_effect_storage(rt_postfx3d *fx) {
 /// @brief Clamp `v` into the closed interval `[lo, hi]`. Used throughout the effect
 /// pipeline to keep intermediate float values inside the displayable range before
 /// converting back to 8-bit pixels at the end.
+/// @param v Value to clamp; non-finite values map to the lower bound.
+/// @param lo First interval bound.
+/// @param hi Second interval bound; bounds are exchanged when out of order.
+/// @return The finite value constrained to the normalized closed interval.
 static float clampf(float v, float lo, float hi) {
     if (lo > hi) {
         float tmp = lo;
@@ -356,6 +381,11 @@ static float clampf(float v, float lo, float hi) {
 }
 
 /// @brief Clamp a double into a finite float parameter range, using fallback for NaN/Inf.
+/// @param value Runtime-supplied value to narrow and clamp.
+/// @param fallback Replacement used when @p value is not finite.
+/// @param lo First permitted bound.
+/// @param hi Second permitted bound; bounds are exchanged when out of order.
+/// @return A finite float constrained to the normalized interval.
 static float sanitize_range_f32(double value, float fallback, float lo, float hi) {
     float narrowed;
     if (lo > hi) {
@@ -376,11 +406,16 @@ static float sanitize_range_f32(double value, float fallback, float lo, float hi
 }
 
 /// @brief `sanitize_f32` plus clamp-to-zero floor — for strengths/intensities that must be ≥ 0.
+/// @param value Runtime-supplied value to sanitize.
+/// @param fallback Replacement used when @p value is not finite.
+/// @return A finite float in the supported non-negative parameter range.
 static float sanitize_nonnegative_f32(double value, float fallback) {
     return sanitize_range_f32(value, fallback, 0.0f, POSTFX3D_PARAM_MAX);
 }
 
 /// @brief Clamp an HDR color channel into the valid [0, POSTFX3D_FOCUS_MAX] range.
+/// @param value HDR channel value to sanitize.
+/// @return A finite channel value in the supported HDR range.
 static float sanitize_hdr_channel(float value) {
     return clampf(value, 0.0f, POSTFX3D_FOCUS_MAX);
 }
@@ -388,6 +423,10 @@ static float sanitize_hdr_channel(float value) {
 /// @brief Clamp a 64-bit integer into a 32-bit range, truncating outside values.
 /// @details Used where IL-side integer knobs (kernel radii, sample counts) need to match
 ///   backend-side `int32_t` slots without trapping on out-of-range input.
+/// @param value Runtime-supplied 64-bit value.
+/// @param lo First permitted 32-bit bound.
+/// @param hi Second permitted 32-bit bound; bounds are exchanged when out of order.
+/// @return @p value narrowed after clamping to the normalized interval.
 static int32_t clamp_i64_to_i32(int64_t value, int32_t lo, int32_t hi) {
     if (lo > hi) {
         int32_t tmp = lo;
@@ -404,11 +443,21 @@ static int32_t clamp_i64_to_i32(int64_t value, int32_t lo, int32_t hi) {
 /// @brief Perceptual luminance of a linear sRGB colour using the Rec. 709 weights
 /// (0.2126 R + 0.7152 G + 0.0722 B). Used by the bloom extract pass, the FXAA edge
 /// detector, and the saturation term of `apply_color_grade`.
+/// @param r Linear red channel.
+/// @param g Linear green channel.
+/// @param b Linear blue channel.
+/// @return Rec. 709 weighted luminance.
 static float luminance(float r, float g, float b) {
     return 0.2126f * r + 0.7152f * g + 0.0722f * b;
 }
 
 /// @brief Validate an RGB float buffer shape and compute its pixel/byte counts.
+/// @param w Image width in pixels.
+/// @param h Image height in pixels.
+/// @param[out] out_pixels Optional destination for the total pixel count.
+/// @param[out] out_floats Optional destination for the packed RGB float count.
+/// @param[out] out_bytes Optional destination for the packed RGB byte count.
+/// @return 1 when all dimensions and derived sizes are valid, or 0 on invalid input or overflow.
 static int postfx_rgb_float_layout(
     int32_t w, int32_t h, size_t *out_pixels, size_t *out_floats, size_t *out_bytes) {
     size_t width;
@@ -510,6 +559,8 @@ static float postfx_gamma_lut_sample(const float lut[POSTFX3D_GAMMA_LUT_SIZE + 1
 /// amortized cost of long chains is O(1). Returns NULL on realloc failure — the caller's
 /// chain stays intact and the caller silently drops the add, matching the prior fixed-
 /// size-array implementation's "silent drop past N" contract.
+/// @param fx PostFX chain whose internal effect array receives the new entry.
+/// @return A zero-initialized chain-owned entry, or `NULL` when storage cannot grow.
 static postfx_entry_t *postfx_append_entry(rt_postfx3d *fx) {
     postfx_entry_t *effects;
     int32_t new_capacity;
@@ -552,6 +603,10 @@ static postfx_entry_t *postfx_append_entry(rt_postfx3d *fx) {
 /// `INT32_MAX` to avoid integer overflow in the size-in-bytes multiplication. Returns 1
 /// on success, 0 on realloc failure. Freshly allocated entries are zeroed so unused
 /// tail descriptors carry an `enabled = 0` marker by default.
+/// @param chain Backend-facing chain whose descriptor allocation may grow.
+/// @param needed Minimum number of descriptors the allocation must hold.
+/// @return 1 when the requested capacity is available, or 0 for invalid metadata or allocation
+///   failure.
 static int vgfx3d_postfx_chain_reserve(vgfx3d_postfx_chain_t *chain, int32_t needed) {
     vgfx3d_postfx_effect_desc_t *effects;
     int32_t new_capacity;
@@ -594,6 +649,9 @@ static int vgfx3d_postfx_chain_reserve(vgfx3d_postfx_chain_t *chain, int32_t nee
 /// effects, NULL inputs, or unknown effect types so the backend never walks partial data.
 /// The snapshot is a stable, flat struct so GPU shaders don't have to chase the internal
 /// tagged union.
+/// @param e Internal effect entry to translate.
+/// @param[out] out_effect Destination backend descriptor.
+/// @return 1 when a supported enabled effect was written, or 0 when the entry must be skipped.
 static int vgfx3d_postfx_fill_effect_snapshot(const postfx_entry_t *e,
                                               vgfx3d_postfx_effect_desc_t *out_effect) {
     vgfx3d_postfx_snapshot_t snapshot;
@@ -675,6 +733,7 @@ static int vgfx3d_postfx_fill_effect_snapshot(const postfx_entry_t *e,
 ///          composes on the color buffer alone and doesn't force the extra targets.
 ///          This gate is what the backend render-target allocator checks before
 ///          creating the depth/velocity attachments.
+/// @param postfx Candidate PostFX3D chain.
 /// @return 1 if the chain requires auxiliary GPU scene buffers, 0 if color-only.
 int vgfx3d_postfx_requires_gpu_scene_buffers(void *postfx) {
     rt_postfx3d *fx = postfx3d_checked(postfx);
@@ -702,6 +761,12 @@ int vgfx3d_postfx_requires_gpu_scene_buffers(void *postfx) {
 /// @brief Sample one RGB float level bilinearly at a continuous pixel coordinate.
 /// @details Coordinates are in the destination level's own pixel space; edges clamp.
 ///          Shared by the bloom chain's progressive upsample and the final composite.
+/// @param level Packed RGB source level.
+/// @param lw Source width in pixels.
+/// @param lh Source height in pixels.
+/// @param fx Continuous source-space x coordinate.
+/// @param fy Continuous source-space y coordinate.
+/// @param[out] out Three-element destination receiving the interpolated RGB value.
 static void postfx_bloom_sample_bilinear(
     const float *level, int32_t lw, int32_t lh, float fx, float fy, float out[3]) {
     int32_t x0 = (int32_t)floorf(fx);
@@ -753,6 +818,13 @@ static void postfx_bloom_sample_bilinear(
 ///          stays ≥ POSTFX3D_BLOOM_MIN_DIM); the composite divides by the accumulated level
 ///          count so perceived brightness stays roughly independent of depth. All levels
 ///          pack into one scratch allocation (offsets never alias between adjacent levels).
+/// @param buf Packed linear RGB framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param threshold Luminance threshold for the bright-extract pass.
+/// @param intensity Scale applied when compositing the accumulated bloom chain.
+/// @param blur_passes Requested number of downsample levels, clamped to the supported range.
+/// @param scratch Reusable allocations owned by the active PostFX chain.
 static void apply_bloom(float *buf,
                         int32_t w,
                         int32_t h,
@@ -924,6 +996,10 @@ typedef struct {
     const float *gamma_lut;
 } postfx_tonemap_band_ctx;
 
+/// @brief Tone-map one non-overlapping band of packed RGB pixels.
+/// @param ctx_ptr Pointer to a fully initialized `postfx_tonemap_band_ctx`.
+/// @param y0 Inclusive first row to process.
+/// @param y1 Exclusive row limit.
 static void apply_tonemap_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     const postfx_tonemap_band_ctx *bc = (const postfx_tonemap_band_ctx *)ctx_ptr;
     float *buf = bc->buf;
@@ -964,6 +1040,14 @@ static void apply_tonemap_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     }
 }
 
+/// @brief Apply the selected exposure, tone curve, and display gamma transform.
+/// @param fx PostFX chain providing row-band parallelism.
+/// @param buf Packed linear RGB framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param mode Tone-map mode: zero for passthrough, one for Reinhard, or two for ACES.
+/// @param exposure Linear exposure multiplier applied before the tone curve.
+/// @param hdr_gamma Non-zero when mode zero must still convert linear HDR input to display gamma.
 static void apply_tonemap(rt_postfx3d *fx,
                           float *buf,
                           int32_t w,
@@ -1002,6 +1086,10 @@ typedef struct {
     float min_thresh;
 } postfx_fxaa_band_ctx;
 
+/// @brief Detect and smooth contrast edges in one FXAA row band.
+/// @param ctx_ptr Pointer to a fully initialized `postfx_fxaa_band_ctx`.
+/// @param band_y0 Inclusive first row assigned to the band.
+/// @param band_y1 Exclusive row limit assigned to the band.
 static void apply_fxaa_rows(void *ctx_ptr, int32_t band_y0, int32_t band_y1) {
     const postfx_fxaa_band_ctx *bc = (const postfx_fxaa_band_ctx *)ctx_ptr;
     float *buf = bc->buf;
@@ -1068,6 +1156,14 @@ static void apply_fxaa_rows(void *ctx_ptr, int32_t band_y0, int32_t band_y1) {
         }
 }
 
+/// @brief Apply the simplified order-independent FXAA filter through a copy-out buffer.
+/// @param fx PostFX chain providing row-band parallelism.
+/// @param buf Packed RGB framebuffer modified in place after filtering.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param edge_thresh Relative luminance-range threshold for edge detection.
+/// @param min_thresh Absolute lower bound for the edge threshold.
+/// @param scratch Reusable allocation supplying the copy-out buffer.
 static void apply_fxaa(rt_postfx3d *fx,
                        float *buf,
                        int32_t w,
@@ -1111,6 +1207,10 @@ typedef struct {
     float saturation;
 } postfx_grade_band_ctx;
 
+/// @brief Apply brightness, contrast, and saturation adjustments to one row band.
+/// @param ctx_ptr Pointer to a fully initialized `postfx_grade_band_ctx`.
+/// @param y0 Inclusive first row to process.
+/// @param y1 Exclusive row limit.
 static void apply_color_grade_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     const postfx_grade_band_ctx *bc = (const postfx_grade_band_ctx *)ctx_ptr;
     float *buf = bc->buf;
@@ -1137,6 +1237,14 @@ static void apply_color_grade_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     }
 }
 
+/// @brief Apply color grading across the packed RGB framebuffer.
+/// @param fx PostFX chain providing row-band parallelism.
+/// @param buf Packed RGB framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param brightness Signed channel offset.
+/// @param contrast Scale around middle gray.
+/// @param saturation Chroma scale relative to Rec. 709 luminance.
 static void apply_color_grade(rt_postfx3d *fx,
                               float *buf,
                               int32_t w,
@@ -1171,6 +1279,10 @@ typedef struct {
     float softness;
 } postfx_vignette_band_ctx;
 
+/// @brief Apply the radial vignette multiplier to one row band.
+/// @param ctx_ptr Pointer to a fully initialized `postfx_vignette_band_ctx`.
+/// @param y0 Inclusive first row to process.
+/// @param y1 Exclusive row limit.
 static void apply_vignette_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     const postfx_vignette_band_ctx *bc = (const postfx_vignette_band_ctx *)ctx_ptr;
     float *buf = bc->buf;
@@ -1191,6 +1303,13 @@ static void apply_vignette_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
         }
 }
 
+/// @brief Apply a resolution-independent radial vignette to a packed RGB framebuffer.
+/// @param fx PostFX chain providing row-band parallelism.
+/// @param buf Packed RGB framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param radius Normalized distance at which attenuation begins.
+/// @param softness Normalized width of the attenuation ramp.
 static void apply_vignette(
     rt_postfx3d *fx, float *buf, int32_t w, int32_t h, float radius, float softness) {
     postfx_vignette_band_ctx ctx;
@@ -1221,6 +1340,9 @@ static void apply_vignette(
 ///          exposure + gamma-out transform (Plan 05 gamma fix), so the final 8-bit
 ///          conversion must treat the buffer as already display-encoded. On LDR sources
 ///          mode 0 stays a passthrough identity and doesn't count.
+/// @param fx PostFX chain to inspect.
+/// @param hdr_active Non-zero when the source buffer contains linear HDR values.
+/// @return 1 when an enabled entry performs the display transform, or 0 otherwise.
 static int postfx_chain_has_tonemap(const rt_postfx3d *fx, int hdr_active) {
     int32_t effect_count = postfx3d_safe_effect_count(fx);
     if (!fx || !fx->enabled || effect_count <= 0)
@@ -1242,6 +1364,9 @@ static int postfx_chain_has_tonemap(const rt_postfx3d *fx, int hdr_active) {
  *=========================================================================*/
 
 /// @brief Convenience wrappers over postfx_scratch_reserve for float-count sizing.
+/// @param scratch Scratch descriptor whose primary allocation may grow.
+/// @param float_count Number of float elements required.
+/// @return The reusable primary buffer, or `NULL` for invalid size or allocation failure.
 static float *postfx_scratch_primary(postfx_scratch_t *scratch, size_t float_count) {
     if (!scratch || float_count == 0 || float_count > SIZE_MAX / sizeof(float))
         return NULL;
@@ -1249,6 +1374,10 @@ static float *postfx_scratch_primary(postfx_scratch_t *scratch, size_t float_cou
         &scratch->primary, &scratch->primary_bytes, float_count * sizeof(float), 0);
 }
 
+/// @brief Reserve the secondary reusable scratch allocation by float count.
+/// @param scratch Scratch descriptor whose secondary allocation may grow.
+/// @param float_count Number of float elements required.
+/// @return The reusable secondary buffer, or `NULL` for invalid size or allocation failure.
 static float *postfx_scratch_secondary(postfx_scratch_t *scratch, size_t float_count) {
     if (!scratch || float_count == 0 || float_count > SIZE_MAX / sizeof(float))
         return NULL;
@@ -1277,6 +1406,9 @@ typedef struct {
 } postfx_scene_in_t;
 
 /// @brief Adjugate 4x4 inverse (row-major float). Returns 0 on singular input.
+/// @param m Sixteen-element source matrix in row-major order.
+/// @param[out] out Sixteen-element destination receiving the inverse on success.
+/// @return 1 when the matrix is invertible and finite, or 0 for singular input.
 static int postfx_mat4_invert(const float *m, float *out) {
     float inv[16];
     inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] +
@@ -1321,6 +1453,10 @@ static int postfx_mat4_invert(const float *m, float *out) {
 }
 
 /// @brief Fetch NDC depth at (x,y), or FLT_MAX when empty/out of range.
+/// @param sc Scene-input descriptor containing the optional depth buffer.
+/// @param x Horizontal pixel coordinate.
+/// @param y Vertical pixel coordinate.
+/// @return The stored NDC depth, or `FLT_MAX` when depth is unavailable or out of bounds.
 static inline float postfx_depth_at(const postfx_scene_in_t *sc, int32_t x, int32_t y) {
     if (!sc || !sc->has_depth || x < 0 || y < 0 || x >= sc->depth_w || y >= sc->depth_h)
         return FLT_MAX;
@@ -1328,6 +1464,9 @@ static inline float postfx_depth_at(const postfx_scene_in_t *sc, int32_t x, int3
 }
 
 /// @brief Convert NDC depth ([-1,1]) to camera-space linear depth.
+/// @param sc Scene inputs supplying the near and far clip distances.
+/// @param ndc_z Normalized-device-coordinate depth.
+/// @return Positive camera-space depth, with safe clip-plane fallbacks for invalid metadata.
 static inline float postfx_linear_depth(const postfx_scene_in_t *sc, float ndc_z) {
     float n = sc->cam_near > 1e-5f ? sc->cam_near : 0.1f;
     float f = sc->cam_far > n * 1.001f ? sc->cam_far : n * 1000.0f;
@@ -1339,6 +1478,14 @@ static inline float postfx_linear_depth(const postfx_scene_in_t *sc, float ndc_z
 }
 
 /// @brief Reconstruct the render-space world position of pixel (x,y) at @p ndc_z.
+/// @param sc Scene inputs supplying the inverse view-projection matrix.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param x Horizontal pixel coordinate.
+/// @param y Vertical pixel coordinate.
+/// @param ndc_z Normalized-device-coordinate depth at the pixel.
+/// @param[out] out Three-element destination for the reconstructed world position.
+/// @return 1 when a finite position was reconstructed, or 0 when inputs are invalid.
 static inline int postfx_world_at(const postfx_scene_in_t *sc,
                                   int32_t w,
                                   int32_t h,
@@ -1364,6 +1511,12 @@ static inline int postfx_world_at(const postfx_scene_in_t *sc,
 }
 
 /// @brief Project a render-space point with @p vp; returns pixel coords + NDC z.
+/// @param vp Sixteen-element view-projection matrix in row-major order.
+/// @param world Three-element render-space position.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param[out] out_xyz Destination receiving pixel x, pixel y, and NDC depth.
+/// @return 1 when the point projects in front of the camera with finite coordinates.
 static inline int postfx_project(
     const float *vp, const float world[3], int32_t w, int32_t h, float out_xyz[3]) {
     float cx = vp[0] * world[0] + vp[1] * world[1] + vp[2] * world[2] + vp[3];
@@ -1406,6 +1559,10 @@ typedef struct {
     size_t count;
 } postfx_ssao_band_ctx;
 
+/// @brief Compute raw depth-derived ambient occlusion for one row band.
+/// @param ctx_ptr Pointer to a fully initialized `postfx_ssao_band_ctx`.
+/// @param y0 Inclusive first row to process.
+/// @param y1 Exclusive row limit.
 static void apply_ssao_occlusion_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     const postfx_ssao_band_ctx *bc = (const postfx_ssao_band_ctx *)ctx_ptr;
     const postfx_scene_in_t *sc = bc->sc;
@@ -1450,6 +1607,10 @@ static void apply_ssao_occlusion_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     }
 }
 
+/// @brief Apply the SSAO 3-by-3 spatial blur to one row band.
+/// @param ctx_ptr Pointer to a `postfx_ssao_band_ctx` containing raw and blurred AO buffers.
+/// @param y0 Inclusive first row to process.
+/// @param y1 Exclusive row limit.
 static void apply_ssao_blur_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     const postfx_ssao_band_ctx *bc = (const postfx_ssao_band_ctx *)ctx_ptr;
     const float *ao = bc->ao;
@@ -1475,6 +1636,10 @@ static void apply_ssao_blur_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     }
 }
 
+/// @brief Multiply planar framebuffer channels by blurred AO for one row band.
+/// @param ctx_ptr Pointer to a `postfx_ssao_band_ctx` containing framebuffer and AO buffers.
+/// @param y0 Inclusive first row to process.
+/// @param y1 Exclusive row limit.
 static void apply_ssao_modulate_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     const postfx_ssao_band_ctx *bc = (const postfx_ssao_band_ctx *)ctx_ptr;
     const float *ao_blur = bc->ao_blur;
@@ -1490,6 +1655,16 @@ static void apply_ssao_modulate_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     }
 }
 
+/// @brief Apply the complete CPU SSAO pipeline using depth comparisons and a spatial blur.
+/// @param fx PostFX chain providing row-band parallelism.
+/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param sc Scene inputs supplying a matching NDC depth buffer.
+/// @param radius World-relative occlusion sampling radius.
+/// @param intensity Occlusion strength, normalized to the supported range.
+/// @param samples Requested Poisson tap count, clamped between four and twelve.
+/// @param scratch Reusable primary and secondary allocations for AO stages.
 static void apply_ssao_cpu(rt_postfx3d *fx,
                            float *fbuf,
                            int32_t w,
@@ -1534,6 +1709,14 @@ static void apply_ssao_cpu(rt_postfx3d *fx,
 }
 
 /// @brief DOF: circle-of-confusion gather blur; CoC from |linear - focus| / aperture.
+/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param sc Scene inputs supplying a matching NDC depth buffer.
+/// @param focus_distance Camera-space distance of the focus plane.
+/// @param aperture Distance scale controlling the circle of confusion.
+/// @param max_blur User-facing maximum blur amount, converted to a bounded pixel radius.
+/// @param scratch Reusable allocation used to preserve the unblurred framebuffer.
 static void apply_dof_cpu(float *fbuf,
                           int32_t w,
                           int32_t h,
@@ -1617,6 +1800,13 @@ static void apply_dof_cpu(float *fbuf,
 
 /// @brief Motion blur: camera-reprojection velocity, up to 6 samples along it.
 ///   Per-object velocity is a documented divergence from the GPU path.
+/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param sc Scene inputs supplying depth, inverse projection, and prior-frame projection.
+/// @param strength Scale applied to the reconstructed screen-space velocity.
+/// @param samples Requested gather count, clamped between two and six.
+/// @param scratch Reusable allocation used to preserve the source framebuffer.
 static void apply_motion_blur_cpu(float *fbuf,
                                   int32_t w,
                                   int32_t h,
@@ -1689,6 +1879,13 @@ static void apply_motion_blur_cpu(float *fbuf,
 
 /// @brief SSR: coarse screen-space march along the depth-reconstructed reflection ray.
 ///   Misses keep the base color (no environment fallback on CPU — documented).
+/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param sc Scene inputs supplying depth, camera position, and projection matrices.
+/// @param intensity Blend weight applied to successful reflection hits.
+/// @param steps Requested ray-march iteration count, clamped between four and sixteen.
+/// @param scratch Reusable allocation used to preserve the source framebuffer.
 static void apply_ssr_cpu(float *fbuf,
                           int32_t w,
                           int32_t h,
@@ -1809,6 +2006,13 @@ static void apply_ssr_cpu(float *fbuf,
 ///   (0.18), clamped to [min_ev, max_ev] in stops. Smoothing uses a fixed
 ///   deterministic 1/60 s step; downward adaptation runs 2.5x faster than
 ///   upward for the classic cinematic feel.
+/// @param fx PostFX chain storing the temporally smoothed exposure state.
+/// @param fbuf Planar RGB float framebuffer scaled in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param min_ev Minimum permitted exposure value in stops.
+/// @param max_ev Maximum permitted exposure value in stops.
+/// @param adapt_speed Temporal adaptation rate.
 static void apply_auto_exposure_cpu(rt_postfx3d *fx,
                                     float *fbuf,
                                     int32_t w,
@@ -1863,6 +2067,11 @@ static void apply_auto_exposure_cpu(rt_postfx3d *fx,
 }
 
 /// @brief 3D LUT color grade from a 256x16 strip (16 tiles of 16x16), trilinear.
+/// @param fx PostFX chain owning the retained lookup-table Pixels object.
+/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param blend Lookup-table blend weight, clamped to the unit interval.
 static void apply_color_lut_cpu(
     const rt_postfx3d *fx, float *fbuf, int32_t w, int32_t h, float blend) {
     size_t count = (size_t)w * (size_t)h;
@@ -1916,6 +2125,14 @@ static void apply_color_lut_cpu(
 ///   primary directional light's projected position (classic god rays). Sky =
 ///   pixels with no depth (cleared FLT_MAX); occluders carve dark wedges for free.
 ///   No-ops when the sun projects far off-screen or behind the camera.
+/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param sc Scene inputs supplying depth and the projected sun position.
+/// @param intensity Additive shaft strength.
+/// @param decay Per-sample radial attenuation factor.
+/// @param samples Requested radial sample count, clamped between eight and forty-eight.
+/// @param scratch Reusable allocation used for the sky luminance mask.
 static void apply_sun_shafts_cpu(float *fbuf,
                                  int32_t w,
                                  int32_t h,
@@ -1992,6 +2209,12 @@ static void apply_sun_shafts_cpu(float *fbuf,
 ///   perturb every rasterized sample. On this path TAA therefore acts as reprojected
 ///   temporal smoothing (stabilizing motion, not resolving new edge coverage); the GPU
 ///   backends run the full Halton-jittered TAA resolve.
+/// @param fx PostFX chain owning the persistent history buffer and its validity state.
+/// @param fbuf Planar RGB float framebuffer modified in place and copied into history.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param sc Optional scene inputs used to reproject history into the current frame.
+/// @param blend History contribution, clamped below one to retain current-frame influence.
 static void apply_taa_cpu(
     rt_postfx3d *fx, float *fbuf, int32_t w, int32_t h, const postfx_scene_in_t *sc, float blend) {
     size_t count = (size_t)w * (size_t)h;
@@ -2113,6 +2336,12 @@ static void apply_taa_cpu(
 ///          is the whole point of running this before `postfx_apply` touches the
 ///          integer framebuffer. @p hdr_active selects the linear-HDR source behavior
 ///          for explicit mode-0 tonemap entries (gamma-out; see `apply_tonemap`).
+/// @param fx PostFX chain whose enabled entries are applied in insertion order.
+/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param hdr_active Non-zero when @p fbuf contains linear HDR source values.
+/// @param scene Optional scene inputs for depth- and history-aware CPU effects.
 static void postfx_apply_float_effects(rt_postfx3d *fx,
                                        float *fbuf,
                                        int32_t w,
@@ -2239,6 +2468,12 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
 ///   enabled CPU effect in insertion order, then writes RGB back with alpha preserved.
 ///   SSAO, DOF, and motion blur require GPU scene depth/motion buffers and are rejected
 ///   before this helper is called.
+/// @param fx PostFX chain whose enabled entries are applied.
+/// @param pixels Mutable RGBA8 framebuffer.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param stride Byte distance between consecutive framebuffer rows.
+/// @param scene Optional scene inputs for depth- and history-aware effects.
 static void postfx_apply(rt_postfx3d *fx,
                          uint8_t *pixels,
                          int32_t w,
@@ -2287,6 +2522,8 @@ static void postfx_apply(rt_postfx3d *fx,
 /// @details Copies the HDR RGBA16F buffer into a temporary packed RGB float buffer, applies
 ///          the enabled post-fx chain (tone mapping, bloom, color grading, etc.), then
 ///          writes the result back into the 8-bit UNORM color buffer for display/readback.
+/// @param fx PostFX chain whose enabled entries are applied.
+/// @param target Render target providing HDR source storage and mutable LDR output storage.
 static void postfx_apply_hdr_target(rt_postfx3d *fx, vgfx3d_rendertarget_t *target) {
     size_t count;
     size_t fbuf_bytes;
@@ -2336,9 +2573,9 @@ static void postfx_apply_hdr_target(rt_postfx3d *fx, vgfx3d_rendertarget_t *targ
  * PostFX3D lifecycle + API
  *=========================================================================*/
 
-/// @brief GC finalizer for `PostFX3D`. Frees the heap-allocated effect array and zeroes
-/// capacity/count so a dangling pointer re-use would fail cleanly. No other resources
-/// are owned by the object — backend snapshots are rebuilt on each frame.
+/// @brief Release all heap buffers, retained objects, and the worker pool owned by PostFX3D.
+/// @details Backend snapshots are rebuilt independently and are not owned by this object.
+/// @param obj PostFX3D runtime object being finalized; ignored when `NULL`.
 static void rt_postfx3d_finalize(void *obj) {
     rt_postfx3d *fx = (rt_postfx3d *)obj;
     if (!fx)
@@ -2379,6 +2616,7 @@ static void rt_postfx3d_finalize(void *obj) {
 /// `_add_bloom` / `_add_tonemap` / etc. The internal `effects` array is lazily
 /// allocated on the first append, so a never-used chain pays zero extra memory
 /// beyond the wrapper struct.
+/// @return A new GC-managed PostFX3D object, or `NULL` after trapping on allocation failure.
 void *rt_postfx3d_new(void) {
     rt_postfx3d *fx =
         (rt_postfx3d *)rt_obj_new_i64(RT_G3D_POSTFX3D_CLASS_ID, (int64_t)sizeof(rt_postfx3d));
@@ -2399,6 +2637,10 @@ void *rt_postfx3d_new(void) {
 /// @brief Append a Bloom effect: extracts pixels brighter than `threshold`, blurs `blur_passes`
 /// times, then composites back at `intensity` strength. Common values: threshold 0.8–1.0,
 /// intensity 0.3–1.5, passes 2–6.
+/// @param obj PostFX3D chain receiving the effect.
+/// @param threshold Non-negative bright-extract luminance threshold.
+/// @param intensity Non-negative composite strength.
+/// @param blur_passes Requested mip-chain depth, sanitized for internal storage.
 void rt_postfx3d_add_bloom(void *obj, double threshold, double intensity, int64_t blur_passes) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2416,6 +2658,9 @@ void rt_postfx3d_add_bloom(void *obj, double threshold, double intensity, int64_
 
 /// @brief Append a tone-map (HDR → LDR compression). `mode`: 0 = off, 1 = Reinhard,
 /// 2 = ACES filmic. `exposure` scales the input before mapping (typical 0.5–2.0).
+/// @param obj PostFX3D chain receiving the effect.
+/// @param mode Tone-map selector clamped to the supported zero-through-two range.
+/// @param exposure Non-negative linear exposure multiplier.
 void rt_postfx3d_add_tonemap(void *obj, int64_t mode, double exposure) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2432,6 +2677,7 @@ void rt_postfx3d_add_tonemap(void *obj, int64_t mode, double exposure) {
 
 /// @brief Append FXAA (Fast Approximate Anti-Aliasing). Smooths jagged edges by detecting
 /// luminance discontinuities. Defaults to standard edge-threshold 0.166 / min-threshold 0.0833.
+/// @param obj PostFX3D chain receiving the effect.
 void rt_postfx3d_add_fxaa(void *obj) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2450,6 +2696,10 @@ void rt_postfx3d_add_fxaa(void *obj) {
 /// @details `brightness` is a signed additive offset centered on 0.0. `contrast` scales around
 /// mid-grey (0.5) and `saturation` interpolates from grayscale; both are multipliers centered
 /// on 1.0.
+/// @param obj PostFX3D chain receiving the effect.
+/// @param brightness Signed channel offset clamped to the supported range.
+/// @param contrast Scale around middle gray, where one is neutral.
+/// @param saturation Chroma scale relative to luminance, where one is neutral.
 void rt_postfx3d_add_color_grade(void *obj, double brightness, double contrast, double saturation) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2467,6 +2717,9 @@ void rt_postfx3d_add_color_grade(void *obj, double brightness, double contrast, 
 
 /// @brief Append a vignette (radial darkening toward edges). `radius` is the bright region
 /// before corner-normalized falloff starts; `softness` controls the falloff width.
+/// @param obj PostFX3D chain receiving the effect.
+/// @param radius Normalized unaffected radius, clamped to the unit interval.
+/// @param softness Width of the radial attenuation ramp.
 void rt_postfx3d_add_vignette(void *obj, double radius, double softness) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2483,6 +2736,8 @@ void rt_postfx3d_add_vignette(void *obj, double radius, double softness) {
 
 /// @brief Master enable/disable for the entire effect chain. Disabled = framebuffer passes
 /// through unchanged. Individual effects keep their own configuration.
+/// @param obj PostFX3D chain to update.
+/// @param enabled Non-zero to enable chain application, or zero to bypass it.
 void rt_postfx3d_set_enabled(void *obj, int8_t enabled) {
     rt_postfx3d *fx = postfx3d_checked(obj);
     if (fx)
@@ -2490,12 +2745,15 @@ void rt_postfx3d_set_enabled(void *obj, int8_t enabled) {
 }
 
 /// @brief Returns 1 if the post-FX chain is currently enabled.
+/// @param obj Candidate PostFX3D chain.
+/// @return 1 when the object is a valid enabled chain, or 0 otherwise.
 int8_t rt_postfx3d_get_enabled(void *obj) {
     rt_postfx3d *fx = postfx3d_checked(obj);
     return fx && fx->enabled ? 1 : 0;
 }
 
 /// @brief Drop every effect in the chain (fresh state). Master enable flag preserved.
+/// @param obj PostFX3D chain whose effect entries are cleared.
 void rt_postfx3d_clear(void *obj) {
     rt_postfx3d *fx = postfx3d_checked(obj);
     if (!fx)
@@ -2507,6 +2765,8 @@ void rt_postfx3d_clear(void *obj) {
 }
 
 /// @brief Number of effects currently in the chain.
+/// @param obj Candidate PostFX3D chain.
+/// @return The bounded number of stored effects, or zero for an invalid chain.
 int64_t rt_postfx3d_get_effect_count(void *obj) {
     rt_postfx3d *fx = postfx3d_checked(obj);
     return postfx3d_safe_effect_count(fx);
@@ -2516,6 +2776,9 @@ int64_t rt_postfx3d_get_effect_count(void *obj) {
  * Canvas3D integration
  *=========================================================================*/
 
+/// @brief Determine whether a canvas can execute backend GPU scene-aware effects.
+/// @param c Canvas to inspect.
+/// @return 1 for a window-backed canvas with a post-FX presentation hook, or 0 otherwise.
 static int postfx3d_canvas_supports_gpu_scene_effects(const rt_canvas3d *c);
 
 /// @brief Attach a PostFX3D chain to a Canvas3D. Pass NULL to detach. The canvas retains a
@@ -2524,6 +2787,8 @@ static int postfx3d_canvas_supports_gpu_scene_effects(const rt_canvas3d *c);
 ///   are validated against the canvas at bind time. On an unsupported canvas the bind is
 ///   refused and the reason is recorded on the chain (`PostFX3D.LastError`) instead of
 ///   trapping at first apply — supporting the capability-gated-fallback pattern games use.
+/// @param canvas Canvas3D receiving or releasing the retained chain reference.
+/// @param postfx PostFX3D chain to attach, or `NULL` to detach the current chain.
 void rt_canvas3d_set_post_fx(void *canvas, void *postfx) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     if (!c)
@@ -2546,6 +2811,8 @@ void rt_canvas3d_set_post_fx(void *canvas, void *postfx) {
 }
 
 /// @brief Last recoverable PostFX configuration error ("" when none) — see SetPostFX.
+/// @param obj Candidate PostFX3D chain.
+/// @return A new runtime string containing the last error, or an empty string when none exists.
 rt_string rt_postfx3d_get_last_error(void *obj) {
     rt_postfx3d *fx = postfx3d_checked(obj);
     const char *msg = fx ? fx->last_error : "";
@@ -2558,6 +2825,8 @@ enum {
 };
 
 /// @brief Clamp an arbitrary quality value to the valid PERFORMANCE..CINEMATIC range.
+/// @param quality Requested runtime quality value.
+/// @return The corresponding supported quality constant after endpoint clamping.
 static int32_t postfx3d_quality_level(int64_t quality) {
     if (quality < RT_GRAPHICS3D_QUALITY_PERFORMANCE)
         return RT_GRAPHICS3D_QUALITY_PERFORMANCE;
@@ -2569,11 +2838,15 @@ static int32_t postfx3d_quality_level(int64_t quality) {
 /// @brief True if the canvas can run GPU scene-buffer effects (SSAO/DoF/motion blur):
 ///   it must have a backend with a present_postfx hook and be rendering to the window
 ///   (no offscreen render target).
+/// @param c Canvas to inspect.
+/// @return 1 when GPU scene-aware post-processing is available, or 0 otherwise.
 static int postfx3d_canvas_supports_gpu_scene_effects(const rt_canvas3d *c) {
     return c && c->backend && c->backend->present_postfx && c->render_target == NULL;
 }
 
 /// @brief Human-readable text for a quality-fallback reason code (empty when none).
+/// @param reason Internal quality-fallback reason code.
+/// @return Static null-terminated reason text, or an empty string for no known reason.
 static const char *postfx3d_quality_fallback_reason_text(int32_t reason) {
     switch (reason) {
         case POSTFX3D_QUALITY_FALLBACK_GPU_POSTFX_UNAVAILABLE:
@@ -2587,6 +2860,9 @@ static const char *postfx3d_quality_fallback_reason_text(int32_t reason) {
 ///   (performance/balanced/cinematic) and record the requested/active quality on the
 ///   canvas. Cinematic adds GPU scene effects only when supported, otherwise it records
 ///   a quality fallback so callers can report the downgrade.
+/// @param fx PostFX chain to clear and populate with the preset entries.
+/// @param canvas Optional canvas whose quality and fallback metadata is updated.
+/// @param quality Normalized quality constant selecting the preset.
 static void postfx3d_configure_quality_profile(rt_postfx3d *fx,
                                                rt_canvas3d *canvas,
                                                int32_t quality) {
@@ -2639,6 +2915,10 @@ static void postfx3d_configure_quality_profile(rt_postfx3d *fx,
 }
 
 /// @brief Build a backend-safe PostFX chain for a canvas and requested quality level.
+/// @param canvas Canvas used for validation and quality-state tracking.
+/// @param quality Requested quality value, clamped to the supported range.
+/// @return A new configured PostFX3D chain, or `NULL` when the canvas is invalid or allocation
+///   fails.
 void *rt_postfx3d_new_quality(void *canvas, int64_t quality) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     if (!c)
@@ -2651,6 +2931,8 @@ void *rt_postfx3d_new_quality(void *canvas, int64_t quality) {
 }
 
 /// @brief Apply a backend-safe quality profile to a Canvas3D.
+/// @param canvas Canvas receiving the newly constructed retained PostFX chain.
+/// @param quality Requested quality value, clamped to the supported range.
 void rt_canvas3d_set_quality(void *canvas, int64_t quality) {
     void *fx = rt_postfx3d_new_quality(canvas, quality);
     if (!fx)
@@ -2661,24 +2943,32 @@ void rt_canvas3d_set_quality(void *canvas, int64_t quality) {
 }
 
 /// @brief Get the last quality level requested via SetQuality. See header.
+/// @param canvas Canvas whose requested quality is queried.
+/// @return The normalized requested quality, or performance for an invalid canvas.
 int64_t rt_canvas3d_get_quality_requested(void *canvas) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     return c ? postfx3d_quality_level(c->quality_requested) : RT_GRAPHICS3D_QUALITY_PERFORMANCE;
 }
 
 /// @brief Get the quality level actually active after capability fallback. See header.
+/// @param canvas Canvas whose active quality is queried.
+/// @return The normalized active quality, or performance for an invalid canvas.
 int64_t rt_canvas3d_get_quality_active(void *canvas) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     return c ? postfx3d_quality_level(c->quality_active) : RT_GRAPHICS3D_QUALITY_PERFORMANCE;
 }
 
 /// @brief True if the last quality application was degraded for backend safety. See header.
+/// @param canvas Canvas whose fallback state is queried.
+/// @return 1 when the last profile was degraded, or 0 otherwise.
 int8_t rt_canvas3d_get_quality_fallback(void *canvas) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     return c && c->quality_fallback ? 1 : 0;
 }
 
 /// @brief Get a human-readable reason for the last quality fallback (empty if none). See header.
+/// @param canvas Canvas whose fallback reason is queried.
+/// @return A new runtime string containing the reason, or an empty string when no fallback exists.
 rt_string rt_canvas3d_get_quality_fallback_reason(void *canvas) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     const char *reason = c ? postfx3d_quality_fallback_reason_text(c->quality_fallback_reason) : "";
@@ -2688,6 +2978,7 @@ rt_string rt_canvas3d_get_quality_fallback_reason(void *canvas) {
 /// @brief Apply the canvas's attached post-FX chain in place to its framebuffer pixels. Called
 /// from `rt_canvas3d_flip` after rendering completes. No-op if no chain attached / disabled /
 /// the framebuffer is unmapped (e.g., GPU-only window).
+/// @param canvas Canvas supplying the attached chain, framebuffer, and current scene inputs.
 void rt_postfx3d_apply_to_canvas(void *canvas) {
     uint8_t *pixels = NULL;
     int32_t width = 0;
@@ -2792,6 +3083,10 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
 /// @brief Append eye-adaptation auto-exposure. Target exposure centers the scene's
 /// geometric-mean luminance at middle gray, clamped to [minEv, maxEv] stops and
 /// smoothed by adaptSpeed (downward adaptation runs 2.5x faster).
+/// @param obj PostFX3D chain receiving the effect.
+/// @param min_ev Minimum exposure value in stops.
+/// @param max_ev Maximum exposure value in stops.
+/// @param adapt_speed Positive temporal adaptation rate.
 void rt_postfx3d_add_auto_exposure(void *obj, double min_ev, double max_ev, double adapt_speed) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2812,6 +3107,9 @@ void rt_postfx3d_add_auto_exposure(void *obj, double min_ev, double max_ev, doub
 /// @brief Append a 3D LUT color grade. @p lut_pixels is a 256x16 strip (16 tiles of
 /// 16x16: x = red, y = green, tile = blue), trilinear sampled, blended 0..1 with the
 /// ungraded color. The chain retains the Pixels.
+/// @param obj PostFX3D chain receiving the effect and retaining the LUT.
+/// @param lut_pixels Pixels object containing the required 256-by-16 LUT strip.
+/// @param blend LUT contribution clamped to the unit interval.
 void rt_postfx3d_add_color_lut(void *obj, void *lut_pixels, double blend) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2843,6 +3141,10 @@ void rt_postfx3d_add_color_lut(void *obj, void *lut_pixels, double blend) {
 /// @brief Append screen-space sun shafts: radial sky-mask accumulation toward the
 /// primary directional light's screen position; auto-fades when the sun is
 /// off-screen or behind the camera.
+/// @param obj PostFX3D chain receiving the effect.
+/// @param intensity Positive additive shaft strength.
+/// @param decay Per-sample attenuation in the open unit interval.
+/// @param samples Requested radial sample count, clamped between eight and forty-eight.
 void rt_postfx3d_add_sun_shafts(void *obj, double intensity, double decay, int64_t samples) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2865,6 +3167,7 @@ void rt_postfx3d_add_sun_shafts(void *obj, double intensity, double decay, int64
 /// @brief Build the identity 256x16 LUT strip. Screenshot it composited over a
 /// reference frame, grade the screenshot in any editor, crop the strip back out,
 /// and feed it to AddColorLUT — that is the whole grading workflow.
+/// @return A new 256-by-16 Pixels object encoding the identity RGB lookup table.
 void *rt_postfx3d_make_identity_lut(void) {
     void *pixels = rt_pixels_new(256, 16);
     rt_pixels_impl *pv = rt_pixels_checked_impl_or_null(pixels);
@@ -2888,6 +3191,10 @@ void *rt_postfx3d_make_identity_lut(void) {
 /// @brief Append SSAO (Screen-Space Ambient Occlusion). `radius` (world units) is the sample
 /// neighborhood; `intensity` is the darkening multiplier; `samples` controls quality (8..64).
 /// Higher `samples` = better quality but slower.
+/// @param obj PostFX3D chain receiving the effect.
+/// @param radius Non-negative world-space sampling radius.
+/// @param intensity Non-negative occlusion strength.
+/// @param samples Requested sample count, clamped to the backend descriptor range.
 void rt_postfx3d_add_ssao(void *obj, double radius, double intensity, int64_t samples) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2906,6 +3213,10 @@ void rt_postfx3d_add_ssao(void *obj, double radius, double intensity, int64_t sa
 /// @brief Append depth-of-field. `focus_distance` (world units) is the sharply-focused depth;
 /// `aperture` controls how quickly things outside that depth blur; `max_blur` caps the blur
 /// kernel radius in pixels. Larger aperture = shallower DOF.
+/// @param obj PostFX3D chain receiving the effect.
+/// @param focus_distance Non-negative camera-space focus distance.
+/// @param aperture Non-negative blur growth parameter.
+/// @param max_blur Maximum blur amount stored in the effect descriptor.
 void rt_postfx3d_add_dof(void *obj, double focus_distance, double aperture, double max_blur) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2925,6 +3236,9 @@ void rt_postfx3d_add_dof(void *obj, double focus_distance, double aperture, doub
 /// @details Walks the chain for the first enabled DOF entry and rewrites its
 ///          focus parameter — no topology change, no reallocation. Returns 0
 ///          (recoverable) when the chain has no DOF effect.
+/// @param obj PostFX3D chain containing the effect to update.
+/// @param distance New non-negative focus distance.
+/// @return 1 when an enabled DOF entry was updated, or 0 when none was found.
 int8_t rt_postfx3d_set_dof_focus(void *obj, double distance) {
     rt_postfx3d *fx = postfx3d_checked(obj);
     if (!fx)
@@ -2943,6 +3257,9 @@ int8_t rt_postfx3d_set_dof_focus(void *obj, double distance) {
 
 /// @brief Append per-pixel motion blur. `intensity` controls the blur length; `samples` is
 /// the per-pixel sample count along the motion vector (more = smoother but slower).
+/// @param obj PostFX3D chain receiving the effect.
+/// @param intensity Motion-vector length scale clamped to the unit interval.
+/// @param samples Requested sample count, clamped to the backend descriptor range.
 void rt_postfx3d_add_motion_blur(void *obj, double intensity, int64_t samples) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2959,9 +3276,11 @@ void rt_postfx3d_add_motion_blur(void *obj, double intensity, int64_t samples) {
 
 /// @brief Append a TAA (temporal antialiasing) resolve pass. `blend` is the history weight:
 /// each frame blends `blend` of the reprojected, neighborhood-clamped history with
-/// `1 - blend` of the current frame. Typical 0.85–0.95; clamped to [0.5, 0.98]. Requires a
-/// GPU window backend (motion + depth buffers); the CPU/software path rejects it like
-/// SSAO/DOF/motion blur.
+/// `1 - blend` of the current frame. Typical 0.85–0.95; clamped to [0.5, 0.98]. GPU
+/// backends can use motion and depth buffers, while the deterministic CPU path performs
+/// unjittered view-projection reprojection.
+/// @param obj PostFX3D chain receiving the effect.
+/// @param blend History weight clamped to the supported temporal range.
 void rt_postfx3d_add_taa(void *obj, double blend) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -2977,8 +3296,11 @@ void rt_postfx3d_add_taa(void *obj, double blend) {
 
 /// @brief Append screen-space reflections (Plan 10). Ray-marches the opaque scene in
 /// screen space for materials flagged `SsrEnabled`, compositing hits over the env-map
-/// term with screen-edge fade; misses keep the env-map reflection. GPU window backends
-/// only — the software path rejects it like SSAO/DOF/motion blur/TAA.
+/// term with screen-edge fade; misses keep the env-map reflection. The CPU path uses a
+/// lower-step deterministic depth reconstruction and keeps the base color on misses.
+/// @param obj PostFX3D chain receiving the effect.
+/// @param intensity Reflection-hit blend weight clamped to the unit interval.
+/// @param max_roughness Maximum material roughness eligible for backend SSR.
 void rt_postfx3d_add_ssr(void *obj, double intensity, double max_roughness) {
     postfx_entry_t *e;
     rt_postfx3d *fx = postfx3d_checked(obj);
@@ -3002,6 +3324,7 @@ void rt_postfx3d_add_ssr(void *obj, double intensity, double max_roughness) {
 /// its effect-descriptor storage. Used by the GPU frame loop to reuse a preallocated chain
 /// buffer across frames — zeroing the descriptors keeps the allocation warm while discarding
 /// last frame's contents. Pair with `_free` to release the buffer when the chain is retired.
+/// @param chain Backend-facing chain to reset; ignored when `NULL`.
 void vgfx3d_postfx_chain_reset(vgfx3d_postfx_chain_t *chain) {
     if (!chain)
         return;
@@ -3021,6 +3344,7 @@ void vgfx3d_postfx_chain_reset(vgfx3d_postfx_chain_t *chain) {
 
 /// @brief Release the effect-descriptor storage of a backend-facing chain and reset it to
 /// a freshly-initialised state. Used at backend teardown / canvas destruction. NULL-safe.
+/// @param chain Backend-facing chain whose allocation is released; ignored when `NULL`.
 void vgfx3d_postfx_chain_free(vgfx3d_postfx_chain_t *chain) {
     if (!chain)
         return;
@@ -3037,6 +3361,9 @@ void vgfx3d_postfx_chain_free(vgfx3d_postfx_chain_t *chain) {
 /// chain active" without inspecting `dst` further. Unused tail descriptors in `dst`
 /// are zeroed so a stale shader that over-reads sees explicit disables instead of
 /// garbage.
+/// @param dst Destination chain whose owned storage is reused or grown.
+/// @param src Source chain to copy; may be `NULL` to reset @p dst.
+/// @return 1 when an enabled non-empty chain was copied, or 0 when the destination was reset.
 int vgfx3d_postfx_chain_copy(vgfx3d_postfx_chain_t *dst, const vgfx3d_postfx_chain_t *src) {
     if (!dst)
         return 0;
@@ -3067,6 +3394,10 @@ int vgfx3d_postfx_chain_copy(vgfx3d_postfx_chain_t *dst, const vgfx3d_postfx_cha
 /// entries disabled / the target buffer couldn't be grown. The per-frame backend reads
 /// this into a local snapshot so later edits to the gameplay chain don't affect the
 /// in-flight frame.
+/// @param postfx Candidate gameplay-facing PostFX3D chain.
+/// @param[out] out Backend chain whose owned descriptor storage receives enabled effects.
+/// @return 1 when at least one enabled supported effect was exported, or 0 after resetting
+///   @p out.
 int vgfx3d_postfx_get_chain(void *postfx, vgfx3d_postfx_chain_t *out) {
     rt_postfx3d *fx;
     int32_t enabled_count = 0;
@@ -3123,6 +3454,9 @@ int vgfx3d_postfx_get_chain(void *postfx, vgfx3d_postfx_chain_t *out) {
 /// type appears more than once, later entries stomp earlier ones. Returns 1 when the
 /// chain is enabled and has ≥1 entry, 0 otherwise; `out` is always zeroed before use so
 /// disabled fields read as zero instead of garbage.
+/// @param postfx Candidate gameplay-facing PostFX3D chain.
+/// @param[out] out Legacy flat snapshot, always cleared before validation and export.
+/// @return 1 when at least one enabled supported effect was flattened, or 0 otherwise.
 int vgfx3d_postfx_get_snapshot(void *postfx, vgfx3d_postfx_snapshot_t *out) {
     rt_postfx3d *fx;
     int32_t valid_count = 0;

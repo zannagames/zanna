@@ -3,6 +3,17 @@
 // File: src/runtime/graphics/3d/physics/rt_physics3d_collision_narrowphase.inc  (#included from rt_physics3d_collision.c; not a standalone translation unit)
 // Purpose: Physics3D shape-specific narrow-phase primitive collision tests
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_physics3d_collision_narrowphase.inc
+ * @brief Implements primitive, oriented-box, mesh, capsule, and triangle collision tests.
+ *
+ * This fragment supplies the exact shape-level tests used by collider-pair
+ * dispatch. All successful tests return a normal from A toward B and a
+ * non-negative penetration depth, use bounded mesh traversal with safe
+ * fallbacks, and preserve oriented collider poses.
+ */
+
 /* --- Shape-specific narrow-phase collision tests ---
  * Normal always points A→B (matches impulse convention: a.vel -= j*n). */
 
@@ -10,6 +21,11 @@
 ///
 /// SAT picks the axis of minimum overlap as the separation direction.
 /// Normal points from A toward B (impulse convention: `a.vel -= j*n`).
+/// @param a First AABB proxy body.
+/// @param b Second AABB proxy body.
+/// @param normal Three-component output receiving the A-to-B minimum-overlap axis.
+/// @param depth Output receiving penetration depth.
+/// @return One when the boxes overlap with positive depth, otherwise zero.
 static int test_aabb_aabb(const rt_body3d *a, const rt_body3d *b, double *normal, double *depth) {
     double amn[3], amx[3], bmn[3], bmx[3];
     body_aabb(a, amn, amx);
@@ -44,6 +60,11 @@ static int test_aabb_aabb(const rt_body3d *a, const rt_body3d *b, double *normal
 /// Falls back to a +Y push when the centers are exactly coincident
 /// (otherwise the normal would be ill-defined and the impulse step
 /// would NaN out).
+/// @param a First sphere proxy body.
+/// @param b Second sphere proxy body.
+/// @param normal Three-component output receiving the A-to-B unit normal.
+/// @param depth Output receiving radial penetration depth.
+/// @return One when the spheres overlap, otherwise zero.
 static int test_sphere_sphere(const rt_body3d *a,
                               const rt_body3d *b,
                               double *normal,
@@ -77,6 +98,11 @@ static int test_sphere_sphere(const rt_body3d *a,
 /// If the sphere's center lies inside the AABB, falls back to the
 /// AABB-AABB pushout to avoid a degenerate zero-distance normal. The
 /// returned normal points from AABB to sphere.
+/// @param aabb Box proxy body.
+/// @param sph Sphere proxy body.
+/// @param normal Three-component output receiving the box-to-sphere normal.
+/// @param depth Output receiving penetration depth.
+/// @return One when the sphere overlaps the AABB, otherwise zero.
 static int test_aabb_sphere(const rt_body3d *aabb,
                             const rt_body3d *sph,
                             double *normal,
@@ -114,6 +140,8 @@ static int test_aabb_sphere(const rt_body3d *aabb,
 }
 
 /// @brief Whether `type` is one of the primitive shapes the narrow phase handles directly.
+/// @param type Collider3D type discriminator.
+/// @return One for box, sphere, or capsule types, otherwise zero.
 static int collider_type_is_simple(int64_t type) {
     return type == RT_COLLIDER3D_TYPE_BOX || type == RT_COLLIDER3D_TYPE_SPHERE ||
            type == RT_COLLIDER3D_TYPE_CAPSULE;
@@ -125,6 +153,10 @@ static int collider_type_is_simple(int64_t type) {
 /// a transient body so we can reuse the body-level narrow-phase tests.
 /// Applies the pose's scale to extents/radius/height. Returns 0 for
 /// non-simple shapes (the caller falls back to AABB-vs-AABB).
+/// @param pose World pose applied to the collider.
+/// @param collider Simple Collider3D handle to mirror.
+/// @param out Caller-provided Body3D storage receiving the proxy.
+/// @return One for a supported primitive collider, otherwise zero.
 int build_simple_proxy(const rt_collider_pose *pose, void *collider, rt_body3d *out) {
     double hx[3];
     int64_t type;
@@ -178,6 +210,9 @@ int build_simple_proxy(const rt_collider_pose *pose, void *collider, rt_body3d *
 
 /// @brief Compute a box collider's world half-extents by scaling its raw local
 ///   half-extents by the pose's absolute per-axis scale.
+/// @param collider Box Collider3D whose local extents are read.
+/// @param pose World pose providing scale.
+/// @param half_extents Three-component output receiving scaled half-extents.
 static void box_scaled_half_extents(void *collider,
                                     const rt_collider_pose *pose,
                                     double *half_extents) {
@@ -190,6 +225,8 @@ static void box_scaled_half_extents(void *collider,
 
 /// @brief Derive the pose's three orthonormal world axes (rows of its rotation) by
 ///   rotating the local basis vectors; degenerate axes fall back to the identity basis.
+/// @param pose World pose whose rotation defines the basis.
+/// @param axes Three-by-three output receiving normalized world axes.
 static void pose_rotation_axes(const rt_collider_pose *pose, double axes[3][3]) {
     const double local_x[3] = {1.0, 0.0, 0.0};
     const double local_y[3] = {0.0, 1.0, 0.0};
@@ -207,6 +244,11 @@ static void pose_rotation_axes(const rt_collider_pose *pose, double axes[3][3]) 
 
 /// @brief SAT helper: if @p penetration is the smallest seen so far, record it and the
 ///   signed separating axis as the current best (minimum-penetration) result.
+/// @param axis Three-component candidate unit axis.
+/// @param sign Direction sign orienting the axis from A toward B.
+/// @param penetration Candidate overlap depth.
+/// @param best_penetration In/out smallest overlap depth seen.
+/// @param best_axis Three-component output paired with @p best_penetration.
 static void obb_record_axis(const double *axis,
                             double sign,
                             double penetration,
@@ -221,6 +263,13 @@ static void obb_record_axis(const double *axis,
 }
 
 /// @brief Exact SAT test for two oriented box colliders.
+/// @param a_collider First box Collider3D.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_collider Second box Collider3D.
+/// @param b_pose World pose of @p b_collider.
+/// @param normal Three-component output receiving the A-to-B minimum-overlap axis.
+/// @param depth Output receiving penetration depth in world units.
+/// @return One when no SAT axis separates the boxes, otherwise zero.
 static int test_box_box_obb(void *a_collider,
                             const rt_collider_pose *a_pose,
                             void *b_collider,
@@ -327,6 +376,12 @@ static int test_box_box_obb(void *a_collider,
 }
 
 /// @brief Box-vs-sphere using the box's full oriented pose.
+/// @param box_collider Box Collider3D.
+/// @param box_pose World pose of @p box_collider.
+/// @param sphere Sphere proxy body.
+/// @param normal Three-component output receiving the box-to-sphere normal.
+/// @param depth Output receiving penetration depth.
+/// @return One when the sphere overlaps the oriented box, otherwise zero.
 static int test_box_sphere_pose(void *box_collider,
                                 const rt_collider_pose *box_pose,
                                 const rt_body3d *sphere,
@@ -376,6 +431,12 @@ static int test_box_sphere_pose(void *box_collider,
 }
 
 /// @brief Box-vs-capsule via adaptive sphere samples along the capsule axis.
+/// @param box_collider Box Collider3D.
+/// @param box_pose World pose of @p box_collider.
+/// @param capsule Capsule proxy body.
+/// @param normal Three-component output receiving the deepest box-to-capsule normal.
+/// @param depth Output receiving the deepest sampled penetration.
+/// @return One when any capsule-axis sample overlaps the box, otherwise zero.
 static int test_box_capsule_pose(void *box_collider,
                                  const rt_collider_pose *box_pose,
                                  const rt_body3d *capsule,
@@ -417,6 +478,13 @@ static int test_box_capsule_pose(void *box_collider,
 ///   routes to the matching box-box/box-sphere/box-capsule (etc.) test, flipping the
 ///   returned normal so it always points from A toward B. Returns 1 on overlap with
 ///   @p normal/@p depth filled, else 0.
+/// @param a_collider First primitive Collider3D.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_collider Second primitive Collider3D.
+/// @param b_pose World pose of @p b_collider.
+/// @param normal Three-component output receiving the A-to-B contact normal.
+/// @param depth Output receiving penetration depth.
+/// @return One when the supported primitive pair overlaps, otherwise zero.
 static int test_simple_collider_pose_collision(void *a_collider,
                                                const rt_collider_pose *a_pose,
                                                void *b_collider,
@@ -478,6 +546,11 @@ static int test_simple_collider_pose_collision(void *a_collider,
 /// collider, whose box pairs take the pose-aware OBB SAT path instead; this
 /// fallback only serves internal proxies and legacy cached-primitive bodies,
 /// which never carry a rotation that matters.
+/// @param a First primitive proxy body.
+/// @param b Second primitive proxy body.
+/// @param normal Three-component output receiving the A-to-B contact normal.
+/// @param depth Output receiving penetration depth.
+/// @return One when the primitive pair overlaps, otherwise zero.
 static int test_simple_collision(const rt_body3d *a,
                                  const rt_body3d *b,
                                  double *normal,
@@ -568,6 +641,15 @@ static int test_simple_collision(const rt_body3d *a,
 /// Same SAT logic as `test_aabb_aabb` but takes raw extents and centers
 /// so it can be used for compound child colliders that don't have a
 /// backing body.
+/// @param amn First AABB minimum corner.
+/// @param amx First AABB maximum corner.
+/// @param a_center First AABB center.
+/// @param bmn Second AABB minimum corner.
+/// @param bmx Second AABB maximum corner.
+/// @param b_center Second AABB center.
+/// @param normal Three-component output receiving the A-to-B minimum-overlap axis.
+/// @param depth Output receiving penetration depth.
+/// @return One when the raw bounds overlap with positive depth, otherwise zero.
 static int test_bounds_overlap(const double *amn,
                                const double *amx,
                                const double *a_center,
@@ -600,6 +682,11 @@ static int test_bounds_overlap(const double *amn,
 /// Implements the standard Voronoi-region algorithm from Real-Time
 /// Collision Detection (Ericson §5.1.5): tests whether `p` falls into
 /// the vertex, edge, or interior region and clamps accordingly.
+/// @param p Three-component query point.
+/// @param a First triangle vertex.
+/// @param b Second triangle vertex.
+/// @param c Third triangle vertex.
+/// @param closest Three-component output receiving the closest triangle point.
 static void closest_point_on_triangle(
     const double *p, const double *a, const double *b, const double *c, double *closest) {
     double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
@@ -694,6 +781,10 @@ static void closest_point_on_triangle(
 ///
 /// Falls back to +Y when the triangle is degenerate (zero area). The
 /// orientation depends on vertex order — caller may flip if needed.
+/// @param a First triangle vertex.
+/// @param b Second triangle vertex.
+/// @param c Third triangle vertex.
+/// @param normal Three-component output receiving the unit face normal.
 void triangle_normal(const double *a, const double *b, const double *c, double *normal) {
     double ab[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
     double ac[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
@@ -714,7 +805,17 @@ void triangle_normal(const double *a, const double *b, const double *c, double *
     }
 }
 
+/// @brief Ensure the mesh's physics triangle BVH matches its current geometry revision.
+/// @param mesh Mesh3D whose cached physics acceleration structure may rebuild.
+/// @return One when a valid BVH is available, otherwise zero.
 int mesh_physics_bvh_rebuild(rt_mesh3d *mesh);
+
+/// @brief Transform a local-space AABB into a conservative world-space AABB.
+/// @param pose World pose applied to the local bounds.
+/// @param mn Three-component local minimum corner.
+/// @param mx Three-component local maximum corner.
+/// @param out_min Three-component output receiving the world minimum.
+/// @param out_max Three-component output receiving the world maximum.
 void transform_local_aabb_to_world(const rt_collider_pose *pose,
                                    const float *mn,
                                    const float *mx,
@@ -724,6 +825,11 @@ void transform_local_aabb_to_world(const rt_collider_pose *pose,
 /// @brief Whether a sphere overlaps an axis-aligned box, via closest-point squared distance.
 /// @details Sums squared distance only on axes where the center lies outside [mn, mx] and compares
 ///          to radius² — no sqrt, and an inside-the-box center trivially intersects.
+/// @param mn AABB minimum corner.
+/// @param mx AABB maximum corner.
+/// @param center Sphere center.
+/// @param radius Non-negative sphere radius.
+/// @return One when the closed sphere intersects the AABB, otherwise zero.
 static int aabb_intersects_sphere_raw(const double *mn,
                                       const double *mx,
                                       const double *center,
@@ -748,6 +854,11 @@ static int aabb_intersects_sphere_raw(const double *mn,
 ///   parallelepiped whose AABB is the corner min/max); testing stored local BVH node
 ///   bounds against this box is conservative, so pruning stays safe while each node
 ///   visit skips the previous 8-corner local->world transform.
+/// @param pose Pose whose inverse transforms the world bounds.
+/// @param mn World-space AABB minimum corner.
+/// @param mx World-space AABB maximum corner.
+/// @param out_min Output receiving the conservative local minimum.
+/// @param out_max Output receiving the conservative local maximum.
 static void ph3d_world_aabb_to_local_bounds(const rt_collider_pose *pose,
                                             const double *mn,
                                             const double *mx,
@@ -774,6 +885,9 @@ static void ph3d_world_aabb_to_local_bounds(const rt_collider_pose *pose,
 /// @brief Conservative local-space radius for a world-space sphere under a pose's scale.
 /// @details A world sphere maps to a local ellipsoid with semi-axes radius/|scale_i|;
 ///   the bounding sphere of that ellipsoid has radius radius/min|scale_i|.
+/// @param pose Pose whose absolute scale maps world to local space.
+/// @param radius World-space sphere radius.
+/// @return Conservative non-negative local-space radius.
 static double ph3d_world_radius_to_local(const rt_collider_pose *pose, double radius) {
     double sx = pose_abs_scale_or_unit(pose->scale[0]);
     double sy = pose_abs_scale_or_unit(pose->scale[1]);
@@ -791,6 +905,12 @@ static double ph3d_world_radius_to_local(const rt_collider_pose *pose, double ra
 /// Traverses the mesh's BVH entirely in mesh-local space (query sphere transformed
 /// once) and tests only candidate leaf triangles, falling back to a full scan if
 /// BVH traversal cannot complete.
+/// @param mesh Triangle mesh to test.
+/// @param mesh_pose World pose applied to @p mesh.
+/// @param sphere Sphere proxy body.
+/// @param normal Three-component output receiving the deepest mesh-to-sphere normal.
+/// @param depth Output receiving the deepest penetration.
+/// @return One when any triangle overlaps the sphere, otherwise zero.
 static int test_meshlike_sphere(rt_mesh3d *mesh,
                                 const rt_collider_pose *mesh_pose,
                                 const rt_body3d *sphere,
@@ -981,6 +1101,12 @@ mesh_sphere_done:
 ///
 /// Samples at radius-relative spacing instead of a fixed small count, which
 /// avoids missing side contacts on long capsules.
+/// @param mesh Triangle mesh to test.
+/// @param mesh_pose World pose applied to @p mesh.
+/// @param capsule Capsule proxy body.
+/// @param normal Three-component output receiving the deepest mesh-to-capsule normal.
+/// @param depth Output receiving the deepest sampled penetration.
+/// @return One when any capsule-axis sample overlaps a triangle, otherwise zero.
 static int test_meshlike_capsule(rt_mesh3d *mesh,
                                  const rt_collider_pose *mesh_pose,
                                  const rt_body3d *capsule,
@@ -1025,6 +1151,8 @@ static int test_meshlike_capsule(rt_mesh3d *mesh,
 
 /// @brief Initialize a collider pose (identity scale) from a body's position and
 ///   orientation — used to bring a body proxy into the SAT routines.
+/// @param body Body3D proxy whose position and orientation are copied.
+/// @param pose Output receiving the corresponding unit-scale collider pose.
 static void body_pose_from_proxy(const rt_body3d *body, rt_collider_pose *pose) {
     collider_pose_identity(pose);
     if (!body)
@@ -1039,6 +1167,13 @@ static void body_pose_from_proxy(const rt_body3d *body, rt_collider_pose *pose) 
 /// @brief One SAT axis test for a triangle vs a box (in the box's local frame): project
 ///   both onto the normalized @p axis_in; returns 0 if they are separated, else 1 and
 ///   updates the running minimum-overlap axis/sign. Zero-length axes are skipped (return 1).
+/// @param tri Three triangle vertices in box-local space.
+/// @param he Three-component box half-extents.
+/// @param axis_in Candidate separating axis.
+/// @param best_depth In/out smallest overlap found.
+/// @param best_axis Three-component output paired with @p best_depth.
+/// @param best_sign Output orienting @p best_axis out of the box toward the triangle.
+/// @return Zero when the axis separates the shapes, otherwise one.
 static int test_triangle_box_local_axis(const double tri[3][3],
                                         const double he[3],
                                         const double axis_in[3],
@@ -1080,6 +1215,13 @@ static int test_triangle_box_local_axis(const double tri[3][3],
 ///   transforms the triangle into the box's local space and tests the 3 box axes, the
 ///   triangle normal, and the 9 edge cross-product axes. Returns 1 on overlap with the
 ///   world-space @p normal (pointing out of the box) and penetration @p depth.
+/// @param world_a First world-space triangle vertex.
+/// @param world_b Second world-space triangle vertex.
+/// @param world_c Third world-space triangle vertex.
+/// @param box Oriented box proxy body.
+/// @param normal Three-component output receiving the box-to-triangle normal.
+/// @param depth Output receiving minimum SAT penetration.
+/// @return One when no candidate axis separates the triangle and box, otherwise zero.
 static int test_triangle_box_obb(const double *world_a,
                                  const double *world_b,
                                  const double *world_c,
@@ -1139,6 +1281,12 @@ static int test_triangle_box_obb(const double *world_a,
 /// @brief Test a posed triangle mesh against a box body by traversing mesh BVH
 ///   candidates before the triangle-vs-OBB SAT test. Falls back to a full scan if
 ///   BVH traversal cannot complete.
+/// @param mesh Triangle mesh to test.
+/// @param mesh_pose World pose applied to @p mesh.
+/// @param box Oriented box proxy body.
+/// @param normal Three-component output receiving the deepest mesh-to-box normal.
+/// @param depth Output receiving the deepest triangle penetration.
+/// @return One when any mesh triangle overlaps the box, otherwise zero.
 static int test_meshlike_box(rt_mesh3d *mesh,
                              const rt_collider_pose *mesh_pose,
                              const rt_body3d *box,

@@ -31,6 +31,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_textureasset3d.c
+ * @brief Assembles the TextureAsset3D KTX2 loader and software codec implementation.
+ * @details Defines container limits and supported Vulkan format identifiers, then includes the
+ *          ownership/core, block-codec, BasisLZ, UASTC, and KTX2 parsing fragments into one
+ *          graphics-enabled translation unit. Native compressed mip payloads are retained for
+ *          capable backends while decoded Pixels fallbacks serve unsupported formats.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_textureasset3d.h"

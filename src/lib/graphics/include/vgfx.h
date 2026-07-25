@@ -885,29 +885,34 @@ int vgfx_get_clip(
 
 /// @brief Establish a temporary upper bound that ordinary clip operations cannot escape.
 /// @details Captures the current clip, intersects it with the requested rectangle, and makes the
-///          result an immutable limit until @ref vgfx_pop_clip_limit is called. While the limit is
-///          active, @ref vgfx_set_clip intersects each requested clip with the limit and
-///          @ref vgfx_clear_clip restores the limit instead of enabling full-window drawing. This
-///          lets retained compositors impose a damage rectangle while widgets continue using the
-///          existing set/clear clip API. The operation performs no allocation. Clip-limit scopes
-///          are intentionally non-nesting; a second push leaves all state unchanged and returns
-///          zero. Coordinates use the same drawing-coordinate space and coordinate scaling as
-///          @ref vgfx_set_clip. A non-positive extent establishes an empty limit.
+///          result an immutable limit until the matching @ref vgfx_pop_clip_limit. While a limit is
+///          active, @ref vgfx_set_clip intersects each requested clip with the innermost limit and
+///          @ref vgfx_clear_clip restores that limit instead of enabling full-window drawing. This
+///          lets retained compositors impose a damage rectangle — and internally clipping
+///          containers such as scroll views impose their content viewport — while descendants
+///          continue using the existing set/clear clip API. The operation performs no allocation.
+///          Scopes nest to a fixed depth: each nested limit is intersected with the enclosing one,
+///          and a push beyond the maximum depth leaves all state unchanged and returns zero so the
+///          caller can fall back to a plain clip rectangle. Coordinates use the same
+///          drawing-coordinate space and coordinate scaling as @ref vgfx_set_clip. A non-positive
+///          extent establishes an empty limit.
 /// @param window Window whose drawing state is constrained; NULL is rejected without side effects.
 /// @param x Left edge of the requested limit in drawing coordinates.
 /// @param y Top edge of the requested limit in drawing coordinates.
 /// @param w Width of the requested limit; non-positive values suppress all drawing in the scope.
 /// @param h Height of the requested limit; non-positive values suppress all drawing in the scope.
-/// @return 1 when the scope was established, or 0 for a NULL window or an already-active scope.
+/// @return 1 when the scope was established, or 0 for a NULL window or exhausted nesting depth.
 /// @post On success, exactly one matching @ref vgfx_pop_clip_limit restores the captured clip.
 int vgfx_push_clip_limit(vgfx_window_t window, int32_t x, int32_t y, int32_t w, int32_t h);
 
-/// @brief End the active clip-limit scope and restore the clip captured by its push.
+/// @brief End the innermost clip-limit scope and restore the clip captured by its push.
 /// @details Restores both the enabled state and exact effective rectangle that were active before
-///          @ref vgfx_push_clip_limit. Calling this function with NULL or without an active scope
-///          is a no-op. The function performs no allocation and never changes framebuffer pixels.
-/// @param window Window whose active clip-limit scope should end; may be NULL.
-/// @post A successful prior push is balanced and ordinary set/clear clip semantics resume.
+///          the matching @ref vgfx_push_clip_limit. Calling this function with NULL or without an
+///          active scope is a no-op. The function performs no allocation and never changes
+///          framebuffer pixels.
+/// @param window Window whose innermost clip-limit scope should end; may be NULL.
+/// @post A successful prior push is balanced and the enclosing scope (or ordinary set/clear clip
+///       semantics) resumes.
 void vgfx_pop_clip_limit(vgfx_window_t window);
 
 //===----------------------------------------------------------------------===//

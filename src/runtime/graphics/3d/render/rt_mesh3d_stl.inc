@@ -3,6 +3,13 @@
 // File: src/runtime/graphics/3d/render/rt_mesh3d_stl.inc  (#included from rt_mesh3d.c; not a
 // standalone translation unit) Purpose: Mesh3D STL loader (binary + ASCII)
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements bounded binary and ASCII STL decoding into Mesh3D geometry.
+/// @details This include fragment is compiled as part of `rt_mesh3d.c`. Both loaders validate
+///          finite coordinates, skip degenerate facets, deduplicate exact shared vertices,
+///          reconcile winding with authored facet normals, and recalculate smooth mesh normals.
+
 //=============================================================================
 // STL Loading (Binary + ASCII)
 //=============================================================================
@@ -18,11 +25,15 @@
 #define STL_MAX_FILE_BYTES (INT64_C(512) * 1024 * 1024)
 
 /// @brief Read a little-endian uint32 from a binary STL byte stream.
+/// @param p Pointer to at least four encoded bytes.
+/// @return Host-order unsigned 32-bit value.
 static uint32_t stl_read_u32_le(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 /// @brief Read a little-endian IEEE-754 float from a binary STL byte stream.
+/// @param p Pointer to at least four encoded bytes.
+/// @return Decoded float bit pattern.
 static float stl_read_f32_le(const uint8_t *p) {
     uint32_t bits =
         (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
@@ -32,6 +43,8 @@ static float stl_read_f32_le(const uint8_t *p) {
 }
 
 /// @brief Return non-zero if a facet normal is finite and directionally useful.
+/// @param normal Three-component facet normal.
+/// @return Nonzero when all components are finite and squared length exceeds the degeneracy limit.
 static int stl_normal_is_usable(const float *normal) {
     double nx;
     double ny;
@@ -49,6 +62,8 @@ static int stl_normal_is_usable(const float *normal) {
 /// @brief Cap the initial triangle reservation for a binary STL to a safe ceiling.
 /// @details Avoids over-allocating from an untrusted header count; the buffer grows as facets are
 ///          actually read.
+/// @param tri_count Untrusted declared facet count.
+/// @return Initial facet reservation no greater than the configured cap.
 static uint32_t stl_initial_reserve_triangles(uint32_t tri_count) {
     return tri_count < STL_BINARY_INITIAL_RESERVE_TRIANGLES ? tri_count
                                                             : STL_BINARY_INITIAL_RESERVE_TRIANGLES;
@@ -69,6 +84,10 @@ typedef struct {
 } stl_vertex_cache_t;
 
 /// @brief Convert a finite float coordinate to its stable IEEE bit pattern for exact matching.
+/// @details Negative zero is canonicalized to positive zero so geometrically identical zero
+///          coordinates share a cache key.
+/// @param value Finite coordinate to encode.
+/// @return Raw canonicalized IEEE-754 bits.
 static uint32_t stl_float_bits(float value) {
     uint32_t bits;
     if (value == 0.0f)
@@ -78,6 +97,10 @@ static uint32_t stl_float_bits(float value) {
 }
 
 /// @brief Hash an exact STL vertex key into a 64-bit open-addressing probe seed.
+/// @param x_bits Canonical X-coordinate bits.
+/// @param y_bits Canonical Y-coordinate bits.
+/// @param z_bits Canonical Z-coordinate bits.
+/// @return Mixed 64-bit hash of the exact coordinate tuple.
 static uint64_t stl_hash_vertex_bits(uint32_t x_bits, uint32_t y_bits, uint32_t z_bits) {
     uint64_t h = 1469598103934665603ull;
     h = (h ^ (uint64_t)x_bits) * 1099511628211ull;
@@ -94,6 +117,9 @@ static uint64_t stl_hash_vertex_bits(uint32_t x_bits, uint32_t y_bits, uint32_t 
 ///          across adjacent facets. This cache maps exact float coordinate bit patterns to emitted
 ///          Mesh3D indices so the loader can build indexed geometry without merging authored seams
 ///          that are merely close rather than identical.
+/// @param cache Cache object to initialize.
+/// @param capacity Requested minimum entry capacity, rounded up to a power of two.
+/// @return One on success, or zero for invalid input, overflow, or allocation failure.
 static int stl_vertex_cache_init(stl_vertex_cache_t *cache, size_t capacity) {
     if (!cache)
         return 0;
@@ -120,6 +146,7 @@ static int stl_vertex_cache_init(stl_vertex_cache_t *cache, size_t capacity) {
 }
 
 /// @brief Release storage owned by an STL exact-vertex cache.
+/// @param cache Cache to clear; NULL is ignored.
 static void stl_vertex_cache_free(stl_vertex_cache_t *cache) {
     if (!cache)
         return;
@@ -130,6 +157,8 @@ static void stl_vertex_cache_free(stl_vertex_cache_t *cache) {
 }
 
 /// @brief Grow and rehash an STL exact-vertex cache.
+/// @param cache Initialized cache to double.
+/// @return One after successful allocation and rehash, or zero on invalid state or failure.
 static int stl_vertex_cache_grow(stl_vertex_cache_t *cache) {
     stl_vertex_cache_t grown;
     size_t new_capacity;
@@ -158,6 +187,12 @@ static int stl_vertex_cache_grow(stl_vertex_cache_t *cache) {
 }
 
 /// @brief Look up an exact STL vertex key in the cache.
+/// @param cache Initialized exact-coordinate cache.
+/// @param x_bits Canonical X-coordinate bits.
+/// @param y_bits Canonical Y-coordinate bits.
+/// @param z_bits Canonical Z-coordinate bits.
+/// @param out_index Optional destination for the cached Mesh3D vertex index.
+/// @return One when the key exists; otherwise zero.
 static int stl_vertex_cache_lookup(const stl_vertex_cache_t *cache,
                                    uint32_t x_bits,
                                    uint32_t y_bits,
@@ -181,6 +216,12 @@ static int stl_vertex_cache_lookup(const stl_vertex_cache_t *cache,
 }
 
 /// @brief Insert an exact STL vertex key into the cache, growing before long probe chains form.
+/// @param cache Initialized exact-coordinate cache.
+/// @param x_bits Canonical X-coordinate bits.
+/// @param y_bits Canonical Y-coordinate bits.
+/// @param z_bits Canonical Z-coordinate bits.
+/// @param mesh_index Mesh3D vertex index associated with the key.
+/// @return One after insertion, or zero when growth or probing fails.
 static int stl_vertex_cache_insert(stl_vertex_cache_t *cache,
                                    uint32_t x_bits,
                                    uint32_t y_bits,
@@ -214,6 +255,14 @@ static int stl_vertex_cache_insert(stl_vertex_cache_t *cache,
 /// @brief Emit or reuse one STL vertex and return its Mesh3D index.
 /// @details Cache insertion is best-effort. If the dedup table cannot grow, the loader still emits
 ///          a valid non-deduplicated vertex rather than failing an otherwise valid STL asset.
+/// @param mesh Destination Mesh3D under construction.
+/// @param cache Optional exact-coordinate deduplication cache.
+/// @param x Vertex X coordinate.
+/// @param y Vertex Y coordinate.
+/// @param z Vertex Z coordinate.
+/// @param out_index Receives the reused or appended Mesh3D vertex index.
+/// @return One on successful reuse or append; zero for invalid input, overflow, or mesh-build
+///         failure.
 static int stl_get_or_add_vertex(
     void *mesh, stl_vertex_cache_t *cache, float x, float y, float z, uint32_t *out_index) {
     rt_mesh3d *m = (rt_mesh3d *)mesh;
@@ -240,6 +289,9 @@ static int stl_get_or_add_vertex(
 }
 
 /// @brief Return non-zero when STL vertex order should be flipped to match facet normal.
+/// @param verts Packed three-vertex position array with nine floats.
+/// @param normal Authored facet normal; unusable normals preserve source winding.
+/// @return Nonzero when the geometric cross product opposes the authored normal.
 static int stl_triangle_should_flip(const float *verts, const float *normal) {
     double abx;
     double aby;
@@ -267,6 +319,12 @@ static int stl_triangle_should_flip(const float *verts, const float *normal) {
 }
 
 /// @brief Append one STL triangle, skipping zero-area faces without failing the entire import.
+/// @param mesh Destination Mesh3D under construction.
+/// @param cache Exact-coordinate vertex deduplication cache.
+/// @param verts Packed three-vertex position array with nine finite floats.
+/// @param normal Authored facet normal used only to reconcile winding.
+/// @return One when the facet is skipped or emitted successfully; zero on vertex or mesh-build
+///         failure.
 static int stl_emit_triangle(void *mesh,
                              stl_vertex_cache_t *cache,
                              const float *verts,
@@ -298,6 +356,9 @@ static int stl_emit_triangle(void *mesh,
 /// per triangle (12-byte normal + 3 × 12-byte vertices + 2-byte
 /// attribute count). Vertices are not deduplicated — STL emits
 /// each face's vertices in full.
+/// @param data Complete binary STL byte buffer.
+/// @param len Number of readable bytes in @p data.
+/// @return New Mesh3D with recalculated normals, or NULL for malformed, empty, or failed input.
 static void *MESH3D_UNUSED_PRIVATE stl_load_binary(const uint8_t *data, size_t len) {
     if (len < 84)
         return NULL;
@@ -374,6 +435,10 @@ static void *MESH3D_UNUSED_PRIVATE stl_load_binary(const uint8_t *data, size_t l
 /// @brief Read @p tri_count triangles from an open binary-STL stream (positioned at the
 ///   first facet record) into a new Mesh3D with recomputed normals; returns NULL on a
 ///   zero/overflowing count or read error.
+/// @param f Open binary stream positioned at the first 50-byte facet record.
+/// @param tri_count Validated number of facet records to consume.
+/// @return New nonempty Mesh3D with recalculated normals, or NULL on validation, read, allocation,
+///         or build failure.
 static void *stl_load_binary_stream(FILE *f, uint32_t tri_count) {
     uint32_t reserve_triangles;
     stl_vertex_cache_t vertex_cache = {0};
@@ -442,6 +507,10 @@ static void *stl_load_binary_stream(FILE *f, uint32_t tri_count) {
 }
 
 /// @brief Parse a double from an ASCII STL stream, advancing the cursor past it.
+/// @param pp Address of the bounded text cursor, advanced on success.
+/// @param end One-past-end pointer for the current line span.
+/// @param out Receives the finite parsed value.
+/// @return One on success, or zero for exhausted or malformed input.
 static int stl_parse_double(const char **pp, const char *end, double *out) {
     const char *parse_end = NULL;
     while (*pp < end && (**pp == ' ' || **pp == '\t'))
@@ -455,6 +524,9 @@ static int stl_parse_double(const char **pp, const char *end, double *out) {
 }
 
 /// @brief Advance past spaces and tabs, returning the first non-blank pointer (≤ `end`).
+/// @param p Current cursor within a line span.
+/// @param end One-past-end bound.
+/// @return First non-horizontal-whitespace position, not beyond @p end.
 static const char *stl_skip_horizontal_ws(const char *p, const char *end) {
     while (p < end && (*p == ' ' || *p == '\t'))
         p++;
@@ -462,6 +534,9 @@ static const char *stl_skip_horizontal_ws(const char *p, const char *end) {
 }
 
 /// @brief Trim trailing spaces, tabs, LF, and CR from a line span, returning the new end pointer.
+/// @param start First byte of the line span.
+/// @param end Original one-past-end pointer.
+/// @return One-past-end pointer after removing trailing whitespace.
 static const char *stl_trim_line_end(const char *start, const char *end) {
     while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r'))
         end--;
@@ -469,6 +544,10 @@ static const char *stl_trim_line_end(const char *start, const char *end) {
 }
 
 /// @brief True if the `[start,end)` span equals NUL-terminated `text` exactly.
+/// @param start First byte of the bounded line span.
+/// @param end One-past-end pointer.
+/// @param text NUL-terminated comparison string.
+/// @return Nonzero for an exact length and byte match; otherwise zero.
 static int stl_line_equals(const char *start, const char *end, const char *text) {
     size_t len = strlen(text);
     return (size_t)(end - start) == len && strncmp(start, text, len) == 0;
@@ -476,6 +555,10 @@ static int stl_line_equals(const char *start, const char *end, const char *text)
 
 /// @brief True if the span begins with `keyword` followed by end-of-span or whitespace.
 /// @details The trailing-boundary check stops "facetx" from matching keyword "facet".
+/// @param start First byte of the bounded line span.
+/// @param end One-past-end pointer.
+/// @param keyword NUL-terminated keyword to match.
+/// @return Nonzero when the keyword occupies the first complete token; otherwise zero.
 static int stl_line_starts_keyword(const char *start, const char *end, const char *keyword) {
     size_t len = strlen(keyword);
     if ((size_t)(end - start) < len || strncmp(start, keyword, len) != 0)
@@ -484,6 +567,9 @@ static int stl_line_starts_keyword(const char *start, const char *end, const cha
 }
 
 /// @brief Parse an ASCII-STL `facet normal nx ny nz` line into `normal[3]`.
+/// @param start First nonblank byte of the bounded line.
+/// @param end Trimmed one-past-end pointer.
+/// @param normal Three-float destination.
 /// @return 1 on a well-formed line with three finite, float-range components and
 ///         no trailing junk; 0 otherwise.
 static int stl_parse_facet_normal_line(const char *start, const char *end, float *normal) {
@@ -511,6 +597,9 @@ static int stl_parse_facet_normal_line(const char *start, const char *end, float
 }
 
 /// @brief Parse an ASCII-STL `vertex x y z` line into `out_xyz[3]`.
+/// @param start First nonblank byte of the bounded line.
+/// @param end Trimmed one-past-end pointer.
+/// @param out_xyz Three-float destination.
 /// @return 1 on a well-formed line with three finite, float-range components and
 ///         no trailing junk; 0 otherwise.
 static int stl_parse_vertex_line(const char *start, const char *end, float *out_xyz) {
@@ -539,6 +628,9 @@ static int stl_parse_vertex_line(const char *start, const char *end, float *out_
 /// Walks the text, recognising `facet normal …` blocks each
 /// containing three `vertex …` lines. Same no-deduplication
 /// rule as the binary loader.
+/// @param data Complete ASCII STL byte buffer.
+/// @param len Number of readable bytes in @p data.
+/// @return New nonempty Mesh3D with recalculated normals, or NULL for malformed or failed input.
 static void *MESH3D_UNUSED_PRIVATE stl_load_ascii(const uint8_t *data, size_t len) {
     enum {
         STL_ASCII_OUTSIDE_FACET = 0,
@@ -659,6 +751,7 @@ static void *MESH3D_UNUSED_PRIVATE stl_load_ascii(const uint8_t *data, size_t le
 /// @brief Parse an ASCII STL stream into a new Mesh3D.
 /// @details Drives a small state machine over `facet`/`outer loop`/`vertex`/`endfacet` keywords,
 ///          accumulating each facet's three vertices (with the stored normal) into the mesh.
+/// @param f Open stream positioned at the beginning of ASCII STL text.
 /// @return New Mesh3D handle, or NULL on a malformed stream or allocation failure.
 static void *stl_load_ascii_stream(FILE *f) {
     enum {

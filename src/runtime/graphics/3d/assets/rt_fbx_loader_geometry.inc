@@ -16,6 +16,25 @@
 // Links: rt_fbx_loader.c, rt_fbx_loader_parse.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_fbx_loader_geometry.inc
+ * @brief Implements FBX coordinate conversion, mesh extraction, procedural-surface
+ *        tessellation, and material-property import.
+ *
+ * This internal implementation fragment converts parsed FBX geometry nodes into
+ * runtime Mesh3D objects. It resolves FBX layer mapping/reference modes, preserves
+ * control-point-to-emitted-vertex remaps for later deformation import, triangulates
+ * polygon meshes, and tessellates NURBS and patch surfaces under the loader's
+ * aggregate allocation budget. It also imports the material scalars understood by
+ * the runtime.
+ *
+ * All node and property pointers are borrowed from the parsed FBX tree. Returned
+ * meshes and materials are newly allocated runtime objects; temporary sampling,
+ * remapping, and numeric buffers are released locally or transferred explicitly to
+ * caller-owned remap structures.
+ */
+
 /*==========================================================================
  * Coordinate system detection + correction
  *=========================================================================*/
@@ -25,6 +44,8 @@
 /// Most FBX exporters use Y-up but Maya / Blender / 3ds Max can
 /// emit Z-up scenes. The extractors apply a coordinate-system swap
 /// when this returns 1 so the scene is normalised to Zanna's Y-up convention.
+/// @param root Root of the parsed FBX node tree; may be NULL.
+/// @return Non-zero when the declared up axis is Z, or zero when it is Y, absent, or malformed.
 static int fbx_is_z_up(fbx_node_t *root) {
     fbx_node_t *gs = fbx_find_child(root, "GlobalSettings");
     if (!gs)
@@ -45,14 +66,22 @@ static int fbx_is_z_up(fbx_node_t *root) {
     return 0;
 }
 
-/// @brief Apply Z-up → Y-up correction: swap Y/Z and negate new Z.
+/// @brief Apply the FBX Z-up to runtime Y-up coordinate conversion in place.
+/// @details Preserves @p x, assigns the original Z coordinate to @p y, and negates the
+///          original Y coordinate into @p z to retain a right-handed coordinate system.
+/// @param[in,out] x X coordinate, which is left unchanged.
+/// @param[in,out] y Y coordinate, replaced by the original Z coordinate.
+/// @param[in,out] z Z coordinate, replaced by the negated original Y coordinate.
 static void fbx_correct_zup(double *x, double *y, double *z) {
     double tmp = *y;
     *y = *z;
     *z = -tmp;
 }
 
-/// @brief Free the per-control-vertex index lists inside a single mesh remap entry.
+/// @brief Release every allocation owned by a mesh-remap entry and reset it.
+/// @details The remap object itself remains caller-owned and may be safely reused or
+///          passed to this function again after the call.
+/// @param[in,out] remap Remap to clear; NULL is accepted as a no-op.
 static void fbx_mesh_remap_free(fbx_mesh_remap_t *remap) {
     if (!remap)
         return;
@@ -74,7 +103,9 @@ static void fbx_mesh_remap_free(fbx_mesh_remap_t *remap) {
     remap->id = 0;
 }
 
-/// @brief Free an array of `count` mesh remap entries and the array itself.
+/// @brief Release an array of mesh-remap entries and all storage owned by them.
+/// @param[in,out] remaps Heap array to release; NULL is accepted as a no-op.
+/// @param count Number of initialized entries in @p remaps.
 static void fbx_mesh_remaps_free(fbx_mesh_remap_t *remaps, int32_t count) {
     if (!remaps)
         return;
@@ -83,7 +114,15 @@ static void fbx_mesh_remaps_free(fbx_mesh_remap_t *remaps, int32_t count) {
     free(remaps);
 }
 
-/// @brief Append a completed mesh remap, taking ownership of @p remap on success.
+/// @brief Append a completed mesh remap to a heap-grown array.
+/// @details On success the entry is copied into the array and @p remap is zeroed,
+///          transferring ownership of all nested allocations. On failure both the
+///          array and @p remap retain their original ownership and contents.
+/// @param[in,out] remaps Address of the caller-owned array pointer.
+/// @param[in,out] count Number of entries, incremented after a successful append.
+/// @param[in,out] remap Completed entry whose allocations transfer on success.
+/// @return Non-zero on success, or zero for invalid arguments, count/size overflow,
+///         or allocation failure.
 static int fbx_mesh_remaps_append(fbx_mesh_remap_t **remaps,
                                   int32_t *count,
                                   fbx_mesh_remap_t *remap) {
@@ -103,7 +142,15 @@ static int fbx_mesh_remaps_append(fbx_mesh_remap_t **remaps,
     return 1;
 }
 
-/// @brief Allocate the per-control-vertex index arrays for a mesh remap entry; returns 0 on OOM.
+/// @brief Initialize a mesh remap for an FBX geometry's control vertices.
+/// @details Existing contents are overwritten, so the caller must first release any
+///          allocations already owned by @p remap. A non-positive control count creates
+///          an otherwise valid empty remap.
+/// @param[out] remap Entry to initialize.
+/// @param id FBX object identifier associated with the geometry.
+/// @param control_count Number of source control vertices to track.
+/// @return Non-zero on success, or zero for a NULL destination, an untrusted-size
+///         rejection, or allocation failure.
 static int fbx_mesh_remap_init(fbx_mesh_remap_t *remap, int64_t id, int32_t control_count) {
     if (!remap)
         return 0;
@@ -123,6 +170,9 @@ static int fbx_mesh_remap_init(fbx_mesh_remap_t *remap, int64_t id, int32_t cont
 /// @brief Append a new mesh vertex index to the list for a given control vertex.
 /// @details Grows the per-control-vertex list as needed. Returning status lets the geometry builder
 ///          abort instead of silently losing the remap entry used later by skinning/bind data.
+/// @param[in,out] remap Initialized geometry remap to update.
+/// @param control_index Zero-based source control-vertex index.
+/// @param vertex_index Non-negative emitted Mesh3D vertex index to append.
 /// @return 1 on success, 0 on invalid indices, capacity overflow, or allocation failure.
 static int fbx_mesh_remap_add_vertex(fbx_mesh_remap_t *remap,
                                      int32_t control_index,
@@ -150,7 +200,11 @@ static int fbx_mesh_remap_add_vertex(fbx_mesh_remap_t *remap,
     return 1;
 }
 
-/// @brief Linear-search `remaps` for the entry with the given `id`; returns NULL if not found.
+/// @brief Find the mesh remap associated with an FBX object identifier.
+/// @param remaps Array of initialized remap entries.
+/// @param count Number of entries available in @p remaps.
+/// @param id FBX geometry identifier to match.
+/// @return Borrowed pointer to the matching entry, or NULL when no entry matches.
 static const fbx_mesh_remap_t *fbx_find_mesh_remap(const fbx_mesh_remap_t *remaps,
                                                    int32_t count,
                                                    int64_t id) {
@@ -160,7 +214,8 @@ static const fbx_mesh_remap_t *fbx_find_mesh_remap(const fbx_mesh_remap_t *remap
     return NULL;
 }
 
-/// @brief Free a mesh's per-triangle material-slot map and zero the struct.
+/// @brief Release a mesh's per-triangle material-slot map and reset it.
+/// @param[in,out] map Material map to clear; NULL is accepted as a no-op.
 static void fbx_mesh_material_map_free(fbx_mesh_material_map_t *map) {
     if (!map)
         return;
@@ -168,7 +223,9 @@ static void fbx_mesh_material_map_free(fbx_mesh_material_map_t *map) {
     memset(map, 0, sizeof(*map));
 }
 
-/// @brief Free an array of mesh bindings, releasing each binding's material map first.
+/// @brief Release an array of mesh bindings and their nested material maps.
+/// @param[in,out] bindings Heap array to release; NULL is accepted as a no-op.
+/// @param count Number of initialized bindings in @p bindings.
 static void fbx_mesh_bindings_free(fbx_mesh_binding_t *bindings, int32_t count) {
     if (!bindings)
         return;
@@ -180,6 +237,9 @@ static void fbx_mesh_bindings_free(fbx_mesh_binding_t *bindings, int32_t count) 
 /// @brief Append @p triangle_count triangles, all assigned to @p material_slot, to the
 ///   map's per-triangle slot array (growing it with overflow checks) and widen the tracked
 ///   slot count. Negative slots are clamped to 0.
+/// @param[in,out] map Material map that owns the heap-grown slot array.
+/// @param material_slot FBX material slot assigned to each appended triangle.
+/// @param triangle_count Number of consecutive triangle entries to append.
 /// @return 1 on success or no-op (zero triangles); 0 on overflow or allocation failure.
 static int fbx_mesh_material_map_append(fbx_mesh_material_map_t *map,
                                         int32_t material_slot,
@@ -217,6 +277,13 @@ static int fbx_mesh_material_map_append(fbx_mesh_material_map_t *map,
 ///   mode (@p by_polygon → per-polygon lookup, @p all_same → slot 0, else per-index).
 ///   Returns -1 for an out-of-range index or a negative slot value when a
 ///   material map is present; returns 0 when no material map exists.
+/// @param slots Borrowed array of FBX material-slot indices.
+/// @param slot_count Number of entries in @p slots.
+/// @param by_polygon Non-zero when one slot is stored per polygon.
+/// @param all_same Non-zero when all polygons use the first slot.
+/// @param polygon_index Polygon whose material assignment is requested.
+/// @return The non-negative material slot, zero when no map is present, or -1 for
+///         an invalid mapped entry.
 static int32_t fbx_material_slot_for_polygon(const int32_t *slots,
                                              uint32_t slot_count,
                                              int by_polygon,
@@ -242,27 +309,41 @@ static int32_t fbx_material_slot_for_polygon(const int32_t *slots,
  * Geometry extraction
  *=========================================================================*/
 
-/// @brief A parsed FBX vertex-attribute layer (LayerElementNormal / -UV): the raw
-///   value array plus its optional index array and mapping/reference modes.
+/// @brief Borrowed view of one parsed FBX vertex-attribute layer.
+/// @details The arrays remain owned by the parsed FBX property tree. Mapping flags
+///          describe how a polygon vertex selects a direct attribute element.
 typedef struct {
+    /// Borrowed double-precision direct-value array, or NULL.
     double *data;
+    /// Borrowed single-precision direct-value array, or NULL.
     float *data32;
+    /// Borrowed IndexToDirect array, or NULL for direct reference mode.
     int32_t *indices;
+    /// Number of complete elements in the direct-value array.
     uint32_t count;
+    /// Number of entries available through @ref indices.
     uint32_t index_count;
+    /// Scalar component count per direct element.
     int components;
+    /// Non-zero for `ByPolygonVertex` mapping.
     int by_polygon_vertex;
+    /// Non-zero for `ByPolygon` mapping.
     int by_polygon;
+    /// Non-zero for `AllSame` mapping.
     int all_same;
+    /// Non-zero when the mapped index must be resolved through @ref indices.
     int index_to_direct;
 } fbx_vertex_layer_t;
 
-/// @brief A parsed FBX LayerElementMaterial: per-polygon material slot indices and
-///   the mapping mode that selects how they apply.
+/// @brief Borrowed view of a parsed FBX `LayerElementMaterial`.
 typedef struct {
+    /// Borrowed array of authored material-slot indices.
     int32_t *slots;
+    /// Number of entries available in @ref slots.
     uint32_t slot_count;
+    /// Non-zero when entries correspond to individual polygons.
     int by_polygon;
+    /// Non-zero when the first entry applies to every polygon.
     int all_same;
 } fbx_material_layer_t;
 
@@ -321,6 +402,14 @@ static fbx_node_t *fbx_find_vertex_layer(fbx_node_t *geom_node,
 ///   is an optional fallback index-array name (or NULL). @p layer_index selects among
 ///   repeated FBX layer nodes, allowing UV1/vertex-color imports in addition to the
 ///   first normal/UV layer. All fields are zeroed when the layer is absent or malformed.
+/// @param geom_node Geometry node that owns the requested layer.
+/// @param layer_name Name of the `LayerElement*` child to select.
+/// @param data_name Name of the child containing direct attribute values.
+/// @param index_name Primary name of the optional index-array child.
+/// @param index_name_alt Alternate index-array name, or NULL when none is accepted.
+/// @param components Number of scalar components expected per direct element.
+/// @param layer_index Zero-based layer number to select among repeated layer nodes.
+/// @param[out] out Borrowed layer view, always initialized before return.
 static void fbx_parse_vertex_layer(fbx_node_t *geom_node,
                                    const char *layer_name,
                                    const char *data_name,
@@ -413,8 +502,11 @@ static double fbx_vertex_layer_component(const fbx_vertex_layer_t *layer,
     return isfinite(value) ? value : fallback;
 }
 
-/// @brief Parse the LayerElementMaterial of @p geom_node into *out (zeroed when
-///   absent or malformed).
+/// @brief Parse a geometry node's material-assignment layer.
+/// @details The result borrows the material index array from the FBX tree and is
+///          zero-initialized when the layer is absent or malformed.
+/// @param geom_node Geometry node containing an optional `LayerElementMaterial`.
+/// @param[out] out Material-layer view to initialize.
 static void fbx_parse_material_layer(fbx_node_t *geom_node, fbx_material_layer_t *out) {
     memset(out, 0, sizeof(*out));
     fbx_node_t *mat_layer = fbx_find_child(geom_node, "LayerElementMaterial");
@@ -441,6 +533,11 @@ static void fbx_parse_material_layer(fbx_node_t *geom_node, fbx_material_layer_t
 /// @brief Resolve the direct value index for one polygon-vertex within a vertex
 ///   layer, honoring its mapping (ByPolygonVertex/ByPolygon/ByVertex) and optional
 ///   IndexToDirect indirection. Returns -1 when out of range or unmapped.
+/// @param layer Parsed layer and mapping metadata.
+/// @param polygon_vertex_idx Running polygon-vertex index across the index stream.
+/// @param polygon_idx Zero-based polygon index.
+/// @param vi Source control-vertex index for ByVertex mapping.
+/// @return A valid direct-array element index, or -1 when the mapping cannot be resolved.
 static int32_t fbx_resolve_layer_index(const fbx_vertex_layer_t *layer,
                                        int32_t polygon_vertex_idx,
                                        uint32_t polygon_idx,
@@ -465,6 +562,10 @@ static int32_t fbx_resolve_layer_index(const fbx_vertex_layer_t *layer,
 
 /// @brief Common geometry-extraction failure cleanup: free a heap-grown polygon
 ///   buffer, release the partially-built mesh, and return NULL.
+/// @param polygon Current polygon buffer, which may alias @p polygon_stack.
+/// @param polygon_stack Address of the caller's inline polygon buffer.
+/// @param mesh Partially built runtime mesh to release when non-NULL.
+/// @return Always NULL.
 static void *fbx_geom_fail(int32_t *polygon, int32_t *polygon_stack, void *mesh) {
     if (polygon != polygon_stack)
         free(polygon);
@@ -475,6 +576,12 @@ static void *fbx_geom_fail(int32_t *polygon, int32_t *polygon_stack, void *mesh)
 
 /// @brief Parse the optional FBX vertex attribute layers (normal, UV0/UV1, color) and the
 ///        material assignment for a geometry node into the caller-provided structs.
+/// @param geom_node Geometry node containing the optional layer elements.
+/// @param[out] norm_layer Receives the normal layer view.
+/// @param[out] uv_layer Receives the primary texture-coordinate layer view.
+/// @param[out] uv1_layer Receives the secondary texture-coordinate layer view.
+/// @param[out] color_layer Receives the vertex-color layer view.
+/// @param[out] mat Receives the material-assignment layer view.
 static void fbx_parse_geometry_layers(fbx_node_t *geom_node,
                                       fbx_vertex_layer_t *norm_layer,
                                       fbx_vertex_layer_t *uv_layer,
@@ -499,32 +606,50 @@ static void fbx_parse_geometry_layers(fbx_node_t *geom_node,
 #define FBX_SURFACE_MAX_STEP 256
 #define FBX_SURFACE_DENOM_EPSILON 1e-12
 
+/// @brief Topological closure mode for one parametric NURBS surface axis.
 typedef enum {
+    /// The axis has distinct start and end boundaries.
     FBX_SURFACE_OPEN = 0,
+    /// The axis closes at its boundary without periodic control repetition.
     FBX_SURFACE_CLOSED = 1,
+    /// The axis is periodic across its parameter domain.
     FBX_SURFACE_PERIODIC = 2,
 } fbx_surface_form_t;
 
+/// @brief Supported FBX patch basis families.
 typedef enum {
+    /// Cubic Bernstein/Bezier basis with four controls per span.
     FBX_PATCH_BEZIER = 0,
+    /// Quadratic Bernstein/Bezier basis with three controls per span.
     FBX_PATCH_BEZIER_QUADRATIC = 1,
+    /// Cubic cardinal-spline basis.
     FBX_PATCH_CARDINAL = 2,
+    /// Uniform cubic B-spline basis.
     FBX_PATCH_BSPLINE = 3,
+    /// Piecewise-linear basis with two controls per span.
     FBX_PATCH_LINEAR = 4,
 } fbx_patch_basis_t;
 
 /// @brief Sparse basis values for every generated sample along one surface axis.
 typedef struct {
+    /// Number of sampled parameter positions.
     int32_t sample_count;
+    /// Number of tessellated line segments along the axis.
     int32_t segment_count;
+    /// Fixed maximum number of contributing controls per sample.
     int32_t support;
+    /// Non-zero when the last sample reconnects to the first.
     int closed;
+    /// Flattened control indices, with @ref support entries per sample.
     int32_t *indices;
+    /// Flattened normalized basis weights parallel to @ref indices.
     double *weights;
+    /// Flattened analytic basis derivatives parallel to @ref indices.
     double *derivatives;
 } fbx_surface_axis_samples_t;
 
-/// @brief Release all heap storage owned by one sampled surface axis.
+/// @brief Release all heap storage owned by one sampled surface axis and reset it.
+/// @param[in,out] axis Sample table to clear; NULL is accepted as a no-op.
 static void fbx_surface_axis_samples_free(fbx_surface_axis_samples_t *axis) {
     if (!axis)
         return;
@@ -542,7 +667,9 @@ static int fbx_surface_error(const char *message) {
     return 0;
 }
 
-/// @brief Return whether an FBX scalar property is numeric.
+/// @brief Test whether an FBX property uses one of the supported scalar numeric encodings.
+/// @param property Property to inspect; may be NULL.
+/// @return Non-zero for integer, boolean, float, or double scalar encodings; otherwise zero.
 static int fbx_surface_property_is_number(const fbx_prop_t *property) {
     if (!property)
         return 0;
@@ -550,7 +677,11 @@ static int fbx_surface_property_is_number(const fbx_prop_t *property) {
            property->type == 'C' || property->type == 'F' || property->type == 'D';
 }
 
-/// @brief Read an exact two-scalar child node.
+/// @brief Read an exact pair of numeric scalar properties from a named child node.
+/// @param geometry Geometry node containing the pair.
+/// @param name Name of the required child node.
+/// @param[out] out_values Receives the two values converted to signed 64-bit integers.
+/// @return Non-zero when the child has exactly two numeric properties; otherwise zero.
 static int fbx_surface_read_pair_i64(fbx_node_t *geometry,
                                      const char *name,
                                      int64_t out_values[2]) {
@@ -563,7 +694,11 @@ static int fbx_surface_read_pair_i64(fbx_node_t *geometry,
     return 1;
 }
 
-/// @brief Read one float/double numeric-array element as double.
+/// @brief Read and validate one floating-point array element as a double.
+/// @param property FBX array property encoded as floats or doubles.
+/// @param index Zero-based element index.
+/// @param[out] out_value Receives the finite converted value.
+/// @return Non-zero on success, or zero for an invalid property, type, index, or value.
 static int fbx_surface_array_number(const fbx_prop_t *property, uint32_t index, double *out_value) {
     double value;
     if (!property || !out_value || !property->v.array.data || index >= property->v.array.count)
@@ -580,7 +715,11 @@ static int fbx_surface_array_number(const fbx_prop_t *property, uint32_t index, 
     return 1;
 }
 
-/// @brief Parse one NURBS form lane from string or SDK enum encoding.
+/// @brief Parse one NURBS surface-form lane from text or the FBX SDK enum encoding.
+/// @param form_node Node whose properties encode the U and V forms.
+/// @param index Property lane to parse.
+/// @param[out] out_form Receives the normalized surface form.
+/// @return Non-zero when the lane contains a recognized form; otherwise zero.
 static int fbx_surface_parse_form(fbx_node_t *form_node, int index, fbx_surface_form_t *out_form) {
     fbx_prop_t *property;
     if (!form_node || !out_form || index < 0 || index >= form_node->prop_count)
@@ -614,7 +753,11 @@ static int fbx_surface_parse_form(fbx_node_t *form_node, int index, fbx_surface_
     return 0;
 }
 
-/// @brief Parse one FBX Patch basis lane from string or SDK enum encoding.
+/// @brief Parse one FBX patch-basis lane from text or the FBX SDK enum encoding.
+/// @param type_node Node whose properties encode the U and V basis types.
+/// @param index Property lane to parse.
+/// @param[out] out_basis Receives the normalized patch basis.
+/// @return Non-zero when the lane contains a supported basis; otherwise zero.
 static int fbx_surface_parse_patch_basis(fbx_node_t *type_node,
                                          int index,
                                          fbx_patch_basis_t *out_basis) {
@@ -650,7 +793,12 @@ static int fbx_surface_parse_patch_basis(fbx_node_t *type_node,
     return 0;
 }
 
-/// @brief Resolve and validate authored subdivisions, applying the FBX minimum of one.
+/// @brief Resolve and validate the authored U/V subdivision counts.
+/// @details Values below one are normalized to one; values above
+///          @ref FBX_SURFACE_MAX_STEP are rejected with an asset error.
+/// @param authored Two authored subdivision counts.
+/// @param[out] out_steps Receives validated positive U/V step counts.
+/// @return Non-zero on success, or zero when either authored count exceeds the limit.
 static int fbx_surface_validate_steps(const int64_t authored[2], int32_t out_steps[2]) {
     for (int axis = 0; axis < 2; ++axis) {
         if (authored[axis] > FBX_SURFACE_MAX_STEP)
@@ -662,7 +810,16 @@ static int fbx_surface_validate_steps(const int64_t authored[2], int32_t out_ste
 
 /// @brief Load and normalize an exact four-lane control net.
 /// @details FBX NURBS points store Euclidean xyz plus a rational weight. Patch points use the
-///          same four-lane representation but do not require a nonzero weight.
+///          same four-lane representation but do not require a nonzero weight. Position
+///          coordinates are sanitized and optionally converted from Z-up to Y-up.
+/// @param geometry Procedural geometry node containing `Points` or `Vertices`.
+/// @param count_u Number of controls along the U axis.
+/// @param count_v Number of controls along the V axis.
+/// @param rational Non-zero when control weights must be nonzero.
+/// @param z_up Non-zero to apply FBX Z-up coordinate conversion.
+/// @param[in,out] context Loader context charged for the normalized control buffer.
+/// @return Newly allocated array of `count_u * count_v * 4` doubles, or NULL for
+///         malformed input, limit/budget rejection, or allocation failure.
 static double *fbx_surface_load_control_net(fbx_node_t *geometry,
                                             int32_t count_u,
                                             int32_t count_v,
@@ -714,7 +871,18 @@ static double *fbx_surface_load_control_net(fbx_node_t *geometry,
     return controls;
 }
 
-/// @brief Copy and validate one NURBS knot vector, or generate a deterministic legal vector.
+/// @brief Copy and validate one NURBS knot vector, or synthesize a deterministic default.
+/// @details An authored vector must contain exactly `control_count + order` finite,
+///          nondecreasing values. Missing open-form vectors are clamped at their ends;
+///          missing closed/periodic vectors use uniform integer knots.
+/// @param geometry NURBS geometry node containing the optional vector.
+/// @param name Child-node name for the requested U or V knot vector.
+/// @param control_count Number of controls along the axis.
+/// @param order NURBS order, which must be between two and @p control_count.
+/// @param form Axis closure form used when synthesizing missing knots.
+/// @param[in,out] context Loader context charged for the copied vector.
+/// @return Newly allocated knot vector, or NULL for invalid dimensions, malformed
+///         authored knots, limit/budget rejection, or allocation failure.
 static double *fbx_surface_load_knots(fbx_node_t *geometry,
                                       const char *name,
                                       int32_t control_count,
@@ -770,7 +938,17 @@ static double *fbx_surface_load_knots(fbx_node_t *geometry,
     return knots;
 }
 
-/// @brief Allocate fixed-width sparse basis arrays for one sampled axis.
+/// @brief Allocate fixed-width sparse basis tables for one sampled surface axis.
+/// @details On success every control index is initialized to -1 and the weight and
+///          derivative arrays are zeroed. On partial allocation failure @p axis is reset.
+/// @param[out] axis Sample table to initialize.
+/// @param sample_count Number of parameter positions that will be stored.
+/// @param segment_count Number of tessellated segments represented by the table.
+/// @param support Number of control contributions stored per sample.
+/// @param closed Non-zero when the axis reconnects its final segment to its first sample.
+/// @param[in,out] context Loader context charged for all three flattened arrays.
+/// @return Non-zero on success, or zero for invalid dimensions, overflow,
+///         limit/budget rejection, or allocation failure.
 static int fbx_surface_axis_allocate(fbx_surface_axis_samples_t *axis,
                                      int32_t sample_count,
                                      int32_t segment_count,
@@ -815,7 +993,15 @@ static int fbx_surface_axis_allocate(fbx_surface_axis_samples_t *axis,
     return 1;
 }
 
-/// @brief Evaluate one order of Cox-de Boor values for a known knot span.
+/// @brief Evaluate Cox-de Boor basis values of one order for a known knot span.
+/// @param knots Valid nondecreasing knot vector.
+/// @param order Number of basis values to produce.
+/// @param span Knot span containing @p parameter.
+/// @param parameter Parameter value to evaluate.
+/// @param[out] basis Scratch/output array with room for @p order values.
+/// @param[out] left Scratch array with room for @p order values.
+/// @param[out] right Scratch array with room for @p order values.
+/// @return Non-zero when finite basis values were evaluated, or zero for invalid inputs.
 static int fbx_surface_nurbs_basis_values(const double *knots,
                                           int32_t order,
                                           int32_t span,
@@ -844,7 +1030,23 @@ static int fbx_surface_nurbs_basis_values(const double *knots,
     return 1;
 }
 
-/// @brief Evaluate nonzero NURBS basis functions and their analytic derivatives.
+/// @brief Evaluate normalized nonzero NURBS basis functions and analytic derivatives.
+/// @details The result describes exactly @p order consecutive controls for @p span.
+///          Negligible values are canonicalized to zero, and weights are normalized
+///          to sum to one before derivatives are evaluated.
+/// @param knots Valid nondecreasing knot vector.
+/// @param control_count Number of controls along the axis.
+/// @param order NURBS order and number of output contributions.
+/// @param span Knot span containing @p parameter.
+/// @param parameter Parameter value to evaluate.
+/// @param[out] out_indices Receives @p order control indices.
+/// @param[out] out_weights Receives @p order normalized basis weights.
+/// @param[out] out_derivatives Receives @p order analytic derivatives.
+/// @param[out] basis Scratch array with room for @p order values.
+/// @param[out] left Scratch array with room for @p order values.
+/// @param[out] right Scratch array with room for @p order values.
+/// @return Non-zero on success, or zero for an invalid span, non-finite/degenerate
+///         basis, or invalid output storage.
 static int fbx_surface_nurbs_basis(const double *knots,
                                    int32_t control_count,
                                    int32_t order,
@@ -894,7 +1096,18 @@ static int fbx_surface_nurbs_basis(const double *knots,
     return 1;
 }
 
-/// @brief Sample one complete NURBS axis at the authored frequency.
+/// @brief Sample a complete NURBS axis at the authored subdivision frequency.
+/// @details Empty knot spans are skipped. Open axes include the terminal parameter
+///          sample, while closed/periodic axes omit the duplicate endpoint.
+/// @param knots Valid nondecreasing knot vector.
+/// @param control_count Number of controls along the axis.
+/// @param order NURBS order.
+/// @param step Number of subdivisions generated per nonempty knot span.
+/// @param form Axis closure form.
+/// @param[in,out] context Loader context charged for output and scratch storage.
+/// @param[out] out_axis Receives the allocated sparse sample table.
+/// @return Non-zero on success, or zero for invalid topology, evaluation failure,
+///         limit/budget rejection, or allocation failure.
 static int fbx_surface_build_nurbs_axis(const double *knots,
                                         int32_t control_count,
                                         int32_t order,
@@ -994,6 +1207,9 @@ static int fbx_surface_build_nurbs_axis(const double *knots,
 }
 
 /// @brief Wrap a signed control index into one closed patch axis.
+/// @param index Possibly negative or overflowing control index.
+/// @param count Positive number of controls in the axis.
+/// @return The equivalent index in `[0, count)`, or -1 when @p count is not positive.
 static int32_t fbx_surface_wrap_index(int32_t index, int32_t count) {
     int32_t wrapped;
     if (count <= 0)
@@ -1002,7 +1218,14 @@ static int32_t fbx_surface_wrap_index(int32_t index, int32_t count) {
     return wrapped < 0 ? wrapped + count : wrapped;
 }
 
-/// @brief Validate one patch axis and return its authored span/support counts.
+/// @brief Validate a patch axis and derive its span and basis-support counts.
+/// @param basis Patch basis family.
+/// @param control_count Number of authored controls along the axis.
+/// @param closed Non-zero when the patch axis wraps.
+/// @param[out] out_span_count Receives the number of evaluable basis spans.
+/// @param[out] out_support Receives the number of control contributions per sample.
+/// @return Non-zero for a valid basis/control layout, or zero when the basis is
+///         unsupported or its required control relationship is not satisfied.
 static int fbx_surface_patch_layout(fbx_patch_basis_t basis,
                                     int32_t control_count,
                                     int closed,
@@ -1060,7 +1283,17 @@ static int fbx_surface_patch_layout(fbx_patch_basis_t basis,
     return 1;
 }
 
-/// @brief Fill sparse control indices and basis values for one patch span sample.
+/// @brief Evaluate sparse control indices, basis values, and derivatives for a patch sample.
+/// @param basis Patch basis family to evaluate.
+/// @param control_count Number of controls along the axis.
+/// @param closed Non-zero to wrap support indices at the axis boundary.
+/// @param span Zero-based patch span.
+/// @param t Local span parameter in the inclusive range `[0, 1]`.
+/// @param[out] out_indices Receives the contributing control indices.
+/// @param[out] out_weights Receives basis weights for those controls.
+/// @param[out] out_derivatives Receives derivatives with respect to @p t.
+/// @return Non-zero on success, or zero for an unsupported basis, invalid parameter,
+///         output storage, or out-of-range control contribution.
 static int fbx_surface_patch_basis(fbx_patch_basis_t basis,
                                    int32_t control_count,
                                    int closed,
@@ -1154,7 +1387,17 @@ static int fbx_surface_patch_basis(fbx_patch_basis_t basis,
     return 1;
 }
 
-/// @brief Sample one complete FBX Patch axis at its authored frequency.
+/// @brief Sample a complete FBX patch axis at its authored subdivision frequency.
+/// @details Open axes include their final endpoint; closed axes omit that duplicate
+///          sample because generated topology reconnects to the first sample.
+/// @param basis Patch basis family.
+/// @param control_count Number of controls along the axis.
+/// @param step Number of subdivisions generated per patch span.
+/// @param closed Non-zero when the axis wraps.
+/// @param[in,out] context Loader context charged for the output sample table.
+/// @param[out] out_axis Receives the allocated sparse samples.
+/// @return Non-zero on success, or zero for invalid topology, evaluation failure,
+///         limit/budget rejection, or allocation failure.
 static int fbx_surface_build_patch_axis(fbx_patch_basis_t basis,
                                         int32_t control_count,
                                         int32_t step,
@@ -1216,7 +1459,9 @@ static int fbx_surface_build_patch_axis(fbx_patch_basis_t basis,
     return 1;
 }
 
-/// @brief Whether a Geometry subtype is converted into a runtime triangle mesh.
+/// @brief Test whether an FBX Geometry subtype can be converted to a runtime triangle mesh.
+/// @param geometry_type FBX geometry subtype string.
+/// @return Non-zero for polygon meshes, NURBS surfaces, and patches; otherwise zero.
 static int fbx_geometry_type_is_renderable(const char *geometry_type) {
     return geometry_type &&
            (strcmp(geometry_type, "Mesh") == 0 || strcmp(geometry_type, "NurbsSurface") == 0 ||
@@ -1224,7 +1469,17 @@ static int fbx_geometry_type_is_renderable(const char *geometry_type) {
             strcmp(geometry_type, "Patch") == 0);
 }
 
-/// @brief Allocate sparse procedural control contributions on an initialized mesh remap.
+/// @brief Initialize a procedural mesh remap and allocate sparse control contributions.
+/// @details The contribution arrays reserve a fixed worst-case number of entries per
+///          generated vertex. Any failure releases the partially initialized remap.
+/// @param[out] remap Remap to initialize and populate with owned arrays.
+/// @param geometry_id FBX object identifier for the source geometry.
+/// @param control_count Number of authored surface controls.
+/// @param vertex_count Number of tessellated output vertices.
+/// @param max_contributions_per_vertex Maximum tensor-product support per output vertex.
+/// @param[in,out] context Loader context charged for every remap allocation.
+/// @return Non-zero on success, or zero for invalid dimensions, overflow,
+///         limit/budget rejection, or allocation failure.
 static int fbx_surface_prepare_remap(fbx_mesh_remap_t *remap,
                                      int64_t geometry_id,
                                      int32_t control_count,
@@ -1266,7 +1521,10 @@ static int fbx_surface_prepare_remap(fbx_mesh_remap_t *remap,
     return 1;
 }
 
-/// @brief Read one optional boolean pair, using false/false when absent.
+/// @brief Read an optional pair of surface-closure flags.
+/// @param geometry Patch geometry node containing an optional `Closed` child.
+/// @param[out] out_closed Receives normalized U/V boolean flags; both are false when absent.
+/// @return Non-zero when the child is absent or has exactly two properties; otherwise zero.
 static int fbx_surface_read_closed_pair(fbx_node_t *geometry, int out_closed[2]) {
     fbx_node_t *closed_node = fbx_find_child(geometry, "Closed");
     out_closed[0] = 0;
@@ -1280,13 +1538,34 @@ static int fbx_surface_read_closed_pair(fbx_node_t *geometry, int out_closed[2])
     return 1;
 }
 
-/// @brief Return whether one optional scalar child is truthy.
+/// @brief Read the truth value of the first property on an optional named child.
+/// @param geometry Geometry node containing the optional child.
+/// @param name Child-node name to query.
+/// @return Non-zero when the child exists and its first property is truthy; otherwise zero.
 static int fbx_surface_child_truthy(fbx_node_t *geometry, const char *name) {
     fbx_node_t *child = fbx_find_child(geometry, name);
     return child && child->prop_count > 0 ? fbx_prop_truthy(child, 0) : 0;
 }
 
-/// @brief Evaluate sampled basis tensors, generate normals/topology, and publish a Mesh3D.
+/// @brief Evaluate a sampled surface, generate normals and topology, and create a Mesh3D.
+/// @details Tensor-product basis contributions produce positions, analytic tangents,
+///          and sparse control weights for each vertex. Degenerate analytic normals
+///          fall back to neighboring finite differences. The generated grid is then
+///          triangulated with wrapping on closed axes.
+/// @param geometry Source FBX geometry node; its first property supplies the remap ID.
+/// @param controls Flattened four-component control net in V-major, then U-major order.
+/// @param count_u Number of controls along U.
+/// @param count_v Number of controls along V.
+/// @param axis_u Precomputed U-axis basis samples.
+/// @param axis_v Precomputed V-axis basis samples.
+/// @param rational Non-zero to apply rational control weights and quotient derivatives.
+/// @param flip_normals Non-zero to reverse normals and triangle winding.
+/// @param[in,out] context Loader context charged for generated buffers and mesh storage.
+/// @param[out] remap Receives the owned sparse control-to-output-vertex mapping.
+/// @param[out] material_map Optional material map, reset to empty on success.
+/// @return Newly allocated runtime mesh on success, or NULL on invalid input,
+///         arithmetic/limit failure, allocation failure, or invalid evaluated geometry.
+/// @post On failure, any storage initialized in @p remap and any partial mesh are released.
 static void *fbx_surface_build_mesh(fbx_node_t *geometry,
                                     const double *controls,
                                     int32_t count_u,
@@ -1558,7 +1837,18 @@ fail:
     return NULL;
 }
 
-/// @brief Convert an FBX NURBS surface or Patch into an ordinary indexed Mesh3D.
+/// @brief Convert an FBX NURBS surface or patch into an indexed runtime Mesh3D.
+/// @details Validates dimensions, tessellation steps, basis metadata, knots, and
+///          control points before sampling both parameter axes. Failures publish a
+///          precise corrupt-input or aggregate-budget error through the asset-error API.
+/// @param geometry Source FBX `Geometry` node.
+/// @param geometry_type Geometry subtype, expected to identify a NURBS surface or `Patch`.
+/// @param z_up Non-zero to convert control positions from Z-up to runtime Y-up space.
+/// @param[in,out] context Loader context used for aggregate allocation accounting.
+/// @param[out] remap Receives the generated vertex-to-control contribution mapping.
+/// @param[out] material_map Receives an empty material map for the generated surface.
+/// @return Newly allocated runtime mesh on success, or NULL with the asset error set
+///         when metadata, topology, numeric data, budgets, or allocation are invalid.
 static void *fbx_extract_procedural_geometry(fbx_node_t *geometry,
                                              const char *geometry_type,
                                              int z_up,
@@ -1727,6 +2017,10 @@ done:
 /// `LayerElementUV`, and `LayerElementMaterial`. Triangulates n-gons
 /// using ear clipping. If `z_up` is set, applies an axis
 /// swap (positions and normals) to convert to Y-up.
+/// @param geom_node Source FBX polygon-mesh `Geometry` node.
+/// @param z_up Non-zero to convert positions and normals from Z-up to Y-up space.
+/// @param[out] remap Receives the control-vertex to emitted-vertex mapping.
+/// @param[out] material_map Optional per-triangle material assignment map.
 /// @return A new mesh on success, NULL on missing or malformed geometry.
 static void *fbx_extract_geometry(fbx_node_t *geom_node,
                                   int z_up,
@@ -1951,10 +2245,13 @@ static void *fbx_extract_geometry(fbx_node_t *geom_node,
 
 /// @brief Convert an FBX `Material` node into a Zanna `rt_material3d_t`.
 ///
-/// Reads `DiffuseColor` and `Shininess` from the property table.
-/// Other PBR attributes (metallic, roughness, normal/AO maps) are
-/// not surfaced here — FBX stores them in extension blocks that
-/// vary by exporter, so we leave them at the material's defaults.
+/// Reads common legacy and PBR scalar properties from `Properties70`, including
+/// diffuse/base color, shininess, opacity, emission, metallic, roughness,
+/// ambient occlusion, normal scale, and double-sided state. Unknown
+/// exporter-specific properties leave the runtime material defaults unchanged.
+/// @param mat_node Source FBX `Material` node.
+/// @return Newly allocated runtime material, retaining defaults for absent properties,
+///         or NULL when @p mat_node is NULL or material allocation fails.
 static void *fbx_extract_material(fbx_node_t *mat_node) {
     if (!mat_node)
         return NULL;

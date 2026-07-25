@@ -17,10 +17,21 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Metal attachment allocation, target caching, pass setup, and texture copies.
+/// @details This implementation fragment owns the GPU resources that back window scenes and
+///          runtime render targets. It also maintains clustered-light buffers, shadow-slot
+///          readiness, cache lifetimes, mip generation, channel-order conversion, and readback.
+
 /// @brief Fetch (or upload into the ring) the GPU buffer for a CPU cluster table.
 /// @details Keyed by lights revision; keys reset each begin_frame because binning
 ///          is camera-dependent. The 4-deep ring keeps in-flight frames from
 ///          reading a buffer the CPU is rewriting.
+/// @param ctx Borrowed Metal context owning the clustered-light buffer ring.
+/// @param table Borrowed CPU cluster table to validate and upload.
+/// @param expected_revision Light revision that @p table must describe.
+/// @param light_count Number of lights expected by the current draw.
+/// @return The matching or newly uploaded cluster buffer, or nil for unusable input/allocation.
 static id<MTLBuffer> metal_cluster_buffer_for_table(VGFXMetalContext *ctx,
                                                     const vgfx3d_cluster_table_t *table,
                                                     uint32_t expected_revision,
@@ -47,6 +58,8 @@ static id<MTLBuffer> metal_cluster_buffer_for_table(VGFXMetalContext *ctx,
 
 /// @brief Zero-filled full-size stand-in bound when a draw has no cluster table,
 ///        keeping fragment buffer 3 valid for the shared fragment shader.
+/// @param ctx Borrowed Metal context that owns the lazily allocated dummy buffer.
+/// @return The reusable zero-initialized cluster buffer, or nil when allocation fails.
 static id<MTLBuffer> metal_cluster_dummy_buffer(VGFXMetalContext *ctx) {
     if (!ctx->_clusterDummyBuffer)
         ctx->_clusterDummyBuffer = [ctx.device newBufferWithLength:sizeof(vgfx3d_cluster_table_t)
@@ -96,6 +109,8 @@ typedef struct {
 
 /// @brief Transpose a row-major 4x4 float matrix: dst[c][r] = src[r][c] (@p src and @p dst must not
 ///   alias). Used to convert engine row-major matrices to the column-major layout Metal expects.
+/// @param src Borrowed row-major 4x4 source matrix.
+/// @param[out] dst Caller-owned 4x4 destination receiving the transpose.
 static void transpose4x4(const float *src, float *dst) {
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++)
@@ -103,6 +118,9 @@ static void transpose4x4(const float *src, float *dst) {
 }
 
 /// @brief Row-major 4x4 matrix product out = a * b (out must not alias a or b).
+/// @param a Borrowed left-hand 4x4 matrix.
+/// @param b Borrowed right-hand 4x4 matrix.
+/// @param[out] out Caller-owned 4x4 destination that does not alias either input.
 static void mat4f_mul(const float *a, const float *b, float *out) {
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++)
@@ -111,6 +129,7 @@ static void mat4f_mul(const float *a, const float *b, float *out) {
 }
 
 /// @brief Write the 4x4 identity matrix into @p out.
+/// @param[out] out Caller-owned storage for 16 float components; may be NULL.
 static void mat4f_identity(float *out) {
     if (!out)
         return;
@@ -123,6 +142,9 @@ static void mat4f_identity(float *out) {
 
 /// @brief Whether the GPU storage backing shadow @p slot exists (per-slot depth
 ///   texture for the classic CSM slots, the shared atlas texture for tile slots).
+/// @param ctx Borrowed Metal context containing shadow textures.
+/// @param slot Shadow slot whose backing allocation is inspected.
+/// @return Nonzero when the slot has the appropriate per-slot or atlas depth texture.
 static int metal_shadow_slot_texture_ready(VGFXMetalContext *ctx, int32_t slot) {
     if (!ctx)
         return 0;
@@ -138,6 +160,7 @@ static int metal_shadow_slot_texture_ready(VGFXMetalContext *ctx, int32_t slot) 
 ///          depth texture — requiring _shadowDepthTexture there silently zeroed every
 ///          atlas slot out of _shadowCount and the extra spot/point-cube shadows never
 ///          reached the shaders.
+/// @param ctx Borrowed Metal context whose contiguous ready-prefix count is recomputed.
 static void metal_recompute_shadow_count(VGFXMetalContext *ctx) {
     int32_t count = 0;
     if (!ctx)
@@ -202,6 +225,8 @@ static int8_t metal_window_scene_route_enabled(VGFXMetalContext *ctx) {
 }
 
 /// @brief Maximum mip LOD index for a cubemap (0 if it has no mip chain).
+/// @param cubemap Borrowed runtime cubemap whose validated face size determines the mip chain.
+/// @return The zero-based maximum mip level, or 0 when no usable chain is available.
 static float metal_cubemap_max_lod(const rt_cubemap3d *cubemap) {
     int32_t face_size;
     int32_t mip_count;
@@ -216,6 +241,11 @@ static float metal_cubemap_max_lod(const rt_cubemap3d *cubemap) {
 ///   prefiltered chain's lod-base and effective max-lod for the env sampler.
 /// @details Non-IBL draws keep the full-pyramid max lod (legacy reflectivity
 ///   mix); IBL draws address only the GGX-prefiltered tail of the mip chain.
+/// @param ctx Borrowed Metal context containing the cubemap cache and IBL state.
+/// @param cmd Borrowed draw command whose environment-map request is resolved.
+/// @param[out] out_lod_base Required destination for the first prefiltered mip level.
+/// @param[out] out_max_lod Required destination for the effective sampler LOD range.
+/// @return 1 when a complete cached IBL chain is usable, otherwise 0.
 static int metal_cmd_ibl_draw(VGFXMetalContext *ctx,
                               const vgfx3d_draw_cmd_t *cmd,
                               float *out_lod_base,
@@ -256,12 +286,22 @@ static int metal_cmd_ibl_draw(VGFXMetalContext *ctx,
 
 /// @brief Map a runtime color-format enum to its Metal pixel format (HDR16F → RGBA16Float, else
 /// BGRA8).
+/// @param format Backend-neutral Metal color-format classification.
+/// @return The corresponding `MTLPixelFormat`.
 static MTLPixelFormat metal_color_pixel_format(vgfx3d_metal_color_format_t format) {
     return format == VGFX3D_METAL_COLOR_FORMAT_HDR16F ? MTLPixelFormatRGBA16Float
                                                       : MTLPixelFormatBGRA8Unorm;
 }
 
 /// @brief Create a 2D color texture with the given format/usage/storage (nil on invalid args).
+/// @param ctx Borrowed Metal context providing the allocation device.
+/// @param w Texture width in pixels.
+/// @param h Texture height in pixels.
+/// @param pixel_format Metal pixel format for the allocation.
+/// @param usage Bitmask describing intended render, sample, or copy operations.
+/// @param storage_mode Metal storage mode controlling CPU/GPU visibility.
+/// @param mipmapped YES to allocate the complete mip chain.
+/// @return A newly allocated texture, or nil for invalid input or allocation failure.
 static id<MTLTexture> metal_new_color_texture(VGFXMetalContext *ctx,
                                               int32_t w,
                                               int32_t h,
@@ -282,6 +322,11 @@ static id<MTLTexture> metal_new_color_texture(VGFXMetalContext *ctx,
 }
 
 /// @brief Create a private-storage Depth32Float depth texture (nil on invalid args).
+/// @param ctx Borrowed Metal context providing the allocation device.
+/// @param w Texture width in pixels.
+/// @param h Texture height in pixels.
+/// @param usage Bitmask describing intended depth-texture operations.
+/// @return A new private Depth32Float texture, or nil for invalid input/allocation failure.
 static id<MTLTexture> metal_new_depth_texture(VGFXMetalContext *ctx,
                                               int32_t w,
                                               int32_t h,
@@ -303,6 +348,8 @@ static id<MTLTexture> metal_new_depth_texture(VGFXMetalContext *ctx,
 ///   command queue as frame rendering, so a subsequently committed draw buffer cannot sample the
 ///   texture before mip generation completes. Waiting here turns every cache miss into a main-
 ///   thread/GPU round trip and causes persistent frame hitches when content streams in.
+/// @param ctx Borrowed Metal context providing the serial command queue.
+/// @param texture Borrowed mipmapped texture whose lower levels are generated.
 static void metal_generate_mipmaps(VGFXMetalContext *ctx, id<MTLTexture> texture) {
     id<MTLCommandBuffer> cmd_buf;
     id<MTLBlitCommandEncoder> blit;
@@ -323,6 +370,7 @@ static void metal_generate_mipmaps(VGFXMetalContext *ctx, id<MTLTexture> texture
 /// @brief Evict texture-cache entries that are empty or older than the max-age threshold.
 /// @details Aging is measured in frames against ctx.frameSerial so textures unused for ~240 frames
 ///          are released, bounding GPU memory.
+/// @param ctx Borrowed Metal context whose 2D texture cache is pruned.
 static void metal_prune_texture_cache(VGFXMetalContext *ctx) {
     NSMutableArray *keys_to_remove;
 
@@ -341,6 +389,7 @@ static void metal_prune_texture_cache(VGFXMetalContext *ctx) {
 }
 
 /// @brief Evict cubemap-cache entries that are empty or older than the max-age threshold.
+/// @param ctx Borrowed Metal context whose cubemap cache is pruned.
 static void metal_prune_cubemap_cache(VGFXMetalContext *ctx) {
     NSMutableArray *keys_to_remove;
 
@@ -359,6 +408,7 @@ static void metal_prune_cubemap_cache(VGFXMetalContext *ctx) {
 }
 
 /// @brief Evict morph-cache entries that are empty or older than the max-age threshold.
+/// @param ctx Borrowed Metal context whose morph-buffer cache is pruned.
 static void metal_prune_morph_cache(VGFXMetalContext *ctx) {
     NSMutableArray *keys_to_remove;
 
@@ -382,6 +432,7 @@ static void metal_prune_morph_cache(VGFXMetalContext *ctx) {
 ///   is unbound so later readback/rebind is cheap. This periodic prune waits for any pending
 ///   command buffer before removal and also drops entries whose borrowed CPU target pointer no
 ///   longer matches its identity.
+/// @param ctx Borrowed Metal context whose native render-target cache is pruned.
 static void metal_prune_render_target_cache(VGFXMetalContext *ctx) {
     const uint64_t k_render_target_cache_max_age = 120;
     NSMutableArray *keys_to_remove;
@@ -425,6 +476,7 @@ static void metal_prune_render_target_cache(VGFXMetalContext *ctx) {
 /// @brief Clear all CPU-side sync callbacks owned by @p ctx before destroying the Metal context.
 /// @details RenderTarget3D objects may outlive the backend context. Once the context is being
 ///   released, any pending lazy readback callback would point at invalid Objective-C state.
+/// @param ctx Borrowed Metal context whose registered target callbacks are detached.
 static void metal_clear_render_target_sync_callbacks(VGFXMetalContext *ctx) {
     if (!ctx || !ctx.renderTargetCache)
         return;
@@ -452,6 +504,8 @@ static void metal_clear_render_target_sync_callbacks(VGFXMetalContext *ctx) {
 /// @details Registered on the target itself. The runtime invokes this hook before freeing the C
 /// shell, closing the lifetime gap between GC-managed RenderTarget3D objects and ARC-managed cache
 /// entries.
+/// @param userdata Borrowed bridge pointer to the owning `VGFXMetalContext`.
+/// @param target Borrowed render-target shell being finalized.
 static void metal_release_render_target(void *userdata, vgfx3d_rendertarget_t *target) {
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)userdata;
     VGFXMetalRenderTargetCacheEntry *entry;
@@ -471,6 +525,8 @@ static void metal_release_render_target(void *userdata, vgfx3d_rendertarget_t *t
 }
 
 /// @brief Give @p ctx exclusive ownership of @p target's native-cache release notification.
+/// @param ctx Borrowed Metal context that will receive the target's release callback.
+/// @param target Borrowed render-target shell whose backend hook is installed.
 static void metal_install_render_target_release(VGFXMetalContext *ctx,
                                                 vgfx3d_rendertarget_t *target) {
     if (!ctx || !target)
@@ -484,6 +540,9 @@ static void metal_install_render_target_release(VGFXMetalContext *ctx,
 }
 
 /// @brief Look up the cached Metal textures for a RenderTarget3D (NULL if not cached).
+/// @param ctx Borrowed Metal context containing the native target cache.
+/// @param rt Borrowed render-target shell and cache identity to resolve.
+/// @return The matching cache entry, or nil when absent, stale, or invalid.
 static VGFXMetalRenderTargetCacheEntry *metal_lookup_render_target_entry(
     VGFXMetalContext *ctx, vgfx3d_rendertarget_t *rt) {
     NSNumber *key;
@@ -504,6 +563,9 @@ static VGFXMetalRenderTargetCacheEntry *metal_lookup_render_target_entry(
 /// @brief Get or create the cached color/depth/motion textures for a render target.
 /// @details Recreates the textures when the target's size or HDR/UNORM format changed; otherwise
 ///          returns the existing entry. NULL on invalid input or allocation failure.
+/// @param ctx Borrowed Metal context that owns the native target cache and textures.
+/// @param rt Borrowed render-target shell describing the desired attachments.
+/// @return A validated cache entry with complete attachments, or nil on failure.
 static VGFXMetalRenderTargetCacheEntry *metal_ensure_render_target_entry(
     VGFXMetalContext *ctx, vgfx3d_rendertarget_t *rt) {
     NSNumber *key;
@@ -582,6 +644,9 @@ static VGFXMetalRenderTargetCacheEntry *metal_ensure_render_target_entry(
 /// @brief Read a render target's GPU color texture back into its CPU-side Pixels (callback form).
 /// @details Invoked when the runtime needs the rendered image as Pixels (e.g.
 /// RenderTarget3D.AsPixels).
+/// @param userdata Borrowed bridge pointer to the owning `VGFXMetalContext`.
+/// @param target Borrowed render target whose CPU color mirrors are synchronized.
+/// @return 1 after successful readback, or 0 when validation, GPU completion, or copying fails.
 static int metal_sync_render_target_color(void *userdata, vgfx3d_rendertarget_t *target) {
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)userdata;
     VGFXMetalRenderTargetCacheEntry *entry;
@@ -625,6 +690,10 @@ static int metal_sync_render_target_color(void *userdata, vgfx3d_rendertarget_t 
 /// @details Configures load/store actions and clear values for the target's color, motion-vector,
 /// and
 ///          depth textures.
+/// @param ctx Borrowed Metal context supplying the active target attachments and clear color.
+/// @param loadExistingColor YES to preserve existing color and motion attachment contents.
+/// @param loadExistingDepth YES to preserve existing depth attachment contents.
+/// @return A configured render-pass descriptor, or nil when required attachments are unavailable.
 static MTLRenderPassDescriptor *metal_make_scene_pass_descriptor(VGFXMetalContext *ctx,
                                                                  BOOL loadExistingColor,
                                                                  BOOL loadExistingDepth) {
@@ -694,6 +763,9 @@ static MTLRenderPassDescriptor *metal_make_scene_pass_descriptor(VGFXMetalContex
 
 /// @brief Begin the scene render-command encoder for the frame from a pass descriptor.
 /// @details Sets up viewport and shared render state so subsequent draw calls can be encoded.
+/// @param ctx Borrowed Metal context that receives the active scene encoder.
+/// @param loadExistingColor YES to load rather than clear color and motion attachments.
+/// @param loadExistingDepth YES to load rather than clear the depth attachment.
 static void metal_begin_scene_encoder(VGFXMetalContext *ctx,
                                       BOOL loadExistingColor,
                                       BOOL loadExistingDepth) {
@@ -913,6 +985,12 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
 /// @brief Upload a band of RGBA8 source rows into a BGRA8 Metal texture, swizzling R↔B per pixel.
 /// @details Metal's default textures are BGRA-order; Pixels are RGBA, so the channels are swapped
 ///          during the copy. Returns 1 on success.
+/// @param tex Borrowed destination 2D BGRA8 texture.
+/// @param rgba Borrowed tightly packed RGBA8 source rows.
+/// @param w Number of pixels in each source row.
+/// @param start_y First destination row to replace.
+/// @param rows Number of consecutive rows to upload.
+/// @return 1 after successful validation, conversion, and replacement; otherwise 0.
 static int metal_upload_rgba_to_bgra_texture_rows(
     id<MTLTexture> tex, const uint8_t *rgba, int32_t w, int32_t start_y, int32_t rows) {
     uint8_t *bgra;
@@ -945,6 +1023,13 @@ static int metal_upload_rgba_to_bgra_texture_rows(
 }
 
 /// @brief Upload a band of RGBA8 rows into one BGRA8 cubemap face, swizzling R↔B per pixel.
+/// @param tex Borrowed destination BGRA8 cubemap texture.
+/// @param rgba Borrowed tightly packed RGBA8 source rows.
+/// @param w Number of pixels in each source row.
+/// @param face Destination cubemap face index in `[0, 5]`.
+/// @param start_y First destination row to replace.
+/// @param rows Number of consecutive rows to upload.
+/// @return 1 after successful validation, conversion, and replacement; otherwise 0.
 static int metal_upload_rgba_to_bgra_cubemap_rows(id<MTLTexture> tex,
                                                   const uint8_t *rgba,
                                                   int32_t w,
@@ -983,6 +1068,9 @@ static int metal_upload_rgba_to_bgra_cubemap_rows(id<MTLTexture> tex,
 }
 
 /// @brief Round @p value up to a multiple of @p alignment (for buffer/row-pitch alignment).
+/// @param value Byte count or offset to round upward.
+/// @param alignment Requested positive alignment; zero leaves @p value unchanged.
+/// @return The aligned value, or zero when rounding would overflow `size_t`.
 static size_t metal_align_up_size(size_t value, size_t alignment) {
     size_t remainder;
     if (alignment == 0)
@@ -999,6 +1087,14 @@ static size_t metal_align_up_size(size_t value, size_t alignment) {
 /// copy.
 /// @details Handles the BGRA→RGBA swizzle for the LDR path and the float path for HDR targets;
 ///          @p stride is the destination row pitch in bytes. Returns 1 on success.
+/// @param ctx Borrowed Metal context providing the device and readback command queue.
+/// @param tex Borrowed source texture in BGRA8 or RGBA16Float format.
+/// @param[out] dst_rgba Caller-owned RGBA8 destination buffer.
+/// @param w Requested destination width in pixels.
+/// @param h Requested destination height in pixels.
+/// @param stride Destination RGBA8 row pitch in bytes.
+/// @param[out] dst_hdr_rgba Optional tightly packed RGBA32F destination for HDR source data.
+/// @return 1 after successful GPU copy and format conversion, otherwise 0.
 static int metal_copy_texture_to_rgba(VGFXMetalContext *ctx,
                                       id<MTLTexture> tex,
                                       uint8_t *dst_rgba,

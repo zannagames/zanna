@@ -27,6 +27,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_navmesh3d_query.inc
+ * @brief Implements NavMesh3D pathfinding, spatial queries, and dynamic edits.
+ *
+ * This implementation fragment is included by `rt_navmesh3d.c`. It owns the
+ * reusable A* workspaces, corridor smoothing, nearest-surface queries,
+ * off-mesh-link metadata, obstacle edits, area queries, tile rebuild entry
+ * points, and related diagnostic hooks. It is not a standalone translation
+ * unit.
+ */
+
 /*==========================================================================
  * A* pathfinding
  *=========================================================================*/
@@ -84,6 +95,11 @@ static void navmesh3d_path_workspace_release(rt_navmesh3d *nm,
 }
 
 /// @brief Grow reusable A* arrays without discarding the previous workspace on allocation failure.
+/// @param workspace Exclusively held workspace whose buffers may be enlarged.
+/// @param triangle_count Required capacity of the per-triangle cost, parent, and closed arrays.
+/// @param heap_capacity Required number of entries in the open-set heap.
+/// @return One when every requested buffer is available, or zero for invalid sizes or allocation
+/// failure.
 static int navmesh3d_reserve_path_workspace(navmesh3d_path_workspace_t *workspace,
                                             int32_t triangle_count,
                                             int32_t heap_capacity) {
@@ -119,6 +135,8 @@ static int navmesh3d_reserve_path_workspace(navmesh3d_path_workspace_t *workspac
 }
 
 /// @brief Atomically publish LastPathCost for concurrent read-only telemetry.
+/// @param nm Navigation mesh whose most recent path cost is updated.
+/// @param value Non-negative finite cost to publish; invalid values are normalized to zero.
 static void navmesh3d_store_last_path_cost(rt_navmesh3d *nm, double value) {
     if (!nm)
         return;
@@ -159,6 +177,11 @@ int64_t rt_navmesh3d_test_get_path_peak_concurrency(void *obj) {
 /// and therefore the peak heap occupancy — can never exceed that capacity, so no frontier
 /// node is ever silently lost. The guard remains only to keep the function memory-safe were
 /// a future caller to under-size the buffer.
+/// @param heap Caller-owned heap storage.
+/// @param size In/out number of occupied heap entries.
+/// @param capacity Maximum number of entries available in @p heap.
+/// @param tri Triangle index stored in the new entry.
+/// @param f A* priority assigned to the new entry.
 static void heap_push(heap_entry_t *heap, int32_t *size, int32_t capacity, int32_t tri, float f) {
     if (*size >= capacity)
         return;
@@ -180,6 +203,9 @@ static void heap_push(heap_entry_t *heap, int32_t *size, int32_t capacity, int32
 /// @brief Pop the lowest-`f` triangle from the A* min-heap and sift down. Returns the
 /// triangle index. Caller is responsible for ensuring `*size > 0` (assertion would be
 /// nice but this is a hot path; A* main loop guards via `while (size > 0)`).
+/// @param heap Caller-owned, non-empty heap storage.
+/// @param size In/out number of occupied entries; decremented before returning.
+/// @return Triangle index from the removed minimum-priority entry.
 static int32_t heap_pop(heap_entry_t *heap, int32_t *size) {
     int32_t result = heap[0].tri;
     heap[0] = heap[--(*size)];
@@ -204,6 +230,10 @@ static int32_t heap_pop(heap_entry_t *heap, int32_t *size) {
 /// @brief Euclidean distance between two triangles' precomputed centroids. Used as the
 /// A* heuristic on ordinary triangle-only graphs and as the per-edge step cost when expanding
 /// neighbours.
+/// @param nm Navigation mesh containing both triangle centroids.
+/// @param a First triangle index.
+/// @param b Second triangle index.
+/// @return Finite centroid distance, or `FLT_MAX` when the computed distance is not finite.
 static float centroid_dist(const rt_navmesh3d *nm, int32_t a, int32_t b) {
     const float *ca = nm->triangles[a].centroid;
     const float *cb = nm->triangles[b].centroid;
@@ -219,6 +249,10 @@ static float centroid_dist(const rt_navmesh3d *nm, int32_t a, int32_t b) {
 ///   optimality; NavMesh3D.SetHeuristicMode(1) keeps the Euclidean estimate anyway (Recast-style:
 ///   much faster on big link-bearing meshes, with possibly slightly suboptimal paths around link
 ///   shortcuts). Triangle-only navmeshes always use the Euclidean heuristic.
+/// @param nm Navigation mesh defining link presence and heuristic policy.
+/// @param from Triangle whose remaining cost is estimated.
+/// @param goal Destination triangle.
+/// @return Zero for strict searches on link-bearing meshes; otherwise the centroid distance.
 static float navmesh3d_astar_heuristic(const rt_navmesh3d *nm, int32_t from, int32_t goal) {
     if (!nm)
         return 0.0f;
@@ -233,6 +267,8 @@ static float navmesh3d_astar_heuristic(const rt_navmesh3d *nm, int32_t from, int
 ///   the straight-line estimate even with links — dramatically faster on large
 ///   navmeshes, at the cost of possibly non-optimal routes where a link shortcut
 ///   outperforms straight-line distance. Out-of-range modes clamp to 0/1.
+/// @param navmesh NavMesh3D handle to update.
+/// @param mode Zero for strict optimality, or any nonzero value for Euclidean estimation.
 void rt_navmesh3d_set_heuristic_mode(void *navmesh, int64_t mode) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(navmesh, RT_G3D_NAVMESH3D_CLASS_ID);
     if (!nm)
@@ -241,6 +277,8 @@ void rt_navmesh3d_set_heuristic_mode(void *navmesh, int64_t mode) {
 }
 
 /// @brief `NavMesh3D.HeuristicMode` — current pathfinding heuristic policy (0 or 1).
+/// @param navmesh NavMesh3D handle to inspect.
+/// @return The selected heuristic mode, or zero for an invalid handle.
 int64_t rt_navmesh3d_get_heuristic_mode(void *navmesh) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(navmesh, RT_G3D_NAVMESH3D_CLASS_ID);
     return nm ? (int64_t)nm->heuristic_mode : 0;
@@ -248,6 +286,10 @@ int64_t rt_navmesh3d_get_heuristic_mode(void *navmesh) {
 
 /// @brief A* edge cost between adjacent triangles @p from and @p to: their centroid distance
 ///   scaled by the average of their traversal costs; FLT_MAX if non-finite (impassable).
+/// @param nm Navigation mesh containing the triangles and area costs.
+/// @param from Source triangle index.
+/// @param to Destination triangle index.
+/// @return Finite weighted edge cost, or `FLT_MAX` for an unusable edge.
 static float navmesh3d_edge_cost(const rt_navmesh3d *nm, int32_t from, int32_t to) {
     float base = centroid_dist(nm, from, to);
     if (!isfinite(base) || base >= FLT_MAX)
@@ -259,6 +301,8 @@ static float navmesh3d_edge_cost(const rt_navmesh3d *nm, int32_t from, int32_t t
 
 /// @brief Traversal cost of an off-mesh link: its 3D length scaled by its sanitized traversal
 ///   cost; FLT_MAX if non-finite.
+/// @param link Off-mesh link to measure.
+/// @return Zero for a null link, `FLT_MAX` for a non-finite result, or the weighted link length.
 static float navmesh3d_offmesh_cost(const nav_offmesh_link_t *link) {
     if (!link)
         return 0.0f;
@@ -275,6 +319,17 @@ static float navmesh3d_offmesh_cost(const nav_offmesh_link_t *link) {
 /// @brief Relax one directed offmesh edge during A* expansion.
 /// @details Applies the link traversal cost, skips blocked/closed targets, and pushes the target
 ///   triangle with its updated f-score when this edge improves the known g-cost.
+/// @param nm Navigation mesh being searched.
+/// @param cur Triangle currently being expanded.
+/// @param next Candidate triangle reached through @p link.
+/// @param goal Destination triangle used by the heuristic.
+/// @param link Directed off-mesh traversal being relaxed.
+/// @param g_cost In/out best-known path cost for every triangle.
+/// @param parent In/out predecessor triangle for every improved node.
+/// @param closed Read-only closed-set flags for this search.
+/// @param heap Open-set heap storage.
+/// @param heap_size In/out number of occupied heap entries.
+/// @param heap_cap Capacity of @p heap.
 static void navmesh3d_astar_relax_offmesh(rt_navmesh3d *nm,
                                           int32_t cur,
                                           int32_t next,
@@ -298,12 +353,18 @@ static void navmesh3d_astar_relax_offmesh(rt_navmesh3d *nm,
     }
 }
 
-/// @brief Internal: compute the path from `from_v` to `to_v` and copy the waypoints into a
-/// freshly malloc'd `*out_points_xyz` (interleaved x,y,z). Returns the point count, or 0 on
-/// failure. Caller frees `*out_points_xyz`.
 /// @brief A* search over the navmesh triangle graph (edges + off-mesh links).
-/// @details Caller owns the @p g_cost / @p parent / @p closed / @p heap buffers; this fills
-///          @p parent and @p g_cost. @return 1 if @p goal was reached, 0 otherwise.
+/// @details Caller owns the @p g_cost, @p parent, @p closed, and @p heap buffers. The search
+/// fills the cost and predecessor arrays while consuming the initialized open and closed sets.
+/// @param nm Navigation mesh whose graph is searched.
+/// @param start Starting triangle index.
+/// @param goal Destination triangle index.
+/// @param g_cost In/out best-known path cost per triangle.
+/// @param parent In/out predecessor triangle per node.
+/// @param closed In/out closed-set flags per triangle.
+/// @param heap Caller-owned open-set heap.
+/// @param heap_cap Capacity of @p heap.
+/// @return One if @p goal was reached, otherwise zero.
 static int navmesh3d_astar_search(rt_navmesh3d *nm,
                                   int32_t start,
                                   int32_t goal,
@@ -377,6 +438,12 @@ static int navmesh3d_astar_search(rt_navmesh3d *nm,
 /// apex.
 /// @details Prefers the shared-edge portal midpoint; falls back to an off-mesh link's endpoints,
 ///          then to the destination triangle's centroid. Appends into @p points / @p point_count.
+/// @param nm Navigation mesh containing the corridor geometry.
+/// @param ti Source triangle index.
+/// @param tn Destination triangle index.
+/// @param apex In/out last emitted waypoint used for duplicate suppression.
+/// @param points Caller-owned interleaved XYZ output buffer.
+/// @param point_count In/out number of waypoints stored in @p points.
 static void navmesh3d_pull_segment(
     rt_navmesh3d *nm, int32_t ti, int32_t tn, float apex[3], double *points, int64_t *point_count) {
     /* Find the shared edge (portal) between consecutive triangles */
@@ -452,6 +519,10 @@ typedef struct {
 /// @brief Signed twice-area of triangle a/b/c in the XZ plane.
 /// @details Positive/negative signs describe which side of segment a->b point c lies on and are
 ///   used by the string-pulling funnel to detect corridor constrictions.
+/// @param a First XZ point and origin of the oriented edge.
+/// @param b Second XZ point and end of the oriented edge.
+/// @param c Point classified relative to the oriented edge.
+/// @return Signed twice-area in the XZ plane.
 static float navmesh3d_triarea2_xz(const float *a, const float *b, const float *c) {
     float abx = b[0] - a[0];
     float abz = b[2] - a[2];
@@ -461,6 +532,9 @@ static float navmesh3d_triarea2_xz(const float *a, const float *b, const float *
 }
 
 /// @brief Compare two XZ points with a small tolerance for repeated portal vertices.
+/// @param a First point.
+/// @param b Second point.
+/// @return Nonzero when the squared XZ separation is less than `1e-6`, otherwise zero.
 static int navmesh3d_vequal_xz(const float *a, const float *b) {
     float dx = b[0] - a[0];
     float dz = b[2] - a[2];
@@ -468,6 +542,10 @@ static int navmesh3d_vequal_xz(const float *a, const float *b) {
 }
 
 /// @brief Append a funnel corner unless it is nearly identical to the previous apex.
+/// @param points Caller-owned interleaved XYZ output buffer.
+/// @param point_count In/out number of waypoints stored in @p points.
+/// @param corner Candidate corner to append.
+/// @param apex In/out current funnel apex, always advanced to @p corner.
 static void navmesh3d_append_funnel_corner(double *points,
                                            int64_t *point_count,
                                            const float *corner,
@@ -490,6 +568,12 @@ static void navmesh3d_append_funnel_corner(double *points,
 /// @details The portal is ordered left/right from the supplied path apex in XZ. If the transition
 ///   is not a normal adjacency edge (for example an offmesh link), returns 0 so the caller can use
 ///   the existing offmesh fallback.
+/// @param nm Navigation mesh containing triangle and vertex data.
+/// @param ti Source triangle index.
+/// @param tn Adjacent destination triangle index.
+/// @param apex Current path apex used to orient the shared edge.
+/// @param out Receives the oriented portal endpoints on success.
+/// @return One when a finite shared-edge portal was found, otherwise zero.
 static int navmesh3d_transition_portal(
     rt_navmesh3d *nm, int32_t ti, int32_t tn, const float *apex, navmesh3d_portal_t *out) {
     if (!nm || !out || ti < 0 || tn < 0 || ti >= nm->triangle_count || tn >= nm->triangle_count)
@@ -522,6 +606,13 @@ static int navmesh3d_transition_portal(
 /// @details Builds shared-edge portals for the A* triangle sequence and applies the standard
 ///   simple-stupid funnel in XZ. The final destination point is not appended here; the caller adds
 ///   the exact requested endpoint after the funnel emits only necessary corners.
+/// @param nm Navigation mesh containing corridor geometry.
+/// @param seq Ordered triangle indices from path start to path goal.
+/// @param count Number of indices in @p seq.
+/// @param start Exact world-space path start.
+/// @param end Exact world-space path destination.
+/// @param points Caller-owned interleaved XYZ output buffer.
+/// @param point_count In/out number of waypoints stored in @p points.
 /// @return 1 when the corridor used only normal adjacency and the funnel ran, 0 to use fallback.
 static int navmesh3d_pull_funnel_corridor(rt_navmesh3d *nm,
                                           const int32_t *seq,
@@ -603,6 +694,19 @@ static int navmesh3d_pull_funnel_corridor(rt_navmesh3d *nm,
 }
 
 /// @brief Reconstruct the smoothed waypoint list from an A* @p parent chain ending at @p goal.
+/// @param nm Navigation mesh containing the traversed corridor.
+/// @param parent Predecessor triangle array produced by A*.
+/// @param goal Destination triangle at the end of the predecessor chain.
+/// @param fx Float X coordinate of the exact starting point.
+/// @param fy Float Y coordinate of the exact starting point.
+/// @param fz Float Z coordinate of the exact starting point.
+/// @param fdx Double-precision X coordinate emitted for the starting waypoint.
+/// @param fdy Double-precision Y coordinate emitted for the starting waypoint.
+/// @param fdz Double-precision Z coordinate emitted for the starting waypoint.
+/// @param tdx Double-precision X coordinate emitted for the destination waypoint.
+/// @param tdy Double-precision Y coordinate emitted for the destination waypoint.
+/// @param tdz Double-precision Z coordinate emitted for the destination waypoint.
+/// @param out_point_count Receives the number of interleaved XYZ points, or zero on failure.
 /// @return Newly malloc'd points buffer (caller owns) with @p out_point_count entries, or NULL on
 ///         allocation failure (then @p out_point_count is 0).
 static double *navmesh3d_reconstruct_path(rt_navmesh3d *nm,
@@ -685,7 +789,12 @@ static double *navmesh3d_reconstruct_path(rt_navmesh3d *nm,
 }
 
 /// @brief Compute a path from @p from to @p to and copy it into a freshly malloc'd flat xyz
-///   array. @return Point count (the caller frees @p out_points_xyz).
+///   array.
+/// @param obj NavMesh3D handle to query.
+/// @param from_v Starting Vec3 in world space.
+/// @param to_v Destination Vec3 in world space.
+/// @param out_points_xyz Receives a caller-owned interleaved XYZ allocation, or NULL on failure.
+/// @return Number of points written to @p out_points_xyz, or zero when no path can be produced.
 int64_t rt_navmesh3d_copy_path_points(void *obj,
                                       void *from_v,
                                       void *to_v,
@@ -781,6 +890,10 @@ int64_t rt_navmesh3d_copy_path_points(void *obj,
 /// @brief Compute a path from `from_v` to `to_v` (both Vec3 world-space points). Returns a
 /// Seq of Vec3 waypoints, including endpoints. Empty Seq if either endpoint is off-mesh or
 /// no connecting path exists.
+/// @param obj NavMesh3D handle to query.
+/// @param from_v Starting Vec3 in world space.
+/// @param to_v Destination Vec3 in world space.
+/// @return Newly allocated Path3D containing the waypoints, or NULL when no path exists.
 void *rt_navmesh3d_find_path(void *obj, void *from_v, void *to_v) {
     double *points = NULL;
     int64_t point_count = rt_navmesh3d_copy_path_points(obj, from_v, to_v, &points);
@@ -1065,6 +1178,10 @@ static void navmesh3d_sample_record_metrics(rt_navmesh3d *nm,
 /// @brief Snap `point` (Vec3) onto the nearest navmesh triangle and return the projected
 /// world-space position. Useful for pinning agent positions to walkable surface after
 /// teleports. Returns the input unchanged if no triangle is found nearby.
+/// @param obj NavMesh3D handle to query.
+/// @param point Vec3 world-space position to project.
+/// @return Newly allocated projected Vec3; invalid inputs produce the origin, while an empty
+/// navmesh produces a sanitized copy of @p point.
 void *rt_navmesh3d_sample_position(void *obj, void *point) {
     float query[3];
     if (!obj || !navmesh3d_read_point3f(point, query))
@@ -1123,6 +1240,10 @@ int8_t rt_navmesh3d_test_get_last_sample_used_fallback(void *obj) {
 }
 
 /// @brief Returns 1 if `point` (Vec3) lies within (or near) any walkable triangle.
+/// @param obj NavMesh3D handle to query.
+/// @param point Vec3 world-space position to classify.
+/// @return One when @p point resolves to a walkable triangle within vertical tolerance, otherwise
+/// zero.
 int8_t rt_navmesh3d_is_walkable(void *obj, void *point) {
     float query[3];
     if (!obj || !navmesh3d_read_point3f(point, query))
@@ -1135,6 +1256,8 @@ int8_t rt_navmesh3d_is_walkable(void *obj, void *point) {
 }
 
 /// @brief Number of walkable triangles in the baked navmesh.
+/// @param obj NavMesh3D handle to inspect.
+/// @return Number of non-blocked triangles, or zero for an invalid or uninitialized mesh.
 int64_t rt_navmesh3d_get_triangle_count(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     if (!nm || !nm->triangles)
@@ -1150,6 +1273,8 @@ int64_t rt_navmesh3d_get_triangle_count(void *obj) {
 }
 
 /// @brief Total accumulated cost of the most recent successful path query, or 0 if none has run.
+/// @param obj NavMesh3D handle to inspect.
+/// @return Atomically loaded non-negative path cost, or zero for invalid state.
 double rt_navmesh3d_get_last_path_cost(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     double value = 0.0;
@@ -1159,6 +1284,11 @@ double rt_navmesh3d_get_last_path_cost(void *obj) {
 }
 
 /// @brief Add an authored off-mesh traversal link between two walkable points.
+/// @param obj NavMesh3D handle to modify.
+/// @param from Vec3 world-space start endpoint.
+/// @param to Vec3 world-space destination endpoint.
+/// @param bidirectional Nonzero to permit traversal in both directions.
+/// @return One when the endpoints resolve to triangles and the link is appended, otherwise zero.
 int8_t rt_navmesh3d_add_offmesh_link(void *obj, void *from, void *to, int8_t bidirectional) {
     float from_p[3];
     float to_p[3];
@@ -1212,6 +1342,12 @@ int8_t rt_navmesh3d_add_offmesh_link(void *obj, void *from, void *to, int8_t bid
 }
 
 /// @brief Attach kind/cost/state metadata to an authored off-mesh link by index.
+/// @param obj NavMesh3D handle to modify.
+/// @param index Zero-based authored link index.
+/// @param kind Runtime string copied by reference; an empty string clears the stored kind.
+/// @param traversal_cost Cost multiplier sanitized before storage.
+/// @param state_flags Opaque state flags associated with the link.
+/// @return One when the link and string are valid and metadata is stored, otherwise zero.
 int8_t rt_navmesh3d_set_offmesh_link_metadata(
     void *obj, int64_t index, rt_string kind, double traversal_cost, int64_t state_flags) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
@@ -1232,6 +1368,10 @@ int8_t rt_navmesh3d_set_offmesh_link_metadata(
 }
 
 /// @brief Read the kind-string metadata of an authored off-mesh link by index.
+/// @param obj NavMesh3D handle to inspect.
+/// @param index Zero-based authored link index.
+/// @return Referenced runtime kind string, or an empty constant string for an invalid index or
+/// unset kind.
 rt_string rt_navmesh3d_get_offmesh_link_kind(void *obj, int64_t index) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
@@ -1244,6 +1384,9 @@ rt_string rt_navmesh3d_get_offmesh_link_kind(void *obj, int64_t index) {
 
 /// @brief Read the sanitized pathfinding traversal cost of an authored off-mesh link by index
 ///   (0 for an out-of-range index).
+/// @param obj NavMesh3D handle to inspect.
+/// @param index Zero-based authored link index.
+/// @return Sanitized traversal multiplier, or zero for an invalid index.
 double rt_navmesh3d_get_offmesh_link_traversal_cost(void *obj, int64_t index) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
@@ -1254,6 +1397,9 @@ double rt_navmesh3d_get_offmesh_link_traversal_cost(void *obj, int64_t index) {
 }
 
 /// @brief Read the state-flag metadata of an authored off-mesh link by index.
+/// @param obj NavMesh3D handle to inspect.
+/// @param index Zero-based authored link index.
+/// @return Stored state flags, or zero for an invalid index.
 int64_t rt_navmesh3d_get_offmesh_link_state(void *obj, int64_t index) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
@@ -1265,6 +1411,11 @@ int64_t rt_navmesh3d_get_offmesh_link_state(void *obj, int64_t index) {
 /// @brief Read and sanitize an obstacle AABB from two Vec3 handles into float min/max arrays.
 /// @details Rejects non-Vec3 or non-finite inputs, orders each axis (min<=max), and clamps to the
 ///          float range. Returns 1 on success, 0 if the bounds are unusable.
+/// @param min_v First Vec3 corner of the obstacle bounds.
+/// @param max_v Opposite Vec3 corner of the obstacle bounds.
+/// @param out_min Receives the component-wise ordered lower bounds.
+/// @param out_max Receives the component-wise ordered upper bounds.
+/// @return One when both corners are valid and outputs are populated, otherwise zero.
 static int navmesh3d_read_obstacle_bounds(void *min_v,
                                           void *max_v,
                                           float *out_min,
@@ -1285,11 +1436,17 @@ static int navmesh3d_read_obstacle_bounds(void *min_v,
 }
 
 /// @brief Whether obstacles can be edited: the navmesh must retain its unfiltered source triangles.
+/// @param nm Navigation mesh to inspect.
+/// @return Nonzero when both live and preserved source triangles are available.
 static int navmesh3d_can_edit_obstacles(const rt_navmesh3d *nm) {
     return nm && nm->source_triangles && nm->triangles && nm->source_triangle_count > 0;
 }
 
 /// @brief Add a coarse AABB obstacle and immediately refilter the walkable triangle set.
+/// @param obj NavMesh3D handle to modify.
+/// @param min_v First Vec3 corner of the obstacle bounds.
+/// @param max_v Opposite Vec3 corner of the obstacle bounds.
+/// @return One when the obstacle is stored and applied, otherwise zero.
 int8_t rt_navmesh3d_add_obstacle(void *obj, void *min_v, void *max_v) {
     if (!obj)
         return 0;
@@ -1336,6 +1493,9 @@ int8_t rt_navmesh3d_add_obstacle(void *obj, void *min_v, void *max_v) {
 }
 
 /// @brief Remove a coarse AABB obstacle and immediately refilter the walkable triangle set.
+/// @param obj NavMesh3D handle to modify.
+/// @param index Zero-based obstacle index.
+/// @return One when the obstacle is removed and the mesh state is updated, otherwise zero.
 int8_t rt_navmesh3d_remove_obstacle(void *obj, int64_t index) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     if (!navmesh3d_can_edit_obstacles(nm) || index < 0 || index >= nm->obstacle_count)
@@ -1360,6 +1520,11 @@ int8_t rt_navmesh3d_remove_obstacle(void *obj, int64_t index) {
 }
 
 /// @brief Update a coarse AABB obstacle and immediately refilter the walkable triangle set.
+/// @param obj NavMesh3D handle to modify.
+/// @param index Zero-based obstacle index.
+/// @param min_v First Vec3 corner of the replacement bounds.
+/// @param max_v Opposite Vec3 corner of the replacement bounds.
+/// @return One when the obstacle and affected mesh state are updated, otherwise zero.
 int8_t rt_navmesh3d_update_obstacle(void *obj, int64_t index, void *min_v, void *max_v) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     float omin[3];
@@ -1386,12 +1551,20 @@ int8_t rt_navmesh3d_update_obstacle(void *obj, int64_t index, void *min_v, void 
 }
 
 /// @brief Number of authored coarse AABB obstacles.
+/// @param obj NavMesh3D handle to inspect.
+/// @return Non-negative obstacle count, or zero for an invalid handle.
 int64_t rt_navmesh3d_get_obstacle_count(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     return navmesh3d_read_obstacle_count(nm);
 }
 
 /// @brief Assign nav-area and traversal-cost metadata to polygons overlapping an AABB volume.
+/// @param obj NavMesh3D handle to modify.
+/// @param min_v First Vec3 corner of the selection bounds.
+/// @param max_v Opposite Vec3 corner of the selection bounds.
+/// @param area Runtime area-name string to intern and assign.
+/// @param traversal_cost Cost multiplier sanitized before assignment.
+/// @return One when at least one preserved source triangle overlaps the bounds, otherwise zero.
 int8_t rt_navmesh3d_set_area(
     void *obj, void *min_v, void *max_v, rt_string area, double traversal_cost) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
@@ -1425,6 +1598,10 @@ int8_t rt_navmesh3d_set_area(
 }
 
 /// @brief Read the nav-area name metadata at a walkable position.
+/// @param obj NavMesh3D handle to query.
+/// @param point Vec3 world-space position to resolve.
+/// @return Runtime area-name string for the containing triangle, or an empty constant string when
+/// no walkable triangle is found.
 rt_string rt_navmesh3d_get_area(void *obj, void *point) {
     float query[3];
     if (!obj || !navmesh3d_read_point3f(point, query))
@@ -1442,6 +1619,9 @@ rt_string rt_navmesh3d_get_area(void *obj, void *point) {
 /// @brief Sample the navmesh traversal cost at world @p point — resolving the triangle directly
 ///   at/below it (via vertical proximity, so stacked surfaces disambiguate) and returning that
 ///   triangle's area-weighted cost. Returns 0 when @p point is off-mesh, non-finite, or invalid.
+/// @param obj NavMesh3D handle to query.
+/// @param point Vec3 world-space position to resolve.
+/// @return Sanitized traversal cost for the containing triangle, or zero when none is found.
 double rt_navmesh3d_get_traversal_cost(void *obj, void *point) {
     float query[3];
     if (!obj || !navmesh3d_read_point3f(point, query))
@@ -1457,6 +1637,8 @@ double rt_navmesh3d_get_traversal_cost(void *obj, void *point) {
 }
 
 /// @brief Number of authored off-mesh traversal links.
+/// @param obj NavMesh3D handle to inspect.
+/// @return Non-negative off-mesh link count, or zero for an invalid handle.
 int64_t rt_navmesh3d_get_offmesh_link_count(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     return navmesh3d_read_offmesh_link_count(nm);
@@ -1466,6 +1648,8 @@ int64_t rt_navmesh3d_get_offmesh_link_count(void *obj) {
 /// @details Every `Bake` now auto-tiles (extent/16, clamped); `BakeTiled`
 ///          overrides explicitly. `Build`-constructed meshes report 0 (no
 ///          voxel source to re-carve; obstacle edits refilter the mesh).
+/// @param obj NavMesh3D handle to inspect.
+/// @return Positive tile edge length for a tiled mesh, otherwise zero.
 double rt_navmesh3d_get_tile_size(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     return nm && nm->tile_size > 0.0 ? nm->tile_size : 0.0;
@@ -1477,6 +1661,11 @@ double rt_navmesh3d_get_tile_size(void *obj) {
 ///          exact link endpoints, so the tolerance only absorbs float
 ///          round-trips). Writes the link's authored kind string (borrowed,
 ///          may be NULL) to @p out_kind when non-NULL.
+/// @param obj NavMesh3D handle to query.
+/// @param a Three-component world-space segment start.
+/// @param b Three-component world-space segment end.
+/// @param out_kind Optional output receiving the matched link's borrowed kind string.
+/// @return One when the segment matches a permitted link direction, otherwise zero.
 int8_t rt_navmesh3d_segment_is_offmesh_link(void *obj,
                                             const double *a,
                                             const double *b,
@@ -1517,6 +1706,10 @@ int8_t rt_navmesh3d_segment_is_offmesh_link(void *obj,
 /// @details Real tiled data ownership is future work; this conservative baseline refilters the
 /// preserved source triangles and rebuilds adjacency/off-mesh endpoint resolution for the whole
 /// navmesh. The tile coordinates are accepted for API stability.
+/// @param obj NavMesh3D handle to rebuild.
+/// @param tile_x Signed tile X coordinate.
+/// @param tile_z Signed tile Z coordinate.
+/// @return One when the requested rebuild or refilter is accepted, otherwise zero.
 int8_t rt_navmesh3d_rebuild_tile(void *obj, int64_t tile_x, int64_t tile_z) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     if (!nm || !nm->triangles || nm->triangle_count <= 0)
@@ -1546,6 +1739,10 @@ int8_t rt_navmesh3d_rebuild_tile(void *obj, int64_t tile_x, int64_t tile_z) {
 /// @details Used by unit tests to create a "stale" tiled navmesh — the obstacle exists but no tile
 /// has been re-carved yet — so a subsequent `RebuildTile` can be observed to affect exactly one
 /// tile. Not part of the scripting surface (classified internal in RuntimeSurfacePolicy.inc).
+/// @param obj NavMesh3D handle to modify.
+/// @param min_v First Vec3 corner of the injected obstacle.
+/// @param max_v Opposite Vec3 corner of the injected obstacle.
+/// @return One when the obstacle is appended without applying it, otherwise zero.
 int8_t rt_navmesh3d_test_inject_obstacle(void *obj, void *min_v, void *max_v) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     if (!navmesh3d_can_edit_obstacles(nm))
@@ -1574,6 +1771,12 @@ int8_t rt_navmesh3d_test_inject_obstacle(void *obj, void *min_v, void *max_v) {
 
 /// @brief Test-only: map a world XZ position to its tile coords (see navmesh3d_tile_of_point).
 /// Returns 0 if the mesh is not tiled. Not part of the scripting surface.
+/// @param obj NavMesh3D handle to query.
+/// @param px Finite world-space X coordinate.
+/// @param pz Finite world-space Z coordinate.
+/// @param out_tx Receives the containing tile X coordinate.
+/// @param out_tz Receives the containing tile Z coordinate.
+/// @return One when the point maps to a tiled mesh, otherwise zero.
 int8_t rt_navmesh3d_test_tile_of_point(
     void *obj, double px, double pz, int64_t *out_tx, int64_t *out_tz) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
@@ -1590,6 +1793,12 @@ int8_t rt_navmesh3d_test_tile_of_point(
 /// @details This simulates a tile-local geometry source change. A far-tile RebuildTile must leave
 /// the live mesh stale; rebuilding this tile must refresh its geometry/blocking from the retained
 /// source. Not part of the scripting surface.
+/// @param obj NavMesh3D handle whose retained voxel source is edited.
+/// @param tile_x Signed tile X coordinate.
+/// @param tile_z Signed tile Z coordinate.
+/// @param height Finite replacement height written to every voxel cell in the tile.
+/// @param walkable Nonzero to mark the edited cells walkable.
+/// @return One when the tile maps to retained voxel cells and the edit is applied, otherwise zero.
 int8_t rt_navmesh3d_test_set_tile_source(
     void *obj, int64_t tile_x, int64_t tile_z, double height, int8_t walkable) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
@@ -1612,6 +1821,8 @@ int8_t rt_navmesh3d_test_set_tile_source(
 
 /// @brief Set the maximum slope angle (in degrees) considered walkable.
 /// Refilters the preserved source triangles and rebuilds adjacency immediately.
+/// @param obj NavMesh3D handle to modify.
+/// @param degrees Requested maximum walkable slope, sanitized to the supported range.
 void rt_navmesh3d_set_max_slope(void *obj, double degrees) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     if (!nm)
@@ -1624,6 +1835,8 @@ void rt_navmesh3d_set_max_slope(void *obj, double degrees) {
 
 /// @brief Render the navmesh as wireframe / outlined triangles to a Canvas3D for debugging.
 /// Useful for visualizing what's actually walkable vs. blocked.
+/// @param obj NavMesh3D handle to visualize.
+/// @param canvas Canvas3D handle receiving green triangle-edge line primitives.
 void rt_navmesh3d_debug_draw(void *obj, void *canvas) {
     if (!obj || !canvas)
         return;

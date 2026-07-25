@@ -4,14 +4,26 @@
 // rt_textureasset3d.c; not a standalone translation unit) Purpose: TextureAsset3D KTX2 parser and
 // the public TextureAsset3D API
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements KTX2 loading and the public TextureAsset3D query surface.
+///
+/// This implementation fragment validates KTX2 headers, level tables, format
+/// geometry, supercompression, and canonical backing ownership. It selects CPU
+/// fallbacks through the authoritative format table, applies strict or
+/// permissive degradation policy, constructs TextureAsset3D instances, and
+/// exposes their format, residency, alpha, and native-upload metadata.
+///
+/// @note This file is included by `rt_textureasset3d.c` and is not a standalone
+///       translation unit.
+
 /// @brief Decode one mip from an asset's immutable canonical backing using its table-selected
 /// decoder.
 /// @details The asset retains exact packed ranges in @c mips. This helper validates the requested
 ///          index/range through the existing per-format decoder and returns a new Pixels object;
 ///          it never mutates residency or source state. UASTC remains internally distinguishable
 ///          after its public normalized format changes to rgba8.
-/// @param asset Valid TextureAsset3D implementation with canonical backing.
-/// @param mip Absolute mip index.
+/// @param[in] asset Valid TextureAsset3D implementation with canonical backing.
+/// @param[in] mip Absolute mip index.
 /// @return New GC-managed Pixels fallback, or NULL when the index/source/decoder is unavailable or
 ///         the level uses a valid-but-partially-unsupported block mode.
 static void *textureasset3d_decode_mip_from_backing(const rt_textureasset3d *asset, int64_t mip) {
@@ -133,8 +145,8 @@ static void *textureasset3d_decode_mip_from_backing(const rt_textureasset3d *ass
 ///          array always has @p mip_count slots; NULL slots accurately represent levels outside a
 ///          partial decoder's coverage. When no level decodes, the table itself is freed and NULL
 ///          is returned so strict/permissive policy can decide whether to reject or substitute.
-/// @param prototype Temporary asset view containing backing, mips, geometry, and decoder kind.
-/// @param mip_count Validated number of levels.
+/// @param[in] prototype Temporary asset view containing backing, mips, geometry, and decoder kind.
+/// @param[in] mip_count Validated number of levels.
 /// @return Newly allocated Pixels pointer table with zero or more populated slots, or NULL when no
 ///         level decoded/allocation failed.
 static void **textureasset3d_decode_capability_mips(const rt_textureasset3d *prototype,
@@ -239,7 +251,7 @@ static void **textureasset3d_decode_capability_mips(const rt_textureasset3d *pro
 }
 
 /// @brief Stable human-readable detail for a capability row's CPU decode failure.
-/// @param decoder Table-selected decoder kind.
+/// @param[in] decoder Table-selected decoder kind.
 /// @return Static diagnostic text used in the existing load warning/error.
 static const char *textureasset3d_decoder_failure_detail(int32_t decoder) {
     switch ((textureasset3d_decoder_kind)decoder) {
@@ -275,6 +287,10 @@ static const char *textureasset3d_decoder_failure_detail(int32_t decoder) {
 ///          Seeds the cache identity and makes all mips resident. Malformed or unsupported
 ///          input reports through rt_asset_error (recoverable: callers receive NULL and can
 ///          query Assets3D.GetLastLoadError); only allocation failures trap.
+/// @param[in] data Complete caller-owned KTX2 byte stream.
+/// @param[in] size Number of readable bytes in @p data.
+/// @param[in] api_name Public entry-point name used to contextualize diagnostics.
+/// @param[in] strict Nonzero to reject CPU decode misses instead of substituting checkers.
 /// @return New TextureAsset3D handle, or NULL on validation/allocation failure.
 static void *textureasset3d_parse_ktx2(const uint8_t *data,
                                        size_t size,
@@ -654,6 +670,9 @@ static void *textureasset3d_parse_ktx2(const uint8_t *data,
 /// @details Returns NULL with a recoverable rt_asset_error on malformed or
 ///          unsupported input (query via Assets3D.GetLastLoadError); traps
 ///          only on caller misuse (NULL data) and allocation failure.
+/// @param[in] data Complete borrowed KTX2 byte stream.
+/// @param[in] size Number of readable bytes in @p data.
+/// @return A newly allocated TextureAsset3D, or NULL on recoverable load failure.
 void *rt_textureasset3d_load_ktx2_memory(const uint8_t *data, uint64_t size) {
     void *asset;
 
@@ -681,6 +700,9 @@ void *rt_textureasset3d_load_ktx2_memory(const uint8_t *data, uint64_t size) {
 ///          but passes strict policy into the shared parser. The input remains borrowed and may be
 ///          released immediately after return because every accepted level is copied/decoded into
 ///          canonical asset-owned backing.
+/// @param[in] data Complete borrowed KTX2 byte stream.
+/// @param[in] size Number of readable bytes in @p data.
+/// @return A newly allocated TextureAsset3D, or NULL on recoverable load failure.
 void *rt_textureasset3d_load_ktx2_memory_strict(const uint8_t *data, uint64_t size) {
     void *asset;
 
@@ -707,6 +729,8 @@ void *rt_textureasset3d_load_ktx2_memory_strict(const uint8_t *data, uint64_t si
 /// @details Returns NULL with a recoverable rt_asset_error when the file is
 ///          missing, unreadable, malformed, or unsupported; traps only on a
 ///          NULL/empty path (caller misuse) and allocation failure.
+/// @param[in] path Runtime string naming a filesystem KTX2 file.
+/// @return A newly allocated TextureAsset3D, or NULL on recoverable load failure.
 void *rt_textureasset3d_load_ktx2(rt_string path) {
     const char *cpath = path ? rt_string_cstr(path) : NULL;
     size_t size = 0;
@@ -738,6 +762,8 @@ void *rt_textureasset3d_load_ktx2(rt_string path) {
 /// @details File acquisition, limits, canonical backing ownership, and recoverable error behavior
 ///          match the compatibility loader. A partially supported decoder that cannot decode any
 ///          mip causes a NULL result with an unsupported-data diagnostic.
+/// @param[in] path Runtime string naming a filesystem KTX2 file.
+/// @return A newly allocated TextureAsset3D, or NULL on recoverable load failure.
 void *rt_textureasset3d_load_ktx2_strict(rt_string path) {
     const char *cpath = path ? rt_string_cstr(path) : NULL;
     size_t size = 0;
@@ -768,6 +794,8 @@ void *rt_textureasset3d_load_ktx2_strict(rt_string path) {
 /// @brief Load a KTX2 texture from a packed asset path (rt_asset registry).
 /// @details Returns NULL with a recoverable rt_asset_error when the asset is
 ///          missing, malformed, or unsupported; traps only on a NULL path.
+/// @param[in] path Packed-asset registry path.
+/// @return A newly allocated TextureAsset3D, or NULL on recoverable load failure.
 void *rt_textureasset3d_load_ktx2_asset(rt_string path) {
     size_t size = 0;
     uint8_t *data;
@@ -798,6 +826,8 @@ void *rt_textureasset3d_load_ktx2_asset(rt_string path) {
 /// @details The raw asset buffer is always released before return. Missing assets and malformed
 ///          input remain recoverable; recognized blocks outside partial CPU decoder coverage are
 ///          rejected instead of becoming a checker asset.
+/// @param[in] path Packed-asset registry path.
+/// @return A newly allocated TextureAsset3D, or NULL on recoverable load failure.
 void *rt_textureasset3d_load_ktx2_asset_strict(rt_string path) {
     size_t size = 0;
     uint8_t *data;
@@ -825,6 +855,8 @@ void *rt_textureasset3d_load_ktx2_asset_strict(rt_string path) {
 }
 
 /// @brief Return NONE/PARTIAL/FULL CPU fallback quality from the authoritative format table.
+/// @param[in] format_name Stable format name to query.
+/// @return The matching RT_TEXTUREASSET3D_CPU_SUPPORT_* level, or NONE if absent or ambiguous.
 int32_t rt_textureasset3d_cpu_format_support_level(const char *format_name) {
     int32_t support = RT_TEXTUREASSET3D_CPU_SUPPORT_NONE;
 
@@ -845,6 +877,8 @@ int32_t rt_textureasset3d_cpu_format_support_level(const char *format_name) {
 }
 
 /// @brief Legacy boolean CPU-support query derived from the table's quality value.
+/// @param[in] format_name Stable format name to query.
+/// @return 1 when the format has partial or full CPU support, otherwise 0.
 int8_t rt_textureasset3d_cpu_supports_format(const char *format_name) {
     return rt_textureasset3d_cpu_format_support_level(format_name) !=
                    RT_TEXTUREASSET3D_CPU_SUPPORT_NONE
@@ -853,17 +887,22 @@ int8_t rt_textureasset3d_cpu_supports_format(const char *format_name) {
 }
 
 /// @brief Return true when the runtime KTX2 parser can produce CPU texture payloads.
+/// @return Always 1 because KTX2 CPU loading is compiled into this runtime.
 int8_t rt_textureasset3d_cpu_supports_ktx2(void) {
     return 1;
 }
 
 /// @brief Number of rows in the immutable authoritative format table.
+/// @return The number of indices accepted by rt_textureasset3d_get_format_capability().
 int64_t rt_textureasset3d_get_format_capability_count(void) {
     return (int64_t)(sizeof(textureasset3d_format_capabilities) /
                      sizeof(textureasset3d_format_capabilities[0]));
 }
 
 /// @brief Copy one authoritative capability row into caller-owned diagnostics storage.
+/// @param[in] index Zero-based row index.
+/// @param[out] out_capability Destination cleared before validation and filled on success.
+/// @return 1 when @p index and @p out_capability are valid, otherwise 0.
 int8_t rt_textureasset3d_get_format_capability(
     int64_t index, rt_textureasset3d_format_capability *out_capability) {
     const textureasset3d_format_info *row;
@@ -895,52 +934,68 @@ void rt_textureasset3d_test_reset_supercompression_allocation_telemetry(void) {
 }
 
 /// @brief Return final canonical bytes recorded by the latest supercompressed parse.
+/// @return The atomically recorded final canonical-backing byte count.
 uint64_t rt_textureasset3d_test_get_supercompression_final_bytes(void) {
     return rt_atomic_load_u64(&g_textureasset3d_supercompression_final_bytes, __ATOMIC_ACQUIRE);
 }
 
 /// @brief Return peak live final-destination bytes recorded by that parse.
+/// @return The atomically recorded peak destination byte count.
 uint64_t rt_textureasset3d_test_get_supercompression_peak_bytes(void) {
     return rt_atomic_load_u64(&g_textureasset3d_supercompression_peak_bytes, __ATOMIC_ACQUIRE);
 }
 
 /// @brief Texture width in pixels (0 if the handle is invalid).
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Positive base-level width, or 0 for an invalid handle or dimension.
 int64_t rt_textureasset3d_get_width(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return (asset && asset->width > 0) ? asset->width : 0;
 }
 
 /// @brief Texture height in pixels (0 if the handle is invalid).
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Positive base-level height, or 0 for an invalid handle or dimension.
 int64_t rt_textureasset3d_get_height(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return (asset && asset->height > 0) ? asset->height : 0;
 }
 
 /// @brief Number of mip levels (0 if the handle is invalid).
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Validated mip count clamped to the allocated metadata table.
 int64_t rt_textureasset3d_get_mip_count(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return textureasset3d_safe_mip_count(asset);
 }
 
 /// @brief Runtime format name ("rgba8"/"bc3"/"bc7"/"astc"/"etc2"/"unknown"; "" if invalid).
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Runtime string containing the stable format name, or an empty string if invalid.
 rt_string rt_textureasset3d_get_format(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return rt_const_cstr((asset && asset->format) ? asset->format : "");
 }
 
 /// @brief Whether the texture stores native block-compressed mip payloads.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return 1 for a valid compressed asset, otherwise 0.
 int8_t rt_textureasset3d_get_compressed(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return (asset && asset->compressed) ? 1 : 0;
 }
 
 /// @brief Whether permissive loading substituted the visible checker fallback.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return 1 for a valid degraded asset, otherwise 0.
 int8_t rt_textureasset3d_get_degraded(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return asset && asset->degraded ? 1 : 0;
 }
 
 /// @brief Stable degradation reason token, or an empty string for normal/invalid assets.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Runtime string containing the degradation token or an empty string.
 rt_string rt_textureasset3d_get_degraded_reason(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return rt_const_cstr(asset && asset->degraded && asset->degraded_reason ? asset->degraded_reason
@@ -948,6 +1003,8 @@ rt_string rt_textureasset3d_get_degraded_reason(void *obj) {
 }
 
 /// @brief First mip index currently marked resident.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Clamped first resident mip index, or 0 for invalid metadata.
 int64_t rt_textureasset3d_get_resident_mip_start(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     int64_t safe_mip_count = textureasset3d_safe_mip_count(asset);
@@ -959,12 +1016,16 @@ int64_t rt_textureasset3d_get_resident_mip_start(void *obj) {
 }
 
 /// @brief Number of mip levels currently marked resident.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Number of levels in a valid resident range, otherwise 0.
 int64_t rt_textureasset3d_get_resident_mip_count(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return textureasset3d_resident_range_valid(asset) ? asset->resident_mip_count : 0;
 }
 
 /// @brief Total byte size of the currently-resident mips (saturated to INT64_MAX).
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Nonnegative resident byte estimate, or 0 for invalid state.
 int64_t rt_textureasset3d_get_resident_bytes(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     if (!textureasset3d_resident_range_valid(asset) || asset->resident_bytes < 0)
@@ -976,6 +1037,8 @@ int64_t rt_textureasset3d_get_resident_bytes(void *obj) {
 /// @details This is intentionally different from `ResidentBytes`: the resident
 ///          range describes the active upload window, while retained bytes reflects
 ///          process memory held so the upload window can move without reloading.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Nonnegative retained byte estimate, recomputed if cached metadata is invalid.
 int64_t rt_textureasset3d_get_retained_bytes(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     if (!asset)
@@ -986,6 +1049,9 @@ int64_t rt_textureasset3d_get_retained_bytes(void *obj) {
 }
 
 /// @brief Set the resident mip window (traps on a negative range); see the internal helper.
+/// @param[in,out] obj Opaque TextureAsset3D handle whose resident window is replaced.
+/// @param[in] first_mip First requested mip level.
+/// @param[in] mip_count Requested number of consecutive levels.
 void rt_textureasset3d_set_resident_mip_range(void *obj, int64_t first_mip, int64_t mip_count) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     textureasset3d_set_resident_mip_range_internal(
@@ -993,6 +1059,8 @@ void rt_textureasset3d_set_resident_mip_range(void *obj, int64_t first_mip, int6
 }
 
 /// @brief Borrow the decoded Pixels object for the first resident mip (NULL if none/invalid).
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Borrowed decoded Pixels handle for the first resident level, or NULL.
 void *rt_textureasset3d_get_pixels(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     if (!textureasset3d_resident_range_valid(asset) || !asset->mip_pixels)
@@ -1004,6 +1072,8 @@ void *rt_textureasset3d_get_pixels(void *obj) {
 /// @details Exact metadata is available when decoded Pixels fallbacks were produced for all mips.
 ///          Native-only payloads without decoded fallbacks intentionally report unknown so Canvas3D
 ///          does not assume alpha solely from an alpha-capable compressed format.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return 1 when alpha classification is exact for every loaded mip, otherwise 0.
 int8_t rt_textureasset3d_alpha_metadata_known(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return (asset && asset->alpha_metadata_known) ? 1 : 0;
@@ -1012,6 +1082,8 @@ int8_t rt_textureasset3d_alpha_metadata_known(void *obj) {
 /// @brief Return whether exact alpha metadata found any non-opaque texel.
 /// @details Returns 0 for both "known opaque" and "unknown"; callers that need to distinguish those
 ///          states should first call `rt_textureasset3d_alpha_metadata_known`.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return 1 when exact metadata records a non-opaque texel, otherwise 0.
 int8_t rt_textureasset3d_has_alpha_texels(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return (asset && asset->alpha_metadata_known && asset->has_alpha_texels) ? 1 : 0;
@@ -1022,6 +1094,8 @@ int8_t rt_textureasset3d_has_alpha_texels(void *obj) {
 ///          single hash (FNV offset basis seed, golden-ratio mix per term). Returns 0 when there
 ///          is nothing to cache (no native payloads or no resident mips); never returns 0
 ///          otherwise.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Nonzero cache key for a resident native payload, or 0 when none is cacheable.
 uint64_t rt_textureasset3d_get_native_cache_key(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     uint64_t signature = 1469598103934665603ull;
@@ -1044,6 +1118,8 @@ uint64_t rt_textureasset3d_get_native_cache_key(void *obj) {
 ///          resident-window and revision changes, so callers tracking per-asset state over
 ///          time (e.g., Canvas3D texture streaming) can key on it without losing history
 ///          every time they move the window themselves.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Process-unique stable identity, or 0 for an invalid handle.
 uint64_t rt_textureasset3d_get_cache_identity(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return asset ? asset->cache_identity : 0;
@@ -1052,6 +1128,8 @@ uint64_t rt_textureasset3d_get_cache_identity(void *obj) {
 /// @brief Return the authoritative row's normalized native format id.
 /// @details The value is captured at load time from the same table that selected block geometry
 ///          and fallback decoding, eliminating the former name-based mapping switch.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Native format identifier, or RT_TEXTUREASSET3D_NATIVE_FORMAT_NONE.
 int32_t rt_textureasset3d_get_native_format_id(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return asset && asset->compressed ? asset->native_format_id
@@ -1059,6 +1137,8 @@ int32_t rt_textureasset3d_get_native_format_id(void *obj) {
 }
 
 /// @brief Return the same format row's backend capability bit for upload selection.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @return Required backend capability bit, or RT_TEXTUREASSET3D_BACKEND_CAP_NONE.
 int64_t rt_textureasset3d_get_native_capability_bit(void *obj) {
     rt_textureasset3d *asset = textureasset3d_checked(obj);
     return asset && asset->compressed ? asset->backend_capability_bit
@@ -1068,7 +1148,17 @@ int64_t rt_textureasset3d_get_native_capability_bit(void *obj) {
 /// @brief Borrow a retained native compressed mip's bytes and geometry for backend upload.
 /// @details Reports the payload pointer, byte size, pixel dimensions, and block geometry for the
 ///          given absolute @p mip. Only valid for compressed assets with retained native payloads.
+/// @param[in] obj Opaque TextureAsset3D handle.
+/// @param[in] mip Absolute zero-based mip index.
+/// @param[out] out_data Optional destination for the borrowed encoded payload pointer.
+/// @param[out] out_bytes Optional destination for the encoded payload byte count.
+/// @param[out] out_width Optional destination for the mip width in texels.
+/// @param[out] out_height Optional destination for the mip height in texels.
+/// @param[out] out_block_width Optional destination for the block footprint width.
+/// @param[out] out_block_height Optional destination for the block footprint height.
+/// @param[out] out_block_bytes Optional destination for the encoded bytes per block.
 /// @return 1 with the out-params set, 0 if the mip is out of range or has no native payload.
+/// @note The returned byte pointer remains owned by @p obj and must not be freed or modified.
 int rt_textureasset3d_get_native_mip_info(void *obj,
                                           int64_t mip,
                                           const uint8_t **out_data,

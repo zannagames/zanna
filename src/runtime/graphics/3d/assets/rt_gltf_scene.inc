@@ -4,6 +4,20 @@
 // standalone translation unit) Purpose: glTF scene-graph node build and scene import
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_scene.inc
+ * @brief Builds runtime node templates and scene roots from a decoded glTF asset.
+ * @details This `rt_gltf.c` fragment applies node transforms, lights, meshes, skins, primitive
+ *          materials, and material variants; links the validated template hierarchy; clones
+ *          scene-specific root subtrees; imports scene camera metadata; and installs the active
+ *          scene compatibility view.
+ */
+
+/// @brief Apply a glTF node's matrix or component transform to a runtime scene node.
+/// @details A 4x4 matrix takes precedence over translation, rotation, and scale arrays.
+///          The result is decomposed as needed, sanitized, and marked world-dirty.
+/// @param[in] node_json Parsed glTF node object.
+/// @param[in,out] node Runtime node receiving local transform components.
 static void gltf_node_read_transform(void *node_json, rt_scene_node3d *node) {
     void *matrix_arr = jarr(node_json, "matrix");
     if (matrix_arr && jarr_len(matrix_arr) >= 16) {
@@ -32,6 +46,13 @@ static void gltf_node_read_transform(void *node_json, rt_scene_node3d *node) {
     node->world_dirty = 1;
 }
 
+/// @brief Bind a referenced imported punctual light to a runtime node.
+/// @param[in,out] node Runtime node receiving the light.
+/// @param light_ref glTF light index, or a negative value when no light is referenced.
+/// @param[in] imported_lights Runtime light table indexed by glTF light index.
+/// @param imported_light_count Number of entries in @p imported_lights.
+/// @return Non-zero when no light is requested or a valid light is bound; zero for an
+///         invalid or unavailable nonnegative reference.
 static int gltf_node_bind_light(rt_scene_node3d *node,
                                 int64_t light_ref,
                                 void **imported_lights,
@@ -45,6 +66,10 @@ static int gltf_node_bind_light(rt_scene_node3d *node,
     return 0;
 }
 
+/// @brief Assign the resolved default material for one output primitive mesh.
+/// @param[in,out] node Runtime node receiving the material.
+/// @param[in] primitive_materials Per-output-mesh resolved material table.
+/// @param primitive_index Zero-based output primitive slot.
 static void gltf_node_set_primitive_material(rt_scene_node3d *node,
                                              void **primitive_materials,
                                              int32_t primitive_index) {
@@ -57,6 +82,11 @@ static void gltf_node_set_primitive_material(rt_scene_node3d *node,
 ///          primitive does not map keep the primitive's default material, so applying any
 ///          variant is always reversible. No-op when the asset has no variants or the
 ///          primitive carries no mappings.
+/// @param[in] asset Asset providing variant count and resolved material objects.
+/// @param[in,out] node Runtime primitive node receiving the variant material table.
+/// @param[in] primitive_variant_mappings Per-output-mesh variant-to-material-index tables.
+/// @param primitive_index Zero-based output primitive slot.
+/// @param[in] primitive_materials Per-output-mesh default material table.
 static void gltf_node_bind_variant_materials(rt_gltf_asset *asset,
                                              rt_scene_node3d *node,
                                              int32_t **primitive_variant_mappings,
@@ -86,6 +116,19 @@ static void gltf_node_bind_variant_materials(rt_gltf_asset *asset,
     free(table);
 }
 
+/// @brief Create or select the mesh variant required by a node and attach it.
+/// @details Applies node-level morph weights and skin remapping through
+///          gltf_make_node_mesh_variant, releasing any temporary variant after the
+///          node retains it.
+/// @param[in] asset Asset owning the decoded primitive mesh table.
+/// @param[in,out] node Runtime node receiving the mesh.
+/// @param mesh_index Zero-based output primitive mesh slot.
+/// @param skin_ref glTF skin index, or a negative value for an unskinned node.
+/// @param[in] weights_arr Optional node-level morph weights array.
+/// @param[in] skins Decoded skin table.
+/// @param skin_count Number of entries in @p skins.
+/// @return Non-zero when a valid mesh variant is attached; zero on invalid input or
+///         variant creation failure.
 static int gltf_node_attach_primitive_mesh(rt_gltf_asset *asset,
                                            rt_scene_node3d *node,
                                            int32_t mesh_index,
@@ -106,6 +149,20 @@ static int gltf_node_attach_primitive_mesh(rt_gltf_asset *asset,
     return 1;
 }
 
+/// @brief Attach an additional source-mesh primitive as a child node.
+/// @details Creates a child node, installs its mesh variant, default and variant
+///          materials, attaches it to the source node, and releases the local reference.
+/// @param[in] asset Asset owning meshes, materials, and variant metadata.
+/// @param[in,out] node Parent runtime node representing the source glTF node.
+/// @param mesh_index Zero-based output primitive mesh slot.
+/// @param skin_ref glTF skin index, or a negative value for no skin.
+/// @param[in] weights_arr Optional node-level morph weights array.
+/// @param[in] primitive_materials Per-output-mesh default material table.
+/// @param[in] primitive_variant_mappings Per-output-mesh variant mapping tables.
+/// @param[in] skins Decoded skin table.
+/// @param skin_count Number of entries in @p skins.
+/// @return Non-zero when the child primitive is attached; zero on allocation,
+///         mesh-variant, or hierarchy insertion failure.
 static int gltf_node_attach_extra_primitive(rt_gltf_asset *asset,
                                             rt_scene_node3d *node,
                                             int32_t mesh_index,
@@ -134,6 +191,23 @@ static int gltf_node_attach_extra_primitive(rt_gltf_asset *asset,
     return 1;
 }
 
+/// @brief Attach every runtime primitive produced for a referenced glTF mesh.
+/// @details The first primitive is installed directly on @p node; remaining primitives
+///          become child nodes so each can retain its own mesh and material state.
+/// @param[in] asset Asset owning decoded meshes and materials.
+/// @param[in,out] node Runtime node representing the source glTF node.
+/// @param mesh_ref glTF mesh index, or a negative value for no mesh.
+/// @param skin_ref glTF skin index, or a negative value for no skin.
+/// @param[in] weights_arr Optional node-level morph weights array.
+/// @param mesh_json_count Number of source glTF mesh objects.
+/// @param[in] mesh_prim_start Per-source-mesh first output primitive slot table.
+/// @param[in] mesh_prim_count Per-source-mesh emitted primitive count table.
+/// @param[in] primitive_materials Per-output-mesh default material table.
+/// @param[in] primitive_variant_mappings Per-output-mesh variant mapping tables.
+/// @param[in] skins Decoded skin table.
+/// @param skin_count Number of entries in @p skins.
+/// @return Non-zero when no mesh is referenced or every primitive is attached; zero
+///         for an invalid range or attachment failure.
 static int gltf_node_attach_mesh_primitives(rt_gltf_asset *asset,
                                             rt_scene_node3d *node,
                                             int64_t mesh_ref,
@@ -187,6 +261,25 @@ static int gltf_node_attach_mesh_primitives(rt_gltf_asset *asset,
     return 1;
 }
 
+/// @brief Construct and populate one reusable runtime node template.
+/// @details Applies its effective name, validates references, binds any light, imports
+///          its local transform, and attaches all meshes generated for its source mesh.
+/// @param[in] asset Asset owning decoded runtime resources.
+/// @param[in] nodes_arr Parsed glTF `nodes` array.
+/// @param node_index Zero-based source node index.
+/// @param mesh_json_count Number of source glTF mesh objects.
+/// @param[in] mesh_prim_start Per-source-mesh first output primitive slot table.
+/// @param[in] mesh_prim_count Per-source-mesh emitted primitive count table.
+/// @param[in] primitive_materials Per-output-mesh default material table.
+/// @param[in] primitive_variant_mappings Per-output-mesh variant mapping tables.
+/// @param[in] skins Decoded skin table.
+/// @param skin_count Number of entries in @p skins.
+/// @param[in] imported_lights Runtime punctual-light table.
+/// @param imported_light_count Number of entries in @p imported_lights.
+/// @param[out] out_node Receives the allocated node even when later population fails,
+///                      allowing caller cleanup.
+/// @return Non-zero when the template is fully populated; zero on allocation or an
+///         invalid/unresolvable resource reference.
 static int gltf_build_template_node(rt_gltf_asset *asset,
                                     void *nodes_arr,
                                     int32_t node_index,
@@ -241,6 +334,12 @@ static int gltf_build_template_node(rt_gltf_asset *asset,
                                             skin_count);
 }
 
+/// @brief Link child relationships among all constructed node templates.
+/// @param[in] nodes_arr Parsed glTF `nodes` array.
+/// @param node_json_count Number of source node objects.
+/// @param[in,out] nodes Template node table indexed by glTF node index.
+/// @return Non-zero when every valid referenced child is attached; zero when a
+///         hierarchy insertion fails.
 static int gltf_link_template_node_children(void *nodes_arr,
                                             int32_t node_json_count,
                                             rt_scene_node3d **nodes) {
@@ -258,12 +357,24 @@ static int gltf_link_template_node_children(void *nodes_arr,
     return 1;
 }
 
+/// @brief Map import order to a source scene index with the active scene first.
+/// @param order Zero-based output import order.
+/// @param active_scene Source index selected by the root `scene` property.
+/// @param active_valid Non-zero when @p active_scene lies within the scenes array.
+/// @return Source scene index for @p order, preserving source order after moving a
+///         valid active scene to slot zero.
 static int64_t gltf_scene_order_index(int64_t order, int64_t active_scene, int active_valid) {
     if (!active_valid)
         return order;
     return order == 0 ? active_scene : (order <= active_scene ? order - 1 : order);
 }
 
+/// @brief Validate that a scene lists distinct, in-range root nodes.
+/// @param[in] scene_nodes Parsed scene `nodes` array.
+/// @param node_json_count Number of source glTF nodes.
+/// @param[in] node_parent Validated parent-index table, or `NULL`.
+/// @param[out] scene_seen Scratch bitmap used to reject duplicate roots.
+/// @return Non-zero when every listed node is unique, in range, and parentless.
 static int gltf_scene_roots_are_valid(void *scene_nodes,
                                       int32_t node_json_count,
                                       const int *node_parent,
@@ -278,6 +389,17 @@ static int gltf_scene_roots_are_valid(void *scene_nodes,
     return 1;
 }
 
+/// @brief Clone one template subtree and attach it below a scene root.
+/// @details Missing or out-of-range template entries are treated as an empty no-op;
+///          successful clones also mark their source subtree active for scene metadata.
+/// @param[in,out] scene_root Destination scene root.
+/// @param[in] nodes_arr Parsed glTF `nodes` array.
+/// @param node_json_count Number of source nodes.
+/// @param[in] nodes Template node table.
+/// @param node_idx Source root node index to clone.
+/// @param[in,out] scene_active Per-source-node active bitmap updated for the subtree.
+/// @return Non-zero on successful attachment or a harmless missing template; zero on
+///         clone, hierarchy insertion, or active-subtree traversal failure.
 static int gltf_clone_scene_root_into(rt_scene_node3d *scene_root,
                                       void *nodes_arr,
                                       int32_t node_json_count,
@@ -298,6 +420,21 @@ static int gltf_clone_scene_root_into(rt_scene_node3d *scene_root,
     return gltf_mark_active_node_subtree(nodes_arr, node_json_count, node_idx, scene_active);
 }
 
+/// @brief Import one declared glTF scene from its JSON object.
+/// @details Validates root membership, clones each template subtree into a new named
+///          scene root, appends it to the asset, and imports cameras active in that scene.
+/// @param[in,out] asset Asset receiving the new scene record.
+/// @param[in] root Parsed glTF document root used for camera import.
+/// @param[in] nodes_arr Parsed glTF `nodes` array.
+/// @param[in] nodes Reusable runtime template node table.
+/// @param node_json_count Number of source nodes.
+/// @param[in] node_parent Validated parent-index table.
+/// @param[in] scene_json Parsed scene object.
+/// @param scene_index Zero-based source scene index used in fallback naming.
+/// @param order Zero-based import order; the active scene is imported first.
+/// @param[in,out] built_any_io Flag set when a scene is successfully appended.
+/// @return Non-zero when the scene and its camera metadata are imported; zero on
+///         invalid roots or allocation, cloning, append, or camera-import failure.
 static int gltf_import_scene_from_json(rt_gltf_asset *asset,
                                        void *root,
                                        void *nodes_arr,
@@ -349,6 +486,15 @@ static int gltf_import_scene_from_json(rt_gltf_asset *asset,
     return ok;
 }
 
+/// @brief Synthesize a default scene from all parentless template nodes.
+/// @param[in,out] asset Asset receiving the fallback scene.
+/// @param[in] root Parsed glTF document root used for camera import.
+/// @param[in] nodes_arr Parsed glTF `nodes` array.
+/// @param[in] nodes Reusable runtime template node table.
+/// @param node_json_count Number of source nodes.
+/// @param[in] node_parent Validated parent-index table.
+/// @return Non-zero when at least one root is cloned, appended, and has its cameras
+///         imported; zero when no root exists or any required operation fails.
 static int gltf_import_fallback_scene(rt_gltf_asset *asset,
                                       void *root,
                                       void *nodes_arr,
@@ -380,6 +526,17 @@ static int gltf_import_fallback_scene(rt_gltf_asset *asset,
     return ok;
 }
 
+/// @brief Import declared scenes, synthesize a fallback if needed, and install compatibility state.
+/// @details A valid active scene is imported first so asset scene slot zero represents
+///          the selected scene while remaining scenes retain their relative source order.
+/// @param[in,out] asset Asset receiving scene records and active-scene compatibility data.
+/// @param[in] root Parsed glTF document root.
+/// @param[in] nodes_arr Parsed glTF `nodes` array.
+/// @param[in] nodes Reusable runtime template node table.
+/// @param node_json_count Number of source nodes.
+/// @param[in] node_parent Validated parent-index table.
+/// @return Non-zero when all declared or fallback scenes and compatibility state are
+///         installed; zero on import failure.
 static int gltf_import_node_scenes(rt_gltf_asset *asset,
                                    void *root,
                                    void *nodes_arr,
@@ -417,6 +574,16 @@ static int gltf_import_node_scenes(rt_gltf_asset *asset,
 /// @brief Build the reusable template node hierarchy and per-scene roots for a
 ///        glTF asset. Extracted post-asset phase of rt_gltf_load_impl; operates
 ///        only on already-decoded meshes/materials/skins and never early-returns.
+/// @param[in,out] asset Asset receiving node-bound scenes and compatibility state.
+/// @param[in] root Parsed glTF document root.
+/// @param[in] mesh_prim_start Per-source-mesh first output primitive slot table.
+/// @param[in] mesh_prim_count Per-source-mesh emitted primitive count table.
+/// @param[in] primitive_materials Per-output-mesh default material table.
+/// @param[in] primitive_variant_mappings Per-output-mesh variant mapping tables.
+/// @param[in] skins Decoded skin table.
+/// @param skin_count Number of entries in @p skins.
+/// @param[in] imported_lights Runtime punctual-light table.
+/// @param imported_light_count Number of entries in @p imported_lights.
 /// @return Non-zero (load_failed) on a fatal allocation/clone failure.
 static int gltf_build_node_hierarchy(rt_gltf_asset *asset,
                                      void *root,

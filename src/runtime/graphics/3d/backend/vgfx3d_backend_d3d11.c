@@ -23,6 +23,15 @@
 // Links: vgfx3d_backend.h, vgfx3d_backend_d3d11_shared.h, plans/3d/03-d3d11-backend.md
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements the Windows Direct3D 11 Graphics3D backend.
+///
+/// This translation unit owns D3D11 device and swap-chain lifecycle, shader
+/// compilation, render-target and shadow resources, draw/texture/morph caches,
+/// streaming uploads, post-processing, presentation, readback, depth probes,
+/// and backend telemetry. Feature sections are split into implementation
+/// fragments included near the end of this file and share the private context
+/// and helpers declared here.
 
 #if defined(_WIN32) && defined(ZANNA_ENABLE_GRAPHICS)
 
@@ -82,6 +91,7 @@ static const float k_identity4x4[16] = {
 
 #include "vgfx3d_backend_d3d11_shaders.inc"
 
+/// @brief One cached 2D texture or native TextureAsset3D upload and its streaming cursor.
 typedef struct {
     const void *pixels_ptr;
     void *texture_asset;
@@ -103,6 +113,7 @@ typedef struct {
     uint64_t last_used_frame;
 } d3d_tex_cache_entry_t;
 
+/// @brief One cached CubeMap3D resource and its face/row streaming state.
 typedef struct {
     const void *cubemap_ptr;
     uint64_t generation;
@@ -121,12 +132,14 @@ typedef struct {
     uint64_t pending_ibl_bytes;
 } d3d_cubemap_cache_entry_t;
 
+/// @brief Shader-resource view borrowed from a cache or temporarily owned by one draw.
 typedef struct {
     ID3D11Texture2D *tex;
     ID3D11ShaderResourceView *srv;
     int temporary;
 } d3d_temp_srv_t;
 
+/// @brief Complete set of temporary and cached shader resources resolved for one draw.
 typedef struct {
     d3d_temp_srv_t textures[11];
     d3d_temp_srv_t cubemap;
@@ -145,6 +158,7 @@ typedef vgfx3d_d3d11_per_object_t d3d_per_object_t;
 _Static_assert(sizeof(d3d_per_object_t) == 752u,
                "D3D11 PerObject cbuffer must match its HLSL layout");
 
+/// @brief CPU mirror of the D3D11 per-scene constant buffer.
 typedef struct {
     float vp[16];
     float prev_vp[16];
@@ -190,6 +204,7 @@ typedef vgfx3d_d3d11_per_material_t d3d_per_material_t;
 _Static_assert(sizeof(d3d_per_material_t) == 448u,
                "D3D11 PerMaterial cbuffer must match its HLSL layout");
 
+/// @brief CPU mirror of one packed D3D11 light constant-buffer element.
 typedef struct {
     int32_t type;
     int32_t shadow_index;
@@ -219,6 +234,7 @@ _Static_assert(VGFX3D_SHADOW_CUBE_FACES <=
                    VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS * VGFX3D_D3D11_SHADOW_ATLAS_ROWS,
                "D3D11 shadow atlas must fit one point-light cube");
 
+/// @brief CPU mirror of the D3D11 skybox constant buffer.
 typedef struct {
     float inverse_projection[16];
     float inverse_view_rotation[16];
@@ -227,6 +243,7 @@ typedef struct {
 
 _Static_assert(sizeof(d3d_skybox_cb_t) == 144u, "D3D11 Skybox cbuffer must match its HLSL layout");
 
+/// @brief CPU mirror of the D3D11 post-processing constant buffer.
 typedef struct {
     float inv_vp[16];
     float prev_vp[16];
@@ -272,6 +289,7 @@ _Static_assert(offsetof(d3d_postfx_cb_t, scene_is_hdr) == 252u,
 _Static_assert(sizeof(d3d_postfx_cb_t) == 272u, "D3D11 PostFX cbuffer must match its HLSL layout");
 
 /* Plan 05: bloom pass constants (must match HLSL BloomCB). */
+/// @brief CPU mirror of the bloom downsample/upsample pass constants.
 typedef struct {
     float src_inv_size[2];
     float threshold;
@@ -281,6 +299,7 @@ typedef struct {
 _Static_assert(sizeof(d3d_bloom_cb_t) == 16u, "D3D11 Bloom cbuffer must match its HLSL layout");
 
 /* Plan 05: TAA resolve constants (must match HLSL TAACB). */
+/// @brief CPU mirror of temporal anti-aliasing resolve constants and history state.
 typedef struct {
     float inv_vp[16];
     float prev_vp[16];
@@ -294,6 +313,7 @@ typedef struct {
 _Static_assert(sizeof(d3d_taa_cb_t) == 160u, "D3D11 TAA cbuffer must match its HLSL layout");
 
 /* Plan 10: SSR constants (must match HLSL SSRCB). */
+/// @brief CPU mirror of screen-space reflection reconstruction and tracing constants.
 typedef struct {
     float inv_vp[16];
     float vp[16];
@@ -309,6 +329,7 @@ typedef vgfx3d_d3d11_instance_data_t d3d_instance_data_t;
 
 #define D3D11_MESH_CACHE_CAPACITY 256
 
+/// @brief One static mesh cache slot containing immutable vertex and index buffers.
 typedef struct {
     const void *key;
     uint32_t revision;
@@ -331,6 +352,7 @@ _Static_assert((D3D11_TEXTURE_CACHE_HINT_CAPACITY & (D3D11_TEXTURE_CACHE_HINT_CA
 #define D3D11_CUBEMAP_CACHE_MAX_ENTRIES 256
 #define D3D11_CUBEMAP_CACHE_PRUNE_AGE 240u
 
+/// @brief One cached morph-target position/normal shader-resource payload.
 typedef struct {
     const void *key;
     uint64_t generation;
@@ -346,6 +368,12 @@ typedef struct {
     uint64_t last_used_frame;
 } d3d11_morph_cache_entry_t;
 
+/// @brief Complete backend-owned Direct3D 11 renderer context.
+///
+/// The context groups COM resources, CPU staging buffers, cache tables,
+/// pass-routing state, temporal history, shadow slots, streaming counters, and
+/// the current camera/frame snapshot. d3d11_destroy_ctx() releases every owned
+/// COM interface and heap allocation.
 typedef struct {
     ID3D11Device *device;
     ID3D11DeviceContext *ctx;
@@ -652,6 +680,9 @@ typedef struct {
 /// @details A successful HRESULT with a null output is not usable by the backend and must not be
 ///   published as success. Keeping this check in one helper makes every required D3D11 creation
 ///   path follow the same output contract, including defensive handling of faulty proxy drivers.
+/// @param[in] hr HRESULT returned by the COM factory call.
+/// @param[in] output Required output-interface pointer written by that call.
+/// @return @p hr on failure, S_OK for a non-NULL success output, or E_POINTER otherwise.
 static HRESULT d3d11_required_output_result(HRESULT hr, const void *output) {
     if (FAILED(hr))
         return hr;
@@ -755,6 +786,9 @@ static HRESULT d3d11_ensure_shadow_atlas(d3d11_context_t *ctx, int32_t tile_w, i
 ///
 /// Naive triple loop — fine for the once-per-draw matrix combos this
 /// backend computes. Row-major order matches our HLSL shader convention.
+/// @param[in] a Left row-major matrix.
+/// @param[in] b Right row-major matrix.
+/// @param[out] out Product matrix; must not alias either input.
 static void mat4f_mul_d3d(const float *a, const float *b, float *out) {
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 4; c++) {
@@ -764,16 +798,12 @@ static void mat4f_mul_d3d(const float *a, const float *b, float *out) {
     }
 }
 
-/// @brief Log a D3D11 API failure to both the debugger output and stderr.
-/// @details Formats `msg` and the raw HRESULT value as a hex string into a
-///   256-byte stack buffer, then writes it via `OutputDebugStringA` (visible
-///   in Visual Studio's Output pane / DebugView) and `fputs(stderr)` so CI
-///   logs capture it. Intentionally does not assert or abort — most D3D11
-///   failures at steady state are recoverable (e.g., device-removed events
-///   are handled by the calling layer).
-/// @param msg  Human-readable label for the API call that failed (e.g.,
-///   `"Map(cbPostFX)"`), used as the leading text in the log entry.
-/// @param hr   The HRESULT returned by the failing call, printed as 0x%08lx.
+/// @brief Format a bounded diagnostic message for debugger and stderr logging.
+/// @details Guarantees NUL termination when @p capacity is nonzero and replaces a failed
+///          formatting operation with a stable fallback message.
+/// @param[out] buffer Destination character buffer.
+/// @param[in] capacity Total writable bytes in @p buffer.
+/// @param[in] format printf-compatible format string followed by its arguments.
 static void d3d11_format_log_message(char *buffer, size_t capacity, const char *format, ...) {
     static const char kFallback[] = "[vgfx3d_d3d11] diagnostic formatting failed\n";
     int written;
@@ -796,6 +826,9 @@ static void d3d11_format_log_message(char *buffer, size_t capacity, const char *
     }
 }
 
+/// @brief Log a D3D11 HRESULT to both the debugger output and stderr.
+/// @param[in] msg Human-readable label for the failed operation.
+/// @param[in] hr HRESULT printed in hexadecimal form.
 static void d3d11_log_hresult(const char *msg, HRESULT hr) {
     char buffer[256] = {0};
     d3d11_format_log_message(buffer,
@@ -808,6 +841,8 @@ static void d3d11_log_hresult(const char *msg, HRESULT hr) {
 }
 
 /// @brief Whether an HRESULT normally means the D3D11 device is no longer usable.
+/// @param[in] hr HRESULT to classify.
+/// @return 1 for device removed, reset, hung, or internal-driver errors; otherwise 0.
 static int d3d11_hresult_is_device_removed(HRESULT hr) {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
            hr == DXGI_ERROR_DEVICE_HUNG || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
@@ -820,6 +855,9 @@ static int d3d11_hresult_is_device_removed(HRESULT hr) {
 /// the actionable value for driver resets, TDRs, and unsupported operations.
 /// This helper is intentionally side-effect-free beyond logging so callers can
 /// keep their existing recovery behavior.
+/// @param[in] ctx Backend context owning the D3D11 device.
+/// @param[in] msg Diagnostic label for the triggering operation.
+/// @param[in] hr HRESULT that may represent device loss.
 static void d3d11_log_device_removed_reason(d3d11_context_t *ctx, const char *msg, HRESULT hr) {
     HRESULT reason;
     char buffer[256] = {0};
@@ -843,8 +881,8 @@ static void d3d11_log_device_removed_reason(d3d11_context_t *ctx, const char *ms
 ///   commands. A removed device can therefore discard the command without a
 ///   direct failure result. Callers use this check before publishing CPU-side
 ///   cursors, generations, or validity flags that claim the GPU work completed.
-/// @param ctx Backend context containing the device.
-/// @param operation Bounded diagnostic label for the preceding command.
+/// @param[in] ctx Backend context containing the device.
+/// @param[in] operation Bounded diagnostic label for the preceding command.
 /// @return `S_OK` while the device remains usable, otherwise the removal reason.
 static HRESULT d3d11_device_status_after_void_command(d3d11_context_t *ctx, const char *operation) {
     HRESULT hr;
@@ -859,6 +897,9 @@ static HRESULT d3d11_device_status_after_void_command(d3d11_context_t *ctx, cons
 }
 
 /// @brief Print bounded HLSL compiler diagnostics extracted from an `ID3DBlob`.
+/// @param[in] stage Human-readable shader-stage or entry-point label.
+/// @param[in] diagnostics Compiler diagnostics blob; NULL is ignored.
+/// @param[in] failed Nonzero to use the failure label and larger output allowance.
 static void d3d11_log_shader_diagnostics(const char *stage, ID3DBlob *diagnostics, int failed) {
     const char *text;
     SIZE_T text_len;
@@ -885,6 +926,7 @@ static void d3d11_log_shader_diagnostics(const char *stage, ID3DBlob *diagnostic
 }
 
 /// @brief Best-effort D3D11 timestamp query creation for frame GPU-time telemetry.
+/// @param[in,out] ctx Backend context receiving a fresh query set.
 static void d3d11_create_frame_timing_queries(d3d11_context_t *ctx) {
     D3D11_QUERY_DESC desc;
     HRESULT hr = S_FALSE;
@@ -930,6 +972,7 @@ static void d3d11_create_frame_timing_queries(d3d11_context_t *ctx) {
 }
 
 /// @brief Age one busy timestamp poll and abandon a query that never becomes readable.
+/// @param[in,out] ctx Backend context whose pending-poll counter is advanced.
 static void d3d11_note_pending_frame_timing_poll(d3d11_context_t *ctx) {
     if (!ctx || !ctx->frame_time_pending)
         return;
@@ -941,6 +984,8 @@ static void d3d11_note_pending_frame_timing_poll(d3d11_context_t *ctx) {
 }
 
 /// @brief Try to read the pending timestamp query into `frame_gpu_time_us`.
+/// @param[in,out] ctx Backend context holding the pending query set and result.
+/// @return 1 when a valid duration was harvested, otherwise 0.
 static int d3d11_harvest_frame_timing(d3d11_context_t *ctx) {
     D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint;
     UINT64 start_ticks = 0;
@@ -1007,6 +1052,7 @@ static int d3d11_harvest_frame_timing(d3d11_context_t *ctx) {
 }
 
 /// @brief Begin a D3D11 timestamp/disjoint query pair for the current backend pass.
+/// @param[in,out] ctx Backend context whose timing queries are begun.
 static void d3d11_begin_frame_timing(d3d11_context_t *ctx) {
     if (!ctx || !ctx->ctx || !ctx->frame_time_disjoint_query || !ctx->frame_time_start_query ||
         !ctx->frame_time_end_query)
@@ -1027,6 +1073,7 @@ static void d3d11_begin_frame_timing(d3d11_context_t *ctx) {
 }
 
 /// @brief End the active D3D11 timestamp/disjoint query pair.
+/// @param[in,out] ctx Backend context whose active timing query is finalized.
 static void d3d11_end_frame_timing(d3d11_context_t *ctx) {
     if (!ctx || !ctx->ctx || !ctx->frame_time_active)
         return;
@@ -1042,6 +1089,8 @@ static void d3d11_end_frame_timing(d3d11_context_t *ctx) {
 }
 
 /// @brief Return the latest completed D3D11 GPU frame timing in microseconds.
+/// @param[in,out] ctx_ptr Opaque D3D11 backend context; pending results may be harvested.
+/// @return Latest valid GPU duration in microseconds, or zero when unavailable.
 static uint64_t d3d11_get_frame_gpu_time_us(void *ctx_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     if (!ctx)
@@ -1056,6 +1105,7 @@ static uint64_t d3d11_get_frame_gpu_time_us(void *ctx_ptr) {
 /// Logs the HRESULT on failure but doesn't surface the error — present
 /// failures during window resize / device removal are expected and the
 /// next frame typically recovers.
+/// @param[in,out] ctx Backend context owning the swap chain and presented snapshot.
 static void d3d11_present_swapchain(d3d11_context_t *ctx) {
     HRESULT hr;
     int snapshot_ok;
@@ -1085,10 +1135,10 @@ static void d3d11_present_swapchain(d3d11_context_t *ctx) {
 /// owns the release. Used for both vertex and pixel shader stages
 /// (the `target` parameter selects via "vs_5_0" / "ps_5_0" etc).
 ///
-/// @param source   Null-terminated HLSL source.
-/// @param entry    Entry-point function name.
-/// @param target   Target profile string.
-/// @param out_blob Out: compiled bytecode blob (caller releases).
+/// @param[in] source Null-terminated HLSL source.
+/// @param[in] entry Entry-point function name.
+/// @param[in] target Target profile string.
+/// @param[out] out_blob Compiled bytecode blob released by the caller.
 /// @return S_OK on success, HRESULT failure code otherwise.
 static HRESULT d3d11_compile_shader(const char *source,
                                     const char *entry,
@@ -1134,6 +1184,11 @@ static HRESULT d3d11_compile_shader(const char *source,
 /// Used during context init to build the four rasterizer-state combos
 /// (solid+cull, solid+nocull, wire+cull, wire+nocull). Front-face is
 /// counter-clockwise to match the runtime mesh/OpenGL convention, and depth clipping is on.
+/// @param[in] ctx Backend context owning the D3D11 device.
+/// @param[in] fill_mode Solid or wireframe fill selection.
+/// @param[in] cull_mode Requested D3D11 culling mode.
+/// @param[out] out_state Destination cleared before receiving the owned state.
+/// @return S_OK on success, otherwise a validation or D3D11 creation HRESULT.
 static HRESULT d3d11_create_rasterizer_state(d3d11_context_t *ctx,
                                              D3D11_FILL_MODE fill_mode,
                                              D3D11_CULL_MODE cull_mode,
@@ -1158,6 +1213,10 @@ static HRESULT d3d11_create_rasterizer_state(d3d11_context_t *ctx,
 ///
 /// Two boolean dimensions × four pre-built states. Cheaper than a
 /// per-draw `Create*State` call on the device.
+/// @param[in] ctx Backend context holding the prebuilt states.
+/// @param[in] wireframe Nonzero to select wireframe fill.
+/// @param[in] backface_cull Nonzero to select back-face culling.
+/// @return Borrowed matching rasterizer state, or NULL for a missing context.
 static ID3D11RasterizerState *d3d11_choose_rasterizer(d3d11_context_t *ctx,
                                                       int8_t wireframe,
                                                       int8_t backface_cull) {
@@ -1171,6 +1230,8 @@ static ID3D11RasterizerState *d3d11_choose_rasterizer(d3d11_context_t *ctx,
 /// @brief Return whether a draw needs a unique rasterizer state for depth bias.
 /// @details The common draw path uses four cached rasterizer states. D3D11 stores depth bias on the
 ///   rasterizer state itself, so only biased draws pay for a temporary state allocation.
+/// @param[in] cmd Draw command to inspect.
+/// @return 1 when finite constant or slope-scaled bias is materially nonzero, otherwise 0.
 static int d3d11_draw_needs_depth_bias(const vgfx3d_draw_cmd_t *cmd) {
     return cmd &&
            (fabsf(cmd->depth_bias) > 1e-8f || fabsf(vgfx3d_d3d11_sanitize_slope_scaled_depth_bias(
@@ -1179,15 +1240,21 @@ static int d3d11_draw_needs_depth_bias(const vgfx3d_draw_cmd_t *cmd) {
 
 /// @brief Convert the renderer's float depth-bias value to D3D11's integer DepthBias field.
 /// @details D3D11's constant bias is expressed in implementation-scaled integer units. Scaling the
-///   renderer value by 2^16 gives useful sub-depth-buffer offsets without overflowing normal
+///   renderer value by the shared backend scale gives useful sub-depth-buffer offsets without
 ///   material settings; the result is clamped before narrowing to INT. Reversed-Z scene draws and
 ///   standard-Z shadow draws require opposite signs to preserve the renderer's "positive bias
 ///   pushes away from the camera" contract.
+/// @param[in] bias Renderer-space constant depth bias.
+/// @param[in] reversed_z Nonzero to invert the scene-pass sign.
+/// @return Saturating D3D11 integer depth-bias value.
 static INT d3d11_depth_bias_to_int(float bias, int reversed_z) {
     return (INT)vgfx3d_d3d11_depth_bias_units(bias, reversed_z);
 }
 
 /// @brief Sanitized slope bias for either the reversed-Z scene or standard-Z shadow pass.
+/// @param[in] slope_bias Renderer-space slope-scaled bias.
+/// @param[in] reversed_z Nonzero to invert the scene-pass sign.
+/// @return Finite D3D11 slope bias with the selected depth convention.
 static float d3d11_slope_bias(float slope_bias, int reversed_z) {
     return vgfx3d_d3d11_depth_slope_bias(slope_bias, reversed_z);
 }
@@ -1196,6 +1263,13 @@ static float d3d11_slope_bias(float slope_bias, int reversed_z) {
 /// @details Mirrors the cached solid/wireframe and cull/no-cull state but fills in `DepthBias` and
 ///   `SlopeScaledDepthBias` from the draw command. The biased-state cache owns the returned state
 ///   when it is installed through `d3d11_get_depth_biased_rasterizer`.
+/// @param[in] ctx Backend context owning the D3D11 device.
+/// @param[in] cmd Draw command providing depth-bias values.
+/// @param[in] wireframe Nonzero for wireframe fill.
+/// @param[in] backface_cull Nonzero for back-face culling.
+/// @param[in] reversed_z Nonzero for reversed-Z scene bias semantics.
+/// @param[out] out_state Destination cleared before receiving the owned state.
+/// @return S_OK on success, otherwise a validation or D3D11 creation HRESULT.
 static HRESULT d3d11_create_depth_biased_rasterizer(d3d11_context_t *ctx,
                                                     const vgfx3d_draw_cmd_t *cmd,
                                                     int8_t wireframe,
@@ -1225,6 +1299,13 @@ static HRESULT d3d11_create_depth_biased_rasterizer(d3d11_context_t *ctx,
 /// @details D3D11 stores depth bias in the rasterizer state. A single-entry cache removes repeated
 ///   `CreateRasterizerState` calls for common decal/shadow batches while still falling back to the
 ///   pre-built unbiased states for normal draws.
+/// @param[in,out] ctx Backend context owning the single-entry biased-state cache.
+/// @param[in] cmd Draw command providing depth-bias values.
+/// @param[in] wireframe Nonzero for wireframe fill.
+/// @param[in] backface_cull Nonzero for back-face culling.
+/// @param[in] reversed_z Nonzero for reversed-Z scene bias semantics.
+/// @param[out] out_state Destination for a borrowed cached rasterizer state.
+/// @return S_OK on a cache hit or successful creation, otherwise an HRESULT failure code.
 static HRESULT d3d11_get_depth_biased_rasterizer(d3d11_context_t *ctx,
                                                  const vgfx3d_draw_cmd_t *cmd,
                                                  int8_t wireframe,
@@ -1272,6 +1353,10 @@ static HRESULT d3d11_get_depth_biased_rasterizer(d3d11_context_t *ctx,
 /// @details Clears @p out before validation so a failed computation never leaves
 ///   a stale byte count in the caller. Used for CPU-side allocations and D3D11
 ///   ByteWidth / pitch calculations before narrowing to UINT.
+/// @param[in] a First factor.
+/// @param[in] b Second factor.
+/// @param[out] out Destination for the product, cleared before validation.
+/// @return 1 when multiplication succeeds without overflow, otherwise 0.
 static int d3d11_checked_mul_size(size_t a, size_t b, size_t *out) {
     if (out)
         *out = 0;
@@ -1286,6 +1371,10 @@ static int d3d11_checked_mul_size(size_t a, size_t b, size_t *out) {
 /// @brief Create a dynamic D3D11 constant buffer for one CPU-side cbuffer struct.
 /// @details Centralizes the size validation and alignment policy so every cbuffer
 ///   created by the backend obeys the same 16-byte and 64 KiB limits.
+/// @param[in] ctx Backend context owning the D3D11 device.
+/// @param[in] size Requested CPU structure byte size.
+/// @param[out] out_buffer Destination cleared before receiving the owned buffer.
+/// @return S_OK on success, otherwise a validation or D3D11 creation HRESULT.
 static HRESULT d3d11_create_constant_buffer(d3d11_context_t *ctx,
                                             size_t size,
                                             ID3D11Buffer **out_buffer) {
@@ -1312,6 +1401,7 @@ static HRESULT d3d11_create_constant_buffer(d3d11_context_t *ctx,
 /// @details `D3D11_SAMPLER_DESC` is not fully valid when left zeroed: the debug
 ///   layer can reject `ComparisonFunc == 0` or `MaxAnisotropy == 0` even when the
 ///   filter is non-comparison. Callers then override filter/address modes.
+/// @param[out] desc Sampler descriptor initialized to safe non-comparison defaults.
 static void d3d11_init_sampler_desc_defaults(D3D11_SAMPLER_DESC *desc) {
     if (!desc)
         return;
@@ -1324,6 +1414,7 @@ static void d3d11_init_sampler_desc_defaults(D3D11_SAMPLER_DESC *desc) {
 /// @brief Clear the cached description of whatever RTV/DSV set the backend thinks is bound.
 /// @details This updates only the CPU mirror in `d3d11_context_t`; callers that need
 ///   the D3D11 immediate context unbound must call `d3d11_unbind_output_targets` too.
+/// @param[in,out] ctx Backend context whose tracked output binding is cleared.
 static void d3d11_clear_current_target_bindings(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -1339,6 +1430,7 @@ static void d3d11_clear_current_target_bindings(d3d11_context_t *ctx) {
 /// @brief Unbind all output-merger render targets and depth-stencil views.
 /// @details Required before releasing backbuffer/offscreen targets and before
 ///   copying from textures that may currently be bound as RTVs.
+/// @param[in,out] ctx Backend context whose immediate output-merger state is cleared.
 static void d3d11_unbind_output_targets(d3d11_context_t *ctx) {
     if (!ctx || !ctx->ctx)
         return;
@@ -1349,6 +1441,7 @@ static void d3d11_unbind_output_targets(d3d11_context_t *ctx) {
 /// @details Slots 0..3 are scene color, depth, motion, and overlay; slot 4 carries the
 ///   Plan 05 bloom mip-chain result. Clearing them prevents read/write hazards before
 ///   those same textures are rebound as RTVs.
+/// @param[in,out] ctx Backend context whose pixel-shader resource slots are cleared.
 static void d3d11_unbind_postfx_resources(d3d11_context_t *ctx) {
     ID3D11ShaderResourceView *null_srvs[5] = {NULL, NULL, NULL, NULL, NULL};
 
@@ -1360,6 +1453,7 @@ static void d3d11_unbind_postfx_resources(d3d11_context_t *ctx) {
 /// @brief Clear the pixel-shader SRV slots used by shadow-map sampling.
 /// @details Shadow maps are rebound as depth outputs during shadow passes; D3D11
 ///   requires their shader-resource views to be detached first.
+/// @param[in,out] ctx Backend context whose shadow SRV slots are cleared.
 static void d3d11_unbind_shadow_resources(d3d11_context_t *ctx) {
     ID3D11ShaderResourceView *null_shadow_srvs[VGFX3D_CSM_SLOTS] = {NULL};
     ID3D11ShaderResourceView *null_atlas_srv[1] = {NULL};
@@ -1373,6 +1467,7 @@ static void d3d11_unbind_shadow_resources(d3d11_context_t *ctx) {
 /// @brief Rebind the CPU-tracked current output targets after a temporary unbind.
 /// @details Readback and RTT sync paths unbind outputs for `CopyResource`; this
 ///   helper restores the render target set only when one was known to be active.
+/// @param[in,out] ctx Backend context holding the tracked target binding.
 static void d3d11_restore_current_target_bindings(d3d11_context_t *ctx) {
     if (!ctx || !ctx->ctx)
         return;
@@ -1384,6 +1479,8 @@ static void d3d11_restore_current_target_bindings(d3d11_context_t *ctx) {
 ///
 /// HDR16F → R16G16B16A16_FLOAT (linear, 16 bits/channel for HDR);
 /// UNORM8 → R8G8B8A8_UNORM; invalid classes map to DXGI_FORMAT_UNKNOWN.
+/// @param[in] format_class Backend-independent D3D11 color-format class.
+/// @return Matching DXGI format, or DXGI_FORMAT_UNKNOWN for an invalid class.
 static DXGI_FORMAT d3d11_color_format_to_dxgi(vgfx3d_d3d11_color_format_t format_class) {
     if (format_class == VGFX3D_D3D11_COLOR_FORMAT_UNORM8)
         return DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1396,6 +1493,7 @@ static DXGI_FORMAT d3d11_color_format_to_dxgi(vgfx3d_d3d11_color_format_t format
 /// @details Resizes, post-FX disable, and target destruction invalidate the prior
 ///   view-projection/depth/motion history. Resetting to identity avoids using stale
 ///   matrices for motion blur, SSAO reconstruction, or overlay load decisions.
+/// @param[in,out] ctx Backend context whose temporal state is reset.
 static void d3d11_reset_temporal_scene_state(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -1415,6 +1513,7 @@ static void d3d11_reset_temporal_scene_state(d3d11_context_t *ctx) {
 /// @brief Invalidate queued, pending, and published scene-depth probe state.
 /// @details Target lifetime changes must not publish one target's asynchronous
 ///   depth samples under slot ids belonging to a different target or extent.
+/// @param[in,out] ctx Backend context whose depth-probe state is invalidated.
 static void d3d11_reset_depth_probe_state(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -1427,6 +1526,7 @@ static void d3d11_reset_depth_probe_state(d3d11_context_t *ctx) {
 }
 
 /// @brief Release the soft-particle opaque-depth snapshot and clear its size/validity state.
+/// @param[in,out] ctx Backend context owning the snapshot resources.
 static void d3d11_destroy_opaque_depth_target(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -1440,6 +1540,8 @@ static void d3d11_destroy_opaque_depth_target(d3d11_context_t *ctx) {
 /// @brief Return whether every scene color/motion/depth resource is complete.
 /// @details Target selection needs more than RTV/DSV pointers: post-FX presentation
 ///   and readback also require the SRVs and owning textures to exist.
+/// @param[in] ctx Backend context to inspect.
+/// @return Nonzero when the complete offscreen scene target set exists.
 static int d3d11_has_scene_targets(const d3d11_context_t *ctx) {
     return ctx && ctx->scene_color_tex && ctx->scene_color_rtv && ctx->scene_color_srv &&
            ctx->scene_motion_tex && ctx->scene_motion_rtv && ctx->scene_motion_srv &&
@@ -1449,7 +1551,7 @@ static int d3d11_has_scene_targets(const d3d11_context_t *ctx) {
 /// @brief Return whether the next D3D11 window scene uses a reduced render extent.
 /// @details The predicate intentionally ignores current RTT binding: RTT selection remains higher
 ///          priority, while main-window resources may still be rebuilt for the stored scale.
-/// @param ctx Borrowed D3D11 backend context.
+/// @param[in] ctx Borrowed D3D11 backend context.
 /// @return Non-zero for a finite stored scale in `[0.25, 0.999)`.
 static int d3d11_render_scale_active(const d3d11_context_t *ctx) {
     return ctx && isfinite(ctx->render_scale) && ctx->render_scale >= 0.25f &&
@@ -1459,13 +1561,15 @@ static int d3d11_render_scale_active(const d3d11_context_t *ctx) {
 /// @brief Return whether D3D11 window rendering needs scene targets and a final composite.
 /// @details Post-processing and render scaling share the same offscreen HDR scene route; effect
 ///          selection still depends only on `gpu_postfx_enabled` at the final composite.
-/// @param ctx Borrowed D3D11 backend context.
+/// @param[in] ctx Borrowed D3D11 backend context.
 /// @return Non-zero when either feature requires the offscreen scene route.
 static int8_t d3d11_window_scene_route_enabled(const d3d11_context_t *ctx) {
     return (ctx && (ctx->gpu_postfx_enabled || d3d11_render_scale_active(ctx))) ? 1 : 0;
 }
 
 /// @brief Return whether the separate overlay color target is complete.
+/// @param[in] ctx Backend context to inspect.
+/// @return Nonzero when the overlay texture, RTV, and SRV all exist.
 static int d3d11_has_overlay_target(const d3d11_context_t *ctx) {
     return ctx && ctx->overlay_color_tex && ctx->overlay_color_rtv && ctx->overlay_color_srv;
 }
@@ -1473,6 +1577,8 @@ static int d3d11_has_overlay_target(const d3d11_context_t *ctx) {
 /// @brief Return whether all render-to-texture resources are complete.
 /// @details RTT needs color/depth outputs plus staging readback storage; a partial
 ///   set must fall back before the backend binds stale or NULL resources.
+/// @param[in] ctx Backend context to inspect.
+/// @return Nonzero when the complete render-to-texture resource set exists.
 static int d3d11_has_rtt_targets(const d3d11_context_t *ctx) {
     return ctx && ctx->rtt_color_tex && ctx->rtt_rtv && ctx->rtt_depth_tex && ctx->rtt_dsv &&
            ctx->rtt_staging;
@@ -1482,6 +1588,8 @@ static int d3d11_has_rtt_targets(const d3d11_context_t *ctx) {
 /// @details The active target kind is downgraded to a complete target set first,
 ///   then overlay/load-existing flags are derived from the resolved target so the
 ///   clear path never preserves stale contents from a failed allocation.
+/// @param[in,out] ctx Backend context whose active-pass routing is recomputed.
+/// @param[in] cam Camera flags requesting retained color or depth.
 static void d3d11_refresh_pass_flags(d3d11_context_t *ctx, const vgfx3d_camera_params_t *cam) {
     if (!ctx || !cam)
         return;
@@ -1504,6 +1612,11 @@ static void d3d11_refresh_pass_flags(d3d11_context_t *ctx, const vgfx3d_camera_p
 /// `D3D11_MAP_WRITE_DISCARD` so the driver can hand back a fresh GPU
 /// allocation if the previous one is in flight, avoiding a CPU stall.
 /// Used per-draw for the per-object/per-scene/per-material cbuffers.
+/// @param[in] ctx Backend context owning the immediate device context.
+/// @param[in,out] buffer Dynamic constant buffer to update.
+/// @param[in] data CPU structure bytes to copy.
+/// @param[in] size Number of bytes to copy; remaining buffer bytes are zero-filled.
+/// @return S_OK on success, otherwise a validation, map, or device-loss HRESULT.
 static HRESULT d3d11_update_constant_buffer(d3d11_context_t *ctx,
                                             ID3D11Buffer *buffer,
                                             const void *data,
@@ -1547,6 +1660,13 @@ static HRESULT d3d11_update_constant_buffer(d3d11_context_t *ctx,
 /// next power-of-two ≥ needed. Caller passes `initial_size` for the
 /// first allocation. The old buffer is kept alive until replacement
 /// succeeds. Traps via `E_OUTOFMEMORY` on size overflow.
+/// @param[in] ctx Backend context owning the D3D11 device.
+/// @param[in,out] buffer Owned dynamic buffer slot to grow.
+/// @param[in,out] capacity Current capacity, replaced after successful growth.
+/// @param[in] bind_flags D3D11 bind flags for the new buffer.
+/// @param[in] needed Minimum required byte capacity.
+/// @param[in] initial_size Initial growth baseline when no buffer exists.
+/// @return S_OK when existing capacity suffices or replacement succeeds, otherwise an HRESULT.
 static HRESULT d3d11_ensure_dynamic_buffer(d3d11_context_t *ctx,
                                            ID3D11Buffer **buffer,
                                            size_t *capacity,
@@ -1599,6 +1719,14 @@ static HRESULT d3d11_ensure_dynamic_buffer(d3d11_context_t *ctx,
 ///
 /// One-stop helper used by the per-draw vertex / index buffer upload
 /// path. Returns 0 on any failure (logged to the HRESULT logger).
+/// @param[in] ctx Backend context owning the device and immediate context.
+/// @param[in,out] buffer Owned dynamic buffer slot to grow and update.
+/// @param[in,out] capacity Current byte capacity.
+/// @param[in] bind_flags D3D11 bind flags for the buffer.
+/// @param[in] data Source bytes.
+/// @param[in] bytes Number of source bytes to upload.
+/// @param[in] initial_size Initial growth baseline.
+/// @return 1 on complete upload, otherwise 0.
 static int d3d11_upload_dynamic_buffer(d3d11_context_t *ctx,
                                        ID3D11Buffer **buffer,
                                        size_t *capacity,
@@ -1640,6 +1768,9 @@ static int d3d11_upload_dynamic_buffer(d3d11_context_t *ctx,
 ///
 /// Doubling growth starting at 32 entries. Used by the instanced-draw
 /// path to assemble per-instance matrices before uploading.
+/// @param[in,out] ctx Backend context owning the CPU scratch allocation.
+/// @param[in] instance_count Required number of instance records.
+/// @return 1 when sufficient capacity is available, otherwise 0.
 static int d3d11_ensure_instance_upload_capacity(d3d11_context_t *ctx, int32_t instance_count) {
     size_t new_capacity;
     size_t upload_bytes;
@@ -1684,6 +1815,7 @@ static int d3d11_ensure_instance_upload_capacity(d3d11_context_t *ctx, int32_t i
 // with LRU-style eviction.
 
 /// @brief Release the GPU buffers in a single mesh-cache slot.
+/// @param[in,out] entry Cache entry whose COM resources and metadata are cleared.
 static void d3d11_release_mesh_cache_entry(d3d11_mesh_cache_entry_t *entry) {
     if (!entry)
         return;
@@ -1693,6 +1825,7 @@ static void d3d11_release_mesh_cache_entry(d3d11_mesh_cache_entry_t *entry) {
 }
 
 /// @brief Release every mesh-cache slot — called during context teardown.
+/// @param[in,out] ctx Backend context owning the static-mesh cache.
 static void d3d11_release_mesh_cache(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -1705,6 +1838,12 @@ static void d3d11_release_mesh_cache(d3d11_context_t *ctx) {
 /// `D3D11_USAGE_IMMUTABLE` enables driver-side optimizations (no
 /// possibility of CPU writes), preferred for static mesh VB/IB. The
 /// buffer can never be mapped after creation.
+/// @param[in] ctx Backend context owning the D3D11 device.
+/// @param[in] bind_flags Vertex- or index-buffer binding flags.
+/// @param[in] data Initial immutable bytes.
+/// @param[in] bytes Number of bytes in @p data.
+/// @param[out] out_buffer Destination cleared before receiving the owned buffer.
+/// @return S_OK on success, otherwise a validation or D3D11 creation HRESULT.
 static HRESULT d3d11_create_static_buffer(d3d11_context_t *ctx,
                                           UINT bind_flags,
                                           const void *data,
@@ -1748,11 +1887,22 @@ static HRESULT d3d11_create_static_buffer(d3d11_context_t *ctx,
 /// @details Availability of both compact input layouts is the single gate consulted by
 ///   the mesh cache, the stride selection, and the layout binds, so buffer contents and
 ///   input-assembler layout always agree.
+/// @param[in] ctx Backend context holding compact input layouts.
+/// @param[in] cmd Draw command requesting compact cached geometry.
+/// @return 1 when the complete compact path is available and requested, otherwise 0.
 static int d3d11_cmd_uses_compact_stream(const d3d11_context_t *ctx, const vgfx3d_draw_cmd_t *cmd) {
     return ctx && cmd && cmd->compact_vertex_stream && cmd->geometry_key &&
            ctx->input_layout_compact && ctx->input_layout_instanced_compact;
 }
 
+/// @brief Acquire dynamic or cached immutable vertex and index buffers for one draw.
+/// @details Transient commands upload through shared dynamic buffers. Stable keyed commands use
+///          an LRU cache and atomically replace a slot only after both immutable buffers succeed.
+/// @param[in,out] ctx Backend context owning dynamic buffers and the mesh cache.
+/// @param[in] cmd Validated draw command and geometry identity.
+/// @param[out] out_vb Destination for a borrowed vertex buffer.
+/// @param[out] out_ib Destination for a borrowed index buffer.
+/// @return 1 when both buffers are ready, otherwise 0.
 static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
                                       const vgfx3d_draw_cmd_t *cmd,
                                       ID3D11Buffer **out_vb,
@@ -1878,6 +2028,12 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
 /// Creates a replacement buffer/SRV at `element_count` elements and swaps it
 /// in only after both objects exist. Used for the morph-delta SRV buffers
 /// (one for positions, one for normals).
+/// @param[in] ctx Backend context owning the D3D11 device.
+/// @param[in,out] buffer Owned float-buffer slot.
+/// @param[in,out] srv Owned shader-resource-view slot paired with @p buffer.
+/// @param[in,out] capacity Current element capacity, updated after replacement.
+/// @param[in] element_count Minimum required float count.
+/// @return S_OK when capacity is ready, otherwise a validation or D3D11 creation HRESULT.
 static HRESULT d3d11_ensure_float_srv_buffer(d3d11_context_t *ctx,
                                              ID3D11Buffer **buffer,
                                              ID3D11ShaderResourceView **srv,
@@ -1938,6 +2094,13 @@ static HRESULT d3d11_ensure_float_srv_buffer(d3d11_context_t *ctx,
 /// @brief Resize-if-needed plus upload for a float SRV buffer.
 ///
 /// Uses `UpdateSubresource` (default-usage buffer) rather than map.
+/// @param[in,out] ctx Backend context owning the device and immediate context.
+/// @param[in,out] buffer Owned float-buffer slot.
+/// @param[in,out] srv Owned shader-resource-view slot paired with @p buffer.
+/// @param[in,out] capacity Current element capacity.
+/// @param[in] data Float elements to upload.
+/// @param[in] element_count Number of elements in @p data.
+/// @return S_OK on complete upload, otherwise a validation, allocation, or device HRESULT.
 static HRESULT d3d11_update_float_srv_buffer(d3d11_context_t *ctx,
                                              ID3D11Buffer **buffer,
                                              ID3D11ShaderResourceView **srv,
@@ -1975,7 +2138,7 @@ static HRESULT d3d11_update_float_srv_buffer(d3d11_context_t *ctx,
 /// valid SRV to bind until the real upload completes, matching the OpenGL
 /// backend's bindable-fallback semantics. Material feature flags remain disabled
 /// until the requested SRV itself is complete.
-/// @param ctx Backend context that owns the D3D11 device and receives the SRVs.
+/// @param[in,out] ctx Backend context that owns the D3D11 device and receives the SRVs.
 /// @return `S_OK` when both fallback resources exist; otherwise the failing HRESULT.
 static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     static const uint8_t kWhitePixel[4] = {255u, 255u, 255u, 255u};
@@ -2123,6 +2286,8 @@ fail:
 /// texture fallback binds during budgeted streaming. Fields for subsystems not
 /// instrumented by D3D11 remain zero rather than fabricating cross-backend
 /// values.
+/// @param[in] ctx_ptr Opaque D3D11 backend context.
+/// @param[out] out_stats Caller-owned snapshot destination, cleared before validation.
 static void d3d11_get_backend_stats(void *ctx_ptr, vgfx3d_backend_stats_t *out_stats) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     if (!out_stats)
@@ -2137,7 +2302,7 @@ static void d3d11_get_backend_stats(void *ctx_ptr, vgfx3d_backend_stats_t *out_s
 /// @details The D3D11 backend builds the scene, bloom, and TAA history targets as RGBA16F
 /// resources, so HDR scene color and temporal anti-aliasing are native capabilities whenever the
 /// backend initializes successfully.
-/// @param ctx_ptr D3D11 backend context, currently unused.
+/// @param[in] ctx_ptr D3D11 backend context, currently unused.
 /// @return RT_CANVAS3D_BACKEND_CAP_* feature bits supported by D3D11.
 static int64_t d3d11_get_feature_caps(void *ctx_ptr) {
     (void)ctx_ptr;

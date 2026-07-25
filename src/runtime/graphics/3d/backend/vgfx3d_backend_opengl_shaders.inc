@@ -16,6 +16,14 @@
 // Links: vgfx3d_backend_opengl.c, vgfx3d_backend_opengl_material.inc
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Provides embedded GLSL programs and immutable helper geometry for the OpenGL backend.
+/// @details The source chunks define full and specialized material shading, shadows, skyboxes,
+///          bloom, TAA, SSR, and final composition. Attribute, uniform-block, texture-unit, and
+///          attachment locations form contracts with the adjacent context, material, and mesh
+///          implementation fragments.
+
 static const char *const glsl_vertex_src[] = {
     "#version 330 core\n"
     "layout(location=0) in vec3 aPosition;\n"

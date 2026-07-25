@@ -27,6 +27,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the dynamically loaded Linux OpenGL 3.3 Core backend for Graphics3D.
+/// @details This translation unit defines the OpenGL/GLX dispatch surface, native binding helpers,
+///          shared state utilities, shader compilation, capability probes, and the backend vtable.
+///          Specialized frame, material, mesh, target, texture, and context operations are
+///          assembled from the adjacent implementation fragments.
+
 #if defined(__linux__) && defined(ZANNA_ENABLE_GRAPHICS)
 
 #include "rt_platform.h"
@@ -452,6 +459,8 @@ static int gl_debug_enabled(void);
 /// Wrapped by the `GL_CHECK()` macro at every API call site in debug
 /// builds; compiled out (`((void)0)`) in release. Skips silently if
 /// the GL function-pointer table hasn't been loaded yet.
+/// @param file Source filename reported for each drained GL error.
+/// @param line Source line reported for each drained GL error.
 static __attribute__((unused)) void gl_check_error(const char *file, int line) {
     if (!gl.GetError)
         return;
@@ -472,6 +481,8 @@ static __attribute__((unused)) void gl_check_error(const char *file, int line) {
 /// @details This helper is intentionally available in release builds, unlike `GL_CHECK`, because
 ///          resource creation and readback paths must not cache or expose objects after a driver
 ///          error. Draining the queue also prevents an old error from poisoning a later operation.
+/// @param label Optional operation label included in diagnostics when debug reporting is enabled.
+/// @return Nonzero when the queue contained no errors, otherwise zero.
 static int gl_drain_errors(const char *label) {
     int ok = 1;
     if (!gl.GetError)
@@ -493,10 +504,14 @@ static int gl_drain_errors(const char *label) {
 }
 
 /// @brief Return whether the most recent upload/resource operation produced no GL errors.
+/// @return Nonzero when draining the GL error queue finds no upload errors.
 static int gl_upload_ok(void) {
     return gl_drain_errors("upload");
 }
 
+/// @brief Return whether runtime OpenGL diagnostics are enabled through the environment.
+/// @details The `ZANNA_OPENGL_DEBUG` value is parsed once and cached for subsequent hot-path calls.
+/// @return Nonzero when the variable is set to a nonempty value other than `"0"`.
 static int gl_debug_enabled(void) {
     static int cached = -1;
     if (cached < 0) {
@@ -974,6 +989,9 @@ typedef struct {
     int32_t depth_probe_result_count;
 } gl_context_t;
 
+/// @brief Make the context's EGL/Wayland or GLX binding current on the calling thread.
+/// @param ctx Borrowed OpenGL backend context containing the native binding.
+/// @return Nonzero when the binding became current, otherwise zero.
 static int gl_make_current(gl_context_t *ctx) {
     if (!ctx)
         return 0;
@@ -983,6 +1001,8 @@ static int gl_make_current(gl_context_t *ctx) {
            glx.MakeCurrent(ctx->display, ctx->window, ctx->glxCtx);
 }
 
+/// @brief Destroy the context's EGL/Wayland or GLX native binding.
+/// @param ctx Borrowed OpenGL backend context whose native handles are released and cleared.
 static void gl_destroy_native_binding(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -996,6 +1016,8 @@ static void gl_destroy_native_binding(gl_context_t *ctx) {
     }
 }
 
+/// @brief Present the current native surface through EGL/Wayland or GLX.
+/// @param ctx Borrowed OpenGL backend context containing the active native binding.
 static void gl_swap_native_buffers(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -1177,6 +1199,7 @@ typedef struct {
 } gl_framebuffer_state_t;
 
 /// @brief Capture the current framebuffer/read/draw/viewport state.
+/// @param[out] state Caller-owned snapshot receiving framebuffer, viewport, and pixel alignment.
 static void gl_capture_framebuffer_state(gl_framebuffer_state_t *state) {
     if (!state)
         return;
@@ -1191,6 +1214,7 @@ static void gl_capture_framebuffer_state(gl_framebuffer_state_t *state) {
 
 /// @brief Restore framebuffer/read/draw/viewport state captured by
 /// `gl_capture_framebuffer_state`.
+/// @param state Borrowed state snapshot previously populated by gl_capture_framebuffer_state().
 static void gl_restore_framebuffer_state(const gl_framebuffer_state_t *state) {
     if (!state)
         return;
@@ -1207,6 +1231,7 @@ static void gl_restore_framebuffer_state(const gl_framebuffer_state_t *state) {
 /// Post-FX and readback helpers disable depth/cull/blend and bind their own
 /// program/VAO. Calling this before returning to normal scene or overlay drawing
 /// keeps later submissions from inheriting helper-pass state.
+/// @param ctx Borrowed OpenGL context whose primary program and VAO are rebound.
 static void gl_restore_main_draw_state(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -1231,6 +1256,8 @@ static void gl_restore_main_draw_state(gl_context_t *ctx) {
 /// Budgeted streaming can leave a newly requested texture incomplete for a few
 /// frames. Binding a known 1x1 white texture preserves material color and avoids
 /// shader feature toggles flickering off while the real image upload catches up.
+/// @param ctx Borrowed OpenGL context containing the default texture name.
+/// @return The context's white 2D texture name, or zero for a NULL context.
 static GLuint gl_fallback_white_texture(const gl_context_t *ctx) {
     return ctx ? ctx->default_white_tex : 0;
 }
@@ -1240,6 +1267,8 @@ static GLuint gl_fallback_white_texture(const gl_context_t *ctx) {
 /// The cubemap cache uploads face rows over multiple frames. Binding a valid
 /// white cubemap while that upload is incomplete keeps skybox and image-based
 /// material paths from sampling an uninitialized texture object.
+/// @param ctx Borrowed OpenGL context containing the default cubemap name.
+/// @return The context's white cubemap texture name, or zero for a NULL context.
 static GLuint gl_fallback_white_cubemap(const gl_context_t *ctx) {
     return ctx ? ctx->default_white_cubemap : 0;
 }
@@ -1249,6 +1278,8 @@ static GLuint gl_fallback_white_cubemap(const gl_context_t *ctx) {
 /// Used because GLSL/glUniformMatrix4fv default to column-major while
 /// our matrices are stored row-major. Out-of-place — `src` and `dst`
 /// must not alias.
+/// @param src Borrowed 4x4 source matrix.
+/// @param[out] dst Caller-owned 4x4 destination receiving the transpose.
 static void transpose4x4(const float *src, float *dst) {
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++)
@@ -1259,6 +1290,9 @@ static void transpose4x4(const float *src, float *dst) {
 ///
 /// Naive triple loop — same shape as `mat4f_mul_d3d`. We keep the
 /// per-backend copy so the optimizer can inline it locally.
+/// @param a Borrowed left-hand row-major 4x4 matrix.
+/// @param b Borrowed right-hand row-major 4x4 matrix.
+/// @param[out] out Caller-owned product matrix that does not alias either input.
 static void mat4f_mul_gl(const float *a, const float *b, float *out) {
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++)
@@ -1271,6 +1305,9 @@ static void mat4f_mul_gl(const float *a, const float *b, float *out) {
 /// Returns 0 on success, -1 if `m` is singular (|det| < 1e-12). Used
 /// to compute `inv_vp` for post-FX shaders that need to reconstruct
 /// world-space positions from depth + screen UVs.
+/// @param m Borrowed row-major 4x4 matrix to invert.
+/// @param[out] out Caller-owned 4x4 inverse destination.
+/// @return 0 on success, or -1 when @p m is singular.
 static int mat4f_inverse_gl(const float *m, float *out) {
     float inv[16];
     inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] +
@@ -1327,6 +1364,8 @@ static int mat4f_inverse_gl(const float *m, float *out) {
 /// Returns 0 on success, -1 if any required function couldn't be
 /// resolved (the backend caller falls back to software in that case).
 /// Idempotent — `gl_loaded` flag short-circuits subsequent calls.
+/// @param wayland_binding Nonzero to resolve the EGL/Wayland presentation route instead of GLX.
+/// @return 0 when every required symbol is available, otherwise -1.
 static int load_gl(int wayland_binding) {
     const char *missing_symbol = NULL;
     if (gl_loaded)
@@ -1590,6 +1629,11 @@ fail: {
 /// (GLSL requires #version first). On compile failure dumps the GLSL
 /// info log to stderr and deletes the shader.
 /// Returns the shader handle, or 0 on failure.
+/// @param type OpenGL shader stage enum, such as `GL_VERTEX_SHADER`.
+/// @param src Borrowed array of source-string pointers.
+/// @param src_count Number of entries in @p src.
+/// @param zero_to_one_clip Nonzero to splice the zero-to-one depth convention prologue.
+/// @return Compiled shader object name, or zero on validation or compilation failure.
 static GLuint compile_shader_parts(GLenum type,
                                    const char *const *src,
                                    GLsizei src_count,
@@ -1663,6 +1707,10 @@ static GLuint compile_shader_parts(GLenum type,
 }
 
 /// @brief Single-source convenience wrapper around `compile_shader_parts`.
+/// @param type OpenGL shader stage enum.
+/// @param src Borrowed null-terminated GLSL source string.
+/// @param zero_to_one_clip Nonzero to enable the zero-to-one depth convention.
+/// @return Compiled shader object name, or zero on failure.
 static GLuint compile_shader(GLenum type, const char *src, int zero_to_one_clip) {
     const char *parts[] = {src};
     return compile_shader_parts(type, parts, 1, zero_to_one_clip);
@@ -1673,6 +1721,9 @@ static GLuint compile_shader(GLenum type, const char *src, int zero_to_one_clip)
 /// Logs the linker info log to stderr on failure and deletes the
 /// program. Doesn't `glDetachShader` — caller is expected to delete
 /// the shaders separately once linking is done.
+/// @param vs Compiled vertex-shader object name.
+/// @param fs Compiled fragment-shader object name.
+/// @return Linked program object name, or zero on creation or link failure.
 static GLuint link_program(GLuint vs, GLuint fs) {
     GLuint program = gl.CreateProgram();
     if (!program)
@@ -1711,6 +1762,13 @@ static GLuint link_program(GLuint vs, GLuint fs) {
 /// buffer and reallocates with a NULL data pointer to size it without
 /// uploading. Capacity grows via the shared `vgfx3d_opengl_next_capacity`
 /// helper.
+/// @param target Buffer binding target.
+/// @param buffer Existing OpenGL buffer object name.
+/// @param[in,out] capacity Caller-owned current capacity, updated after successful growth.
+/// @param needed Minimum required byte capacity.
+/// @param initial_capacity Initial geometric-growth floor.
+/// @param usage OpenGL usage hint supplied to `glBufferData`.
+/// @return 0 when capacity is sufficient or growth succeeds, otherwise -1.
 static int ensure_buffer_capacity(GLenum target,
                                   GLuint buffer,
                                   size_t *capacity,
@@ -1744,6 +1802,10 @@ static int ensure_buffer_capacity(GLenum target,
 /// the existing storage may be reused for in-flight draws while we
 /// build the next frame's data. Avoids the explicit-fence sync the
 /// driver would otherwise have to insert on `BufferSubData`.
+/// @param target Buffer binding target.
+/// @param buffer Existing OpenGL buffer object name.
+/// @param capacity Number of bytes to allocate for the replacement store.
+/// @param usage OpenGL usage hint supplied to `glBufferData`.
 /// @return 1 when the orphan succeeded without GL errors; otherwise 0.
 static int orphan_stream_buffer(GLenum target, GLuint buffer, size_t capacity, GLenum usage) {
     if (!buffer || capacity == 0)
@@ -1754,6 +1816,8 @@ static int orphan_stream_buffer(GLenum target, GLuint buffer, size_t capacity, G
 }
 
 /// @brief Whether the named OpenGL extension is present (checks both indexed and legacy queries).
+/// @param name Borrowed exact extension name to locate.
+/// @return Nonzero when the active context advertises @p name, otherwise zero.
 static int gl_extension_supported(const char *name) {
     GLint count = 0;
     const char *extensions;
@@ -1789,6 +1853,8 @@ static int gl_extension_supported(const char *name) {
 /// format but still reject it for render targets on a specific context/profile.
 /// This helper performs the actual framebuffer-completeness check used to decide
 /// whether the backend may allocate scene or RTT targets in that format.
+/// @param internal_format Candidate sized color internal format.
+/// @param data_type Pixel data type used for the probe allocation.
 /// @return Non-zero when a 1x1 framebuffer using @p internal_format is complete.
 static int gl_probe_color_renderable_format(GLint internal_format, GLenum data_type) {
     gl_framebuffer_state_t saved;
@@ -1823,6 +1889,8 @@ static int gl_probe_color_renderable_format(GLint internal_format, GLenum data_t
 /// Depth formats vary more across GL drivers than the GL version alone implies.
 /// This live FBO probe prevents post-FX and shadow targets from selecting a
 /// floating depth format that the context cannot actually attach.
+/// @param internal_format Candidate sized depth internal format.
+/// @param data_type Pixel data type used for the probe allocation.
 /// @return Non-zero when a 1x1 depth-only framebuffer is complete.
 static int gl_probe_depth_renderable_format(GLint internal_format, GLenum data_type) {
     gl_framebuffer_state_t saved;
@@ -1859,6 +1927,8 @@ static int gl_probe_depth_renderable_format(GLint internal_format, GLenum data_t
 /// layout. This function records the limits once, validates the minimum profile, and captures
 /// optional compressed-texture support so TextureAsset3D can use native blocks when the driver
 /// advertises them.
+/// @param ctx Borrowed OpenGL backend context receiving version, limit, and feature results.
+/// @return Nonzero when the active context satisfies all required limits and probes.
 static int gl_query_context_capabilities(gl_context_t *ctx) {
     const char *version = NULL;
 
@@ -1922,6 +1992,7 @@ static int gl_query_context_capabilities(gl_context_t *ctx) {
 }
 
 /// @brief Probe GL_EXT_texture_filter_anisotropic once for the active context.
+/// @param ctx Borrowed OpenGL backend context receiving support and maximum-anisotropy values.
 static void gl_query_anisotropy_support(gl_context_t *ctx) {
     GLfloat max_anisotropy = 1.0f;
 

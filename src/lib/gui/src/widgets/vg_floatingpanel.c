@@ -282,22 +282,37 @@ static void floatingpanel_paint_overlay(vg_widget_t *widget, void *canvas) {
         floatingpanel_stroke_round_rect(win, px, py, pw, ph, radius, border_color);
 
     if (pw > 0 && ph > 0) {
-        vgfx_set_clip(win, px, py, pw, ph);
+        // Ceiling scope: descendants may set/clear their own clips without
+        // escaping the panel body. Fall back to a plain clip restored between
+        // direct children when the nesting depth is exhausted.
+        bool limited = vgfx_push_clip_limit(win, px, py, pw, ph) != 0;
+        if (!limited)
+            vgfx_set_clip(win, px, py, pw, ph);
         VG_FOREACH_VISIBLE_CHILD(widget, child) {
             floatingpanel_render_normal_subtree(child, canvas, widget->x, widget->y);
-            vgfx_set_clip(win, px, py, pw, ph);
+            if (!limited)
+                vgfx_set_clip(win, px, py, pw, ph);
         }
-        vgfx_clear_clip(win);
+        if (limited)
+            vgfx_pop_clip_limit(win);
+        else
+            vgfx_clear_clip(win);
     }
 
-    // Nested overlays inherit the panel clip so large forms and scroll views stay contained.
+    // Nested overlays inherit the panel ceiling so large forms and scroll views stay contained.
     if (pw > 0 && ph > 0) {
-        vgfx_set_clip(win, px, py, pw, ph);
+        bool limited = vgfx_push_clip_limit(win, px, py, pw, ph) != 0;
+        if (!limited)
+            vgfx_set_clip(win, px, py, pw, ph);
         VG_FOREACH_VISIBLE_CHILD(widget, child) {
             floatingpanel_render_overlay_subtree(child, canvas, widget->x, widget->y);
-            vgfx_set_clip(win, px, py, pw, ph);
+            if (!limited)
+                vgfx_set_clip(win, px, py, pw, ph);
         }
-        vgfx_clear_clip(win);
+        if (limited)
+            vgfx_pop_clip_limit(win);
+        else
+            vgfx_clear_clip(win);
     }
 }
 

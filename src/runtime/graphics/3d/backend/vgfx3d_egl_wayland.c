@@ -13,6 +13,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file vgfx3d_egl_wayland.c
+ * @brief Implements dynamic EGL/OpenGL context management for native Wayland surfaces.
+ *
+ * This adapter loads EGL and wayland-egl at runtime, resolves the entry points required by the
+ * OpenGL backend, and owns the EGL display, context, surface, and wl_egl_window associated with
+ * one binding. Library discovery is cached process-wide behind a small atomic lock so callers can
+ * probe availability without introducing link-time EGL or Wayland dependencies.
+ */
+
 #include "vgfx3d_egl_wayland.h"
 
 #include "rt_platform.h"
@@ -105,17 +115,27 @@ static vgfx3d_egl_api_t g_egl;
 static int32_t g_egl_state;
 static int32_t g_egl_lock;
 
+/// @brief Acquire the process-wide spin lock protecting initial EGL symbol discovery.
 static void vgfx3d_egl_lock(void) {
     while (rt_atomic_test_and_set(&g_egl_lock, __ATOMIC_ACQUIRE)) {}
 }
 
+/// @brief Release the process-wide EGL symbol-discovery lock.
 static void vgfx3d_egl_unlock(void) { rt_atomic_clear(&g_egl_lock, __ATOMIC_RELEASE); }
 
+/// @brief Open the preferred shared library name or fall back to an unversioned soname.
+/// @param primary Preferred versioned library name.
+/// @param fallback Secondary unversioned library name used when @p primary cannot be opened.
+/// @return Dynamic-library handle for the first available name, or null when neither loads.
 static void *vgfx3d_egl_open(const char *primary, const char *fallback) {
     void *library = dlopen(primary, RTLD_LOCAL | RTLD_NOW);
     return library ? library : dlopen(fallback, RTLD_LOCAL | RTLD_NOW);
 }
 
+/// @brief Resolve and cache the EGL and wayland-egl entry points required by this adapter.
+/// @details The first caller performs discovery under @ref g_egl_lock. Both success and failure
+///          are published atomically and cached for the remainder of the process.
+/// @return Non-zero when all mandatory libraries and entry points are available, otherwise zero.
 static int vgfx3d_egl_load(void) {
     int32_t state = __atomic_load_n(&g_egl_state, __ATOMIC_ACQUIRE);
     if (state != 0)
@@ -177,8 +197,14 @@ fail:
     return 0;
 }
 
+/// @brief Report whether the runtime EGL and wayland-egl dependencies are usable.
+/// @return Non-zero after successful symbol discovery, otherwise zero.
 int vgfx3d_egl_wayland_available(void) { return vgfx3d_egl_load(); }
 
+/// @brief Resolve an OpenGL or EGL extension entry point for the Wayland backend.
+/// @param name Null-terminated symbol name.
+/// @return Resolved function pointer, first through @c eglGetProcAddress and then the EGL shared
+///         library, or null for an invalid name, unavailable loader, or missing symbol.
 void *vgfx3d_egl_wayland_get_proc(const char *name) {
     if (!name || !vgfx3d_egl_load())
         return NULL;
@@ -186,6 +212,17 @@ void *vgfx3d_egl_wayland_get_proc(const char *name) {
     return result ? result : dlsym(g_egl.egl_library, name);
 }
 
+/// @brief Create and bind an EGL OpenGL context for a native Wayland surface.
+/// @details Requests an RGBA8/depth24 window configuration and an OpenGL 3.3 core context, falling
+///          back to implementation-default context attributes when necessary. The new context is
+///          made current and its swap interval is forced to zero so EGL does not dispatch the
+///          caller-owned Wayland display queue internally.
+/// @param native_display Borrowed native @c wl_display pointer.
+/// @param native_surface Borrowed native @c wl_surface pointer.
+/// @param width Positive initial window width in pixels.
+/// @param height Positive initial window height in pixels.
+/// @return Newly allocated binding owned by the caller, or null after cleaning up any partially
+///         created EGL and wayland-egl resources.
 vgfx3d_egl_wayland_t *vgfx3d_egl_wayland_create(void *native_display,
                                                 void *native_surface,
                                                 int32_t width,
@@ -255,6 +292,9 @@ fail:
     return NULL;
 }
 
+/// @brief Make a Wayland binding's context current for drawing and reading.
+/// @param binding Borrowed initialized binding.
+/// @return Non-zero on success, otherwise zero for an incomplete binding or EGL failure.
 int vgfx3d_egl_wayland_make_current(vgfx3d_egl_wayland_t *binding) {
     return binding && binding->display && binding->surface && binding->context &&
            g_egl.make_current(
@@ -262,15 +302,28 @@ int vgfx3d_egl_wayland_make_current(vgfx3d_egl_wayland_t *binding) {
                EGL_FALSE_VALUE;
 }
 
+/// @brief Present the current back buffer through the binding's EGL window surface.
+/// @param binding Borrowed initialized binding.
+/// @return Non-zero when @c eglSwapBuffers succeeds, otherwise zero.
 int vgfx3d_egl_wayland_swap(vgfx3d_egl_wayland_t *binding) {
     return binding && g_egl.swap_buffers(binding->display, binding->surface) != EGL_FALSE_VALUE;
 }
 
+/// @brief Keep the binding's EGL swap interval at zero.
+/// @details Wayland display dispatch remains owned by Zanna, so the requested interval is
+///          intentionally ignored to prevent a blocking EGL swap from dispatching internally.
+/// @param binding Borrowed initialized binding.
+/// @param interval Requested interval, accepted for API compatibility but otherwise ignored.
+/// @return Non-zero when EGL accepts interval zero, otherwise zero.
 int vgfx3d_egl_wayland_set_swap_interval(vgfx3d_egl_wayland_t *binding, int32_t interval) {
     (void)interval;
     return binding && g_egl.swap_interval(binding->display, 0) != EGL_FALSE_VALUE;
 }
 
+/// @brief Resize the native wl_egl_window without changing its attachment offset.
+/// @param binding Borrowed binding whose window is resized.
+/// @param width Positive new width in pixels.
+/// @param height Positive new height in pixels.
 void vgfx3d_egl_wayland_resize(vgfx3d_egl_wayland_t *binding,
                                int32_t width,
                                int32_t height) {
@@ -278,6 +331,11 @@ void vgfx3d_egl_wayland_resize(vgfx3d_egl_wayland_t *binding,
         g_egl.window_resize(binding->window, width, height, 0, 0);
 }
 
+/// @brief Release every EGL and wayland-egl resource owned by a binding.
+/// @details The context is first detached, followed by the surface, context, native window, and
+///          display connection. A null pointer is a no-op, and partially initialized bindings are
+///          safe to destroy.
+/// @param binding Owned binding to destroy.
 void vgfx3d_egl_wayland_destroy(vgfx3d_egl_wayland_t *binding) {
     if (!binding)
         return;

@@ -16,11 +16,25 @@
 // Links: rt_fbx_loader.c, rt_fbx_loader_loader.inc, rt_fbx_loader_nodeanim.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_fbx_loader_scene.inc
+ * @brief Builds the runtime scene hierarchy, FBX transform stacks, material-split
+ *        meshes, lights, and cameras.
+ *
+ * Numeric FBX object connections are resolved into SceneNode3D ownership and parent
+ * relationships. Static transforms use the same row-major pivot, rotation-order,
+ * geometric-transform, inheritance, and coordinate-conversion machinery as animation
+ * sampling. Camera and light NodeAttributes are normalized into runtime resources, and
+ * multi-material geometry is cloned into compact per-slot meshes when required.
+ */
+
 /*==========================================================================
  * Scene graph extraction
  *=========================================================================*/
 
 /// @brief Release a GC-managed object held in `*slot` and NULL-out the slot.
+/// @param[in,out] slot Address of a runtime reference slot to release.
 static void fbx_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
@@ -50,22 +64,39 @@ static void fbx_set_clean_object_name(void *scene_node, fbx_node_t *object_node)
 ///          explicit lets the scene-node and skeleton importers share the same interpretation
 ///          instead of each rebuilding a partial Euler-only path.
 typedef struct {
+    /// Local translation.
     double translation[3];
+    /// Local Euler rotation in degrees.
     double rotation[3];
+    /// Local non-uniform scale.
     double scale[3];
+    /// FBX pre-rotation Euler angles.
     double pre_rotation[3];
+    /// FBX post-rotation Euler angles.
     double post_rotation[3];
+    /// Translation applied before the rotation pivot.
     double rotation_offset[3];
+    /// Rotation pivot position.
     double rotation_pivot[3];
+    /// Translation applied before the scaling pivot.
     double scaling_offset[3];
+    /// Scaling pivot position.
     double scaling_pivot[3];
+    /// Geometry-only translation appended after the Model transform.
     double geometric_translation[3];
+    /// Geometry-only Euler rotation.
     double geometric_rotation[3];
+    /// Geometry-only scale.
     double geometric_scale[3];
+    /// Optional already-sampled quaternion used instead of Euler rotation.
     double sampled_rotation_quaternion[4];
+    /// FBX Euler RotationOrder enum.
     int rotation_order;
+    /// Non-zero when authored local rotation is active.
     int rotation_active;
+    /// FBX TransformInheritType enum.
     int inherit_type;
+    /// Non-zero to compose @ref sampled_rotation_quaternion.
     int use_sampled_rotation_quaternion;
 } fbx_transform_components_t;
 
@@ -113,7 +144,10 @@ static int fbx_read_p_xyz(fbx_node_t *p, double out_xyz[3]) {
     return 1;
 }
 
-/// @brief Return the named `Properties70/P` record, or NULL when the property is absent.
+/// @brief Find a named `Properties70/P` record.
+/// @param node FBX object containing an optional `Properties70` child.
+/// @param name Case-insensitive authored property name.
+/// @return Borrowed pointer to the matching `P` node, or NULL when absent.
 static fbx_node_t *fbx_find_property70(fbx_node_t *node, const char *name) {
     fbx_node_t *properties;
     if (!node || !name)
@@ -136,6 +170,7 @@ static fbx_node_t *fbx_find_property70(fbx_node_t *node, const char *name) {
 /// @param name Property/child name.
 /// @param fallback Returned when the value is absent or non-finite.
 /// @param out_found Optional presence flag, set only for a finite numeric value.
+/// @return The finite imported scalar, or @p fallback when unavailable.
 static double fbx_read_object_number(fbx_node_t *node,
                                      const char *name,
                                      double fallback,
@@ -166,6 +201,10 @@ static double fbx_read_object_number(fbx_node_t *node,
 }
 
 /// @brief Read a finite XYZ property from `Properties70` or a three-scalar direct child.
+/// @param node FBX object carrying the property.
+/// @param name Property/child name.
+/// @param[out] out_xyz Receives the finite XYZ vector.
+/// @return Non-zero when a complete finite vector is found; otherwise zero.
 static int fbx_read_object_xyz(fbx_node_t *node, const char *name, double out_xyz[3]) {
     fbx_node_t *property;
     if (!node || !name || !out_xyz)
@@ -184,7 +223,9 @@ static int fbx_read_object_xyz(fbx_node_t *node, const char *name, double out_xy
     return 1;
 }
 
-/// @brief Whether an FBX `Model` subtype belongs to the skeletal hierarchy.
+/// @brief Test whether an FBX Model subtype belongs to the skeletal hierarchy.
+/// @param type Model subtype string.
+/// @return Non-zero for LimbNode, Limb, or Root; otherwise zero.
 static int fbx_model_type_is_skeleton(const char *type) {
     return type && (strcmp(type, "LimbNode") == 0 || strcmp(type, "Limb") == 0 ||
                     strcmp(type, "Root") == 0);
@@ -913,6 +954,11 @@ static void fbx_build_inherited_global_matrix(const double parent_global[16],
 ///          PreRotation/PostRotation, and geometric transforms before decomposing to the
 ///          SceneNode3D representation. `z_up` applies a full matrix basis conversion so rotated
 ///          and pivoted models convert correctly.
+/// @param model_node Source FBX Model node; NULL leaves identity defaults.
+/// @param z_up Non-zero to convert the composed matrix into runtime Y-up space.
+/// @param[out] pos Optional three-component translation output.
+/// @param[out] quat Optional four-component XYZW quaternion output.
+/// @param[out] scale Optional three-component scale output.
 static void fbx_extract_model_trs(
     fbx_node_t *model_node, int z_up, double *pos, double *quat, double *scale) {
     fbx_transform_components_t components;
@@ -942,7 +988,11 @@ static void fbx_extract_model_trs(
     fbx_decompose_matrix_trs(matrix, pos, quat, scale);
 }
 
-/// @brief Linear-search @p bindings for the entry with the given @p id; NULL if not found.
+/// @brief Find a mesh binding by FBX Geometry identifier.
+/// @param bindings Geometry-ID to mesh binding array.
+/// @param count Number of entries in @p bindings.
+/// @param id Geometry identifier to match.
+/// @return Borrowed pointer to the matching binding, or NULL.
 static const fbx_mesh_binding_t *fbx_lookup_mesh_binding_entry(const fbx_mesh_binding_t *bindings,
                                                                int32_t count,
                                                                int64_t id) {
@@ -955,6 +1005,11 @@ static const fbx_mesh_binding_t *fbx_lookup_mesh_binding_entry(const fbx_mesh_bi
 /// @brief Build a new Mesh3D containing only the triangles of @p src assigned to
 ///   @p material_slot, compacting the referenced vertices through a remap table so the
 ///   sub-mesh has no unused vertices.
+/// @details Copies high-precision positions when present and remaps MorphTarget3D shapes
+///          to the compact vertex order. The source mesh and material map remain borrowed.
+/// @param src Source runtime mesh.
+/// @param map Per-triangle FBX material-slot assignment.
+/// @param material_slot Non-negative slot whose triangles are selected.
 /// @return The new mesh object, or NULL if no triangle uses the slot or on allocation failure.
 static void *fbx_clone_mesh_for_material_slot(const rt_mesh3d *src,
                                               const fbx_mesh_material_map_t *map,
@@ -1056,6 +1111,10 @@ fail:
 
 /// @brief Linear search for a `Material3D` associated with an FBX object ID. Mirror of
 /// `fbx_lookup_mesh_binding` for the material table.
+/// @param bindings Material-ID to runtime-material binding array.
+/// @param count Number of entries in @p bindings.
+/// @param id FBX Material identifier to match.
+/// @return Borrowed runtime material pointer, or NULL when no binding matches.
 static void *fbx_lookup_material_binding(const fbx_material_binding_t *bindings,
                                          int32_t count,
                                          int64_t id) {
@@ -1113,31 +1172,49 @@ static void fbx_apply_model_node_trs(fbx_node_t *obj, void *node, int z_up) {
 /// @brief (id, model-index) pair used to build a sorted lookup table for FBX parent
 ///   resolution, replacing repeated O(n) id scans with O(log n) binary search.
 typedef struct {
+    /// Numeric FBX Model identifier used as the sort key.
     int64_t id;
+    /// Original index of the Model in the unsorted table.
     int32_t index;
 } fbx_model_id_entry_t;
 
 /// @brief One imported non-skeleton FBX Model and its evaluated runtime scene node.
 typedef struct {
+    /// Numeric FBX Model identifier.
     int64_t id;
+    /// Numeric parent Model identifier, or zero.
     int64_t parent_id;
+    /// Stable ordinal in the FBX `Objects` child array.
     int32_t import_index;
+    /// Borrowed source Model node.
     fbx_node_t *source;
+    /// Owned-until-publication runtime scene-node reference.
     void *node;
+    /// Parsed static FBX transform-stack components.
     fbx_transform_components_t components;
+    /// Composed parent-independent local matrix.
     double local_matrix[16];
+    /// Evaluated world/global matrix.
     double global_matrix[16];
+    /// Non-zero after @ref global_matrix has been evaluated.
     int global_evaluated;
 } fbx_scene_model_binding_t;
 
 /// @brief qsort comparator ordering fbx_model_id_entry_t by ascending id.
+/// @param a First lookup entry.
+/// @param b Second lookup entry.
+/// @return Negative, zero, or positive according to ascending numeric ID order.
 static int fbx_model_id_entry_cmp(const void *a, const void *b) {
     int64_t ia = ((const fbx_model_id_entry_t *)a)->id;
     int64_t ib = ((const fbx_model_id_entry_t *)b)->id;
     return (ia > ib) - (ia < ib);
 }
 
-/// @brief Binary-search a sorted id->index table; returns the model index or -1.
+/// @brief Binary-search a sorted Model-ID lookup table.
+/// @param sorted Lookup table sorted by ascending ID.
+/// @param count Number of entries in @p sorted.
+/// @param id Model identifier to find.
+/// @return Original Model index, or -1 when absent.
 static int32_t fbx_model_index_for_id(const fbx_model_id_entry_t *sorted,
                                       int32_t count,
                                       int64_t id) {
@@ -1156,6 +1233,10 @@ static int32_t fbx_model_index_for_id(const fbx_model_id_entry_t *sorted,
 }
 
 /// @brief Find one scene-model binding by FBX numeric ID.
+/// @param models Scene-model binding array.
+/// @param model_count Number of entries in @p models.
+/// @param id Non-zero Model identifier to find.
+/// @return Borrowed pointer to the matching binding, or NULL.
 static fbx_scene_model_binding_t *fbx_scene_model_for_id(fbx_scene_model_binding_t *models,
                                                          int32_t model_count,
                                                          int64_t id) {
@@ -1171,6 +1252,11 @@ static fbx_scene_model_binding_t *fbx_scene_model_for_id(fbx_scene_model_binding
 /// @brief Find a connected `NodeAttribute` with the requested subtype.
 /// @details Standard FBX connects `NodeAttribute -> Model`; the reverse direction is accepted for
 /// exporter compatibility. Numeric connection endpoints remain the only identity keys.
+/// @param objects Parsed FBX `Objects` node.
+/// @param ct Connection table used for bidirectional adjacency.
+/// @param model_id Owning Model identifier.
+/// @param subtype Required NodeAttribute subtype, such as `Light` or `Camera`.
+/// @return Borrowed matching NodeAttribute, or NULL.
 static fbx_node_t *fbx_find_model_node_attribute(fbx_node_t *objects,
                                                  const fbx_conn_table_t *ct,
                                                  int64_t model_id,
@@ -1200,7 +1286,13 @@ static fbx_node_t *fbx_find_model_node_attribute(fbx_node_t *objects,
     return NULL;
 }
 
-/// @brief Read a scalar from an attribute, falling back to its owning Model.
+/// @brief Read a scalar from a NodeAttribute, falling back to its owning Model.
+/// @param attribute Preferred NodeAttribute object; may be NULL.
+/// @param model Owning Model fallback; may be NULL.
+/// @param name Property name to read.
+/// @param fallback Value returned when neither object supplies a finite scalar.
+/// @param[out] out_found Optional flag indicating that an imported value was found.
+/// @return Imported finite scalar or @p fallback.
 static double fbx_read_attribute_number(
     fbx_node_t *attribute, fbx_node_t *model, const char *name, double fallback, int *out_found) {
     int found = 0;
@@ -1212,7 +1304,14 @@ static double fbx_read_attribute_number(
     return value;
 }
 
-/// @brief Read the first present scalar from a list of exporter-compatible property names.
+/// @brief Read the first scalar found under a list of exporter-compatible aliases.
+/// @param attribute Preferred NodeAttribute object.
+/// @param model Owning Model fallback.
+/// @param names Ordered array of property-name aliases.
+/// @param name_count Number of entries in @p names.
+/// @param fallback Value returned when no alias supplies a finite scalar.
+/// @param[out] out_found Optional flag indicating that an imported value was found.
+/// @return First finite aliased scalar, or @p fallback.
 static double fbx_read_attribute_number_aliases(fbx_node_t *attribute,
                                                 fbx_node_t *model,
                                                 const char *const *names,
@@ -1239,6 +1338,10 @@ static double fbx_read_attribute_number_aliases(fbx_node_t *attribute,
 }
 
 /// @brief Validate a required positive finite imported light dimension.
+/// @param value Authored dimension.
+/// @param property_name Name used in the asset-error diagnostic.
+/// @return Non-zero when the value lies in the accepted positive range; otherwise
+///         zero after setting a corrupt-input error.
 static int fbx_validate_light_dimension(double value, const char *property_name) {
     if (isfinite(value) && value > 1e-6 && value <= 1000000.0)
         return 1;
@@ -1248,7 +1351,12 @@ static int fbx_validate_light_dimension(double value, const char *property_name)
     return 0;
 }
 
-/// @brief Read an XYZ property from an attribute, falling back to its owning Model.
+/// @brief Read an XYZ property from a NodeAttribute, falling back to its owning Model.
+/// @param attribute Preferred NodeAttribute object.
+/// @param model Owning Model fallback.
+/// @param name Property name to read.
+/// @param[out] out_xyz Receives the finite vector.
+/// @return Non-zero when either object supplies a complete finite vector.
 static int fbx_read_attribute_xyz(fbx_node_t *attribute,
                                   fbx_node_t *model,
                                   const char *name,
@@ -1257,7 +1365,11 @@ static int fbx_read_attribute_xyz(fbx_node_t *attribute,
            fbx_read_object_xyz(model, name, out_xyz);
 }
 
-/// @brief Normalize a finite vector, substituting the requested fallback on degeneracy.
+/// @brief Normalize a finite vector, substituting a requested fallback on degeneracy.
+/// @param[in,out] vector Three-component vector to normalize.
+/// @param x Fallback X component.
+/// @param y Fallback Y component.
+/// @param z Fallback Z component.
 static void fbx_normalize_vec3_or(double vector[3], double x, double y, double z) {
     double maximum;
     double length;
@@ -1286,6 +1398,14 @@ static void fbx_normalize_vec3_or(double vector[3], double x, double y, double z
 }
 
 /// @brief Build a node-local Light3D from an FBX light attribute.
+/// @details Imports type, color, normalized intensity, range/decay, spot angles,
+///          area dimensions, enabled state, and shadow state. Required FBX enum and
+///          area-dimension violations set a corrupt-input diagnostic.
+/// @param attribute Preferred Light NodeAttribute.
+/// @param model Owning Model used as an exporter-compatible property fallback.
+/// @param[in,out] context Loader context charged for the runtime light allocation.
+/// @return Newly allocated Light3D on success, or NULL for invalid metadata, budget
+///         rejection, or allocation failure.
 static void *fbx_make_model_light(fbx_node_t *attribute,
                                   fbx_node_t *model,
                                   fbx_load_context_t *context) {
@@ -1464,7 +1584,14 @@ static void *fbx_make_model_light(fbx_node_t *attribute,
     return light;
 }
 
-/// @brief Resolve a camera look-at/up target connected by the named FBX relationship.
+/// @brief Resolve a camera look-at or up target through a named FBX relationship.
+/// @param models Evaluated scene-model binding array.
+/// @param model_count Number of entries in @p models.
+/// @param ct Connection table containing relationship properties.
+/// @param model_id Camera Model identifier.
+/// @param attribute_id Camera NodeAttribute identifier, or zero.
+/// @param relationship Required connection property name.
+/// @return Borrowed matching target Model binding, or NULL.
 static fbx_scene_model_binding_t *fbx_find_camera_target(fbx_scene_model_binding_t *models,
                                                          int32_t model_count,
                                                          const fbx_conn_table_t *ct,
@@ -1493,26 +1620,46 @@ static fbx_scene_model_binding_t *fbx_find_camera_target(fbx_scene_model_binding
 
 /// @brief Raw FBX camera projection properties before conversion to Camera3D's vertical-FOV form.
 typedef struct {
+    /// FBX projection enum: perspective or orthographic.
     double projection_type;
+    /// FBX aperture-mode enum.
     double aperture_mode;
+    /// Generic authored field-of-view angle.
     double field_of_view;
+    /// Authored horizontal field of view.
     double field_of_view_x;
+    /// Authored vertical field of view.
     double field_of_view_y;
+    /// Focal length in millimetres.
     double focal_length;
+    /// Film aperture width in inches.
     double film_width;
+    /// Film aperture height in inches.
     double film_height;
+    /// Render aspect-width component.
     double aspect_width;
+    /// Render aspect-height component.
     double aspect_height;
+    /// Near clipping distance.
     double near_plane;
+    /// Far clipping distance.
     double far_plane;
+    /// Orthographic zoom/size.
     double ortho_zoom;
+    /// Non-zero when generic FOV was explicitly authored.
     int has_field_of_view;
+    /// Non-zero when horizontal FOV was explicitly authored.
     int has_field_of_view_x;
+    /// Non-zero when vertical FOV was explicitly authored.
     int has_field_of_view_y;
+    /// Non-zero when focal length was explicitly authored.
     int has_focal_length;
 } fbx_camera_property_state_t;
 
 /// @brief Read one camera's complete scalar state with documented FBX SDK defaults.
+/// @param attribute Preferred Camera NodeAttribute.
+/// @param model Owning Model used as an exporter-compatible fallback.
+/// @param[out] state Camera property state initialized and populated before return.
 static void fbx_read_camera_property_state(fbx_node_t *attribute,
                                            fbx_node_t *model,
                                            fbx_camera_property_state_t *state) {
@@ -1545,7 +1692,9 @@ static void fbx_read_camera_property_state(fbx_node_t *attribute,
             fbx_read_attribute_number(attribute, model, "CameraOrthoZoom", 10.0, NULL);
 }
 
-/// @brief Return a finite positive FBX camera aspect, falling back to square pixels.
+/// @brief Derive a finite positive FBX camera aspect ratio.
+/// @param state Camera property state.
+/// @return Clamped width/height aspect, or 1.0 for absent, non-finite, or non-positive input.
 static double fbx_camera_state_aspect(const fbx_camera_property_state_t *state) {
     if (!state || !isfinite(state->aspect_width) || !isfinite(state->aspect_height) ||
         state->aspect_width <= 0.0 || state->aspect_height <= 0.0)
@@ -1554,6 +1703,9 @@ static double fbx_camera_state_aspect(const fbx_camera_property_state_t *state) 
 }
 
 /// @brief Convert an FBX horizontal field of view to Camera3D's vertical convention.
+/// @param horizontal_degrees Horizontal angle in degrees.
+/// @param aspect Positive width/height aspect ratio.
+/// @return Clamped vertical angle in degrees, or the 60-degree fallback for invalid input.
 static double fbx_camera_horizontal_to_vertical_fov(double horizontal_degrees, double aspect) {
     static const double pi = 3.14159265358979323846;
     double radians;
@@ -1571,6 +1723,9 @@ static double fbx_camera_horizontal_to_vertical_fov(double horizontal_degrees, d
 ///          focal-length mode as horizontal unless the active aperture mode is explicitly
 ///          vertical; the runtime always stores a vertical FOV, so horizontal results are
 ///          converted through the evaluated AspectWidth/AspectHeight ratio.
+/// @param state Complete camera property state.
+/// @return Vertical runtime field of view in the range `[1, 179]` degrees, using
+///         exporter-compatible fallbacks when the selected lane is absent.
 static double fbx_camera_state_vertical_fov(const fbx_camera_property_state_t *state) {
     static const double pi = 3.14159265358979323846;
     int aperture_mode;
@@ -1617,7 +1772,10 @@ static double fbx_camera_state_vertical_fov(const fbx_camera_property_state_t *s
     return 60.0;
 }
 
-/// @brief Validate the two discrete FBX camera enums required to construct a projection.
+/// @brief Validate the discrete FBX camera enums required to construct a projection.
+/// @param state Camera property state to validate.
+/// @return Non-zero when projection and aperture modes are finite integral values in
+///         their SDK ranges; otherwise zero after setting an asset error.
 static int fbx_camera_state_validate_enums(const fbx_camera_property_state_t *state) {
     if (!state || !isfinite(state->projection_type) ||
         state->projection_type != floor(state->projection_type) || state->projection_type < 0.0 ||
@@ -1636,7 +1794,18 @@ static int fbx_camera_state_validate_enums(const fbx_camera_property_state_t *st
     return 1;
 }
 
-/// @brief Build and orient one Camera3D from an evaluated FBX camera model.
+/// @brief Build and orient one Camera3D from an evaluated FBX camera Model.
+/// @details Converts projection state into runtime perspective/orthographic parameters,
+///          derives eye/forward/up vectors from the evaluated global matrix, and honors
+///          optional `LookAtProperty` and `UpVectorProperty` target relationships.
+/// @param attribute Preferred Camera NodeAttribute.
+/// @param model Evaluated owning Model binding.
+/// @param models Complete evaluated Model table for target resolution.
+/// @param model_count Number of entries in @p models.
+/// @param ct Connection table containing camera target relationships.
+/// @param[in,out] context Loader context charged for the runtime camera allocation.
+/// @return Newly allocated and oriented Camera3D, or NULL for invalid metadata,
+///         budget rejection, or allocation failure.
 static void *fbx_make_model_camera(fbx_node_t *attribute,
                                    fbx_scene_model_binding_t *model,
                                    fbx_scene_model_binding_t *models,
@@ -1712,6 +1881,21 @@ static void *fbx_make_model_camera(fbx_node_t *attribute,
 /// released via the GC on failure — no manual cleanup needed). This is the "scene
 /// graph" half of the FBX importer; the flat mesh/material/animation lists live on
 /// `rt_fbx_asset` alongside the root.
+/// @param[in,out] asset Staged asset that receives standalone camera references.
+/// @param root Parsed FBX document root.
+/// @param objects Parsed FBX `Objects` node.
+/// @param ct Validated object connection table.
+/// @param constraint_pose Optional pre-evaluated static constrained pose.
+/// @param mesh_bindings Geometry-ID to runtime-mesh binding array.
+/// @param mesh_binding_count Number of entries in @p mesh_bindings.
+/// @param material_bindings Material-ID to runtime-material binding array.
+/// @param material_binding_count Number of entries in @p material_bindings.
+/// @param z_up Non-zero to convert static model transforms into runtime Y-up space.
+/// @param[in,out] context Loader context charged for published resources.
+/// @param[out] out_failed Optional hard-failure flag, initialized to zero and set when
+///                        NULL represents transaction failure rather than an empty scene.
+/// @return Newly allocated scene root owning the assembled hierarchy, or NULL for
+///         invalid input or any hard allocation, topology, transform, camera, or light failure.
 static void *fbx_build_scene_root(rt_fbx_asset *asset,
                                   fbx_node_t *root,
                                   fbx_node_t *objects,

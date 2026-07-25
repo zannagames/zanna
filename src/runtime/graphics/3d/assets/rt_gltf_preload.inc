@@ -5,7 +5,22 @@
 // meshes, morphs, images)
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_preload.inc
+ * @brief Stages glTF buffers, meshes, morph targets, and images for asynchronous loading.
+ * @details This `rt_gltf.c` fragment parses bounded JSON spans without constructing the runtime
+ *          object tree, validates buffer-view and accessor ranges, converts primitive data into
+ *          owned mesh and morph POD dependencies, and stages decoded or source image payloads.
+ *          The resulting preload bundle transfers validated work to the synchronous commit path.
+ */
+
 /// @brief Resolve a raw JSON texture object's source, including KHR_texture_basisu.
+/// @param[in] json Complete glTF JSON byte sequence.
+/// @param len Length of @p json in bytes.
+/// @param obj_start Inclusive byte offset of the texture object.
+/// @param obj_end Exclusive byte offset bounding the texture object.
+/// @return Basis Universal extension source when present and valid; otherwise the
+///         texture's ordinary source index, or -1 when neither is declared.
 static int gltf_json_texture_source_index(const char *json,
                                           size_t len,
                                           size_t obj_start,
@@ -43,6 +58,11 @@ static int gltf_json_texture_source_index(const char *json,
 /// @details For GLB (magic "glTF", version 2) it validates the chunk table and copies the first
 ///          (JSON) chunk; for plain .gltf it copies the bytes verbatim. Returns a NUL-terminated
 ///          owned copy (caller frees) with @p out_len set, or NULL on a malformed container.
+/// @param[in] data Root asset bytes containing JSON text or a GLB container.
+/// @param len Number of readable bytes at @p data.
+/// @param[out] out_len Optional destination for the copied JSON byte length, excluding NUL.
+/// @return Malloc-owned, NUL-terminated JSON text, or `NULL` on invalid input or allocation
+///         failure.
 static char *gltf_json_copy_from_root_bytes(uint8_t *data, size_t len, size_t *out_len) {
     gltf_root_document_view document;
     char *json_copy;
@@ -61,10 +81,20 @@ static char *gltf_json_copy_from_root_bytes(uint8_t *data, size_t len, size_t *o
 }
 
 /// @brief Stage an image payload under @p key, decoding to RGBA up front when possible.
-/// @details Takes ownership of @p data. If it decodes to an RGBA blob the dependency is tagged
-///          IMAGE_RGBA (ready for streaming upload); otherwise the raw bytes are kept as IMAGE.
-///          When @p required and a supported format fails to decode, sets @p error and fails.
-/// @return 1 on success (including the no-op for empty data), 0 on a required decode/stage failure.
+/// @details For a nonempty payload, transfers @p data to the bundle or releases it on a failure
+///          before insertion. If it decodes to an RGBA blob the dependency is tagged IMAGE_RGBA
+///          (ready for streaming upload); otherwise the raw bytes are kept as IMAGE. When
+///          @p required and a supported format fails to decode, sets @p error and fails.
+/// @param[in,out] bundle Bundle receiving the owned image dependencies.
+/// @param[in] key Stable dependency key used for both source and decoded forms.
+/// @param[in] mime_or_name MIME type or resource name used to select an image decoder.
+/// @param[in,out] data Source payload whose ownership transfers when @p data_len is nonzero.
+/// @param data_len Size of @p data in bytes.
+/// @param required Non-zero when a supported but undecodable image must fail staging.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero on success, including the no-op for empty data; zero on a required
+///         decode or dependency-staging failure.
 static int gltf_preload_bundle_add_image_payload(rt_gltf_preload_bundle *bundle,
                                                  const char *key,
                                                  const char *mime_or_name,
@@ -113,6 +143,15 @@ static int gltf_preload_bundle_add_image_payload(rt_gltf_preload_bundle *bundle,
 /// @details Resolves @p uri relative to @p model_path, loads the bytes (from the asset system or
 ///          disk), and stages them via add_image_payload keyed by the resolved path. data: URIs and
 ///          unreadable optional images are skipped; an unreadable required image sets @p error.
+/// @param[in,out] bundle Bundle receiving the staged image dependency.
+/// @param[in] model_path Path of the root glTF asset used for relative resolution.
+/// @param[in] uri External image URI from the glTF document.
+/// @param load_assets Non-zero to resolve through the asset-loading system.
+/// @param required Non-zero when a supported missing or invalid image is fatal.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when the image was staged or may be skipped; zero on a required
+///         image failure.
 static int gltf_preload_stage_external_image(rt_gltf_preload_bundle *bundle,
                                              const char *model_path,
                                              const char *uri,
@@ -146,6 +185,9 @@ static int gltf_preload_stage_external_image(rt_gltf_preload_bundle *bundle,
 }
 
 /// @brief Format the dependency key for inline buffer @p index ("<gltf:inline-buffer:N>").
+/// @param index Zero-based glTF buffer index.
+/// @param[out] out Destination character buffer.
+/// @param out_cap Capacity of @p out, including the terminator.
 static void gltf_preload_buffer_key(int index, char *out, size_t out_cap) {
     if (!out || out_cap == 0)
         return;
@@ -154,6 +196,10 @@ static void gltf_preload_buffer_key(int index, char *out, size_t out_cap) {
 
 /// @brief Format the dependency key for inline image @p index, with an extension chosen by MIME
 /// type.
+/// @param index Zero-based glTF image index.
+/// @param[in] mime_type Optional MIME type used to choose a recognizable suffix.
+/// @param[out] out Destination character buffer.
+/// @param out_cap Capacity of @p out, including the terminator.
 static void gltf_preload_image_key(int index, const char *mime_type, char *out, size_t out_cap) {
     const char *ext = ".bin";
     if (!out || out_cap == 0)
@@ -172,6 +218,10 @@ static void gltf_preload_image_key(int index, const char *mime_type, char *out, 
 }
 
 /// @brief Format the mesh-POD dependency key for a (mesh, primitive) pair.
+/// @param mesh_index Zero-based source mesh index.
+/// @param primitive_index Zero-based primitive index within the source mesh.
+/// @param[out] out Destination character buffer.
+/// @param out_cap Capacity of @p out, including the terminator.
 static void gltf_preload_mesh_key(int mesh_index, int primitive_index, char *out, size_t out_cap) {
     if (!out || out_cap == 0)
         return;
@@ -179,6 +229,10 @@ static void gltf_preload_mesh_key(int mesh_index, int primitive_index, char *out
 }
 
 /// @brief Format the morph-POD dependency key for a (mesh, primitive) pair.
+/// @param mesh_index Zero-based source mesh index.
+/// @param primitive_index Zero-based primitive index within the source mesh.
+/// @param[out] out Destination character buffer.
+/// @param out_cap Capacity of @p out, including the terminator.
 static void gltf_preload_morph_key(int mesh_index, int primitive_index, char *out, size_t out_cap) {
     if (!out || out_cap == 0)
         return;
@@ -188,7 +242,12 @@ static void gltf_preload_morph_key(int mesh_index, int primitive_index, char *ou
 /// @brief Locate the binary (BIN) chunk inside a GLB container.
 /// @details Validates the "glTF" magic/version/length and walks the chunk table (the JSON chunk
 ///          must come first) to find the 0x004E4942 ("BIN\0") chunk.
-/// @return 1 with @p out_bin / @p out_bin_len set, 0 for a plain .gltf or a malformed/absent BIN.
+/// @param[in] data Root asset bytes.
+/// @param len Number of readable bytes at @p data.
+/// @param[out] out_bin Optional destination for the borrowed BIN payload pointer.
+/// @param[out] out_bin_len Optional destination for the BIN payload length.
+/// @return Non-zero with the requested outputs set for a valid GLB BIN chunk; zero for
+///         plain JSON, malformed GLB data, or an absent BIN chunk.
 static int gltf_root_find_glb_bin(uint8_t *data,
                                   size_t len,
                                   const uint8_t **out_bin,
@@ -209,7 +268,11 @@ static int gltf_root_find_glb_bin(uint8_t *data,
 
 /// @brief Ensure the buffer-ref array holds at least @p required_count entries, zero-filling
 /// growth.
-/// @return 1 on success, 0 on bad args or reallocation failure.
+/// @param[in,out] refs Address of the reallocatable buffer-reference array.
+/// @param[in,out] capacity Current capacity, updated after successful growth.
+/// @param required_count Minimum number of entries required.
+/// @return Non-zero when the requested capacity is available; zero on invalid arguments,
+///         overflow, or allocation failure.
 static int gltf_preload_grow_buffer_refs(gltf_preload_buffer_ref_t **refs,
                                          int *capacity,
                                          int required_count) {
@@ -231,6 +294,11 @@ static int gltf_preload_grow_buffer_refs(gltf_preload_buffer_ref_t **refs,
     return 1;
 }
 
+/// @brief Bind one staged buffer reference to a borrowed byte range.
+/// @param[out] refs Buffer-reference table containing @p index.
+/// @param index Zero-based table entry to update.
+/// @param[in] data Borrowed buffer payload retained by the preload bundle or root asset.
+/// @param len Number of readable bytes at @p data.
 static void gltf_preload_set_buffer_ref(gltf_preload_buffer_ref_t *refs,
                                         int index,
                                         const uint8_t *data,
@@ -239,6 +307,14 @@ static void gltf_preload_set_buffer_ref(gltf_preload_buffer_ref_t *refs,
     refs[index].len = len;
 }
 
+/// @brief Decode and stage one data-URI buffer dependency.
+/// @param[in,out] bundle Bundle that assumes ownership of successfully decoded bytes.
+/// @param index Zero-based glTF buffer index.
+/// @param[in] uri Data URI containing the buffer payload.
+/// @param required_len Minimum payload length declared by the buffer object.
+/// @param[out] refs Buffer-reference table receiving the staged payload.
+/// @return Non-zero when the payload satisfies the declared length and is staged, or
+///         when an empty declared buffer may be omitted; zero otherwise.
 static int gltf_preload_stage_inline_buffer(rt_gltf_preload_bundle *bundle,
                                             int index,
                                             const char *uri,
@@ -262,6 +338,16 @@ static int gltf_preload_stage_inline_buffer(rt_gltf_preload_bundle *bundle,
     return 1;
 }
 
+/// @brief Resolve, load, and stage one external buffer dependency.
+/// @param[in,out] bundle Bundle that assumes ownership of successfully loaded bytes.
+/// @param[in] model_path Root asset path used to resolve the relative URI.
+/// @param index Zero-based glTF buffer index.
+/// @param[in] uri External buffer URI.
+/// @param load_assets Non-zero to resolve through the asset-loading system.
+/// @param required_len Minimum number of bytes required by the buffer declaration.
+/// @param[out] refs Buffer-reference table receiving the staged payload.
+/// @return Non-zero when the dependency was staged or the declaration permits an empty
+///         payload; zero when a required payload cannot be loaded or recorded.
 static int gltf_preload_stage_external_buffer(rt_gltf_preload_bundle *bundle,
                                               const char *model_path,
                                               int index,
@@ -290,6 +376,15 @@ static int gltf_preload_stage_external_buffer(rt_gltf_preload_bundle *bundle,
     return data || required_len == 0u;
 }
 
+/// @brief Dispatch a buffer URI to inline or external dependency staging.
+/// @param[in,out] bundle Bundle receiving the staged buffer.
+/// @param[in] model_path Root asset path used for relative external URIs.
+/// @param index Zero-based glTF buffer index.
+/// @param[in] uri Data or external URI to stage.
+/// @param load_assets Non-zero to use asset-system loading for external data.
+/// @param required_len Minimum payload length.
+/// @param[out] refs Buffer-reference table receiving the payload.
+/// @return Result of the selected buffer staging path.
 static int gltf_preload_stage_buffer_uri(rt_gltf_preload_bundle *bundle,
                                          const char *model_path,
                                          int index,
@@ -303,6 +398,13 @@ static int gltf_preload_stage_buffer_uri(rt_gltf_preload_bundle *bundle,
         bundle, model_path, index, uri, load_assets, required_len, refs);
 }
 
+/// @brief Bind the URI-less first glTF buffer to a validated GLB BIN chunk.
+/// @param index Zero-based glTF buffer index; only index zero is accepted.
+/// @param[in] glb_bin Borrowed GLB BIN payload.
+/// @param glb_bin_len Physical BIN chunk length, including permitted alignment padding.
+/// @param required_len Logical byte length declared by the glTF buffer.
+/// @param[out] refs Buffer-reference table receiving the logical BIN range.
+/// @return Non-zero when the BIN chunk matches the declaration within GLB padding rules.
 static int gltf_preload_bind_glb_buffer(int index,
                                         const uint8_t *glb_bin,
                                         size_t glb_bin_len,
@@ -320,6 +422,17 @@ static int gltf_preload_bind_glb_buffer(int index,
 /// @details Walks the top-level "buffers" array: a data: URI is decoded inline, an external URI is
 ///          resolved/loaded, and an absent URI binds to the GLB BIN chunk. Each ref records the
 ///          bytes so later stages can slice them. Sets @p error and returns 0 on a staging failure.
+/// @param[in,out] bundle Bundle receiving owned buffer dependencies.
+/// @param[in] model_path Root asset path used for relative URI resolution.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param load_assets Non-zero to use asset-system loading for external buffers.
+/// @param[out] out_refs Optional destination for the malloc-owned buffer-reference table.
+/// @param[out] out_count Optional destination for the number of parsed buffer entries.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when all declared buffers are staged or no buffer array exists;
+///         zero on malformed sizing, allocation, or dependency-loading failure.
 static int gltf_preload_stage_buffers(rt_gltf_preload_bundle *bundle,
                                       const char *model_path,
                                       const char *json,
@@ -404,6 +517,11 @@ static int gltf_preload_stage_buffers(rt_gltf_preload_bundle *bundle,
 
 /// @brief Ensure the buffer-view-ref array holds at least @p required_count entries (zero-filled
 /// growth).
+/// @param[in,out] views Address of the reallocatable buffer-view-reference array.
+/// @param[in,out] capacity Current capacity, updated after successful growth.
+/// @param required_count Minimum number of entries required.
+/// @return Non-zero when the requested capacity is available; zero on invalid arguments,
+///         overflow, or allocation failure.
 static int gltf_preload_grow_view_refs(gltf_preload_buffer_view_ref_t **views,
                                        int *capacity,
                                        int required_count) {
@@ -431,6 +549,14 @@ static int gltf_preload_grow_view_refs(gltf_preload_buffer_view_ref_t **views,
 /// @details A view is marked valid when it names a buffer and has a positive length. Returns the
 ///          table via @p out_views / @p out_count; on allocation failure sets @p error and returns
 ///          0.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param[out] out_views Optional destination for the malloc-owned view-reference table.
+/// @param[out] out_count Optional destination for the number of parsed buffer views.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero on successful parsing or when no buffer-view array exists; zero on
+///         count validation or allocation failure.
 static int gltf_preload_parse_buffer_views(const char *json,
                                            size_t json_len,
                                            gltf_preload_buffer_view_ref_t **out_views,
@@ -517,7 +643,16 @@ static int gltf_preload_parse_buffer_views(const char *json,
 ///          tightly-packed), and overflow-checks that the last element's end offset fits both the
 ///          view's byteLength and the backing buffer. This is the security gate that stops a
 ///          malformed accessor from inducing out-of-bounds reads during mesh packing.
-/// @return 1 if valid (or count 0 / no bufferView), 0 if any bound is exceeded or types are bad.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param obj_start Inclusive byte offset of the accessor object.
+/// @param obj_end Exclusive byte offset bounding the accessor object.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @return Non-zero if valid, including a zero count or absent buffer view; zero if
+///         component metadata is invalid or any computed range exceeds its bounds.
 static int gltf_preload_validate_accessor(const char *json,
                                           size_t json_len,
                                           size_t obj_start,
@@ -590,6 +725,16 @@ static int gltf_preload_validate_accessor(const char *json,
 /// bounds.
 /// @details Fails fast (setting @p error) on the first out-of-range accessor. Returns 1 if all
 /// pass.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when all accessor ranges are valid or no accessor array exists;
+///         zero after reporting the first invalid range.
 static int gltf_preload_validate_accessors(const char *json,
                                            size_t json_len,
                                            const gltf_preload_buffer_ref_t *buffers,
@@ -632,6 +777,11 @@ static int gltf_preload_validate_accessors(const char *json,
 
 /// @brief Ensure the accessor-ref array holds at least @p required_count entries (zero-filled
 /// growth).
+/// @param[in,out] accessors Address of the reallocatable accessor-reference array.
+/// @param[in,out] capacity Current capacity, updated after successful growth.
+/// @param required_count Minimum number of entries required.
+/// @return Non-zero when the requested capacity is available; zero on invalid arguments,
+///         overflow, or allocation failure.
 static int gltf_preload_grow_accessor_refs(gltf_preload_accessor_ref_t **accessors,
                                            int *capacity,
                                            int required_count) {
@@ -658,6 +808,14 @@ static int gltf_preload_grow_accessor_refs(gltf_preload_accessor_ref_t **accesso
 /// @details Records component type/count, element count, normalization, and any sparse
 ///          indices/values sub-views. Marks each accessor valid only with a positive count and
 ///          known component size. Returns the table via @p out_accessors / @p out_count.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param[out] out_accessors Optional destination for the malloc-owned accessor table.
+/// @param[out] out_count Optional destination for the number of parsed accessors.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero on successful parsing or when no accessor array exists; zero on
+///         count validation or allocation failure.
 static int gltf_preload_parse_accessors(const char *json,
                                         size_t json_len,
                                         gltf_preload_accessor_ref_t **out_accessors,
@@ -776,8 +934,16 @@ static int gltf_preload_parse_accessors(const char *json,
 ///          and — for sparse accessors — validates the index/value sub-views and that sparse
 ///          indices are strictly increasing and in-range. Fills @p out with raw pointers the
 ///          packers read.
-/// @return 1 with @p out populated, or 0 if the accessor is invalid or any bound/ordering check
-/// fails.
+/// @param[in] accessors Parsed accessor-reference table.
+/// @param accessor_count Number of entries in @p accessors.
+/// @param accessor_index Zero-based accessor to resolve.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @param[out] out Destination concrete accessor view.
+/// @return Non-zero with @p out populated, or zero if the accessor is invalid or any
+///         dense/sparse range or ordering check fails.
 static int gltf_preload_resolve_accessor_view(const gltf_preload_accessor_ref_t *accessors,
                                               int accessor_count,
                                               int accessor_index,
@@ -916,6 +1082,10 @@ static int gltf_preload_resolve_accessor_view(const gltf_preload_accessor_ref_t 
 
 /// @brief Whether all @p count floats are finite (no NaN/Inf); false for NULL or non-positive
 /// count.
+/// @param[in] values Floating-point sequence to inspect.
+/// @param count Number of elements in @p values.
+/// @return Non-zero only when @p values is non-null, @p count is positive, and every
+///         element is finite.
 static int gltf_preload_floats_are_finite(const float *values, int count) {
     if (!values || count <= 0)
         return 0;
@@ -929,6 +1099,13 @@ static int gltf_preload_floats_are_finite(const float *values, int count) {
 /// @brief Whether three vertices form a non-degenerate triangle (positive area).
 /// @details Computes the squared area from the cross product of two edges and rejects values
 ///          below 1e-20, dropping zero-area triangles that would produce invalid normals.
+/// @param[in] vertices Packed vertex array.
+/// @param vertex_count Number of entries in @p vertices.
+/// @param i0 First candidate vertex index.
+/// @param i1 Second candidate vertex index.
+/// @param i2 Third candidate vertex index.
+/// @return Non-zero when all indices are in range and their positions form a finite
+///         triangle above the degeneracy threshold.
 static int gltf_preload_pod_positions_form_triangle(
     const vgfx3d_vertex_t *vertices, uint32_t vertex_count, uint32_t i0, uint32_t i1, uint32_t i2) {
     const float *p0;
@@ -959,7 +1136,15 @@ static int gltf_preload_pod_positions_form_triangle(
 }
 
 /// @brief Append a triangle's three indices if it is non-degenerate (distinct, positive-area).
-/// @return 1 if emitted, 0 if the triangle was rejected (degenerate or repeated indices).
+/// @param[in] vertices Packed vertex array used for geometric validation.
+/// @param vertex_count Number of entries in @p vertices.
+/// @param i0 First candidate vertex index.
+/// @param i1 Second candidate vertex index.
+/// @param i2 Third candidate vertex index.
+/// @param[out] indices Output index array with capacity for three additional entries.
+/// @param[in,out] index_count Number of populated output indices, advanced by three on success.
+/// @return Non-zero if emitted; zero if the triangle has repeated, out-of-range, or
+///         geometrically degenerate vertices.
 static int gltf_preload_emit_pod_triangle(const vgfx3d_vertex_t *vertices,
                                           uint32_t vertex_count,
                                           uint32_t i0,
@@ -979,6 +1164,9 @@ static int gltf_preload_emit_pod_triangle(const vgfx3d_vertex_t *vertices,
 
 /// @brief Read an index from the index accessor, or use @p element_index directly for non-indexed
 /// geometry.
+/// @param[in] view Optional index accessor view.
+/// @param element_index Logical source index element.
+/// @return Decoded accessor value, or @p element_index when @p view is `NULL`.
 static uint32_t gltf_preload_read_index_or_vertex(const gltf_accessor_view_t *view,
                                                   int32_t element_index) {
     uint32_t value = (uint32_t)element_index;
@@ -990,6 +1178,11 @@ static uint32_t gltf_preload_read_index_or_vertex(const gltf_accessor_view_t *vi
 /// @brief Compute the triangle-list index capacity needed to triangulate a primitive topology.
 /// @details mode 4 = triangles (count/3 tris), 5/6 = strip/fan (count-2 tris); each yields 3
 ///          indices per triangle. Overflow-checked. Returns 0 for unsupported topologies.
+/// @param mode glTF primitive topology mode.
+/// @param source_index_count Number of source indices or implicit vertices.
+/// @param[out] out_capacity Receives the maximum emitted triangle-list index count.
+/// @return Non-zero when the topology is supported and its capacity is representable;
+///         zero for an unsupported mode or overflow.
 static int gltf_preload_topology_index_capacity(int mode,
                                                 int32_t source_index_count,
                                                 uint32_t *out_capacity) {
@@ -1015,6 +1208,9 @@ static int gltf_preload_topology_index_capacity(int mode,
 /// @brief Write a vertex's 4 skinning joints/weights, normalizing the weights to sum to 1.
 /// @details Out-of-range joints and non-positive weights are zeroed; weights are renormalized by
 ///          their total (or all zeroed if the total is ~0).
+/// @param[out] vertex Packed vertex receiving sanitized joint indices and normalized weights.
+/// @param[in] joints Four source joint indices.
+/// @param[in] weights Four source joint weights.
 /// @return One past the highest referenced bone index (i.e. a bone-count hint), or 0 if none.
 static uint32_t gltf_preload_write_vertex_bone_weights(vgfx3d_vertex_t *vertex,
                                                        const uint32_t joints[4],
@@ -1054,6 +1250,20 @@ static uint32_t gltf_preload_write_vertex_bone_weights(vgfx3d_vertex_t *vertex,
 ///          count, skin-import diagnostics) followed by the raw vertex and index arrays, all
 ///          overflow-checked, then stores it under the mesh/primitive key for
 ///          gltf_preload_take_decoded_mesh to consume later.
+/// @param[in,out] bundle Bundle receiving the owned mesh POD dependency.
+/// @param mesh_index Zero-based source mesh index used in the dependency key.
+/// @param primitive_index Zero-based source primitive index used in the dependency key.
+/// @param flags Packed mesh attribute-presence flags.
+/// @param[in] vertices Packed vertex array.
+/// @param vertex_count Number of entries in @p vertices.
+/// @param[in] indices Triangle-list index array.
+/// @param index_count Number of entries in @p indices.
+/// @param bone_count Highest referenced bone count for the primitive.
+/// @param[in] skin_stats Optional skin truncation and out-of-range counters.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when the POD was staged or the primitive is intentionally omitted;
+///         zero on blob allocation or dependency insertion failure.
 static int gltf_preload_pack_mesh_pod(rt_gltf_preload_bundle *bundle,
                                       int mesh_index,
                                       int primitive_index,
@@ -1114,15 +1324,23 @@ static int gltf_preload_pack_mesh_pod(rt_gltf_preload_bundle *bundle,
 /// @brief One decoded morph shape staged for packing: its name, base weight, present-channel
 ///        flags, and owned per-vertex position/normal/tangent delta arrays.
 typedef struct {
+    /// Owned UTF-8 display name.
     char *name;
+    /// Sanitized default morph weight.
     float weight;
+    /// `GLTF_PRELOAD_MORPH_POD_HAS_*` channel-presence mask.
     uint32_t flags;
+    /// Owned position deltas, three floats per base vertex.
     float *pos_deltas;
+    /// Owned normal deltas, three floats per base vertex.
     float *normal_deltas;
+    /// Owned tangent deltas, three floats per base vertex.
     float *tangent_deltas;
 } gltf_preload_morph_shape_t;
 
 /// @brief Free an array of morph shapes and every owned name/delta buffer inside it.
+/// @param[in,out] shapes Owned shape array to release; `NULL` is accepted.
+/// @param shape_count Number of initialized entries in @p shapes.
 static void gltf_preload_free_morph_shapes(gltf_preload_morph_shape_t *shapes, size_t shape_count) {
     if (!shapes)
         return;
@@ -1138,6 +1356,12 @@ static void gltf_preload_free_morph_shapes(gltf_preload_morph_shape_t *shapes, s
 /// @brief Resolve a morph target's display name, falling back to "target_N".
 /// @details Reads the optional mesh `extras.targetNames[target_index]`; if absent or empty,
 ///          synthesizes a name from the index. Returns an owned string (caller frees).
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param mesh_start Inclusive byte offset of the parent mesh object.
+/// @param mesh_end Exclusive byte offset bounding the parent mesh object.
+/// @param target_index Zero-based morph target index.
+/// @return Heap-owned target name, or `NULL` if allocation fails.
 static char *gltf_preload_target_name_alloc(
     const char *json, size_t json_len, size_t mesh_start, size_t mesh_end, int target_index) {
     size_t extras_start;
@@ -1163,6 +1387,12 @@ static char *gltf_preload_target_name_alloc(
 }
 
 /// @brief Read a morph target's default weight from the mesh "weights" array (0.0 if absent).
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param mesh_start Inclusive byte offset of the parent mesh object.
+/// @param mesh_end Exclusive byte offset bounding the parent mesh object.
+/// @param target_index Zero-based morph target index.
+/// @return Finite default weight clamped to [-1, 1], or zero when absent or invalid.
 static double gltf_preload_target_weight(
     const char *json, size_t json_len, size_t mesh_start, size_t mesh_end, int target_index) {
     size_t weights_start;
@@ -1186,6 +1416,11 @@ static double gltf_preload_target_weight(
 /// @brief Copy one morph channel (vec3 deltas) from an accessor view into an owned float array.
 /// @details Allocates vertex_count*3 floats, samples up to the accessor's count (zero-padding the
 ///          rest), and sanitizes non-finite components to 0. NULL view yields a NULL out (no-op).
+/// @param[in] view Optional resolved vec3 delta accessor.
+/// @param vertex_count Number of base-mesh vertices to allocate.
+/// @param[out] out_deltas Receives the owned, zero-padded delta array.
+/// @return Non-zero on success or when no view is present; zero on size overflow or
+///         allocation failure.
 static int gltf_preload_copy_morph_channel(const gltf_accessor_view_t *view,
                                            int32_t vertex_count,
                                            float **out_deltas) {
@@ -1216,6 +1451,16 @@ static int gltf_preload_copy_morph_channel(const gltf_accessor_view_t *view,
 /// @details Lays out a header, fixed-size per-shape records, a packed names region, and a deltas
 ///          payload (position/normal/tangent channels per the flags), all overflow-checked, then
 ///          stores it under the morph key for gltf_preload_take_decoded_morph to consume later.
+/// @param[in,out] bundle Bundle receiving the owned morph POD dependency.
+/// @param mesh_index Zero-based source mesh index used in the dependency key.
+/// @param primitive_index Zero-based primitive index used in the dependency key.
+/// @param[in] shapes Decoded morph-shape array.
+/// @param shape_count Number of entries in @p shapes.
+/// @param vertex_count Number of base vertices represented by every channel.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when the POD is staged or there is nothing to pack; zero on
+///         invalid representable size, allocation, or dependency insertion failure.
 static int gltf_preload_pack_morph_pod(rt_gltf_preload_bundle *bundle,
                                        int mesh_index,
                                        int primitive_index,
@@ -1346,8 +1591,26 @@ static int gltf_preload_pack_morph_pod(rt_gltf_preload_bundle *bundle,
 ///          and recording each target's name and morph weight), then hands the collected shapes
 ///          to gltf_preload_pack_morph_pod so gltf_preload_take_decoded_morph can rehydrate them
 ///          at load time. A primitive without a "targets" array is a successful no-op.
-/// @return 1 on success or when there is nothing to stage; 0 on allocation/staging failure
-///         (with @p error populated).
+/// @param[in,out] bundle Bundle receiving the packed morph dependency.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param mesh_index Zero-based source mesh index.
+/// @param primitive_index Zero-based primitive index within the source mesh.
+/// @param mesh_start Inclusive byte offset of the parent mesh object.
+/// @param mesh_end Exclusive byte offset bounding the parent mesh object.
+/// @param prim_start Inclusive byte offset of the primitive object.
+/// @param prim_end Exclusive byte offset bounding the primitive object.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @param[in] accessors Parsed accessor-reference table.
+/// @param accessor_count Number of entries in @p accessors.
+/// @param vertex_count Number of base vertices represented by each target.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero on success or when there is nothing to stage; zero on allocation
+///         or dependency-staging failure.
 static int gltf_preload_stage_morph_targets(rt_gltf_preload_bundle *bundle,
                                             const char *json,
                                             size_t json_len,
@@ -1509,51 +1772,77 @@ done:
     return ok;
 }
 
-/// @brief Decode one mesh primitive into interleaved vertices + indices and stage it as a mesh POD
-/// dependency.
-/// @details Reads the primitive's "attributes" (POSITION required; NORMAL, TEXCOORD_0/1, COLOR_0,
-///          TANGENT, JOINTS_0/1, WEIGHTS_0/1 optional) and "mode" (4=triangle list, 5=strip,
-///          6=fan), resolves each accessor view, and assembles a vgfx3d_vertex_t array. Up to
-///          eight bone influences (JOINTS_0 + JOINTS_1) are merged down to the top four and
-///          renormalized, with out-of-range bone indices dropped. The source topology is
-///          triangulated into a 32-bit index buffer, channel-presence flags are recorded, and the
-///          result is packed via gltf_preload_pack_mesh_pod and then
-///          gltf_preload_stage_morph_targets for any blend shapes. Non-triangle modes and
-///          position-less primitives are skipped.
-/// @return 1 on success or skip; 0 on allocation/staging failure (with @p error populated).
 /// @brief Resolved POD-staging state for one glTF mesh primitive: every attribute's
 ///        accessor view + presence flag, plus derived vertex/index counts and topology.
 typedef struct {
+    /// glTF topology mode: triangle list, strip, or fan.
     int mode;
+    /// Required position accessor.
     gltf_accessor_view_t pos_view;
+    /// Optional normal accessor.
     gltf_accessor_view_t norm_view;
+    /// Optional primary texture-coordinate accessor.
     gltf_accessor_view_t uv0_view;
+    /// Optional secondary texture-coordinate accessor.
     gltf_accessor_view_t uv1_view;
+    /// Optional color accessor.
     gltf_accessor_view_t color_view;
+    /// Optional tangent accessor.
     gltf_accessor_view_t tangent_view;
+    /// Optional first joint-index accessor.
     gltf_accessor_view_t joints_view;
+    /// Optional first joint-weight accessor.
     gltf_accessor_view_t weights_view;
+    /// Optional second joint-index accessor.
     gltf_accessor_view_t joints1_view;
+    /// Optional second joint-weight accessor.
     gltf_accessor_view_t weights1_view;
+    /// Optional primitive index accessor.
     gltf_accessor_view_t idx_view;
+    /// Whether @ref norm_view covers all vertices with a usable format.
     int has_normals;
+    /// Whether @ref uv0_view covers all vertices with a usable format.
     int has_uv0;
+    /// Whether @ref uv1_view covers all vertices with a usable format.
     int has_uv1;
+    /// Whether @ref color_view covers all vertices with a usable format.
     int has_colors;
+    /// Whether @ref tangent_view covers all vertices with a usable format.
     int has_tangents;
+    /// Whether the first joint-index stream is usable.
     int has_joints;
+    /// Whether the first joint-weight stream is usable.
     int has_weights;
+    /// Whether the second joint-index stream is usable.
     int has_joints1;
+    /// Whether the second joint-weight stream is usable.
     int has_weights1;
+    /// Whether at least one complete joint/weight pair is present.
     int has_skinning_attrs;
+    /// Whether a supported scalar index accessor is present.
     int has_indices;
+    /// Number of source position elements.
     int32_t vertex_count_i;
+    /// Number of explicit indices or implicit vertex indices to triangulate.
     int32_t source_index_count;
+    /// Maximum number of triangle-list indices required after topology expansion.
     uint32_t index_capacity_count;
 } gltf_primitive_attribs_t;
 
 /// @brief Resolve every attribute/index accessor view of a primitive into @p out.
-/// @return 1 when the primitive is stageable, 0 to skip it (unsupported mode/attrs/topology).
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param prim_start Inclusive byte offset of the primitive object.
+/// @param prim_end Exclusive byte offset bounding the primitive object.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @param[in] accessors Parsed accessor-reference table.
+/// @param accessor_count Number of entries in @p accessors.
+/// @param[out] out Resolved primitive attribute state.
+/// @return Non-zero when the primitive has supported topology, valid positions, paired
+///         skin streams, and a representable index capacity; zero to skip it.
 static int gltf_preload_resolve_primitive_attribs(const char *json,
                                                   size_t json_len,
                                                   size_t prim_start,
@@ -1745,7 +2034,14 @@ static int gltf_preload_resolve_primitive_attribs(const char *json,
 ///          joint index past VGFX3D_MAX_BONES) are counted into @p skin_stats_io so the
 ///          committing thread can surface load warnings — the decode itself runs on a
 ///          preload worker where the thread-local warning store is not the loader's.
-/// @return 1 on success, 0 to skip the primitive (non-finite source data). Sets @p out_bone_count.
+/// @param[in] a Resolved primitive accessor state.
+/// @param[out] vertices Zero-initialized packed vertex array with one entry per position.
+/// @param[out] out_bone_count Receives one past the highest retained joint index.
+/// @param[out] out_valid_normals Optional flag reporting whether all authored normals were valid.
+/// @param[out] out_valid_tangents Optional flag reporting whether all authored tangents were valid.
+/// @param[in,out] skin_stats_io Optional counters updated for truncated or out-of-range influences.
+/// @return Non-zero on success; zero to skip the primitive when required source data is
+///         non-finite or the arguments are invalid.
 static int gltf_preload_build_primitive_vertices(const gltf_primitive_attribs_t *a,
                                                  vgfx3d_vertex_t *vertices,
                                                  uint32_t *out_bone_count,
@@ -1888,6 +2184,10 @@ static int gltf_preload_build_primitive_vertices(const gltf_primitive_attribs_t 
 }
 
 /// @brief Triangulate the primitive's topology (modes 4/5/6) into @p indices.
+/// @param[in] a Resolved primitive topology and optional index accessor.
+/// @param[in] vertices Packed vertices used to reject geometrically degenerate triangles.
+/// @param[out] indices Triangle-list output array sized to the resolved index capacity.
+/// @param[out] out_index_count Receives the number of emitted indices.
 static void gltf_preload_triangulate_primitive(const gltf_primitive_attribs_t *a,
                                                vgfx3d_vertex_t *vertices,
                                                uint32_t *indices,
@@ -1936,6 +2236,23 @@ static void gltf_preload_triangulate_primitive(const gltf_primitive_attribs_t *a
 ///   and indices from the glTF JSON and buffer views, then record the built geometry into
 ///   @p bundle keyed by (@p mesh_index, @p primitive_index) for later mesh assembly. Writes a
 ///   message into @p error (capacity @p error_cap) on a fatal failure.
+/// @param[in,out] bundle Bundle receiving packed mesh and morph dependencies.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param mesh_index Zero-based source mesh index.
+/// @param primitive_index Zero-based primitive index within the source mesh.
+/// @param mesh_start Inclusive byte offset of the parent mesh object.
+/// @param mesh_end Exclusive byte offset bounding the parent mesh object.
+/// @param prim_start Inclusive byte offset of the primitive object.
+/// @param prim_end Exclusive byte offset bounding the primitive object.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @param[in] accessors Parsed accessor-reference table.
+/// @param accessor_count Number of entries in @p accessors.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
 /// @return Non-zero to continue staging (primitive staged or harmlessly skipped); 0 on a
 ///   fatal error such as an allocation failure.
 static int gltf_preload_stage_mesh_primitive(rt_gltf_preload_bundle *bundle,
@@ -2061,6 +2378,17 @@ done:
 ///          topology, normalizes skinning, and emits "VGMP"/"VGMT" dependencies so the main-thread
 ///          load can build meshes without re-parsing. Sets @p error and returns 0 on a staging
 ///          failure.
+/// @param[in,out] bundle Bundle receiving packed primitive dependencies.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when all primitives were staged or harmlessly skipped; zero on
+///         accessor-table, allocation, or dependency-staging failure.
 static int gltf_preload_stage_meshes(rt_gltf_preload_bundle *bundle,
                                      const char *json,
                                      size_t json_len,
@@ -2154,6 +2482,16 @@ static int gltf_preload_stage_meshes(rt_gltf_preload_bundle *bundle,
 }
 
 /// @brief Stage an inline image's bytes under its image-index key (decoding to RGBA when possible).
+/// @param[in,out] bundle Bundle receiving the owned image dependency.
+/// @param image_index Zero-based source image index used in the dependency key.
+/// @param[in] mime_type Optional declared image MIME type.
+/// @param[in,out] data Owned image bytes transferred to the bundle or released.
+/// @param data_len Number of bytes in @p data.
+/// @param required Non-zero when empty or undecodable supported data is fatal.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when the image was staged or may be omitted; zero on required-image
+///         or dependency-staging failure.
 static int gltf_preload_stage_image_bytes(rt_gltf_preload_bundle *bundle,
                                           int image_index,
                                           const char *mime_type,
@@ -2179,6 +2517,10 @@ static int gltf_preload_stage_image_bytes(rt_gltf_preload_bundle *bundle,
 /// @brief Mark which image sources are actually referenced by a texture, in the @p required bitmap.
 /// @details Scans the top-level "textures" array and sets required[source] for each texture's image
 ///          index, so only images a material can use are treated as mandatory to stage.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param[in,out] required Image-index bitmap updated for referenced sources.
+/// @param required_count Number of entries in @p required.
 static void gltf_preload_mark_required_images(const char *json,
                                               size_t json_len,
                                               uint8_t *required,
@@ -2215,6 +2557,13 @@ static void gltf_preload_mark_required_images(const char *json,
     }
 }
 
+/// @brief Count object-valued elements within one bounded JSON array.
+/// @param[in] json Complete JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param array_start Inclusive byte offset of the array's opening bracket.
+/// @param array_end Exclusive byte offset bounding the array.
+/// @return Number of well-formed object entries encountered before the array ends or
+///         malformed syntax prevents further scanning.
 static int gltf_json_count_objects_in_array(const char *json,
                                             size_t json_len,
                                             size_t array_start,
@@ -2243,6 +2592,17 @@ static int gltf_json_count_objects_in_array(const char *json,
     return count;
 }
 
+/// @brief Allocate and populate the texture-referenced image bitmap for an images array.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param array_start Inclusive byte offset of the `images` array.
+/// @param array_end Exclusive byte offset bounding the `images` array.
+/// @param[out] out_image_count Optional destination for the counted image objects.
+/// @param[out] out_required Optional destination for the owned required-image bitmap.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when the bitmap is prepared or no image objects exist; zero on
+///         untrusted-count rejection or allocation failure.
 static int gltf_preload_prepare_required_images(const char *json,
                                                 size_t json_len,
                                                 size_t array_start,
@@ -2276,10 +2636,13 @@ static int gltf_preload_prepare_required_images(const char *json,
     return 1;
 }
 
-/// @brief Verify that every texture-referenced data-URI image decodes to a supported format.
-/// @details Marks required images (via gltf_preload_mark_required_images), then checks each
-///          referenced inline data-URI image is a decodable format, rejecting the model otherwise.
-/// @return 1 if all required inline images are valid, 0 if any is unsupported/corrupt.
+/// @brief Verify supported data-URI payloads for every texture-referenced image.
+/// @details Marks required images (via gltf_preload_mark_required_images), then decodes each
+///          referenced inline KTX2 or supported raster image to reject corrupt payloads early.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @return Non-zero when every supported required inline payload is valid; zero when
+///         allocation fails or a supported payload is corrupt.
 static int gltf_validate_required_data_uri_images(const char *json, size_t json_len) {
     size_t array_start;
     size_t array_end;
@@ -2368,6 +2731,16 @@ static int gltf_validate_required_data_uri_images(const char *json, size_t json_
     return 1;
 }
 
+/// @brief Decode and stage one image stored in a data URI.
+/// @param[in,out] bundle Bundle receiving the owned image dependency.
+/// @param image_index Zero-based source image index.
+/// @param[in] mime_type Optional MIME type declared by the image object.
+/// @param[in] uri Image data URI.
+/// @param required_image Non-zero when a malformed supported image is fatal.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when the image was staged or may be skipped; zero when required
+///         image data is invalid or staging fails.
 static int gltf_preload_stage_data_uri_image(rt_gltf_preload_bundle *bundle,
                                              int image_index,
                                              const char *mime_type,
@@ -2395,6 +2768,17 @@ static int gltf_preload_stage_data_uri_image(rt_gltf_preload_bundle *bundle,
     return 1;
 }
 
+/// @brief Dispatch an image URI to inline-data or external-file staging.
+/// @param[in,out] bundle Bundle receiving the image dependency.
+/// @param[in] model_path Root asset path used for external URI resolution.
+/// @param image_index Zero-based source image index.
+/// @param[in] mime_type Optional MIME type declared by the image object.
+/// @param[in] uri Data or external image URI.
+/// @param load_assets Non-zero to use asset-system loading for external images.
+/// @param required_image Non-zero when failure to stage a supported image is fatal.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Result of the selected image-staging path.
 static int gltf_preload_stage_image_uri(rt_gltf_preload_bundle *bundle,
                                         const char *model_path,
                                         int image_index,
@@ -2411,6 +2795,23 @@ static int gltf_preload_stage_image_uri(rt_gltf_preload_bundle *bundle,
         bundle, model_path, uri, load_assets, required_image, error, error_cap);
 }
 
+/// @brief Copy and stage an image embedded in a glTF buffer view.
+/// @param[in,out] bundle Bundle receiving the owned image dependency.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param image_index Zero-based source image index.
+/// @param object_start Inclusive byte offset of the image object.
+/// @param object_end Exclusive byte offset bounding the image object.
+/// @param[in] mime_type Optional declared image MIME type.
+/// @param required_image Non-zero when an absent, empty, or invalid view is fatal.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when the image was staged or may be omitted; zero on required-image,
+///         allocation, or dependency-staging failure.
 static int gltf_preload_stage_buffer_view_image(rt_gltf_preload_bundle *bundle,
                                                 const char *json,
                                                 size_t json_len,
@@ -2466,6 +2867,23 @@ static int gltf_preload_stage_buffer_view_image(rt_gltf_preload_bundle *bundle,
     return 1;
 }
 
+/// @brief Stage one parsed image object from its URI or buffer-view representation.
+/// @param[in,out] bundle Bundle receiving the image dependency.
+/// @param[in] model_path Root asset path used for relative URI resolution.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param image_index Zero-based source image index.
+/// @param object_start Inclusive byte offset of the image object.
+/// @param object_end Exclusive byte offset bounding the image object.
+/// @param load_assets Non-zero to use asset-system loading for external images.
+/// @param required_image Non-zero when staging failure is fatal.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Result of URI or buffer-view image staging.
 static int gltf_preload_stage_image_object(rt_gltf_preload_bundle *bundle,
                                            const char *model_path,
                                            const char *json,
@@ -2520,6 +2938,19 @@ static int gltf_preload_stage_image_object(rt_gltf_preload_bundle *bundle,
 /// @details Walks the "images" array, marking texture-referenced images required, and stages each
 ///          image's bytes (decoding to RGBA when possible) under its image key. A required image
 ///          that cannot be staged sets @p error and fails; optional images are skipped on error.
+/// @param[in,out] bundle Bundle receiving all staged image dependencies.
+/// @param[in] model_path Root asset path used for relative URI resolution.
+/// @param[in] json Complete glTF JSON text.
+/// @param json_len Length of @p json in bytes.
+/// @param load_assets Non-zero to use asset-system loading for external images.
+/// @param[in] buffers Staged buffer-reference table.
+/// @param buffer_count Number of entries in @p buffers.
+/// @param[in] views Parsed buffer-view-reference table.
+/// @param view_count Number of entries in @p views.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when every required image was staged and optional failures were
+///         skipped; zero on invalid image enumeration or staging failure.
 static int gltf_preload_stage_images(rt_gltf_preload_bundle *bundle,
                                      const char *model_path,
                                      const char *json,
@@ -2593,6 +3024,12 @@ static int gltf_preload_stage_images(rt_gltf_preload_bundle *bundle,
     return 1;
 }
 
+/// @brief Allocate a preload bundle and attach the caller-owned root asset bytes.
+/// @param[in,out] root_data Root glTF or GLB allocation whose ownership transfers on success.
+/// @param root_size Size of @p root_data in bytes.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Zero-initialized bundle owning @p root_data, or `NULL` on allocation failure.
 static rt_gltf_preload_bundle *gltf_preload_bundle_alloc_with_root(uint8_t *root_data,
                                                                    size_t root_size,
                                                                    char *error,
@@ -2607,6 +3044,18 @@ static rt_gltf_preload_bundle *gltf_preload_bundle_alloc_with_root(uint8_t *root
     return bundle;
 }
 
+/// @brief Run buffer, accessor, mesh, morph, and image staging for validated glTF JSON.
+/// @details Temporary buffer and buffer-view reference tables are always released before
+///          returning; successfully inserted dependencies remain owned by @p bundle.
+/// @param[in,out] bundle Bundle receiving all staged dependencies.
+/// @param[in] model_path Root asset path used for relative URI resolution.
+/// @param[in] json Validated, mutable NUL-terminated glTF JSON text.
+/// @param json_len Length of @p json excluding the terminator.
+/// @param load_assets Non-zero to use asset-system loading for external resources.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Non-zero when every staging phase succeeds; zero on validation, allocation,
+///         or dependency-staging failure.
 static int gltf_preload_stage_bundle_json(rt_gltf_preload_bundle *bundle,
                                           const char *model_path,
                                           char *json,
@@ -2675,7 +3124,14 @@ static int gltf_preload_stage_bundle_json(rt_gltf_preload_bundle *bundle,
 ///          rt_gltf_load_preloaded_bundle call can build runtime objects on the main thread with no
 ///          file I/O or re-parsing. Takes ownership of @p root_data. On failure writes @p error,
 ///          frees partial work, and returns NULL.
-/// @return A populated preload bundle (caller frees via rt_gltf_preload_bundle_free), or NULL.
+/// @param[in] model_path Root asset path used to resolve external dependencies.
+/// @param[in,out] root_data Owned raw glTF or GLB bytes; consumed on every return path.
+/// @param root_size Size of @p root_data in bytes.
+/// @param load_assets Non-zero to resolve external resources through the asset system.
+/// @param[out] error Optional caller-provided error buffer, cleared before processing.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Populated preload bundle owned by the caller, or `NULL` on invalid input,
+///         malformed content, allocation failure, or dependency-staging failure.
 rt_gltf_preload_bundle *rt_gltf_preload_bundle_create_cstr(const char *model_path,
                                                            uint8_t *root_data,
                                                            size_t root_size,
@@ -2730,8 +3186,15 @@ rt_gltf_preload_bundle *rt_gltf_preload_bundle_create_cstr(const char *model_pat
 
 /// @brief Build an off-main-thread preload bundle from a runtime string path.
 /// @details Thin compatibility wrapper around `rt_gltf_preload_bundle_create_cstr`; callers that
-/// run
-///          on worker threads should prefer the C-string variant with an already-snapshotted path.
+///          run on worker threads should prefer the C-string variant with an already-snapshotted
+///          path.
+/// @param path Runtime string path used to resolve external dependencies.
+/// @param[in,out] root_data Owned raw glTF or GLB bytes; consumed by the delegated loader.
+/// @param root_size Size of @p root_data in bytes.
+/// @param load_assets Non-zero to resolve external resources through the asset system.
+/// @param[out] error Optional caller-provided error buffer.
+/// @param error_cap Capacity of @p error in bytes.
+/// @return Resulting caller-owned preload bundle, or `NULL` on failure.
 rt_gltf_preload_bundle *rt_gltf_preload_bundle_create(rt_string path,
                                                       uint8_t *root_data,
                                                       size_t root_size,
@@ -2743,7 +3206,11 @@ rt_gltf_preload_bundle *rt_gltf_preload_bundle_create(rt_string path,
 }
 
 /// @brief Synthesize a name for an embedded resource (e.g. `inline-image-3.png`).
-/// Used by the asset system to give meaningful names to inline base64 buffers.
+/// @details Used by the asset system to give meaningful names to inline base64 buffers.
+/// @param[in] mime_type Optional MIME type used to choose a recognized image extension.
+/// @param[in] fallback_ext Fallback extension, or `NULL` to use `.bin`.
+/// @param[out] out Destination character buffer.
+/// @param out_cap Capacity of @p out, including the terminator.
 static void gltf_build_embedded_name(const char *mime_type,
                                      const char *fallback_ext,
                                      char *out,

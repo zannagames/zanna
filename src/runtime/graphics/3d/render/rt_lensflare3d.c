@@ -30,6 +30,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements occlusion-aware LensFlare3D ghost-chain rendering.
+/// @details Flare objects retain a light and prebuilt radial sprites, project
+///   the light into screen space, estimate visibility from CPU or asynchronous
+///   GPU depth probes, smooth it temporally, and queue scaled overlay ghosts.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_lensflare3d.h"
@@ -72,11 +78,15 @@ typedef struct {
     int64_t smoothed_frame_serial;
 } rt_lensflare3d;
 
+/// @brief Resolve a validated LensFlare3D payload.
+/// @param obj Candidate runtime object.
+/// @return Borrowed flare implementation, or `NULL` for an invalid handle.
 static rt_lensflare3d *lensflare3d_checked(void *obj) {
     return (rt_lensflare3d *)rt_g3d_checked_or_null(obj, RT_G3D_LENSFLARE3D_CLASS_ID);
 }
 
 /// @brief GC finalizer — release the bound light and every ghost sprite.
+/// @param obj LensFlare3D payload being finalized; `NULL` is ignored.
 static void lensflare3d_finalize(void *obj) {
     rt_lensflare3d *lf = (rt_lensflare3d *)obj;
     if (!lf)
@@ -96,6 +106,9 @@ static void lensflare3d_finalize(void *obj) {
 }
 
 /// @brief Create a lens flare bound to @p light (retained).
+/// @param light Live Light3D whose placement and enabled state drive the flare.
+/// @return New GC-managed empty flare retaining @p light, or `NULL` after
+///   reporting invalid input or allocation failure.
 void *rt_lensflare3d_new(void *light) {
     if (!light || !rt_g3d_has_class(light, RT_G3D_LIGHT3D_CLASS_ID)) {
         rt_trap("LensFlare3D.New: flare must bind a Light3D");
@@ -118,6 +131,11 @@ void *rt_lensflare3d_new(void *light) {
 }
 
 /// @brief Build a 32x32 radial-falloff disc tinted by (r,g,b): the classic ghost.
+/// @param r Normalized red tint.
+/// @param g Normalized green tint.
+/// @param b Normalized blue tint.
+/// @return Newly created GC-managed Pixels handle, possibly lacking writable
+///   backing storage if Pixels construction could not fully initialize, or `NULL`.
 static void *lensflare3d_make_ghost(double r, double g, double b) {
     void *pixels = rt_pixels_new(LENSFLARE3D_GHOST_SIZE, LENSFLARE3D_GHOST_SIZE);
     rt_pixels_impl *pv = rt_pixels_checked_impl_or_null(pixels);
@@ -147,6 +165,14 @@ static void *lensflare3d_make_ghost(double r, double g, double b) {
 }
 
 /// @brief Add a ghost element along the light->center axis.
+/// @details Stores at most sixteen elements. The axis offset is clamped to
+///   `[-1, 2]`, invalid size falls back to 32 pixels and is capped at 1024,
+///   and the packed RGB tint is baked into a newly owned radial sprite.
+/// @param obj LensFlare3D receiver; invalid handles are ignored.
+/// @param axis_offset Position along the projected light-to-screen-center axis.
+/// @param size Base square sprite dimension in output pixels.
+/// @param color_rgb Packed `0xRRGGBB` tint.
+/// @param rotation Reserved for API stability; circular ghosts ignore it.
 void rt_lensflare3d_add_element(
     void *obj, double axis_offset, double size, int64_t color_rgb, double rotation) {
     (void)rotation; /* circular ghosts are rotation-invariant; kept for API stability */
@@ -182,6 +208,14 @@ void rt_lensflare3d_add_element(
 ///   GPU backends answer through the async scene-depth-probe hooks: probes queued this
 ///   frame are read back by the backend without stalling, and reads return the previous
 ///   completed frame's depth — the caller's temporal smoothing absorbs that latency.
+/// @param c Canvas supplying depth storage or backend probe hooks.
+/// @param px Projected light X position in output pixels.
+/// @param py Projected light Y position in output pixels.
+/// @param light_ndc_z Light depth in active NDC convention.
+/// @param w Positive output width used to convert GPU probes to NDC.
+/// @param h Positive output height used to convert GPU probes to NDC.
+/// @return Fraction of valid probes considered unoccluded in `[0, 1]`; returns
+///   one when no usable depth source or probe sample exists.
 static float lensflare3d_visibility(
     rt_canvas3d *c, float px, float py, float light_ndc_z, int32_t w, int32_t h) {
     const float *depth = NULL;
@@ -247,6 +281,12 @@ static float lensflare3d_visibility(
 }
 
 /// @brief Draw the flare ghosts into the canvas overlay (call after End).
+/// @details Projects positional lights directly and directional lights as a
+///   distant reverse-direction sun, rejects disabled, behind-camera, and far
+///   off-screen sources, smooths sampled visibility once per frame, then places
+///   every ghost along the light-to-center axis. Nearly invisible flares queue nothing.
+/// @param canvas Canvas3D receiver whose completed scene state and overlay queue are used.
+/// @param flare LensFlare3D receiver borrowed for projection and sprite submission.
 void rt_canvas3d_draw_lens_flare(void *canvas, void *flare) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     rt_lensflare3d *lf = lensflare3d_checked(flare);

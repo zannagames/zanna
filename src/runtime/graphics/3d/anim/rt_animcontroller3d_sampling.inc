@@ -3,9 +3,27 @@
 // File: src/runtime/graphics/3d/anim/rt_animcontroller3d_sampling.inc  (#included from rt_animcontroller3d.c; not a standalone translation unit)
 // Purpose: AnimController3D pose sampling, palette compute, and blend evaluation
 //===----------------------------------------------------------------------===//
-/// @brief Compute the world-space matrix of @p bone_index for the given state at @p time
+/// @file
+/// @brief Implements AnimController3D pose sampling and layer compositing.
+/// @details This private fragment is included by `rt_animcontroller3d.c`. It
+///          samples individual states for root-motion wrap compensation,
+///          evaluates blend-tree/base, overlay, IK, and bone-LOD stages into
+///          model-space globals and skinning palettes, and provides the
+///          double-precision quaternion helpers used for root-motion deltas.
+
+/// @brief Compute the model-space matrix of @p bone_index for the given state at @p time
 ///   by sampling every bone's local transform and walking the parent chain; returns 0
 ///   on invalid controller/state/bone, else 1 with the result in @p out_global.
+/// @details Reuses a controller-owned locals-plus-globals scratch allocation,
+///          growing it to the current bone count on demand.
+/// @param[in,out] controller Controller providing the skeleton, state table,
+///                           and reusable sample buffer.
+/// @param[in] state_index Registered state-table index.
+/// @param[in] time Clip time in seconds.
+/// @param[in] bone_index Skeleton bone whose global matrix to copy.
+/// @param[out] out_global Writable row-major matrix of 16 floats.
+/// @return `1` when the matrix was sampled; `0` for invalid input, missing
+///         animation, or scratch-allocation failure.
 static int controller_sample_state_global_matrix(rt_anim_controller3d *controller,
                                                  int32_t state_index,
                                                  float time,
@@ -53,16 +71,22 @@ static int controller_sample_state_global_matrix(rt_anim_controller3d *controlle
 
 /// @brief Composite the base layer + weighted overlay layers into the final bone palette.
 /// @details Two-pass blend:
-///          1. Base layer (layer 0) is copied wholesale into `final_palette`.
-///             If the base has no animation, identity matrices are used so
-///             the skeleton renders in its rest pose.
+///          1. A compatible BlendTree3D, the base player's local transforms,
+///             or skeleton bind locals seed the working local-pose buffer in
+///             that precedence order.
 ///          2. For each overlay layer (1..MAX-1) with weight > 0, blend the
-///             overlay's palette into `final_palette` at the layer's weight,
+///             overlay's locals into the working pose at the layer's weight,
 ///             but only on bones whose `mask_bits` flag is set. The blend
 ///             decomposes each matrix to TRS, lerps translation/scale, and
 ///             slerps rotation before recomposition.
-///          Weight is clamped to `[0, 1]`. Layers with empty masks contribute
-///          nothing.
+///          Replace overlays interpolate toward their pose; additive overlays
+///          apply a weighted bind-pose-relative delta. Globals are rebuilt
+///          after each contributing overlay, then IK is applied. Bone-count
+///          LOD finally restores distal bind locals and recomputes globals
+///          before every global is multiplied by inverse bind. Layers with
+///          empty masks or negligible weight contribute nothing.
+/// @param[in,out] controller Controller whose pose sources, masks, scratch,
+///                           globals, and palette are evaluated.
 static void controller_compute_final_palette(rt_anim_controller3d *controller) {
     int32_t bone_count;
     int32_t state_count;
@@ -208,6 +232,11 @@ static void controller_compute_final_palette(rt_anim_controller3d *controller) {
 /// @brief Read the translation column from the controller's final global pose.
 /// @details Used by root-motion delta accumulation. Out-pointers are zeroed on failure so
 ///          callers can safely subtract before/after samples.
+/// @param[in] controller Controller whose model-space globals to inspect.
+/// @param[in] bone_index Zero-based skeleton bone index.
+/// @param[out] x Writable X translation.
+/// @param[out] y Writable Y translation.
+/// @param[out] z Writable Z translation.
 static void controller_get_final_translation(
     const rt_anim_controller3d *controller, int32_t bone_index, double *x, double *y, double *z) {
     const float *m;
@@ -228,6 +257,7 @@ static void controller_get_final_translation(
 }
 
 /// @brief Set a quaternion to the identity rotation `(0, 0, 0, 1)` (xyzw).
+/// @param[out] out Writable array of at least four doubles; `NULL` is ignored.
 static void controller_quat_identity(double *out) {
     if (!out)
         return;
@@ -242,6 +272,8 @@ static void controller_quat_identity(double *out) {
 ///          length below 1e-20) to avoid `1/0` from the inverse-length
 ///          division. Critical because subsequent quaternion multiplications
 ///          assume unit operands.
+/// @param[in,out] q Writable array of at least four doubles; becomes identity
+///                  for non-finite or near-zero length.
 static void controller_quat_normalize(double *q) {
     double len_sq;
     double inv_len;
@@ -269,6 +301,16 @@ static void controller_quat_normalize(double *q) {
 ///          branch guards `s` and falls back to the identity quaternion to avoid
 ///          dividing by ~0 and emitting a garbage-direction rotation. Output
 ///          quaternion is normalised before return.
+/// @param[in] m00 Row-zero, column-zero basis lane.
+/// @param[in] m01 Row-zero, column-one basis lane.
+/// @param[in] m02 Row-zero, column-two basis lane.
+/// @param[in] m10 Row-one, column-zero basis lane.
+/// @param[in] m11 Row-one, column-one basis lane.
+/// @param[in] m12 Row-one, column-two basis lane.
+/// @param[in] m20 Row-two, column-zero basis lane.
+/// @param[in] m21 Row-two, column-one basis lane.
+/// @param[in] m22 Row-two, column-two basis lane.
+/// @param[out] out Writable normalized quaternion in `(x,y,z,w)` order.
 static void controller_quat_from_matrix_rows(double m00,
                                              double m01,
                                              double m02,
@@ -339,6 +381,10 @@ static void controller_quat_from_matrix_rows(double m00,
 ///          divides each column out by its scale to recover an orthonormal
 ///          rotation matrix, then converts via Shepperd's method. Falls
 ///          back to identity when any axis scale is degenerate (< 1e-8).
+/// @param[in] controller Controller whose model-space globals to inspect.
+/// @param[in] bone_index Zero-based skeleton bone index.
+/// @param[out] out_quat Writable four-double quaternion initialized to
+///                      identity before controller/index validation.
 static void controller_get_final_rotation(const rt_anim_controller3d *controller,
                                           int32_t bone_index,
                                           double *out_quat) {
@@ -384,6 +430,8 @@ static void controller_get_final_rotation(const rt_anim_controller3d *controller
 /// @details For a unit quaternion, the conjugate equals the inverse. Used
 ///          here to invert the "before" rotation when computing the
 ///          per-frame rotation delta.
+/// @param[in] q Borrowed four-double quaternion.
+/// @param[out] out Writable four-double conjugate; may alias @p q.
 static void controller_quat_conjugate(const double *q, double *out) {
     if (!q || !out)
         return;
@@ -398,6 +446,9 @@ static void controller_quat_conjugate(const double *q, double *out) {
 ///          to absorb the floating-point drift that accumulates as
 ///          quaternion multiplications are chained over many frames of
 ///          root-motion accumulation.
+/// @param[in] a Borrowed left quaternion operand.
+/// @param[in] b Borrowed right quaternion operand.
+/// @param[out] out Writable normalized product; must not alias either input.
 static void controller_quat_mul(const double *a, const double *b, double *out) {
     double x;
     double y;
@@ -417,6 +468,9 @@ static void controller_quat_mul(const double *a, const double *b, double *out) {
 }
 
 /// @brief Return @p value when finite, else @p fallback (double scalar sanitizer).
+/// @param[in] value Candidate double value.
+/// @param[in] fallback Replacement for NaN or infinity.
+/// @return @p value when finite; otherwise @p fallback.
 static double controller_finite_double_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }

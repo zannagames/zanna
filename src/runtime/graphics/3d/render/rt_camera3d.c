@@ -18,6 +18,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements sanitized perspective/orthographic cameras and screen-space transforms.
+///
+/// Camera state uses row-major double-precision view and projection matrices, with guarded
+/// constructors, FPS/orbit/follow controls, deterministic shake, render-aspect overrides,
+/// world-to-screen projection, and cached inverse view-projection picking rays.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -40,15 +47,44 @@
 #define CAMERA3D_DAMPING_EXP_MAX 60.0
 #define CAMERA3D_MAX_FAR_NEAR_RATIO 10000000.0
 
+/// @brief Allocates a runtime object payload with a graphics class identifier.
+/// @param class_id Runtime class identifier.
+/// @param byte_size Positive payload size in bytes.
+/// @return Owned object handle, or null on allocation failure.
 extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
 #include "rt_trap.h"
 
 /* Access existing Vec3 and Mat4 public API */
+/// @brief Allocates a runtime `Vec3`.
+/// @param x Vector x component.
+/// @param y Vector y component.
+/// @param z Vector z component.
+/// @return Owned vector handle, or null on allocation failure.
 extern void *rt_vec3_new(double x, double y, double z);
+
+/// @brief Reads a borrowed `Vec3` x component.
+/// @param v Borrowed vector handle.
+/// @return Stored x component.
 extern double rt_vec3_x(void *v);
+
+/// @brief Reads a borrowed `Vec3` y component.
+/// @param v Borrowed vector handle.
+/// @return Stored y component.
 extern double rt_vec3_y(void *v);
+
+/// @brief Reads a borrowed `Vec3` z component.
+/// @param v Borrowed vector handle.
+/// @return Stored z component.
 extern double rt_vec3_z(void *v);
 
+/// @brief Builds an OpenGL-style orthographic projection matrix.
+/// @param[out] m Writable 16-element matrix.
+/// @param left Left view-volume coordinate.
+/// @param right Right view-volume coordinate.
+/// @param bottom Bottom view-volume coordinate.
+/// @param top Top view-volume coordinate.
+/// @param near_val Near-plane distance.
+/// @param far_val Far-plane distance.
 static void build_ortho(double *m,
                         double left,
                         double right,
@@ -71,11 +107,18 @@ static uint32_t camera3d_next_shake_seed(void) {
 }
 
 /// @brief Return `value` when finite, else `fallback`. Scalar boundary sanitizer.
+/// @param value Candidate scalar.
+/// @param fallback Replacement for NaN or infinity.
+/// @return @p value when finite; otherwise @p fallback.
 static double finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Clamp `value` into `[-max_abs, max_abs]`, substituting `fallback` when not finite.
+/// @param value Candidate scalar.
+/// @param fallback Replacement for a non-finite candidate.
+/// @param max_abs Non-negative symmetric magnitude bound.
+/// @return Finite fallback or clamped candidate.
 static double clamp_abs_or(double value, double fallback, double max_abs) {
     value = finite_or(value, fallback);
     if (value > max_abs)
@@ -86,11 +129,14 @@ static double clamp_abs_or(double value, double fallback, double max_abs) {
 }
 
 /// @brief True if `value` is finite and within ±CAMERA3D_FLOAT_ABS_MAX (safe to narrow to float).
+/// @param value Candidate double-precision matrix element.
+/// @return `1` when narrowing to float stays within finite range; otherwise `0`.
 static int camera_value_fits_float(double value) {
     return isfinite(value) && value >= -CAMERA3D_FLOAT_ABS_MAX && value <= CAMERA3D_FLOAT_ABS_MAX;
 }
 
 /// @brief Write the 4×4 identity matrix into `m` (16 doubles); no-op on NULL.
+/// @param[out] m Writable 16-element matrix; may be null.
 static void camera_identity_matrix(double *m) {
     if (!m)
         return;
@@ -99,6 +145,8 @@ static void camera_identity_matrix(double *m) {
 }
 
 /// @brief True only if all 16 matrix elements are finite (NULL matrix returns false).
+/// @param m Borrowed 16-element matrix.
+/// @return `1` when @p m is non-null and every element is finite; otherwise `0`.
 static int camera_matrix_is_finite(const double *m) {
     if (!m)
         return 0;
@@ -110,6 +158,7 @@ static int camera_matrix_is_finite(const double *m) {
 }
 
 /// @brief Post-build guard: replace a matrix with identity if any element is non-finite.
+/// @param[in,out] m Writable 16-element matrix; a null pointer remains a no-op.
 static void camera_finish_matrix(double *m) {
     if (!camera_matrix_is_finite(m))
         camera_identity_matrix(m);
@@ -118,6 +167,9 @@ static void camera_finish_matrix(double *m) {
 /// @brief Clamp `value` to `[0, +∞)`, substituting `fallback` when not finite.
 /// @details Used for camera knobs (FOV, clip distances, exposure) where negatives would
 ///   invert the geometry or exponent and NaN would propagate into the view matrix.
+/// @param value Candidate scalar.
+/// @param fallback Replacement for a non-finite candidate.
+/// @return Finite value clamped to `[0, CAMERA3D_WORLD_ABS_MAX]`.
 static double sanitize_nonnegative(double value, double fallback) {
     value = finite_or(value, fallback);
     if (value < 0.0)
@@ -129,6 +181,8 @@ static double sanitize_nonnegative(double value, double fallback) {
 /// @details Used to recover camera position / target / up when the caller hands in a
 ///   Vec3 containing NaNs (e.g., from an earlier divide-by-zero); substituting known-good
 ///   fallbacks keeps the view matrix construction from producing a non-invertible matrix.
+/// @param[in,out] v Three-element vector sanitized component by component.
+/// @param fallback Borrowed three-element finite fallback vector.
 static void sanitize_vec3(double v[3], const double fallback[3]) {
     if (!v || !fallback)
         return;
@@ -139,6 +193,8 @@ static void sanitize_vec3(double v[3], const double fallback[3]) {
 /// @brief Clamp aspect ratio away from zero. Values ≤ 1e-6 (including negatives and
 /// zero) fall back to 1.0 so `build_perspective`'s `f / aspect` divide never produces
 /// infinity or a negative scale. Used at every projection-building site.
+/// @param aspect Candidate width-to-height ratio.
+/// @return Finite positive aspect capped at `CAMERA3D_ASPECT_MAX`, or 1 for invalid input.
 static double sanitize_aspect(double aspect) {
     if (!isfinite(aspect) || aspect <= 1e-6)
         return 1.0;
@@ -149,6 +205,8 @@ static double sanitize_aspect(double aspect) {
 /// @details Forces near >= 0.1, keeps far beyond near, clamps the absolute clip range, and caps
 ///   the far/near ratio. A huge ratio leaves too few depth-buffer bits for mid-range triangles,
 ///   which shows up as coplanar flicker and unstable CPU/GPU visibility disagreement.
+/// @param[in,out] near_val Near-plane distance to sanitize.
+/// @param[in,out] far_val Far-plane distance to sanitize relative to @p near_val.
 static void sanitize_clip_planes(double *near_val, double *far_val) {
     if (!near_val || !far_val)
         return;
@@ -175,6 +233,8 @@ static void sanitize_clip_planes(double *near_val, double *far_val) {
 /// `tan(fov/2)` divisor approaches zero and the projection blows up; above 179° the
 /// forward basis effectively flips. Real-world content lives in ~30–100° so this clamp
 /// only kicks in for malformed input.
+/// @param fov_deg Candidate field of view in degrees.
+/// @return Finite vertical field of view in `[1, 179]`, using 60 for non-finite input.
 static double sanitize_fov(double fov_deg) {
     if (!isfinite(fov_deg))
         return 60.0;
@@ -192,6 +252,9 @@ static double sanitize_fov(double fov_deg) {
 ///   for @p aspect using `2 * atan(tan(hfov/2) / aspect)`, with both the input horizontal FOV and
 ///   the resulting vertical FOV passed through the same safety clamps as regular Camera3D FOVs.
 ///   Non-finite or degenerate aspect values fall back to 1.0 through `sanitize_aspect`.
+/// @param horizontal_fov_deg Requested horizontal aperture in degrees.
+/// @param aspect Width-to-height aspect ratio used for conversion.
+/// @return Sanitized vertical field of view in degrees.
 static double camera_vertical_fov_from_horizontal(double horizontal_fov_deg, double aspect) {
     double horizontal_rad;
     double vertical_rad;
@@ -206,6 +269,8 @@ static double camera_vertical_fov_from_horizontal(double horizontal_fov_deg, dou
 /// @brief Clamp orthographic view-volume half-size away from zero — same logic as
 /// `sanitize_aspect` but for the ortho height parameter. Prevents a zero-size ortho
 /// projection from collapsing into a divide-by-zero during matrix construction.
+/// @param size Candidate orthographic half-height.
+/// @return Finite positive half-height capped at `CAMERA3D_ORTHO_SIZE_MAX`, or 1 when invalid.
 static double sanitize_ortho_size(double size) {
     if (!isfinite(size) || size <= 1e-6)
         return 1.0;
@@ -213,6 +278,8 @@ static double sanitize_ortho_size(double size) {
 }
 
 /// @brief Wrap an angle in degrees into (−180, 180]; non-finite input maps to 0.
+/// @param degrees Candidate angle.
+/// @return Equivalent finite wrapped angle, or zero for non-finite input.
 static double camera_wrap_degrees(double degrees) {
     if (!isfinite(degrees))
         return 0.0;
@@ -227,6 +294,8 @@ static double camera_wrap_degrees(double degrees) {
 }
 
 /// @brief Clamp a pitch angle to [−89°, 89°] to avoid look-direction gimbal flip (non-finite → 0).
+/// @param pitch Candidate pitch in degrees.
+/// @return Finite pitch clamped to `[-89, 89]`.
 static double camera_clamp_pitch(double pitch) {
     pitch = finite_or(pitch, 0.0);
     if (pitch > 89.0)
@@ -238,6 +307,9 @@ static double camera_clamp_pitch(double pitch) {
 
 /// @brief Frame-rate-independent smoothing factor `1 − exp(−speed·dt)`, clamped to [0, 1];
 ///   saturates to 1 for large or non-finite exponents.
+/// @param speed Non-negative convergence rate in inverse seconds.
+/// @param dt Non-negative elapsed time in seconds.
+/// @return Finite interpolation factor in `[0, 1]`.
 static double camera_damping_factor(double speed, double dt) {
     double exponent;
     speed = sanitize_nonnegative(speed, 0.0);
@@ -252,6 +324,8 @@ static double camera_damping_factor(double speed, double dt) {
 
 /// @brief Compute the effective eye position as the camera eye plus its shake offset,
 ///   each lane finite-guarded and clamped to the world bound; origin when `cam` is NULL.
+/// @param cam Optional borrowed camera.
+/// @param[out] out_eye Three-element destination; a null destination is a no-op.
 static void camera_eye_with_shake(const rt_camera3d *cam, double out_eye[3]) {
     static const double fallback_eye[3] = {0.0, 0.0, 0.0};
     if (!out_eye)
@@ -276,6 +350,7 @@ static void camera_eye_with_shake(const rt_camera3d *cam, double out_eye[3]) {
 
 /// @brief Replace any non-finite or out-of-range lane of the camera's eye position with a
 ///   safe fallback (origin), keeping later view-matrix construction well-defined.
+/// @param[in,out] cam Borrowed camera whose logical eye is sanitized; may be null.
 static void camera_sanitize_eye(rt_camera3d *cam) {
     static const double fallback_eye[3] = {0.0, 0.0, 0.0};
     if (cam)
@@ -285,6 +360,12 @@ static void camera_sanitize_eye(rt_camera3d *cam) {
 /// @brief Normalize the (`*x`,`*y`,`*z`) triple in place, reverting to the
 ///        fallback direction when any lane is non-finite or the vector length
 ///        is ~zero. Keeps camera basis vectors unit-length and well-defined.
+/// @param[in,out] x Optional x component storage.
+/// @param[in,out] y Optional y component storage.
+/// @param[in,out] z Optional z component storage.
+/// @param fallback_x Fallback x component.
+/// @param fallback_y Fallback y component.
+/// @param fallback_z Fallback z component.
 static void camera_normalize_vec3_or(
     double *x, double *y, double *z, double fallback_x, double fallback_y, double fallback_z) {
     double vx = clamp_abs_or(x ? *x : fallback_x, fallback_x, CAMERA3D_WORLD_ABS_MAX);
@@ -323,6 +404,11 @@ static void camera_normalize_vec3_or(
 /// in the `[-1, 1]` NDC convention. With Zanna's row-major, column-vector transform
 /// path, `m[14] = -1` makes clip.w = -view.z for perspective division. Zeroes the matrix first so
 /// unused slots stay at 0 — callers can assume a fully initialised 4×4.
+/// @param[out] m Writable 16-element projection matrix.
+/// @param fov_deg Sanitized vertical field of view in degrees.
+/// @param aspect Sanitized positive width-to-height ratio.
+/// @param near_val Sanitized near-plane distance.
+/// @param far_val Sanitized far-plane distance greater than @p near_val.
 static void build_perspective(
     double *m, double fov_deg, double aspect, double near_val, double far_val) {
     memset(m, 0, 16 * sizeof(double));
@@ -348,6 +434,10 @@ static void build_perspective(
 /// fallback is the world +X basis if both attempts collapse. Matches
 /// `rt_mat4_look_at` bit-for-bit so the Canvas3D projection and Camera3D forward
 /// vectors stay in lockstep.
+/// @param[out] m Writable 16-element view matrix.
+/// @param eye Optional borrowed three-element camera position.
+/// @param target Optional borrowed three-element look target.
+/// @param up Optional borrowed three-element up hint.
 static void build_look_at(double *m, const double *eye, const double *target, const double *up) {
     static const double fallback_eye[3] = {0.0, 0.0, 0.0};
     static const double fallback_target[3] = {0.0, 0.0, -1.0};
@@ -427,6 +517,7 @@ static void build_look_at(double *m, const double *eye, const double *target, co
 ///          re-sanitising the inputs first so callers can pass any value
 ///          and still produce a valid projection (degenerate aspects or
 ///          clip planes are clamped).
+/// @param[in,out] cam Borrowed camera whose retained projection inputs and matrix are updated.
 static void rebuild_projection(rt_camera3d *cam) {
     if (!cam)
         return;
@@ -450,6 +541,8 @@ static void rebuild_projection(rt_camera3d *cam) {
 ///          rebind). No-op when the new aspect matches within 1e-9, so
 ///          repeated calls with the same dimensions don't churn the
 ///          projection matrix.
+/// @param obj Borrowed heap or stack camera handle.
+/// @param aspect Output width-to-height ratio, sanitized before comparison.
 void rt_camera3d_sync_render_aspect(void *obj, double aspect) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     double sanitized_aspect;
@@ -468,6 +561,11 @@ void rt_camera3d_sync_render_aspect(void *obj, double aspect) {
 ///          camera object. Canvas3D uses it so the same camera can be reused
 ///          across outputs with different aspect ratios without permanently
 ///          rewriting `cam->aspect` / `cam->projection`.
+/// @param obj Borrowed heap or stack camera handle.
+/// @param aspect_override Positive render-surface aspect, or a non-positive value to use the
+///        camera's retained aspect.
+/// @param[out] out_projection Writable 16-float row-major matrix. Invalid double-to-float values
+///        trap and produce identity.
 void rt_camera3d_get_render_projection(void *obj, double aspect_override, float *out_projection) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     double projection[16];
@@ -510,6 +608,7 @@ void rt_camera3d_get_render_projection(void *obj, double aspect_override, float 
 ///          asin(fy). Pitch is clamped to ±89° so the next rebuild can't
 ///          produce a degenerate look-at where forward becomes parallel
 ///          to the world up vector.
+/// @param[in,out] cam Borrowed camera whose cached FPS angles are updated.
 static void camera_sync_fps_angles_from_view(rt_camera3d *cam) {
     double fx;
     double fy;
@@ -531,6 +630,7 @@ static void camera_sync_fps_angles_from_view(rt_camera3d *cam) {
 ///          pitch tilts up/down) and feeds it to `build_look_at`. World
 ///          up is fixed +Y. Called every frame an FPS controller mutates
 ///          yaw/pitch via `RotateYaw` / `RotatePitch` / `LookDelta`.
+/// @param[in,out] cam Borrowed camera whose eye, angles, and view are sanitized or rebuilt.
 static void camera_rebuild_fps_view(rt_camera3d *cam) {
     double yaw_rad;
     double pitch_rad;
@@ -558,6 +658,7 @@ static void camera_rebuild_fps_view(rt_camera3d *cam) {
 ///          targeting eye+forward so heading stays identical — only
 ///          translation jitters. The shake offset itself is updated
 ///          per-frame by `apply_shake`.
+/// @param[in,out] cam Borrowed camera whose view matrix is rebuilt from current shake state.
 static void camera_apply_shake_to_view(rt_camera3d *cam) {
     double forward[3];
     double eye[3];
@@ -650,13 +751,20 @@ void *rt_camera3d_new_horizontal_fov(double horizontal_fov,
 
 /// @brief Construct a row-major orthographic projection matrix into `m`.
 /// @details Maps the axis-aligned view volume `[left,right] × [bottom,top] ×
-///   [near,far]` to the OpenGL-style clip cube `[-1, 1]^3`. Z is flipped
+///   [near,far]` to the three-dimensional OpenGL-style clip cube `[-1, 1]`. Z is flipped
 ///   because view space uses -Z forward while NDC uses +Z forward, giving
 ///   `-2 / (far - near)` on the diagonal. The translation column centers the
 ///   volume on the origin: `(r+l)/(r-l)` is negated to move "left" to -1.
 ///   Degenerate inputs (any axis spanning less than 1e-12) fall back to
 ///   identity rather than generating NaN/Inf, so downstream matrix multiplies
 ///   stay finite.
+/// @param[out] m Writable 16-element matrix.
+/// @param left Left view-volume coordinate.
+/// @param right Right view-volume coordinate.
+/// @param bottom Bottom view-volume coordinate.
+/// @param top Top view-volume coordinate.
+/// @param near_val Near-plane distance.
+/// @param far_val Far-plane distance.
 static void build_ortho(double *m,
                         double left,
                         double right,
@@ -729,6 +837,8 @@ void *rt_camera3d_new_ortho(double size, double aspect, double near_val, double 
 /// @details Lets renderers branch on perspective vs ortho without poking
 ///          into private struct fields. Returns 0 for null obj or for
 ///          perspective cameras built via `rt_camera3d_new`.
+/// @param obj Borrowed heap or stack camera handle.
+/// @return `1` for orthographic projection; otherwise `0`.
 int8_t rt_camera3d_is_ortho(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     return cam && cam->is_ortho ? 1 : 0;
@@ -739,6 +849,8 @@ int8_t rt_camera3d_is_ortho(void *obj) {
 ///          toggled to orthographic and back without losing its authored FOV. Cameras originally
 ///          constructed as orthographic receive a safe 60-degree perspective FOV on their first
 ///          switch because that constructor historically stored zero in the unused FOV field.
+/// @param obj Borrowed heap or stack camera handle.
+/// @param is_ortho Nonzero to activate orthographic projection; zero for perspective.
 void rt_camera3d_set_is_ortho(void *obj, int8_t is_ortho) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     int8_t next;
@@ -755,12 +867,16 @@ void rt_camera3d_set_is_ortho(void *obj, int8_t is_ortho) {
 }
 
 /// @brief Read the camera's retained orthographic half-height through the native sanitizer.
+/// @param obj Borrowed heap or stack camera handle.
+/// @return Sanitized positive retained half-height, or zero for an invalid camera.
 double rt_camera3d_get_ortho_size(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     return cam ? sanitize_ortho_size(cam->ortho_size) : 0.0;
 }
 
 /// @brief Change the retained orthographic half-height and rebuild an active ortho projection.
+/// @param obj Borrowed heap or stack camera handle.
+/// @param size Requested half-height, sanitized to a finite positive range.
 void rt_camera3d_set_ortho_size(void *obj, double size) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -774,6 +890,9 @@ void rt_camera3d_set_ortho_size(void *obj, double size) {
 /// @details Camera3D owns no nested heap allocations, so copying its scalar and fixed-array state
 ///          after allocating a correctly registered destination is a complete clone. The
 ///          destination's runtime header lives outside this payload and is therefore unaffected.
+/// @param obj Borrowed source heap or stack camera.
+/// @return Owned independent camera with identical state, or null for invalid input/allocation
+///         failure.
 void *rt_camera3d_clone(void *obj) {
     rt_camera3d *source = rt_camera3d_checked_or_stack(obj);
     rt_camera3d *copy;
@@ -799,6 +918,10 @@ void *rt_camera3d_clone(void *obj) {
 /// @brief Core look-at: position the camera at @p eye_in aiming at @p target_in with up @p up_in.
 /// @details Sanitizes inputs and recomputes the camera basis/view matrix; shared by the Vec3 and
 ///          scalar-component entry points.
+/// @param[in,out] cam Borrowed camera whose eye, view, FPS angles, and shaken view are updated.
+/// @param eye_in Optional borrowed three-element logical eye.
+/// @param target_in Optional borrowed three-element target.
+/// @param up_in Optional borrowed three-element up hint.
 static void camera3d_look_at_values(rt_camera3d *cam,
                                     const double eye_in[3],
                                     const double target_in[3],
@@ -831,6 +954,10 @@ static void camera3d_look_at_values(rt_camera3d *cam,
 /// @details Builds the view matrix using the standard look-at construction:
 ///          forward = normalize(eye - target), right = cross(up, forward),
 ///          true_up = cross(forward, right). Uses right-handed coordinates.
+/// @param obj Borrowed heap or stack camera handle.
+/// @param eye_v Borrowed `Vec3` eye position.
+/// @param target_v Borrowed `Vec3` target position.
+/// @param up_v Borrowed `Vec3` up hint.
 void rt_camera3d_look_at(void *obj, void *eye_v, void *target_v, void *up_v) {
     if (!obj)
         return;
@@ -849,6 +976,16 @@ void rt_camera3d_look_at(void *obj, void *eye_v, void *target_v, void *up_v) {
 }
 
 /// @brief Aim the camera using scalar eye/target/up components (no Vec3 boxing required).
+/// @param obj Borrowed heap or stack camera handle.
+/// @param eye_x Eye x coordinate.
+/// @param eye_y Eye y coordinate.
+/// @param eye_z Eye z coordinate.
+/// @param target_x Target x coordinate.
+/// @param target_y Target y coordinate.
+/// @param target_z Target z coordinate.
+/// @param up_x Up-hint x component.
+/// @param up_y Up-hint y component.
+/// @param up_z Up-hint z component.
 void rt_camera3d_look_at_components(void *obj,
                                     double eye_x,
                                     double eye_y,
@@ -869,6 +1006,13 @@ void rt_camera3d_look_at_components(void *obj,
 /// @brief Core orbit: place the camera at (yaw, pitch, distance) around a target, then look at it.
 /// @details Shared implementation behind the Vec3 and scalar-component orbit entry points; clamps
 ///          pitch to avoid gimbal flip at the poles.
+/// @param[in,out] cam Borrowed camera to reposition and orient.
+/// @param tx Target x coordinate.
+/// @param ty Target y coordinate.
+/// @param tz Target z coordinate.
+/// @param distance Non-negative orbit radius.
+/// @param yaw Horizontal angle in degrees, wrapped to the canonical range.
+/// @param pitch Vertical angle in degrees, clamped to `[-89, 89]`.
 static void camera3d_orbit_values(
     rt_camera3d *cam, double tx, double ty, double tz, double distance, double yaw, double pitch) {
     if (!cam)
@@ -910,6 +1054,11 @@ static void camera3d_orbit_values(
 /// @details Computes eye position from spherical coordinates (yaw, pitch, distance)
 ///          relative to the target, then builds a look-at view matrix. Useful for
 ///          third-person cameras and object inspection views.
+/// @param obj Borrowed heap or stack camera handle.
+/// @param target_v Borrowed `Vec3` orbit center.
+/// @param distance Non-negative orbit radius.
+/// @param yaw Horizontal angle in degrees.
+/// @param pitch Vertical angle in degrees.
 void rt_camera3d_orbit(void *obj, void *target_v, double distance, double yaw, double pitch) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -924,6 +1073,13 @@ void rt_camera3d_orbit(void *obj, void *target_v, double distance, double yaw, d
 }
 
 /// @brief Orbit the camera around a target using scalar components (no Vec3 boxing required).
+/// @param obj Borrowed heap or stack camera handle.
+/// @param target_x Orbit-center x coordinate.
+/// @param target_y Orbit-center y coordinate.
+/// @param target_z Orbit-center z coordinate.
+/// @param distance Non-negative orbit radius.
+/// @param yaw Horizontal angle in degrees.
+/// @param pitch Vertical angle in degrees.
 void rt_camera3d_orbit_components(void *obj,
                                   double target_x,
                                   double target_y,
@@ -936,6 +1092,8 @@ void rt_camera3d_orbit_components(void *obj,
 }
 
 /// @brief Get the vertical field of view in degrees.
+/// @param obj Borrowed heap or stack camera handle.
+/// @return Sanitized vertical FOV for a perspective camera; zero for orthographic/invalid cameras.
 double rt_camera3d_get_fov(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -944,6 +1102,8 @@ double rt_camera3d_get_fov(void *obj) {
 }
 
 /// @brief Change the field of view and rebuild the projection matrix.
+/// @param obj Borrowed heap or stack perspective camera.
+/// @param fov Requested vertical field of view in degrees, clamped to `[1, 179]`.
 void rt_camera3d_set_fov(void *obj, double fov) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -957,6 +1117,8 @@ void rt_camera3d_set_fov(void *obj, double fov) {
 /// @brief Set the retained perspective FOV without discarding it on an orthographic camera.
 /// @details NodeAnimation3D uses this private path so an FBX camera can animate dormant
 ///          perspective parameters before a later step channel switches projection mode.
+/// @param obj Borrowed heap or stack camera.
+/// @param fov Requested retained vertical FOV in degrees.
 void rt_camera3d_set_retained_fov(void *obj, double fov) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -971,6 +1133,8 @@ void rt_camera3d_set_retained_fov(void *obj, double fov) {
 ///   resulting vertical FOV, then rebuilds the projection immediately. Orthographic cameras ignore
 ///   the call, matching `rt_camera3d_set_fov`. Use this when user-facing tuning should describe
 ///   the horizontal view width rather than the vertical aperture used by the projection matrix.
+/// @param obj Borrowed heap or stack perspective camera.
+/// @param horizontal_fov Requested horizontal aperture in degrees.
 void rt_camera3d_set_horizontal_fov(void *obj, double horizontal_fov) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -984,6 +1148,8 @@ void rt_camera3d_set_horizontal_fov(void *obj, double horizontal_fov) {
 /// @brief Read the near clip-plane distance.
 /// @details Returns the sanitized effective plane used by Camera3D's projection matrix rather
 /// than the raw caller-supplied field, so diagnostics see the same depth range as rendering.
+/// @param obj Borrowed heap or stack camera.
+/// @return Sanitized effective near distance, or zero for an invalid camera.
 double rt_camera3d_get_near_plane(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -997,11 +1163,15 @@ double rt_camera3d_get_near_plane(void *obj) {
 /// @brief Read the effective near clip-plane distance used for projection and shadow splits.
 /// @details Alias for `NearPlane`'s sanitized getter. Kept as a separate runtime entry point so
 /// callers can explicitly request the render-effective value when debugging depth precision.
+/// @param obj Borrowed heap or stack camera.
+/// @return Sanitized effective near distance, or zero for an invalid camera.
 double rt_camera3d_get_effective_near_plane(void *obj) {
     return rt_camera3d_get_near_plane(obj);
 }
 
 /// @brief Set the near clip-plane distance; planes are re-sanitized on rebuild.
+/// @param obj Borrowed heap or stack camera.
+/// @param near_plane Requested near distance; projection rebuilding enforces depth constraints.
 void rt_camera3d_set_near_plane(void *obj, double near_plane) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1013,6 +1183,8 @@ void rt_camera3d_set_near_plane(void *obj, double near_plane) {
 /// @brief Read the far clip-plane distance.
 /// @details Returns the sanitized effective plane used by Camera3D's projection matrix rather
 /// than the raw caller-supplied field, so diagnostics see the same depth range as rendering.
+/// @param obj Borrowed heap or stack camera.
+/// @return Sanitized effective far distance, or zero for an invalid camera.
 double rt_camera3d_get_far_plane(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1026,12 +1198,16 @@ double rt_camera3d_get_far_plane(void *obj) {
 /// @brief Read the effective far clip-plane distance used for projection and shadow splits.
 /// @details Alias for `FarPlane`'s sanitized getter. Exposed separately for code that wants to
 /// display the actual render depth range after Camera3D's precision guardrails.
+/// @param obj Borrowed heap or stack camera.
+/// @return Sanitized effective far distance, or zero for an invalid camera.
 double rt_camera3d_get_effective_far_plane(void *obj) {
     return rt_camera3d_get_far_plane(obj);
 }
 
 /// @brief Set the far clip-plane distance (e.g. to extend draw distance for a
 ///   large scene); planes are re-sanitized on rebuild.
+/// @param obj Borrowed heap or stack camera.
+/// @param far_plane Requested far distance; projection rebuilding enforces depth constraints.
 void rt_camera3d_set_far_plane(void *obj, double far_plane) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1045,6 +1221,9 @@ void rt_camera3d_set_far_plane(void *obj, double far_plane) {
 ///          per-frame to the view matrix but never mutates `cam->eye`,
 ///          so callers see the logical camera location (good for HUDs,
 ///          attaching audio listeners, raycasts from the player).
+/// @param obj Borrowed heap or stack camera.
+/// @return Owned `Vec3` containing the sanitized logical eye, or null for an invalid camera or
+///         allocation failure.
 void *rt_camera3d_get_position(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1056,6 +1235,11 @@ void *rt_camera3d_get_position(void *obj) {
 
 /// @brief Read the camera's world position into @p x / @p y / @p z (returns 0 with no writes if
 /// invalid).
+/// @param obj Borrowed heap or stack camera.
+/// @param[out] x Required x-coordinate destination, initialized to zero.
+/// @param[out] y Required y-coordinate destination, initialized to zero.
+/// @param[out] z Required z-coordinate destination, initialized to zero.
+/// @return `1` when all destinations receive a valid logical eye; otherwise `0`.
 int8_t rt_camera3d_get_position_components(void *obj, double *x, double *y, double *z) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (x)
@@ -1073,6 +1257,8 @@ int8_t rt_camera3d_get_position_components(void *obj, double *x, double *y, doub
 }
 
 /// @brief Set the camera's eye position and rebuild the view matrix.
+/// @param obj Borrowed heap or stack camera.
+/// @param pos Borrowed `Vec3` logical eye; invalid objects are ignored.
 void rt_camera3d_set_position(void *obj, void *pos) {
     double forward[3];
     double up[3];
@@ -1104,6 +1290,8 @@ void rt_camera3d_set_position(void *obj, void *pos) {
 /// along -Z by convention). Caller owns the returned Vec3. Useful for "fire a ray from
 /// the camera" behaviors and for gameplay that needs the camera facing independent of
 /// its `look_at` target.
+/// @param obj Borrowed heap or stack camera.
+/// @return Owned normalized forward `Vec3`, or null for an invalid camera/allocation failure.
 void *rt_camera3d_get_forward(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1119,6 +1307,8 @@ void *rt_camera3d_get_forward(void *obj) {
 /// Read directly from the view matrix's first row. Used together with forward and up
 /// to build camera-relative movement (strafing, mouse-look yaw, etc.). Caller owns the
 /// returned Vec3.
+/// @param obj Borrowed heap or stack camera.
+/// @return Owned normalized right `Vec3`, or null for an invalid camera/allocation failure.
 void *rt_camera3d_get_right(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1135,6 +1325,9 @@ void *rt_camera3d_get_right(void *obj) {
 /// Each inv[i] is the cofactor (signed minor) of the transpose, so
 /// the adjugate matrix is built column-by-column. The determinant is
 /// computed from the first row and its cofactors. Returns -1 if singular.
+/// @param m Borrowed finite 16-element input matrix.
+/// @param[out] out Writable 16-element inverse matrix.
+/// @return `0` on success, or `-1` for null, non-finite, singular, or overflowing input.
 static int mat4d_invert(const double *m, double *out) {
     double inv[16];
     if (!m || !out)
@@ -1198,6 +1391,9 @@ static int mat4d_invert(const double *m, double *out) {
 /// @brief Relative-epsilon equality for cached pick parameters (NaN/inf compare unequal).
 /// @details Tolerance scales with magnitude (max(|a|,|b|,1) * 1e-12), so the inverse-VP cache stays
 ///          valid across both tiny and large coordinate scales.
+/// @param a First scalar.
+/// @param b Second scalar.
+/// @return `1` when both are finite and relatively equal; otherwise `0`.
 static int camera_pick_cache_scalar_equal(double a, double b) {
     double scale;
     if (!isfinite(a) || !isfinite(b))
@@ -1209,6 +1405,9 @@ static int camera_pick_cache_scalar_equal(double a, double b) {
 /// @brief Compute the inverse view-projection matrix used to unproject screen rays for picking.
 /// @details Builds the projection (perspective or ortho) for the given @p aspect, multiplies by the
 ///          view matrix, and inverts the result. @p out_inv_vp receives the 4x4 inverse.
+/// @param[in,out] cam Borrowed camera whose view may be repaired and whose inverse cache is updated.
+/// @param aspect Render-surface width-to-height ratio.
+/// @param[out] out_inv_vp Writable 16-element inverse view-projection matrix.
 /// @return 1 on success, 0 if inputs are invalid or the matrix is singular.
 static int camera_get_pick_inv_vp(rt_camera3d *cam, double aspect, double *out_inv_vp) {
     double near_plane;
@@ -1277,27 +1476,21 @@ static int camera_get_pick_inv_vp(rt_camera3d *cam, double aspect, double *out_i
     return 1;
 }
 
-/// @brief Unproject a screen-space pixel into a world-space ray direction.
-/// @details Standard picking ray construction:
-///          1. Convert pixel (sx,sy) to normalized device coords with the
-///             usual Y-flip (screen Y grows down, NDC Y grows up).
-///          2. Build VP = projection * view, invert it.
-///          3. Multiply NDC point at near plane (z=-1, w=1) by inv(VP)
-///             to get a homogeneous world-space point; perspective-divide
-///             to recover Cartesian coords.
-///          4. Direction = normalize(world − rendered eye), where the
-///             rendered eye includes the current shake offset so picks
-///             align with what the player actually sees.
-///          For ortho cameras, all rays are parallel (direction = view
-///          forward), so the projection-inversion path is skipped and
-///          the normalized forward axis is returned directly.
-///          Returns (0,0,-1) on degenerate inputs (zero size, singular VP).
 /// @brief Project a world-space point to pixel coordinates.
 /// @details Builds the same projection×view the picking path uses (perspective
 ///          or ortho, sanitized clip planes) and projects @p x/y/z. Writes the
 ///          pixel position and returns 1 when the point is in front of the
 ///          camera (clip w > 0); 0 means behind (outputs still written from
 ///          the mirrored projection — callers should hide anchored UI).
+/// @param obj Borrowed heap or stack camera.
+/// @param x World-space point x coordinate.
+/// @param y World-space point y coordinate.
+/// @param z World-space point z coordinate.
+/// @param sw Positive screen width in pixels.
+/// @param sh Positive screen height in pixels.
+/// @param[out] out_sx Optional destination initialized to zero and then set to pixel x.
+/// @param[out] out_sy Optional destination initialized to zero and then set to pixel y.
+/// @return `1` when projection is valid and the point lies in front of the camera; otherwise `0`.
 int8_t rt_camera3d_world_to_screen(void *obj,
                                    double x,
                                    double y,
@@ -1354,6 +1547,11 @@ int8_t rt_camera3d_world_to_screen(void *obj,
 }
 
 /// @brief VM-facing WorldToScreen: returns Vec3(pixelX, pixelY, visible ? 1 : 0).
+/// @param obj Borrowed heap or stack camera.
+/// @param point Borrowed world-space `Vec3`; invalid types trap and return a zero vector.
+/// @param sw Screen width in pixels.
+/// @param sh Screen height in pixels.
+/// @return Owned `Vec3(pixel_x, pixel_y, visibility_flag)`.
 void *rt_camera3d_world_to_screen_vec(void *obj, void *point, int64_t sw, int64_t sh) {
     if (!rt_g3d_is_vec3(point)) {
         rt_trap("Camera3D.WorldToScreen: point must be Vec3");
@@ -1366,6 +1564,16 @@ void *rt_camera3d_world_to_screen_vec(void *obj, void *point, int64_t sw, int64_
     return rt_vec3_new(sx, sy, visible ? 1.0 : 0.0);
 }
 
+/// @brief Unprojects a screen-space pixel into a world-space ray direction.
+/// @details Perspective rays connect the shaken rendered eye to the unprojected near-plane point.
+///          Orthographic rays are the shared normalized view-forward direction. Degenerate screens,
+///          singular matrices, or invalid cameras return `(0, 0, -1)`.
+/// @param obj Borrowed heap or stack camera.
+/// @param sx Pixel x coordinate.
+/// @param sy Pixel y coordinate.
+/// @param sw Positive screen width in pixels.
+/// @param sh Positive screen height in pixels.
+/// @return Owned normalized ray-direction `Vec3`.
 void *rt_camera3d_screen_to_ray(void *obj, int64_t sx, int64_t sy, int64_t sw, int64_t sh) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam || sw <= 0 || sh <= 0)
@@ -1420,6 +1628,12 @@ void *rt_camera3d_screen_to_ray(void *obj, int64_t sx, int64_t sy, int64_t sw, i
 /// @details Perspective cameras originate at the rendered eye position. Orthographic
 ///          cameras originate at the unprojected near-plane point for the requested
 ///          pixel, because each screen pixel has a distinct parallel ray.
+/// @param obj Borrowed heap or stack camera.
+/// @param sx Pixel x coordinate.
+/// @param sy Pixel y coordinate.
+/// @param sw Positive screen width in pixels.
+/// @param sh Positive screen height in pixels.
+/// @return Owned ray-origin `Vec3`; invalid inputs fall back to origin or the rendered eye.
 void *rt_camera3d_screen_to_ray_origin(void *obj, int64_t sx, int64_t sy, int64_t sw, int64_t sh) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam || sw <= 0 || sh <= 0)
@@ -1460,6 +1674,7 @@ void *rt_camera3d_screen_to_ray_origin(void *obj, int64_t sx, int64_t sy, int64_
  *=========================================================================*/
 
 /// @brief Initialize FPS-style camera state (yaw/pitch from current orientation).
+/// @param obj Borrowed heap or stack camera.
 void rt_camera3d_fps_init(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1471,6 +1686,14 @@ void rt_camera3d_fps_init(void *obj) {
 /// @details Integrates mouse deltas into yaw/pitch (with pitch clamped to ±89°),
 ///          then computes the forward/right/up vectors and applies WASD movement.
 ///          The camera shake offset is added last if active.
+/// @param obj Borrowed heap or stack camera.
+/// @param yaw_delta Horizontal look delta in degrees.
+/// @param pitch_delta Vertical look delta in degrees, bounded before accumulation.
+/// @param move_fwd Signed forward-axis movement input.
+/// @param move_right Signed right-axis movement input.
+/// @param move_up Signed world-up movement input.
+/// @param speed Non-negative movement speed in world units per second.
+/// @param dt Non-negative elapsed time in seconds.
 void rt_camera3d_fps_update(void *obj,
                             double yaw_delta,
                             double pitch_delta,
@@ -1535,12 +1758,16 @@ void rt_camera3d_fps_update(void *obj,
 }
 
 /// @brief Return the FPS-controller yaw in degrees (heading around world Y).
+/// @param obj Borrowed heap or stack camera.
+/// @return Wrapped yaw in degrees, or zero for an invalid camera.
 double rt_camera3d_get_yaw(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     return cam ? camera_wrap_degrees(cam->fps_yaw) : 0.0;
 }
 
 /// @brief Return the FPS-controller pitch in degrees (look up/down).
+/// @param obj Borrowed heap or stack camera.
+/// @return Pitch clamped to `[-89, 89]` degrees, or zero for an invalid camera.
 double rt_camera3d_get_pitch(void *obj) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     return cam ? camera_clamp_pitch(cam->fps_pitch) : 0.0;
@@ -1551,6 +1778,8 @@ double rt_camera3d_get_pitch(void *obj) {
 ///          snap heading directly (e.g. cutscene camera, teleport,
 ///          respawn). Caller is responsible for normalizing the angle
 ///          if they care about the stored value range.
+/// @param obj Borrowed heap or stack camera.
+/// @param yaw Absolute heading in degrees; wrapped internally.
 void rt_camera3d_set_yaw(void *obj, double yaw) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1563,6 +1792,8 @@ void rt_camera3d_set_yaw(void *obj, double yaw) {
 /// @brief Set pitch absolutely (clamped to ±89°) and rebuild the view.
 /// @details The clamp matches `fps_update` so manual pitch overrides
 ///          can never produce a degenerate look-at direction.
+/// @param obj Borrowed heap or stack camera.
+/// @param pitch Absolute pitch in degrees, clamped to `[-89, 89]`.
 void rt_camera3d_set_pitch(void *obj, double pitch) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1591,6 +1822,8 @@ void rt_camera3d_set_pitch(void *obj, double pitch) {
 ///          The seed lives on the camera, so two cameras shake
 ///          independently and a single camera replays identically across
 ///          runs given the same dt sequence.
+/// @param[in,out] cam Borrowed camera whose shake timer, intensity, PRNG seed, and offset advance.
+/// @param dt Non-negative elapsed time in seconds.
 static void apply_shake(rt_camera3d *cam, double dt) {
     if (!cam)
         return;
@@ -1639,6 +1872,8 @@ static void apply_shake(rt_camera3d *cam, double dt) {
 ///          `camera_apply_shake_to_view` (rebuild view matrix using the
 ///          new offset) so other call sites that mutate the view can
 ///          re-apply the shake without re-rolling the PRNG.
+/// @param obj Borrowed heap or stack camera.
+/// @param dt Frame duration in seconds; negative/non-finite values sanitize to zero.
 void rt_camera3d_update_shake_for_frame(void *obj, double dt) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
 
@@ -1679,6 +1914,10 @@ void rt_camera3d_update_shake_for_frame_token(void *obj, double dt, int64_t fram
 /// @brief Trigger a camera shake effect (exponentially decaying random offset).
 /// @details The shake applies random XY offsets that decay over the given duration.
 ///          Used for explosions, impacts, and other feedback effects.
+/// @param obj Borrowed heap or stack camera.
+/// @param intensity Non-negative initial offset magnitude in world units.
+/// @param duration Non-negative effect duration in seconds.
+/// @param decay Positive exponential decay rate; invalid values use 5.
 void rt_camera3d_shake(void *obj, double intensity, double duration, double decay) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam)
@@ -1698,6 +1937,12 @@ void rt_camera3d_shake(void *obj, double intensity, double duration, double deca
 /// @brief Smoothly interpolate the camera toward a target position over time.
 /// @details Uses exponential decay (lerp with speed * dt) for natural smoothing.
 ///          The camera maintains a configurable offset from the target.
+/// @param obj Borrowed heap or stack camera.
+/// @param target_pos Borrowed `Vec3` follow target.
+/// @param distance Non-negative trailing distance along current yaw.
+/// @param height Signed vertical offset in world units.
+/// @param speed Non-negative exponential convergence rate.
+/// @param dt Non-negative elapsed time in seconds.
 void rt_camera3d_smooth_follow(
     void *obj, void *target_pos, double distance, double height, double speed, double dt) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
@@ -1742,6 +1987,10 @@ void rt_camera3d_smooth_follow(
  *=========================================================================*/
 
 /// @brief Smoothly rotate the camera toward a look-at target over time.
+/// @param obj Borrowed heap or stack camera.
+/// @param target Borrowed world-space `Vec3` target.
+/// @param speed Non-negative exponential angular convergence rate.
+/// @param dt Non-negative elapsed time in seconds.
 void rt_camera3d_smooth_look_at(void *obj, void *target, double speed, double dt) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
     if (!cam || !rt_g3d_is_vec3(target))

@@ -26,6 +26,7 @@ module scene_asset_browser;
 bind "../core/project_manager";
 bind "../services/asset_library";
 bind "../services/safe_io";
+bind "inspector_rows";
 
 bind GUI = Zanna.GUI;
 bind Pixels = Zanna.Graphics.Pixels;
@@ -237,8 +238,7 @@ class SceneAssetBrowser {
             "Search supported assets already inside the open workspace");
 
         group = GUI.GroupBox.New(parent, "Project assets");
-        var filterRow = GUI.HBox.New();
-        filterRow.SetSpacing(4.0);
+        var filterRow = inspector_rows.NewWrapRow();
         group.AddChild(filterRow);
         filterInput = GUI.TextInput.New(filterRow);
         filterInput.SetFlex(1.0);
@@ -247,8 +247,7 @@ class SceneAssetBrowser {
         clearFilterButton = GUI.Button.New(filterRow, "Clear");
         clearFilterButton.SetAccessibleName("Clear project asset filter");
 
-        var libraryRow = GUI.HBox.New();
-        libraryRow.SetSpacing(4.0);
+        var libraryRow = inspector_rows.NewWrapRow();
         group.AddChild(libraryRow);
         tagFilterInput = GUI.TextInput.New(libraryRow);
         tagFilterInput.SetFlex(1.0);
@@ -276,17 +275,18 @@ class SceneAssetBrowser {
         selectionLabel.SetWordWrap(true);
         libraryStatusLabel = GUI.Label.New(group, "");
         libraryStatusLabel.SetWordWrap(true);
-        var entryRow = GUI.HBox.New();
-        entryRow.SetSpacing(4.0);
+        var entryRow = inspector_rows.NewWrapRow();
         group.AddChild(entryRow);
         entryTagsInput = GUI.TextInput.New(entryRow);
         entryTagsInput.SetFlex(1.0);
         entryTagsInput.SetPlaceholder("Library tags (comma-separated)");
         entryTagsInput.SetAccessibleName("Selected asset library tags");
         entryTileWidthInput = GUI.TextInput.New(entryRow);
+        entryTileWidthInput.SetPreferredSize(64.0, 0.0);
         entryTileWidthInput.SetPlaceholder("tile w");
         entryTileWidthInput.SetAccessibleName("Library entry tile width");
         entryTileHeightInput = GUI.TextInput.New(entryRow);
+        entryTileHeightInput.SetPreferredSize(64.0, 0.0);
         entryTileHeightInput.SetPlaceholder("tile h");
         entryTileHeightInput.SetAccessibleName("Library entry tile height");
 

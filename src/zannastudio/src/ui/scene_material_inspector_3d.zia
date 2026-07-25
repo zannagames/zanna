@@ -27,6 +27,7 @@ module scene_material_inspector_3d;
 
 bind "scene_material_3d";
 bind "scene_asset_browser";
+bind "inspector_rows";
 
 bind GUI = Zanna.GUI;
 bind SceneNode = Zanna.Graphics3D.SceneNode;
@@ -122,14 +123,12 @@ class SceneMaterialInspector3D {
         colorPicker.SetTooltip(
             "Base RGB color; opacity is edited separately below");
 
-        var scalarRow = GUI.HBox.New();
-        scalarRow.SetSpacing(4.0);
+        var scalarRow = inspector_rows.NewWrapRow();
         group.AddChild(scalarRow);
         alpha = AddUnitSpinner(scalarRow, "Alpha", 1.0);
         metallic = AddUnitSpinner(scalarRow, "Metal", 0.0);
 
-        var surfaceRow = GUI.HBox.New();
-        surfaceRow.SetSpacing(4.0);
+        var surfaceRow = inspector_rows.NewWrapRow();
         group.AddChild(surfaceRow);
         roughness = AddUnitSpinner(surfaceRow, "Rough", 0.5);
         ambientOcclusion = AddUnitSpinner(surfaceRow, "AO", 1.0);
@@ -144,8 +143,7 @@ class SceneMaterialInspector3D {
         doubleSided = GUI.Checkbox.New(group, "Double-sided");
         unlit = GUI.Checkbox.New(group, "Unlit");
 
-        var materialButtons = GUI.HBox.New();
-        materialButtons.SetSpacing(4.0);
+        var materialButtons = inspector_rows.NewWrapRow();
         group.AddChild(materialButtons);
         applyButton = GUI.Button.New(materialButtons, "Create Material");
         applyButton.SetTooltip(
@@ -181,8 +179,7 @@ class SceneMaterialInspector3D {
         mapPreviewImage.SetVisible(false);
         mapPreviewStage.SetVisible(false);
 
-        var mapButtons = GUI.HBox.New();
-        mapButtons.SetSpacing(4.0);
+        var mapButtons = inspector_rows.NewWrapRow();
         mapGroup.AddChild(mapButtons);
         chooseMapButton = GUI.Button.New(mapButtons, "Choose Map...");
         chooseMapButton.SetAccessibleName("Choose material texture map");
@@ -591,7 +588,7 @@ class SceneMaterialInspector3D {
     }
 
     /// @brief Configure one normalized scalar spinner.
-    hide func AddUnitSpinner(parent: GUI.HBox,
+    hide func AddUnitSpinner(parent: GUI.Flex,
                              label: String,
                              value: Number) -> GUI.Spinner {
         GUI.Label.New(parent, label);

@@ -22,6 +22,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements stable deferred geometry bindings for Canvas3D mesh draws.
+/// @details The module hashes frame-local bindings, retains immutable heap-mesh
+///   revisions, snapshots transient geometry within a byte budget, supports
+///   camera-relative rebasing, and caches generated tangent variants.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -35,6 +41,11 @@
 /// @details The hash table indexes immutable snapshot entries by the source mesh handle plus the
 ///   geometry revision and validated vertex/index counts. Tangent state is deliberately excluded:
 ///   an existing plain snapshot can be upgraded in place by tangent generation.
+/// @param source Non-null source identity; its pointer value is hashed but not dereferenced.
+/// @param geometry_revision Source geometry revision represented by the binding.
+/// @param vertex_count Validated vertex count represented by the binding.
+/// @param index_count Validated index count represented by the binding.
+/// @return Deterministic nonzero hash key for the supplied tuple.
 static uint64_t canvas3d_mesh_snapshot_key(void *source,
                                            uint32_t geometry_revision,
                                            uint32_t vertex_count,
@@ -46,6 +57,12 @@ static uint64_t canvas3d_mesh_snapshot_key(void *source,
 }
 
 /// @brief Return whether one snapshot entry matches the requested source/revision/count tuple.
+/// @param entry Borrowed snapshot entry to inspect; may be `NULL`.
+/// @param source Exact source identity required.
+/// @param geometry_revision Exact source revision required.
+/// @param vertex_count Exact vertex count required.
+/// @param index_count Exact index count required.
+/// @return Nonzero only when @p entry exists and every key field matches.
 static int canvas3d_mesh_snapshot_entry_matches(const rt_canvas3d_mesh_snapshot_entry *entry,
                                                 void *source,
                                                 uint32_t geometry_revision,
@@ -56,6 +73,8 @@ static int canvas3d_mesh_snapshot_entry_matches(const rt_canvas3d_mesh_snapshot_
 }
 
 /// @brief Clear the snapshot hash table to all-empty slots.
+/// @param c Canvas whose allocated hash slots are reset to the empty sentinel;
+///   null or unavailable tables are ignored.
 void canvas3d_mesh_snapshot_hash_clear(rt_canvas3d *c) {
     if (!c || !c->mesh_snapshot_hash || c->mesh_snapshot_hash_capacity <= 0)
         return;
@@ -67,6 +86,10 @@ void canvas3d_mesh_snapshot_hash_clear(rt_canvas3d *c) {
 /// @details Open addressing keeps the table allocation-free during lookups. Returns 0 only when
 ///   the table is unavailable or saturated; callers can still fall back to the linear snapshot
 ///   list.
+/// @param c Canvas owning a power-of-two hash table and snapshot array.
+/// @param entry_index Valid index in the current snapshot array to insert.
+/// @return Nonzero when an empty probe slot accepted the index; zero for invalid
+///   state, a source-less entry, or a saturated table.
 static int canvas3d_mesh_snapshot_hash_insert(rt_canvas3d *c, int32_t entry_index) {
     rt_canvas3d_mesh_snapshot_entry *entry;
     uint64_t key;
@@ -96,6 +119,10 @@ static int canvas3d_mesh_snapshot_hash_insert(rt_canvas3d *c, int32_t entry_inde
 /// @details Rebuilds from the snapshot array after growth so lookup remains valid if the entry
 ///   array was reallocated. The hash capacity is always a power of two and at least twice the
 ///   requested entry count to keep probing short.
+/// @param c Canvas owning the hash and snapshot arrays.
+/// @param needed Nonnegative number of snapshot entries the table must index.
+/// @return Nonzero when a complete rebuilt table is available. On overflow or
+///   allocation failure, returns zero and marks the hash dirty so lookup scans remain valid.
 static int canvas3d_ensure_mesh_snapshot_hash(rt_canvas3d *c, int32_t needed) {
     int32_t new_cap;
     int32_t *grown;
@@ -129,6 +156,12 @@ static int canvas3d_ensure_mesh_snapshot_hash(rt_canvas3d *c, int32_t needed) {
 }
 
 /// @brief Find a cached snapshot entry index, using the hash table then falling back to a scan.
+/// @param c Canvas containing the frame snapshot table.
+/// @param source Non-null source identity to locate.
+/// @param geometry_revision Required geometry revision.
+/// @param vertex_count Required validated vertex count.
+/// @param index_count Required validated index count.
+/// @return Matching zero-based snapshot index, or `-1` when absent or input is invalid.
 static int32_t canvas3d_find_mesh_snapshot(rt_canvas3d *c,
                                            void *source,
                                            uint32_t geometry_revision,
@@ -207,6 +240,13 @@ static int canvas3d_consume_injected_snapshot_failure(rt_canvas3d *c, size_t req
 ///          consumes the draw command — the snapshot lives on the canvas's temp
 ///          buffer list, freed at end-of-frame. Returns 1 on success, 0 on
 ///          allocation failure or invalid mesh state.
+/// @param c Canvas that tracks the resulting allocations and per-frame byte budget.
+/// @param mesh Borrowed source mesh with nonempty validated vertex and index arrays.
+/// @param out_vertices Output receiving the tracked vertex copy on success.
+/// @param out_indices Output receiving the tracked index copy on success.
+/// @return Nonzero on success; zero for invalid geometry, size overflow, budget or
+///   injected rejection, allocation failure, or temp-tracker failure. Outputs are
+///   not modified unless both buffers become tracked.
 int canvas3d_snapshot_mesh_geometry(rt_canvas3d *c,
                                     const rt_mesh3d *mesh,
                                     vgfx3d_vertex_t **out_vertices,
@@ -269,6 +309,12 @@ int canvas3d_snapshot_mesh_geometry(rt_canvas3d *c,
 }
 
 /// @brief Compute the axis-aligned bounding box of a vertex array (for culling/occlusion).
+/// @param vertices Borrowed array of @p vertex_count vertices; may be `NULL`.
+/// @param vertex_count Number of elements in @p vertices.
+/// @param out_min Output three-element minimum corner.
+/// @param out_max Output three-element maximum corner.
+/// @details Null or empty input produces zero bounds. Null output pointers are
+///   ignored without modifying either destination.
 void canvas3d_compute_vertices_aabb(const vgfx3d_vertex_t *vertices,
                                     uint32_t vertex_count,
                                     float out_min[3],
@@ -288,6 +334,14 @@ void canvas3d_compute_vertices_aabb(const vgfx3d_vertex_t *vertices,
 ///          matrix would otherwise multiply very large positions. `Mesh3D.AddVertex` preserves
 ///          authored double positions in `positions64`; importer buffers without a sidecar fall
 ///          back to their existing float positions.
+/// @param c Canvas that owns and tracks the copied buffers.
+/// @param mesh Borrowed source mesh and optional double-precision position sidecar.
+/// @param origin Three-element local-space origin subtracted from every position.
+/// @param out_vertices Output receiving the rebased frame-owned vertex copy.
+/// @param out_indices Output receiving the unchanged frame-owned index copy.
+/// @return Nonzero on success. Returns zero if ordinary snapshotting fails or any
+///   rebased component cannot fit in `float`; range failure releases both copies
+///   and sets both output pointers to `NULL`.
 int canvas3d_snapshot_mesh_geometry_rebased(rt_canvas3d *c,
                                             const rt_mesh3d *mesh,
                                             const double origin[3],
@@ -325,6 +379,11 @@ int canvas3d_snapshot_mesh_geometry_rebased(rt_canvas3d *c,
 }
 
 /// @brief Ensure the per-frame mesh-snapshot cache can hold @p needed entries (grows as needed).
+/// @param c Canvas owning the cache entry array.
+/// @param needed Nonnegative minimum entry capacity.
+/// @return Nonzero when the requested capacity is available; zero for invalid
+///   state, arithmetic overflow, or allocation failure. Existing entries survive
+///   unsuccessful growth.
 int canvas3d_reserve_mesh_snapshot_cache(rt_canvas3d *c, int32_t needed) {
     if (!c)
         return 0;
@@ -356,6 +415,15 @@ int canvas3d_reserve_mesh_snapshot_cache(rt_canvas3d *c, int32_t needed) {
 ///          so a later source mutation cannot invalidate already queued pointers. Stack/transient
 ///          meshes retain the legacy per-frame copy path. The frame snapshot table deduplicates
 ///          both forms by source, source revision, and safe element counts.
+/// @param c Canvas owning frame binding state and retained references.
+/// @param mesh Borrowed mutable mesh whose current geometry revision is bound.
+/// @param mesh_obj Source identity; heap payloads enable retained-revision caching,
+///   while other values use a frame-owned geometry copy.
+/// @param out_vertices Output receiving immutable vertices valid through frame cleanup.
+/// @param out_indices Output receiving immutable indices valid through frame cleanup.
+/// @return Nonzero when stable geometry was bound. Returns zero for invalid input,
+///   injected failure, unusable source geometry, budget rejection, or allocation
+///   failure. Failure to add an already valid copy to the lookup table is nonfatal.
 int canvas3d_snapshot_mesh_geometry_cached(rt_canvas3d *c,
                                            rt_mesh3d *mesh,
                                            void *mesh_obj,
@@ -434,6 +502,11 @@ int canvas3d_snapshot_mesh_geometry_cached(rt_canvas3d *c,
 /// @details Builds a temporary Mesh3D facade over @p vertices/@p indices so the existing tangent
 ///   generator can run without mutating the source mesh. The vertex and index buffers remain owned
 ///   by the canvas temp-buffer tracker; only the transient facade lives on the stack.
+/// @param source Borrowed mesh supplying validated counts and geometry revision.
+/// @param vertices Writable frame-owned vertex copy updated with generated tangents.
+/// @param indices Borrowed frame-owned index copy used to derive tangent topology.
+/// @return Nonzero when tangent generation reports a ready variant; zero for null
+///   input or generation failure.
 static int canvas3d_generate_cached_snapshot_tangents(const rt_mesh3d *source,
                                                       vgfx3d_vertex_t *vertices,
                                                       uint32_t *indices) {
@@ -459,6 +532,15 @@ static int canvas3d_generate_cached_snapshot_tangents(const rt_mesh3d *source,
 ///          variant therefore survives frame cleanup and is shared by every backend submission
 ///          until mutation forks the mesh revision. Stack/transient sources keep the legacy
 ///          frame-owned snapshot behavior.
+/// @param c Canvas owning frame binding state and retained references.
+/// @param mesh Borrowed mutable mesh whose geometry needs a tangent-ready binding.
+/// @param mesh_obj Source identity; a heap payload permits persistent revision caching.
+/// @param out_vertices Output receiving the retained tangent variant or a tangent-modified
+///   frame copy, valid through frame cleanup.
+/// @param out_indices Output receiving the matching retained or frame-owned indices.
+/// @return Nonzero when tangent-ready stable geometry is bound. Returns zero for
+///   invalid input, injected failure, snapshot/allocation failure, or unsuccessful
+///   tangent generation; temporary copies are released on generation failure.
 int canvas3d_snapshot_mesh_geometry_with_tangents_cached(rt_canvas3d *c,
                                                          rt_mesh3d *mesh,
                                                          void *mesh_obj,
@@ -577,6 +659,10 @@ void canvas3d_release_retained_mesh_revisions(rt_canvas3d *c) {
 ///          allocation fails) so a later mutation cannot alter submitted bytes. Draw-time
 ///          deformation payloads stay on the original retained mesh object so GPU skinning/morph
 ///          paths can bind palettes and weights without forcing CPU geometry snapshots.
+/// @param mesh Borrowed mesh; must be non-null for a positive decision.
+/// @param mesh_obj Candidate runtime object identity.
+/// @return Nonzero exactly when both pointers are non-null and @p mesh_obj is a
+///   managed heap payload; zero for stack/transient or invalid inputs.
 int canvas3d_should_snapshot_geometry(const rt_mesh3d *mesh, void *mesh_obj) {
     if (!mesh || !mesh_obj)
         return 0;

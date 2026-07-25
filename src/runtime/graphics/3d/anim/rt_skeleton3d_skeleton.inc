@@ -3,6 +3,16 @@
 // File: src/runtime/graphics/3d/anim/rt_skeleton3d_skeleton.inc  (#included from rt_skeleton3d.c;
 // not a standalone translation unit) Purpose: Skeleton3D bone hierarchy implementation
 //===----------------------------------------------------------------------===//
+/**
+ * @file rt_skeleton3d_skeleton.inc
+ * @brief Implements skeleton topology, bind poses, names, and retarget aliases.
+ *
+ * This implementation fragment owns bone insertion and retained exact-length
+ * names, parent validation, cached bind-pose TRS values, model-space
+ * inverse-bind generation, lookup and introspection, and the bounded legacy
+ * alias table used during animation retargeting. It is included by
+ * `rt_skeleton3d.c` and is not compiled independently.
+ */
 /*==========================================================================
  * Skeleton3D implementation
  *=========================================================================*/
@@ -11,7 +21,8 @@
 /// @details The count is clamped through the private storage invariant before any
 ///          element is inspected. Registry validation protects finalization from a
 ///          corrupted private name slot while still balancing every published retain.
-/// @param skeleton Skeleton whose bone-name references are to be released; may be NULL.
+/// @param[in,out] skeleton Skeleton whose bone-name references are to be
+/// released; may be `NULL`.
 static void skeleton3d_release_bone_names(rt_skeleton3d *skeleton) {
     int32_t bone_count = skeleton3d_safe_bone_count(skeleton);
     for (int32_t i = 0; i < bone_count; ++i) {
@@ -25,8 +36,8 @@ static void skeleton3d_release_bone_names(rt_skeleton3d *skeleton) {
 /// @details Comparison uses the complete recorded byte lengths, so names that share a long
 ///          prefix remain distinct. NULL is treated as the empty string for defensive reads
 ///          of zero-initialized private slots.
-/// @param left First runtime name.
-/// @param right Second runtime name.
+/// @param[in] left First runtime name.
+/// @param[in] right Second runtime name.
 /// @return Nonzero exactly when both names contain the same byte sequence.
 static int skeleton3d_names_equal(rt_string left, rt_string right) {
     int64_t left_len = left ? rt_str_len(left) : 0;
@@ -46,8 +57,8 @@ static int skeleton3d_names_equal(rt_string left, rt_string right) {
 /// @details Alias and persistence tables retain their historical C-string representation;
 ///          this bridge still compares the complete runtime-string length and never copies
 ///          into a fixed-size temporary buffer.
-/// @param runtime_name Length-carrying bone name; NULL represents empty.
-/// @param c_name NUL-terminated comparison name; NULL represents empty.
+/// @param[in] runtime_name Length-carrying bone name; `NULL` represents empty.
+/// @param[in] c_name Null-terminated comparison name; `NULL` represents empty.
 /// @return Nonzero exactly when the two byte sequences match.
 static int skeleton3d_name_equals_cstr(rt_string runtime_name, const char *c_name) {
     int64_t runtime_len = runtime_name ? rt_str_len(runtime_name) : 0;
@@ -65,8 +76,8 @@ static int skeleton3d_name_equals_cstr(rt_string runtime_name, const char *c_nam
 /// @details Bone identity no longer uses this representation; it remains only for the
 ///          compatibility alias table whose public behavior historically caps each side at
 ///          63 bytes. The helper always terminates @p output and rejects invalid handles.
-/// @param name Runtime alias name; NULL produces an empty alias.
-/// @param output Destination buffer with room for 64 bytes.
+/// @param[in] name Runtime alias name; `NULL` produces an empty alias.
+/// @param[out] output Destination buffer with room for 64 bytes.
 /// @return Nonzero when the input was valid and the destination was initialized.
 static int skeleton3d_copy_alias_name(rt_string name, char output[64]) {
     const char *bytes;
@@ -90,6 +101,9 @@ static int skeleton3d_copy_alias_name(rt_string name, char output[64]) {
 }
 
 /// @brief GC finalizer for a Skeleton3D — releases every retained name and owned array.
+/// @param[in,out] obj Skeleton payload being finalized.
+/// @details Clears the bone and alias arrays and resets their logical counts
+/// and capacities after releasing every valid bone-name reference.
 static void rt_skeleton3d_finalize(void *obj) {
     rt_skeleton3d *s = (rt_skeleton3d *)obj;
     skeleton3d_release_bone_names(s);
@@ -104,6 +118,10 @@ static void rt_skeleton3d_finalize(void *obj) {
 }
 
 /// @brief Allocate an empty Skeleton3D — no bones until `add_bone` is called.
+/// @return A new mutable runtime skeleton, or `NULL` when allocation fails.
+/// @details The object initially owns no arrays, contains no aliases, and
+/// remains structurally mutable until a player, blender, or other pose consumer
+/// freezes it.
 void *rt_skeleton3d_new(void) {
     rt_skeleton3d *s =
         (rt_skeleton3d *)rt_obj_new_i64(RT_G3D_SKELETON3D_CLASS_ID, (int64_t)sizeof(rt_skeleton3d));
@@ -126,10 +144,21 @@ void *rt_skeleton3d_new(void) {
 /// @brief Append one bone to the skeleton with its bind-pose matrix and parent reference.
 ///
 /// `parent_index` of -1 marks a root bone. `bind_mat4` is the
-/// bone-to-model transform in the rest pose; the inverse-bind
-/// (model-to-bone) is computed lazily by
+/// parent-relative local transform in the rest pose; the model-space
+/// inverse-bind matrix is computed lazily by
 /// `rt_skeleton3d_compute_inverse_bind`.
+///
+/// @param[in,out] obj Mutable skeleton receiving the bone.
+/// @param[in] name Exact runtime string retained for the bone; `NULL` selects
+/// the shared empty string.
+/// @param[in] parent_index `-1` for a root or the index of an already-added
+/// parent.
+/// @param[in] bind_mat4 Optional runtime Mat4 containing the row-major local
+/// bind transform. Invalid or non-float-representable matrices become identity.
 /// @return The newly-assigned bone index (0-based), or -1 on failure.
+/// @details Bone insertion is rejected after the skeleton is frozen and at the
+/// 1,024-bone ceiling. The local matrix is decomposed once to cache translation,
+/// normalized rotation, and scale for animation fallback sampling.
 int64_t rt_skeleton3d_add_bone(void *obj, rt_string name, int64_t parent_index, void *bind_mat4) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     rt_string retained_name;
@@ -224,9 +253,14 @@ int64_t rt_skeleton3d_add_bone(void *obj, rt_string name, int64_t parent_index, 
 
 /// @brief Precompute the inverse-bind matrix for every bone (model-space → bone-space).
 ///
-/// Skinning multiplies each bone's animated world matrix by its
+/// Skinning multiplies each bone's animated model-space matrix by its
 /// inverse-bind to displace each vertex from rest space into the
 /// animated pose. Call this once after all bones are added.
+///
+/// @param[in,out] obj Skeleton whose inverse-bind matrices are regenerated.
+/// @details Local bind matrices are composed through the hierarchy before
+/// inversion. Allocation failure leaves existing inverse-bind values unchanged;
+/// a singular or non-finite global bind matrix receives identity.
 void rt_skeleton3d_compute_inverse_bind(void *obj) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     float *bind_locals;
@@ -254,6 +288,9 @@ void rt_skeleton3d_compute_inverse_bind(void *obj) {
 }
 
 /// @brief Number of bones in the skeleton (0 for NULL).
+/// @param[in,out] obj Skeleton to query.
+/// @return The readable bone count after clamping corrupt metadata to the
+/// allocation and skeleton ceiling, or zero for an invalid object.
 int64_t rt_skeleton3d_get_bone_count(void *obj) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     if (!s)
@@ -263,6 +300,11 @@ int64_t rt_skeleton3d_get_bone_count(void *obj) {
 }
 
 /// @brief Linear exact-length search for a bone by name; returns its index or -1 if absent.
+/// @param[in,out] obj Skeleton to search.
+/// @param[in] name Valid runtime string matched by complete byte length and
+/// content.
+/// @return The first matching zero-based index, or `-1` for invalid input or
+/// no match.
 int64_t rt_skeleton3d_find_bone(void *obj, rt_string name) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     if (!s || !name)
@@ -280,8 +322,8 @@ int64_t rt_skeleton3d_find_bone(void *obj, rt_string name) {
 /// @details This preserves `rt_skeleton3d_find_bone` exactly, but turns the
 ///          legacy `-1` sentinel into `None` for callers that want explicit
 ///          absence handling.
-/// @param obj Skeleton3D handle.
-/// @param name Exact bone name to search for.
+/// @param[in,out] obj Skeleton3D handle.
+/// @param[in] name Exact bone name to search for.
 /// @return `Some(index)` for a matching bone, otherwise `None`.
 void *rt_skeleton3d_find_bone_option(void *obj, rt_string name) {
     int64_t index = rt_skeleton3d_find_bone(obj, name);
@@ -291,6 +333,10 @@ void *rt_skeleton3d_find_bone_option(void *obj, rt_string name) {
 /// @brief Read the exact name of bone at `index` as a retained runtime-string reference.
 /// @details The caller owns the returned reference. Invalid skeletons and indexes return
 ///          the shared empty string, preserving the historical non-NULL result contract.
+/// @param[in,out] obj Skeleton to query.
+/// @param[in] index Zero-based bone index.
+/// @return A retained exact bone-name string, or a runtime empty string when
+/// the object or index is invalid.
 rt_string rt_skeleton3d_get_bone_name(void *obj, int64_t index) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     if (!s)
@@ -301,8 +347,11 @@ rt_string rt_skeleton3d_get_bone_name(void *obj, int64_t index) {
     return rt_string_ref(s->bones[index].name ? s->bones[index].name : rt_str_empty());
 }
 
-/// @brief Read the bind-pose Mat4 of bone at `index` (identity for out-of-range / NULL).
 /// @brief Internal: parent index of the bone at @p index (-1 for roots/out of range).
+/// @param[in,out] obj Skeleton to query.
+/// @param[in] index Zero-based bone index.
+/// @return A validated parent index, or `-1` for a root, invalid relation,
+/// invalid skeleton, or out-of-range bone.
 int64_t rt_skeleton3d_get_bone_parent_raw(void *obj, int64_t index) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     if (!s)
@@ -315,6 +364,10 @@ int64_t rt_skeleton3d_get_bone_parent_raw(void *obj, int64_t index) {
 
 /// @brief Internal: copy the bone's parent-relative bind matrix (row-major 16
 ///        doubles) into @p out16; returns 0 on out-of-range.
+/// @param[in,out] obj Skeleton to query.
+/// @param[in] index Zero-based bone index.
+/// @param[out] out16 Destination with room for 16 doubles.
+/// @return One when a valid matrix was copied, otherwise zero.
 int8_t rt_skeleton3d_get_bone_bind_local_raw(void *obj, int64_t index, double *out16) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     if (!s || !out16)
@@ -328,6 +381,11 @@ int8_t rt_skeleton3d_get_bone_bind_local_raw(void *obj, int64_t index, double *o
     return 1;
 }
 
+/// @brief Copy one bone's parent-relative bind transform into a runtime Mat4.
+/// @param[in,out] obj Skeleton to query.
+/// @param[in] index Zero-based bone index.
+/// @return A newly allocated row-major Mat4, or `NULL` for an invalid skeleton
+/// or out-of-range index.
 void *rt_skeleton3d_get_bone_bind_pose(void *obj, int64_t index) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     if (!s)
@@ -363,6 +421,14 @@ void *rt_skeleton3d_get_bone_bind_pose(void *obj, int64_t index) {
 /// external name replaces the mapping; an empty/NULL `local` removes it.
 /// The alias table is not consumed by skinning or pose math, so it may be
 /// edited freely even on a frozen skeleton.
+///
+/// @param[in,out] obj Skeleton whose alias table is modified.
+/// @param[in] external Nonempty foreign-rig name, truncated to 63 bytes.
+/// @param[in] local Local bone name, also truncated to 63 bytes; `NULL` or
+/// empty removes an existing mapping.
+/// @details Matching is exact and case-sensitive after truncation. Replacement
+/// preserves the table slot, while removal fills the gap with the last entry
+/// and therefore does not preserve alias order.
 void rt_skeleton3d_set_bone_alias(void *obj, rt_string external, rt_string local) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     char ext_buf[64];
@@ -408,13 +474,20 @@ void rt_skeleton3d_set_bone_alias(void *obj, rt_string external, rt_string local
 }
 
 /// @brief Number of registered bone-name aliases.
+/// @param[in] obj Skeleton to query.
+/// @return The stored alias count, or zero for an invalid object.
 int64_t rt_skeleton3d_get_alias_count(void *obj) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
     return s ? s->alias_count : 0;
 }
 
 /// @brief Resolve an external bone name through the alias table.
+/// @param[in] s Skeleton whose aliases are searched.
+/// @param[in] external Nonempty null-terminated foreign-rig name.
 /// @return The mapped local bone name, or NULL when no alias matches.
+/// @note The returned pointer is borrowed from the skeleton and becomes invalid
+/// if that alias is replaced or removed, the table grows, or the skeleton is
+/// destroyed.
 const char *skeleton3d_alias_lookup(const rt_skeleton3d *s, const char *external) {
     if (!s || !external || !external[0])
         return NULL;

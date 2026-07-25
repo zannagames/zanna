@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_pixels_internal.h
+// File: src/runtime/graphics/2d/rt_pixels_internal.h
 // Purpose: Shared internal definitions for the Pixels (software image buffer)
 //   runtime implementation. Exposes the rt_pixels_impl struct and common
 //   helpers so that the core, I/O, transform, and draw modules can all access
@@ -21,13 +21,22 @@
 //   - The rt_pixels_impl struct is GC-managed via rt_obj_new_i64.
 //   - Pixel data is embedded in the GC allocation (not separately malloc'd).
 //
-// Links: src/runtime/graphics/rt_pixels.h (public API),
-//        src/runtime/graphics/rt_pixels.c (core operations),
-//        src/runtime/graphics/rt_pixels_io.c (BMP/PNG/JPEG I/O),
-//        src/runtime/graphics/rt_pixels_transform.c (geometric and effect ops),
-//        src/runtime/graphics/rt_pixels_draw.c (drawing primitives)
+// Links: src/runtime/graphics/2d/rt_pixels.h (public API),
+//        src/runtime/graphics/2d/rt_pixels.c (core operations),
+//        src/runtime/graphics/2d/rt_pixels_io.c (BMP/PNG/JPEG I/O),
+//        src/runtime/graphics/2d/rt_pixels_transform.c (geometry and effects),
+//        src/runtime/graphics/2d/rt_pixels_draw.c (drawing primitives)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines the private Pixels payload and shared inline operations.
+///
+/// This header centralizes opaque-handle validation, runtime color
+/// normalization, saturating coordinate arithmetic, rectangle and copy
+/// clipping, mutation-generation invalidation, alpha classification, and
+/// source-over composition. It is an implementation seam for the split
+/// Pixels translation units and is not a public C ABI header.
 #pragma once
 
 #include "rt_object.h"
@@ -36,6 +45,9 @@
 #include <limits.h>
 #include <stdint.h>
 
+/// Marks the runtime's tagged `Color.RGBA` representation.
+/// @details The low 32 bits of a tagged value use `0xAARRGGBB`; the marker
+///          distinguishes it from Canvas RGB and raw Pixels RGBA integers.
 #define RT_PIXELS_COLOR_EXPLICIT_ALPHA_FLAG (INT64_C(1) << 56)
 
 /// @brief Cached alpha-content classes used by deferred material routing.
@@ -48,7 +60,11 @@ typedef enum rt_pixels_alpha_classification {
     RT_PIXELS_ALPHA_FRACTIONAL = 2
 } rt_pixels_alpha_classification;
 
-/// @brief Pixels implementation structure.
+/// @brief GC-managed payload behind every opaque Pixels handle.
+/// @details Nonempty instances store the row-major pixel words immediately
+///          after this header in the same runtime allocation. Mutation
+///          generation and alpha-cache state are intentionally colocated so
+///          render caches can key and invalidate without rescanning eagerly.
 typedef struct rt_pixels_impl {
     int64_t width;                  ///< Width in pixels.
     int64_t height;                 ///< Height in pixels.
@@ -61,10 +77,23 @@ typedef struct rt_pixels_impl {
     int8_t alpha_scan_classification; ///< Cached `rt_pixels_alpha_classification` value.
 } rt_pixels_impl;
 
-/// @brief Trap for invalid opaque Pixels handles without exposing runtime.def symbols here.
+/// @brief Report an invalid opaque Pixels handle without exposing runtime
+///        definition symbols in this internal header.
+/// @param op Operation-specific diagnostic text, or null when the caller has
+///        no override.
+/// @param fallback Fallback trap text used when @p op is null.
 void zanna_pixels_trap_invalid_handle(const char *op, const char *fallback);
 
 /// @brief Validate and cast an opaque handle to a Pixels implementation.
+/// @details Normal runtime builds require the expected class identifier and
+///          minimum payload size. Invalid input traps through
+///          `zanna_pixels_trap_invalid_handle()` and returns null. Specialized
+///          internal builds defining `RT_PIXELS_INTERNAL_ASSUME_STRUCT_HANDLE`
+///          use a direct cast and skip runtime-object validation.
+/// @param pixels Opaque candidate handle.
+/// @param op Operation-specific diagnostic text for validation failures.
+/// @return The validated implementation pointer, or null after a validation
+///         trap.
 static inline rt_pixels_impl *rt_pixels_checked_impl(void *pixels, const char *op) {
 #ifdef RT_PIXELS_INTERNAL_ASSUME_STRUCT_HANDLE
     (void)op;
@@ -82,7 +111,13 @@ static inline rt_pixels_impl *rt_pixels_checked_impl(void *pixels, const char *o
 #endif
 }
 
-/// @brief Nullable validation helper for optional Pixels handles.
+/// @brief Validate an optional Pixels handle without trapping.
+/// @details The normal path accepts only an instance of the Pixels runtime
+///          class with a complete implementation payload. The struct-handle
+///          specialization performs only the direct cast.
+/// @param pixels Optional opaque candidate handle.
+/// @return The validated implementation pointer, or null for absent or
+///         invalid input.
 static inline rt_pixels_impl *rt_pixels_checked_impl_or_null(void *pixels) {
 #ifdef RT_PIXELS_INTERNAL_ASSUME_STRUCT_HANDLE
     return (rt_pixels_impl *)pixels;
@@ -94,17 +129,27 @@ static inline rt_pixels_impl *rt_pixels_checked_impl_or_null(void *pixels) {
 }
 
 /// @brief Convert 0x00RRGGBB canvas color to 0xRRGGBBFF (fully-opaque RGBA).
+/// @param color Integer whose low 24 bits contain Canvas-style RGB channels.
+/// @return Canonical raw Pixels `0xRRGGBBFF`.
 static inline uint32_t rgb_to_rgba(int64_t color) {
     uint32_t rgb = (uint32_t)((uint64_t)color & 0x00FFFFFFu);
     return (rgb << 8) | 0xFFu;
 }
 
 /// @brief Preserve a caller-supplied raw 0xRRGGBBAA value.
+/// @param rgba Integer whose low 32 bits contain canonical raw Pixels RGBA.
+/// @return The low 32 bits unchanged.
 static inline uint32_t rt_pixels_raw_rgba(int64_t rgba) {
     return (uint32_t)((uint64_t)rgba & 0xFFFFFFFFu);
 }
 
-/// @brief Convert Canvas RGB or tagged Color.RGBA values into raw 0xRRGGBBAA.
+/// @brief Normalize any public drawing-color form to raw `0xRRGGBBAA`.
+/// @details Explicitly tagged `Color.RGBA` stores `0xAARRGGBB` in its low
+///          word and is reordered. Untagged values at most `0x00FFFFFF` are
+///          opaque Canvas RGB; larger untagged values are already raw Pixels
+///          RGBA and retain their low 32 bits.
+/// @param color Canvas RGB, raw Pixels RGBA, or tagged runtime `Color.RGBA`.
+/// @return Canonical raw Pixels `0xRRGGBBAA`.
 static inline uint32_t rt_pixels_color_to_rgba(int64_t color) {
     uint64_t c = (uint64_t)color;
     if ((c & (uint64_t)RT_PIXELS_COLOR_EXPLICIT_ALPHA_FLAG) != 0) {
@@ -121,6 +166,10 @@ static inline uint32_t rt_pixels_color_to_rgba(int64_t color) {
 }
 
 /// @brief Preserve raw RGBA unless the value is an explicitly tagged Color.RGBA.
+/// @details Unlike `rt_pixels_color_to_rgba()`, an untagged 24-bit value is
+///          treated as raw RGBA rather than opaque Canvas RGB.
+/// @param color Raw Pixels RGBA or tagged runtime `Color.RGBA`.
+/// @return Canonical raw Pixels `0xRRGGBBAA`.
 static inline uint32_t rt_pixels_rgba_or_tagged_color_to_rgba(int64_t color) {
     uint64_t c = (uint64_t)color;
     if ((c & (uint64_t)RT_PIXELS_COLOR_EXPLICIT_ALPHA_FLAG) == 0)
@@ -129,6 +178,9 @@ static inline uint32_t rt_pixels_rgba_or_tagged_color_to_rgba(int64_t color) {
 }
 
 /// @brief Convert raw 0xRRGGBBAA storage into a tagged Color.RGBA-compatible value.
+/// @param rgba Canonical raw Pixels `0xRRGGBBAA`.
+/// @return Runtime-tagged value with `0xAARRGGBB` in the low word and
+///         `RT_PIXELS_COLOR_EXPLICIT_ALPHA_FLAG` set.
 static inline int64_t rt_pixels_rgba_to_color(uint32_t rgba) {
     uint32_t r = (rgba >> 24) & 0xFFu;
     uint32_t g = (rgba >> 16) & 0xFFu;
@@ -139,6 +191,10 @@ static inline int64_t rt_pixels_rgba_to_color(uint32_t rgba) {
 }
 
 /// @brief Write one pixel with bounds check (no null check — caller ensures p is valid).
+/// @param p Valid destination implementation with writable storage.
+/// @param x Zero-based destination column.
+/// @param y Zero-based destination row.
+/// @param c Canonical raw `0xRRGGBBAA` value.
 /// @return 1 if a pixel was written, 0 if the coordinate was outside the buffer.
 static inline int8_t set_pixel_raw(rt_pixels_impl *p, int64_t x, int64_t y, uint32_t c) {
     if (x >= 0 && x < p->width && y >= 0 && y < p->height) {
@@ -149,6 +205,10 @@ static inline int8_t set_pixel_raw(rt_pixels_impl *p, int64_t x, int64_t y, uint
 }
 
 /// @brief Bump the image content generation after an in-place mutation.
+/// @details Also invalidates the generation-keyed alpha classification. A null
+///          pointer is ignored. The unsigned generation intentionally wraps
+///          according to C arithmetic after `UINT64_MAX`.
+/// @param p Mutated implementation, or null.
 static inline void pixels_touch(rt_pixels_impl *p) {
     if (p) {
         p->generation++;
@@ -207,7 +267,10 @@ static inline int rt_pixels_has_alpha_texels_cached(rt_pixels_impl *p) {
     return rt_pixels_alpha_classification_cached(p) != RT_PIXELS_ALPHA_OPAQUE;
 }
 
-/// @brief Saturating int64 addition for clipping math.
+/// @brief Add signed clipping coordinates with saturation.
+/// @param a First addend.
+/// @param b Second addend.
+/// @return `a + b` clamped to the signed 64-bit range.
 static inline int64_t rt_pixels_add_sat64(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -216,7 +279,10 @@ static inline int64_t rt_pixels_add_sat64(int64_t a, int64_t b) {
     return a + b;
 }
 
-/// @brief Saturating absolute difference for coordinate deltas.
+/// @brief Compute a saturating absolute signed-coordinate difference.
+/// @param a First coordinate.
+/// @param b Second coordinate.
+/// @return `abs(a - b)` clamped to `INT64_MAX`.
 static inline int64_t rt_pixels_abs_diff_sat64(int64_t a, int64_t b) {
     long double diff = (long double)a - (long double)b;
     if (diff < 0.0L)
@@ -226,7 +292,13 @@ static inline int64_t rt_pixels_abs_diff_sat64(int64_t a, int64_t b) {
     return (int64_t)diff;
 }
 
-/// @brief Saturating subtract by a non-negative value.
+/// @brief Subtract a non-negative extent with saturation.
+/// @details A non-positive @p b leaves @p a unchanged, matching callers that
+///          normalize optional radii or lengths before clipping.
+/// @param a Starting coordinate.
+/// @param b Extent to subtract.
+/// @return @p a unchanged when @p b is non-positive; otherwise `a - b`
+///         clamped to `INT64_MIN`.
 static inline int64_t rt_pixels_sub_nonneg_sat64(int64_t a, int64_t b) {
     if (b <= 0)
         return a;
@@ -235,7 +307,12 @@ static inline int64_t rt_pixels_sub_nonneg_sat64(int64_t a, int64_t b) {
     return a - b;
 }
 
-/// @brief Return how many leading units a negative start skips, capped by len.
+/// @brief Count the leading units clipped by a negative start coordinate.
+/// @param start Requested first coordinate.
+/// @param len Requested non-negative span length.
+/// @return Zero for a non-negative start or non-positive length; otherwise
+///         `-start` capped at @p len, with `INT64_MIN` handled without
+///         negation overflow.
 static inline int64_t rt_pixels_negative_skip(int64_t start, int64_t len) {
     if (start >= 0 || len <= 0)
         return 0;
@@ -245,7 +322,18 @@ static inline int64_t rt_pixels_negative_skip(int64_t start, int64_t len) {
     return skip >= len ? len : skip;
 }
 
-/// @brief Clip paired source/destination spans to both non-negative bounds.
+/// @brief Clip paired source and destination spans to two bounded axes.
+/// @details Negative source coordinates advance the destination by the same
+///          amount; negative destination coordinates advance the source.
+///          The surviving length is then limited by both upper bounds. On
+///          failure, @p len is set to zero whenever it is available.
+/// @param dst_limit Exclusive non-negative destination bound.
+/// @param src_limit Exclusive non-negative source bound.
+/// @param dst In/out destination start coordinate.
+/// @param src In/out source start coordinate.
+/// @param len In/out paired span length.
+/// @return Nonzero when a positive paired span survives; zero for invalid
+///         pointers, invalid limits, overflow, or no intersection.
 static inline int8_t rt_pixels_clip_copy_axis(
     int64_t dst_limit, int64_t src_limit, int64_t *dst, int64_t *src, int64_t *len) {
     if (!dst || !src || !len || *len <= 0 || dst_limit <= 0 || src_limit <= 0) {
@@ -303,7 +391,18 @@ static inline int8_t rt_pixels_clip_copy_axis(
     return *len > 0;
 }
 
-/// @brief Clip an in-place rectangle to a pixel buffer's bounds without endpoint overflow.
+/// @brief Clip an in-place rectangle to a pixel buffer without endpoint overflow.
+/// @details Negative origins reduce the corresponding extent before being
+///          moved to zero. Remaining widths and heights are limited with
+///          subtraction from the destination dimensions, avoiding `x + w`
+///          and `y + h` overflow.
+/// @param p Destination implementation with valid dimensions and storage.
+/// @param x In/out rectangle left coordinate.
+/// @param y In/out rectangle top coordinate.
+/// @param w In/out rectangle width.
+/// @param h In/out rectangle height.
+/// @return Nonzero when a positive clipped rectangle remains; zero for
+///         invalid input, empty dimensions, or no intersection.
 static inline int8_t rt_pixels_clip_rect_to_bounds(
     rt_pixels_impl *p, int64_t *x, int64_t *y, int64_t *w, int64_t *h) {
     if (!p || !p->data || !x || !y || !w || !h || *w <= 0 || *h <= 0 || p->width <= 0 ||
@@ -334,6 +433,13 @@ static inline int8_t rt_pixels_clip_rect_to_bounds(
 }
 
 /// @brief Compose two straight-alpha RGBA pixels using Porter-Duff source-over.
+/// @details Both operands and the result use canonical `0xRRGGBBAA`.
+///          Transparent and opaque source pixels take exact fast paths;
+///          intermediate alpha is calculated in premultiplied channel space
+///          with integer rounding and converted back to straight alpha.
+/// @param dst Destination pixel beneath the source.
+/// @param src Source pixel placed over the destination.
+/// @return The straight-alpha source-over result as `0xRRGGBBAA`.
 static inline uint32_t rt_pixels_alpha_over_rgba(uint32_t dst, uint32_t src) {
     uint32_t sr = (src >> 24) & 0xFFu;
     uint32_t sg = (src >> 16) & 0xFFu;
@@ -369,7 +475,11 @@ static inline uint32_t rt_pixels_alpha_over_rgba(uint32_t dst, uint32_t src) {
     return (r << 24) | (g << 16) | (b << 8) | oa;
 }
 
-/// @brief Integer square root (Newton's method, exact for perfect squares).
+/// @brief Compute the floor of a signed 64-bit integer square root.
+/// @details Uses Newton iteration for positive input. Non-positive values
+///          return zero.
+/// @param n Radicand.
+/// @return `floor(sqrt(n))` for positive @p n; otherwise zero.
 static inline int64_t isqrt64(int64_t n) {
     if (n <= 0)
         return 0;
@@ -384,5 +494,12 @@ static inline int64_t isqrt64(int64_t n) {
 
 /// @brief Allocate a new Pixels object with embedded pixel data.
 /// @details Defined in rt_pixels.c. Creates a GC-managed Pixels object with
-///          zero-filled pixel data embedded in the allocation.
+///          zero-filled pixel data embedded in the allocation. Zero
+///          dimensions produce a valid object without a data region; negative
+///          dimensions return null, while overflow and allocation failure
+///          report runtime traps in the implementation.
+/// @param width Non-negative image width.
+/// @param height Non-negative image height.
+/// @return A new implementation with generation zero and a unique cache
+///         identity, or null when construction fails.
 rt_pixels_impl *pixels_alloc(int64_t width, int64_t height);

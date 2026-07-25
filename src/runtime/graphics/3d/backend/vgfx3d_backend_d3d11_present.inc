@@ -17,11 +17,23 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file vgfx3d_backend_d3d11_present.inc
+/// @brief Implements D3D11 frame lifecycle, presentation, readback, post-processing,
+///   shadow-pass, and skybox operations.
+/// @details This implementation fragment is included by the D3D11 backend translation
+///   unit. It owns no context independently; every GPU resource referenced here is
+///   borrowed from, created for, or released through the supplied backend context.
+
 /// @brief Backend `clear` op — stores the clear color for the next BeginFrame.
 ///
 /// We don't actually clear the targets here; that happens in
 /// `BeginFrame`'s `clear_current_targets` call so we know which
 /// target to clear (depending on RTT/scene/swapchain selection).
+/// @param[in] ctx_ptr Opaque pointer to the D3D11 backend context.
+/// @param[in] win Window handle associated with the clear request; unused by this backend.
+/// @param[in] r Requested red clear component, clamped to the unit interval.
+/// @param[in] g Requested green clear component, clamped to the unit interval.
+/// @param[in] b Requested blue clear component, clamped to the unit interval.
 static void d3d11_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, float b) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     (void)win;
@@ -32,15 +44,10 @@ static void d3d11_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, floa
     ctx->clear_b = vgfx3d_d3d11_clamp_float_param(b, 0.0f, 1.0f, 0.0f);
 }
 
-/// @brief Backend `begin_frame` — set up matrices, target selection, and clear.
-///
-/// Increments the frame serial (used by mesh-cache LRU), recomputes
-/// view-projection (and its inverse), captures fog/camera state,
-/// chooses the active target kind based on RTT/postfx/overlay flags,
-/// updates the frame-history (prev VP for motion blur), and calls
-/// `select_current_targets` + `clear_current_targets` to set the
-/// pipeline up for the upcoming draws.
 /// @brief Radical-inverse Halton sequence sample for TAA sub-pixel jitter (Plan 05).
+/// @param[in] index One-based sequence index to evaluate.
+/// @param[in] base Radix used to reflect the digits of @p index.
+/// @return The radical-inverse sample in the half-open interval `[0, 1)`.
 static float d3d11_halton(uint32_t index, uint32_t base) {
     float f = 1.0f;
     float r = 0.0f;
@@ -53,6 +60,9 @@ static float d3d11_halton(uint32_t index, uint32_t base) {
 }
 
 /// @brief True when the exported postfx chain contains an active effect of @p type_value.
+/// @param[in] chain Post-processing chain to inspect; may be `NULL`.
+/// @param[in] type_value Numeric effect type to locate.
+/// @return Nonzero when an enabled effect with the requested type is present; otherwise zero.
 static int d3d11_chain_has_effect(const vgfx3d_postfx_chain_t *chain, int32_t type_value) {
     return vgfx3d_d3d11_postfx_chain_has_active_effect(chain, type_value);
 }
@@ -60,6 +70,13 @@ static int d3d11_chain_has_effect(const vgfx3d_postfx_chain_t *chain, int32_t ty
 static void d3d11_harvest_depth_probes(d3d11_context_t *ctx);
 static void d3d11_discard_depth_probe_staging(d3d11_context_t *ctx);
 
+/// @brief Begin a D3D11 frame by capturing camera state, selecting targets, and clearing them.
+/// @details Increments the frame serial, sanitizes and derives camera matrices, applies
+///   temporal jitter when TAA is active, selects the RTT, scene, overlay, or swapchain
+///   route, refreshes frame history, clears the selected targets, and binds common state.
+///   Invalid input or an already-active frame leaves the context unchanged.
+/// @param[in,out] ctx_ptr Opaque pointer to the D3D11 backend context.
+/// @param[in] cam Camera and per-frame rendering parameters to sanitize and latch.
 static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     HRESULT hr;
@@ -291,6 +308,7 @@ static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
 /// @details Selects RTT, offscreen-scene, or swapchain depth according to the
 ///   active route, detaches all read/write bindings, and issues one 1x1 copy per
 ///   probe. The next frame's begin harvests the strip with a non-blocking Map.
+/// @param[in,out] ctx Active D3D11 backend context whose queued probes are consumed.
 static void d3d11_issue_depth_probes(d3d11_context_t *ctx) {
     int32_t pixels[VGFX3D_DEPTH_PROBE_MAX][2];
     ID3D11Texture2D *source = NULL;
@@ -400,6 +418,7 @@ static void d3d11_issue_depth_probes(d3d11_context_t *ctx) {
 }
 
 /// @brief Drop a failed/stale probe staging strip so a later frame can recreate it.
+/// @param[in,out] ctx Active D3D11 backend context whose staging state is reset.
 static void d3d11_discard_depth_probe_staging(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -410,6 +429,7 @@ static void d3d11_discard_depth_probe_staging(d3d11_context_t *ctx) {
 }
 
 /// @brief Harvest the previous frame's probe strip without blocking the pipeline.
+/// @param[in,out] ctx Active D3D11 backend context receiving completed probe results.
 static void d3d11_harvest_depth_probes(d3d11_context_t *ctx) {
     D3D11_MAPPED_SUBRESOURCE mapped;
     HRESULT hr;
@@ -460,6 +480,8 @@ static void d3d11_harvest_depth_probes(d3d11_context_t *ctx) {
 }
 
 /// @brief Backend hook: choose the swapchain present sync interval (1 = vsync, 0 = off).
+/// @param[in,out] ctx_ptr Opaque pointer to the D3D11 backend context.
+/// @param[in] enabled Nonzero to present with a synchronization interval of one.
 static void d3d11_set_vsync(void *ctx_ptr, int8_t enabled) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     if (!ctx)
@@ -468,6 +490,10 @@ static void d3d11_set_vsync(void *ctx_ptr, int8_t enabled) {
 }
 
 /// @brief Backend hook: register one NDC scene-depth probe for this frame.
+/// @param[in,out] ctx_ptr Opaque pointer to the active D3D11 backend context.
+/// @param[in] ndc_x Horizontal normalized-device coordinate, clamped to `[-1, 1]`.
+/// @param[in] ndc_y Vertical normalized-device coordinate, clamped to `[-1, 1]`.
+/// @return Frame-local probe slot, or `-1` when the request cannot be queued.
 static int32_t d3d11_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     int32_t slot;
@@ -482,6 +508,9 @@ static int32_t d3d11_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) 
 }
 
 /// @brief Backend hook: read a probe result captured on a previous frame.
+/// @param[in] ctx_ptr Opaque pointer to the D3D11 backend context.
+/// @param[in] slot Frame-local probe slot returned by `d3d11_queue_depth_probe()`.
+/// @return Canonical window-depth sample, or `-1.0f` when the slot is unavailable.
 static float d3d11_read_depth_probe(void *ctx_ptr, int32_t slot) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     if (!ctx || slot < 0 || slot >= ctx->depth_probe_result_count)
@@ -494,6 +523,7 @@ static float d3d11_read_depth_probe(void *ctx_ptr, int32_t slot) {
 /// CPU readback is deferred until a caller explicitly asks for pixels.
 /// This keeps render-to-texture frames on the GPU fast instead of forcing
 /// a staging copy at the end of every RTT frame.
+/// @param[in,out] ctx_ptr Opaque pointer to the active D3D11 backend context.
 static void d3d11_end_frame(void *ctx_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
 
@@ -517,12 +547,15 @@ static void d3d11_end_frame(void *ctx_ptr) {
 }
 
 /// @brief Read the total bytes uploaded to D3D11 textures so far this frame (diagnostics counter).
+/// @param[in] ctx_ptr Opaque pointer to the D3D11 backend context.
+/// @return Accumulated upload byte count, or zero when @p ctx_ptr is `NULL`.
 static uint64_t d3d11_get_texture_upload_bytes(void *ctx_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     return ctx ? ctx->texture_upload_bytes : 0;
 }
 
 /// @brief Release swapchain-owned color/depth targets and clear stale CPU binding mirrors.
+/// @param[in,out] ctx Active D3D11 backend context whose main targets are released.
 static void d3d11_release_swapchain_main_targets(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -537,6 +570,11 @@ static void d3d11_release_swapchain_main_targets(d3d11_context_t *ctx) {
 /// @brief Rebuild the swapchain-derived main render targets (back-buffer RTV, scene/depth
 ///   textures) at @p width × @p height after a resize or device reset; @p log_context
 ///   tags any failure log. Returns the first failing HRESULT, or S_OK on success.
+/// @param[in,out] ctx Active context whose swapchain-derived targets are replaced.
+/// @param[in] width Required back-buffer width in pixels.
+/// @param[in] height Required back-buffer height in pixels.
+/// @param[in] log_context Optional label used when reporting creation failures.
+/// @return `S_OK` on success, `E_INVALIDARG` for invalid inputs, or the first D3D11 failure.
 static HRESULT d3d11_recreate_swapchain_main_targets(d3d11_context_t *ctx,
                                                      int32_t width,
                                                      int32_t height,
@@ -611,6 +649,9 @@ static HRESULT d3d11_recreate_swapchain_main_targets(d3d11_context_t *ctx,
 /// RTV + depth target. Scene-targets are also destroyed; they get
 /// recreated in the next `BeginFrame` at the new size. No-op if the
 /// dimensions match.
+/// @param[in,out] ctx_ptr Opaque pointer to the idle D3D11 backend context.
+/// @param[in] w Requested swapchain width in pixels.
+/// @param[in] h Requested swapchain height in pixels.
 static void d3d11_resize(void *ctx_ptr, int32_t w, int32_t h) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     int32_t old_w;
@@ -666,6 +707,13 @@ static void d3d11_resize(void *ctx_ptr, int32_t w, int32_t h) {
 /// Direct memcpy for R8G8B8A8_UNORM. For R16G16B16A16_FLOAT, decodes
 /// each half to float then quantizes to 8-bit. Other formats are
 /// silently skipped.
+/// @param[out] dst_rgba Destination buffer receiving tightly packed RGBA8 pixels by row.
+/// @param[in] dst_stride Destination row stride in bytes.
+/// @param[in] copy_w Number of pixels to copy from each row.
+/// @param[in] copy_h Number of rows to copy.
+/// @param[in] mapped Mapped D3D11 source payload and row pitch.
+/// @param[in] format Source texture format.
+/// @return One when the requested conversion succeeds; otherwise zero.
 static int d3d11_copy_mapped_texture_to_rgba8(uint8_t *dst_rgba,
                                               int32_t dst_stride,
                                               int32_t copy_w,
@@ -717,6 +765,13 @@ static int d3d11_copy_mapped_texture_to_rgba8(uint8_t *dst_rgba,
 /// Reuses a staging texture matching the source's format + size, CopyResource into it,
 /// Map(READ), copy rows. Caller's destination doesn't have to match the source size —
 /// clipping is applied. Returns 0 on any failure.
+/// @param[in,out] ctx Active D3D11 backend context that owns the reusable staging texture.
+/// @param[in] source_tex Source GPU texture to copy and map.
+/// @param[out] dst_rgba Host buffer receiving RGBA8 pixels; cleared before readback.
+/// @param[in] w Requested destination width in pixels.
+/// @param[in] h Requested destination height in pixels.
+/// @param[in] stride Destination row stride in bytes.
+/// @return One when the source is copied and converted successfully; otherwise zero.
 static int d3d11_readback_texture_rgba(d3d11_context_t *ctx,
                                        ID3D11Texture2D *source_tex,
                                        uint8_t *dst_rgba,
@@ -818,6 +873,10 @@ cleanup:
 ///   into a different RTV. This helper batches the OMSetRenderTargets + RSSetViewports
 ///   calls so each pass is one line, not three, and so the viewport tracks the RTV size
 ///   automatically (missing that is a classic source of postfx-chain letterboxing bugs).
+/// @param[in] ctx Active D3D11 backend context.
+/// @param[in] rtv Render-target view to bind for the next full-screen pass.
+/// @param[in] width Viewport width in pixels.
+/// @param[in] height Viewport height in pixels.
 static void d3d11_bind_postfx_target(d3d11_context_t *ctx,
                                      ID3D11RenderTargetView *rtv,
                                      int32_t width,
@@ -909,6 +968,11 @@ static int d3d11_draw_postfx_pass(d3d11_context_t *ctx,
 ///          further mip is a plain 13-tap downsample. The upsample walk tent-filters each
 ///          deeper mip and accumulates it into the one above via the additive blend
 ///          state, leaving mip 0 with the summed octaves.
+/// @param[in,out] ctx Active D3D11 backend context and bloom resource owner.
+/// @param[in] source_srv Scene or prior-pass color input.
+/// @param[in] width Source width in pixels.
+/// @param[in] height Source height in pixels.
+/// @param[in] threshold Luminance threshold used by the first downsample pass.
 /// @return Mip 0's SRV, or NULL when resources are unavailable.
 static ID3D11ShaderResourceView *d3d11_encode_bloom_chain(d3d11_context_t *ctx,
                                                           ID3D11ShaderResourceView *source_srv,
@@ -1001,6 +1065,12 @@ cleanup:
 ///          @p source_srv. Normal presentation writes the free history slot and flips
 ///          parity. Screenshot replay writes a transient ping-pong target so observing
 ///          a frame cannot advance or overwrite temporal history.
+/// @param[in,out] ctx Active D3D11 backend context and temporal-history owner.
+/// @param[in] source_srv Current-frame color input.
+/// @param[in] width Resolve width in pixels.
+/// @param[in] height Resolve height in pixels.
+/// @param[in] snapshot Optional sanitized TAA settings; defaults are used when `NULL`.
+/// @param[in] preserve_history Nonzero to write a transient target without advancing history.
 /// @return The resolved SRV, or NULL when resources are unavailable.
 static ID3D11ShaderResourceView *d3d11_encode_taa_pass(d3d11_context_t *ctx,
                                                        ID3D11ShaderResourceView *source_srv,
@@ -1087,6 +1157,11 @@ static ID3D11ShaderResourceView *d3d11_encode_taa_pass(d3d11_context_t *ctx,
 /// @brief Encode the Plan 10 SSR pass: ray-march the scene depth in screen space for
 ///        pixels whose motion-target alpha carries an SSR mask, compositing reflected
 ///        scene color over @p source_srv into the SSR target.
+/// @param[in,out] ctx Active D3D11 backend context and SSR target owner.
+/// @param[in] source_srv Scene or prior-pass color input.
+/// @param[in] width SSR output width in pixels.
+/// @param[in] height SSR output height in pixels.
+/// @param[in] snapshot Optional sanitized SSR settings; defaults are used when `NULL`.
 /// @return The composited SRV, or NULL when resources are unavailable.
 static ID3D11ShaderResourceView *d3d11_encode_ssr_pass(d3d11_context_t *ctx,
                                                        ID3D11ShaderResourceView *source_srv,
@@ -1203,6 +1278,13 @@ static int d3d11_draw_overlay_composite(d3d11_context_t *ctx,
 }
 
 /// @brief Resolve the offscreen scene color to a final target without applying user effects.
+/// @param[in,out] ctx Active D3D11 backend context.
+/// @param[in] final_rtv Final render target used unless @p force_offscreen_final is nonzero.
+/// @param[in] final_width Width of @p final_rtv in pixels.
+/// @param[in] final_height Height of @p final_rtv in pixels.
+/// @param[in] force_offscreen_final Nonzero to resolve into an owned post-FX target.
+/// @param[out] out_result_tex Optional receiver for the offscreen result texture.
+/// @return One when the resolve and overlay composite succeed; otherwise zero.
 static int d3d11_resolve_scene_to_target(d3d11_context_t *ctx,
                                          ID3D11RenderTargetView *final_rtv,
                                          int32_t final_width,
@@ -1401,6 +1483,9 @@ static int d3d11_apply_postfx_chain(d3d11_context_t *ctx,
 }
 
 /// @brief Acquire the swapchain backbuffer for readback fallback paths.
+/// @param[in] ctx Active D3D11 backend context with a valid swapchain.
+/// @param[out] out_back_buffer Receives an owned COM reference to the backbuffer.
+/// @return One when a backbuffer reference is acquired; otherwise zero.
 static int d3d11_acquire_backbuffer_for_readback(d3d11_context_t *ctx,
                                                  ID3D11Texture2D **out_back_buffer) {
     HRESULT hr;
@@ -1421,6 +1506,12 @@ static int d3d11_acquire_backbuffer_for_readback(d3d11_context_t *ctx,
 }
 
 /// @brief Backend `readback_rgba` op - pick the best source texture to read.
+/// @param[in,out] ctx_ptr Opaque pointer to the D3D11 backend context.
+/// @param[out] dst_rgba Host buffer receiving the selected frame as RGBA8 pixels.
+/// @param[in] w Requested output width in pixels.
+/// @param[in] h Requested output height in pixels.
+/// @param[in] stride Destination row stride in bytes.
+/// @return One on successful readback; otherwise zero.
 static int d3d11_readback_rgba(
     void *ctx_ptr, uint8_t *dst_rgba, int32_t w, int32_t h, int32_t stride) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
@@ -1484,6 +1575,8 @@ static int d3d11_readback_rgba(
 }
 
 /// @brief Internal present path — composite scene + post-FX + overlay onto the swapchain.
+/// @param[in,out] ctx Active D3D11 backend context with a completed pending frame.
+/// @param[in] chain Optional ordered post-processing chain to apply before presentation.
 static void d3d11_present_internal(d3d11_context_t *ctx, const vgfx3d_postfx_chain_t *chain) {
     int use_postfx;
 
@@ -1526,6 +1619,8 @@ static void d3d11_present_internal(d3d11_context_t *ctx, const vgfx3d_postfx_cha
 }
 
 /// @brief Backend `apply_postfx` — composite scene/post-FX onto the swapchain without present.
+/// @param[in,out] ctx_ptr Opaque pointer to the D3D11 backend context.
+/// @param[in] postfx Optional ordered effect chain; an unusable chain triggers a plain resolve.
 static void d3d11_apply_postfx(void *ctx_ptr, const vgfx3d_postfx_chain_t *postfx) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     int use_postfx;
@@ -1559,11 +1654,14 @@ static void d3d11_apply_postfx(void *ctx_ptr, const vgfx3d_postfx_chain_t *postf
 }
 
 /// @brief Backend `present` (no post-FX) — direct swapchain present.
+/// @param[in,out] ctx_ptr Opaque pointer to the D3D11 backend context.
 static void d3d11_present(void *ctx_ptr) {
     d3d11_present_internal((d3d11_context_t *)ctx_ptr, NULL);
 }
 
 /// @brief Backend `present_postfx` — present with an ordered post-FX chain applied.
+/// @param[in,out] ctx_ptr Opaque pointer to the D3D11 backend context.
+/// @param[in] postfx Optional ordered effect chain to composite before presentation.
 static void d3d11_present_postfx(void *ctx_ptr, const vgfx3d_postfx_chain_t *postfx) {
     d3d11_present_internal((d3d11_context_t *)ctx_ptr, postfx);
 }
@@ -1572,6 +1670,8 @@ static void d3d11_present_postfx(void *ctx_ptr, const vgfx3d_postfx_chain_t *pos
 ///
 /// When enabled, frames render to the offscreen scene target so postfx
 /// can read it. When disabled, frames render straight to the swapchain.
+/// @param[in,out] ctx_ptr Opaque pointer to an idle D3D11 backend context.
+/// @param[in] enabled Nonzero to route window frames through the post-FX scene target.
 static void d3d11_set_gpu_postfx_enabled(void *ctx_ptr, int8_t enabled) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     int8_t next_enabled = enabled ? 1 : 0;
@@ -1658,6 +1758,7 @@ static int8_t d3d11_set_render_scale(void *ctx_ptr, float scale) {
 }
 
 /// @brief Invalidate stale presented snapshots when a new post-FX latch starts a frame.
+/// @param[in,out] ctx Active D3D11 backend context whose snapshot validity may be cleared.
 static void d3d11_invalidate_presented_snapshot_for_postfx_latch(d3d11_context_t *ctx) {
     if (!ctx || ctx->scene_composited_to_swapchain)
         return;
@@ -1670,6 +1771,8 @@ static void d3d11_invalidate_presented_snapshot_for_postfx_latch(d3d11_context_t
 ///   into the context so later present-time passes see a stable snapshot even if the
 ///   caller mutates their chain afterward. A copy failure aborts-and-resets rather than
 ///   rendering with a partial chain.
+/// @param[in,out] ctx_ptr Opaque pointer to an idle D3D11 backend context.
+/// @param[in] postfx Chain to deep-copy, or `NULL` to clear the latched chain.
 static void d3d11_set_gpu_postfx_snapshot(void *ctx_ptr, const vgfx3d_postfx_chain_t *postfx) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     if (!ctx || ctx->frame_active)
@@ -1698,6 +1801,8 @@ static void d3d11_set_gpu_postfx_snapshot(void *ctx_ptr, const vgfx3d_postfx_cha
 ///
 /// NULL `rt` tears down RTT and reverts to swapchain rendering.
 /// Non-NULL ensures RTT targets at the requested size and activates them.
+/// @param[in,out] ctx_ptr Opaque pointer to an idle D3D11 backend context.
+/// @param[in,out] rt Render-target descriptor to bind, or `NULL` to leave RTT mode.
 static void d3d11_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     HRESULT hr;
@@ -1726,6 +1831,7 @@ static void d3d11_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
 }
 
 /// @brief Leave any active shadow pass and restore the current color/depth target set.
+/// @param[in,out] ctx Active D3D11 backend context.
 static void d3d11_leave_shadow_pass(d3d11_context_t *ctx) {
     if (!ctx || ctx->shadow_pass_slot < 0)
         return;
@@ -1742,6 +1848,12 @@ static void d3d11_leave_shadow_pass(d3d11_context_t *ctx) {
 /// unbinds draw/shadow SRVs (so we can write to it), binds the shadow
 /// DSV with no color RTV (depth-only pass), clears depth, sets viewport,
 /// and binds the shadow vertex shader with no pixel shader.
+/// @param[in,out] ctx_ptr Opaque pointer to the active D3D11 backend context.
+/// @param[in] slot Shadow slot to render.
+/// @param[in] depth_buf Host depth buffer from the backend interface; unused by D3D11.
+/// @param[in] width Requested shadow-map or atlas-tile width in pixels.
+/// @param[in] height Requested shadow-map or atlas-tile height in pixels.
+/// @param[in] light_vp Light view-projection matrix copied for shadow rendering.
 static void d3d11_shadow_begin(void *ctx_ptr,
                                int32_t slot,
                                float *depth_buf,
@@ -1837,6 +1949,8 @@ static void d3d11_shadow_begin(void *ctx_ptr,
 /// Slimmer than `submit_draw`: only object/scene cbuffers + bone
 /// palettes + morph SRV (if any) — no material, no lights, no
 /// pixel shader. Uses the light-space VP captured by `shadow_begin`.
+/// @param[in,out] ctx_ptr Opaque pointer to the active D3D11 backend context.
+/// @param[in] cmd Mesh draw command to sanitize and submit to the active shadow pass.
 static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     d3d_per_object_t object_data;
@@ -1983,6 +2097,9 @@ static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
 /// reports `shadowEnabled` to the shader. Stores the bias the shader
 /// uses to bias depth comparisons. Re-selects the active scene/RTT
 /// targets so subsequent draws hit the right buffers.
+/// @param[in,out] ctx_ptr Opaque pointer to the active D3D11 backend context.
+/// @param[in] slot Shadow slot whose pass is ending.
+/// @param[in] bias Depth-comparison bias to sanitize and retain for the main pass.
 static void d3d11_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     if (!ctx || !ctx->frame_active)
@@ -2005,6 +2122,13 @@ static void d3d11_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
 /// Only the classic per-slot CSM depth textures persist untouched across frames;
 /// the shared shadow atlas is whole-cleared on its first tile pass each frame, so
 /// atlas slots (>= VGFX3D_CSM_SLOTS) decline reuse and take the normal render path.
+/// @param[in,out] ctx_ptr Opaque pointer to the active D3D11 backend context.
+/// @param[in] slot Persistent cascade slot to re-arm.
+/// @param[in] depth_buf Host depth buffer from the backend interface; unused by D3D11.
+/// @param[in] w Expected shadow-map width in pixels.
+/// @param[in] h Expected shadow-map height in pixels.
+/// @param[in] light_vp Current light view-projection matrix for the reused slot.
+/// @return One when a compatible persistent shadow texture is reused; otherwise zero.
 static int8_t d3d11_shadow_reuse(
     void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
@@ -2029,6 +2153,8 @@ static int8_t d3d11_shadow_reuse(
 /// the inverse-projection/inverse-view-rotation constants, and a depth state
 /// that draws "behind" everything else (`<=` compare with no depth writes).
 /// The cubemap is bound from the cubemap cache or as a temp resource.
+/// @param[in,out] ctx_ptr Opaque pointer to the active D3D11 backend context.
+/// @param[in] cubemap_ptr Cubemap runtime object to sample for the skybox.
 static void d3d11_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     const rt_cubemap3d *cubemap = (const rt_cubemap3d *)cubemap_ptr;

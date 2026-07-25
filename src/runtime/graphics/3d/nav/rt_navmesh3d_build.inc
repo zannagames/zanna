@@ -24,12 +24,31 @@
 // Links: rt_navmesh3d.c, rt_navmesh3d_bake.inc, rt_navmesh3d_query.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_navmesh3d_build.inc
+ * @brief Implements NavMesh3D construction, serialization, transactional topology publication,
+ *        tile mutation, and scene-geometry collection.
+ *
+ * This private fragment is included by rt_navmesh3d.c. It validates all counts and arithmetic
+ * before allocation, stages adjacency and spatial-grid representations before replacing live
+ * state, and preserves the last published topology when a rebuild cannot be completed.
+ */
+
+/// @brief Clamp a logical count to the valid initialized range of an optional array.
+/// @param array Borrowed array pointer.
+/// @param count Requested logical element count.
+/// @param capacity Allocated element capacity.
+/// @return Zero for absent or invalid storage, otherwise `min(count, capacity)`.
 static int32_t navmesh3d_clamped_array_count(const void *array, int32_t count, int32_t capacity) {
     if (!array || count <= 0 || capacity <= 0)
         return 0;
     return count < capacity ? count : capacity;
 }
 
+/// @brief Read a defensively bounded live-triangle count.
+/// @param nm Borrowed navigation mesh.
+/// @return Non-negative count constrained by available live and source triangle storage.
 static int32_t navmesh3d_read_triangle_count(const rt_navmesh3d *nm) {
     if (!nm || !nm->triangles || nm->triangle_count <= 0)
         return 0;
@@ -39,12 +58,18 @@ static int32_t navmesh3d_read_triangle_count(const rt_navmesh3d *nm) {
     return nm->triangle_count;
 }
 
+/// @brief Read a defensively bounded authored off-mesh-link count.
+/// @param nm Borrowed navigation mesh.
+/// @return Non-negative count constrained by the owned link array capacity.
 static int32_t navmesh3d_read_offmesh_link_count(const rt_navmesh3d *nm) {
     return nm ? navmesh3d_clamped_array_count(
                     nm->offmesh_links, nm->offmesh_link_count, nm->offmesh_link_capacity)
               : 0;
 }
 
+/// @brief Read a defensively bounded authored obstacle count.
+/// @param nm Borrowed navigation mesh.
+/// @return Non-negative count constrained by the owned obstacle array capacity.
 static int32_t navmesh3d_read_obstacle_count(const rt_navmesh3d *nm) {
     return nm ? navmesh3d_clamped_array_count(
                     nm->obstacles, nm->obstacle_count, nm->obstacle_capacity)
@@ -62,6 +87,7 @@ static void *navmesh3d_voxel_bake(
 /// (heap-allocated during `Build`) and nulls the slots so a stale handle would crash
 /// loudly on use rather than reading freed memory. The source mesh is borrowed only
 /// during the build call, not retained, so there's no reference to release here.
+/// @param obj Owned NavMesh3D instance being finalized.
 static void navmesh3d_finalizer(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)obj;
     if (nm->offmesh_links) {
@@ -118,12 +144,14 @@ static void navmesh3d_finalizer(void *obj) {
 /// zero.
 /// @details Called in error paths where the navmesh object was allocated but bake failed,
 ///          so the half-built object must be dropped without going through the normal finalizer.
+/// @param nm Partially initialized GC-managed navmesh whose local reference is released.
 static void navmesh3d_free_partial(rt_navmesh3d *nm) {
     if (nm && rt_obj_release_check0(nm))
         rt_obj_free(nm);
 }
 
 /// @brief Drop one reference and free if zero. Safe on NULL.
+/// @param obj Locally retained runtime object; null is a no-op.
 static void navmesh3d_release_local(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -131,6 +159,8 @@ static void navmesh3d_release_local(void *obj) {
 
 /// @brief Validate a max-slope angle (in degrees), clamping to `[0, 89.9]` on bad input.
 /// @details Non-finite inputs collapse to 45° (the documented default).
+/// @param degrees Requested maximum slope.
+/// @return Finite slope in the inclusive supported range.
 static double navmesh3d_sanitize_slope(double degrees) {
     if (!isfinite(degrees))
         degrees = 45.0;
@@ -142,6 +172,9 @@ static double navmesh3d_sanitize_slope(double degrees) {
 }
 
 /// @brief Clamp a finite world coordinate to the range NavMesh3D can index robustly.
+/// @param value Preferred coordinate.
+/// @param fallback Replacement for non-finite input.
+/// @return Finite coordinate in `[-NAVMESH3D_COORD_ABS_MAX, NAVMESH3D_COORD_ABS_MAX]`.
 static double navmesh3d_coord_or(double value, double fallback) {
     if (!isfinite(fallback))
         fallback = 0.0;
@@ -155,11 +188,17 @@ static double navmesh3d_coord_or(double value, double fallback) {
 }
 
 /// @brief Clamp a coordinate to a finite float after applying the NavMesh3D coordinate range.
+/// @param value Preferred coordinate.
+/// @param fallback Replacement for non-finite input.
+/// @return Sanitized coordinate converted to float.
 static float navmesh3d_coordf_or(double value, double fallback) {
     return (float)navmesh3d_coord_or(value, fallback);
 }
 
 /// @brief Sanitize positive agent dimensions such as radius/height.
+/// @param value Preferred dimension.
+/// @param fallback Positive default for unusable input.
+/// @return Positive finite dimension capped to @c NAVMESH3D_AGENT_DIM_MAX.
 static double navmesh3d_agent_dim_or(double value, double fallback) {
     value = (isfinite(value) && value > 0.0) ? value : fallback;
     if (!isfinite(value) || value <= 0.0)
@@ -170,6 +209,9 @@ static double navmesh3d_agent_dim_or(double value, double fallback) {
 }
 
 /// @brief Sanitize voxel cell size to a finite, bounded positive value.
+/// @param value Preferred cell size.
+/// @param fallback Positive default for unusable input.
+/// @return Finite cell size within the configured minimum and maximum.
 static double navmesh3d_cell_size_or(double value, double fallback) {
     value = (isfinite(value) && value > 0.0) ? value : fallback;
     if (!isfinite(value) || value <= 0.0)
@@ -182,6 +224,9 @@ static double navmesh3d_cell_size_or(double value, double fallback) {
 }
 
 /// @brief Read a Vec3 point into finite float coordinates for NavMesh3D queries.
+/// @param point Borrowed runtime Vec3 handle.
+/// @param out Caller-owned three-float destination.
+/// @return 1 when the handle and all coordinates are valid, otherwise 0.
 static int navmesh3d_read_point3f(void *point, float out[3]) {
     if (!rt_g3d_is_vec3(point) || !out)
         return 0;
@@ -197,16 +242,24 @@ static int navmesh3d_read_point3f(void *point, float out[3]) {
 }
 
 /// @brief True when all lanes of a float3 are finite.
+/// @param p Borrowed three-float vector.
+/// @return Non-zero when @p p is non-null and all components are finite.
 static int navmesh3d_float3_finite(const float *p) {
     return p && isfinite(p[0]) && isfinite(p[1]) && isfinite(p[2]);
 }
 
 /// @brief Reject tile indices that would overflow tile-to-world coordinate math.
+/// @param tile Signed tile coordinate.
+/// @return Non-zero when @p tile lies within the configured absolute bound.
 static int navmesh3d_tile_index_valid(int64_t tile) {
     return tile >= -NAVMESH3D_TILE_INDEX_ABS_MAX && tile <= NAVMESH3D_TILE_INDEX_ABS_MAX;
 }
 
 /// @brief Whether the shared edge is wide enough for the configured agent radius.
+/// @param nm Borrowed navmesh containing vertices and agent-clearance policy.
+/// @param va First shared-edge vertex index.
+/// @param vb Second shared-edge vertex index.
+/// @return 1 when the portal is valid and sufficiently wide, otherwise 0.
 static int navmesh3d_portal_allows_agent(const rt_navmesh3d *nm, int32_t va, int32_t vb) {
     if (!nm || !nm->vertices || va < 0 || vb < 0 || va >= nm->vertex_count ||
         vb >= nm->vertex_count)
@@ -227,6 +280,8 @@ static int navmesh3d_portal_allows_agent(const rt_navmesh3d *nm, int32_t va, int
 }
 
 /// @brief Clamp a traversal cost to [1.0, 1e6]; non-finite or sub-1.0 values become 1.0.
+/// @param cost Requested traversal-cost multiplier.
+/// @return Finite float multiplier in `[1, 1e6]`.
 static float navmesh3d_sanitize_traversal_cost(double cost) {
     if (!isfinite(cost) || cost < 1.0)
         cost = 1.0;
@@ -236,26 +291,43 @@ static float navmesh3d_sanitize_traversal_cost(double cost) {
 }
 
 /// @brief Write @p bytes raw bytes to @p f; returns nonzero on success (or when nothing to write).
+/// @param f Open destination stream.
+/// @param data Borrowed source buffer.
+/// @param bytes Number of bytes to write.
+/// @return Non-zero when the complete request succeeds.
 static int navmesh3d_io_write(FILE *f, const void *data, size_t bytes) {
     return f && (!bytes || fwrite(data, 1u, bytes, f) == bytes);
 }
 
 /// @brief Read @p bytes raw bytes from @p f; returns nonzero on success (or when nothing to read).
+/// @param f Open source stream.
+/// @param data Caller-owned destination buffer.
+/// @param bytes Number of bytes to read.
+/// @return Non-zero when the complete request succeeds.
 static int navmesh3d_io_read(FILE *f, void *data, size_t bytes) {
     return f && (!bytes || fread(data, 1u, bytes, f) == bytes);
 }
 
 /// @brief Write a single uint8 to @p f.
+/// @param f Open destination stream.
+/// @param v Value to serialize.
+/// @return Non-zero on success.
 static int navmesh3d_write_u8(FILE *f, uint8_t v) {
     return navmesh3d_io_write(f, &v, 1u);
 }
 
 /// @brief Read a single uint8 from @p f into @p out.
+/// @param f Open source stream.
+/// @param out Receives the decoded value.
+/// @return Non-zero on success.
 static int navmesh3d_read_u8(FILE *f, uint8_t *out) {
     return out && navmesh3d_io_read(f, out, 1u);
 }
 
 /// @brief Write a uint32 to @p f in little-endian byte order.
+/// @param f Open destination stream.
+/// @param v Value to serialize.
+/// @return Non-zero on success.
 static int navmesh3d_write_u32(FILE *f, uint32_t v) {
     uint8_t b[4] = {(uint8_t)(v & 0xffu),
                     (uint8_t)((v >> 8) & 0xffu),
@@ -265,6 +337,9 @@ static int navmesh3d_write_u32(FILE *f, uint32_t v) {
 }
 
 /// @brief Read a little-endian uint32 from @p f into @p out.
+/// @param f Open source stream.
+/// @param out Receives the decoded value.
+/// @return Non-zero on success.
 static int navmesh3d_read_u32(FILE *f, uint32_t *out) {
     uint8_t b[4];
     if (!out || !navmesh3d_io_read(f, b, sizeof(b)))
@@ -274,11 +349,17 @@ static int navmesh3d_read_u32(FILE *f, uint32_t *out) {
 }
 
 /// @brief Write an int32 to @p f (little-endian two's-complement).
+/// @param f Open destination stream.
+/// @param v Value to serialize.
+/// @return Non-zero on success.
 static int navmesh3d_write_i32(FILE *f, int32_t v) {
     return navmesh3d_write_u32(f, (uint32_t)v);
 }
 
 /// @brief Read a little-endian int32 from @p f into @p out.
+/// @param f Open source stream.
+/// @param out Receives the decoded value.
+/// @return Non-zero on success.
 static int navmesh3d_read_i32(FILE *f, int32_t *out) {
     uint32_t u;
     if (!out || !navmesh3d_read_u32(f, &u))
@@ -288,6 +369,9 @@ static int navmesh3d_read_i32(FILE *f, int32_t *out) {
 }
 
 /// @brief Write a uint64 to @p f in little-endian byte order.
+/// @param f Open destination stream.
+/// @param v Value to serialize.
+/// @return Non-zero on success.
 static int navmesh3d_write_u64(FILE *f, uint64_t v) {
     uint8_t b[8] = {(uint8_t)(v & 0xffu),
                     (uint8_t)((v >> 8) & 0xffu),
@@ -301,6 +385,9 @@ static int navmesh3d_write_u64(FILE *f, uint64_t v) {
 }
 
 /// @brief Read a little-endian uint64 from @p f into @p out.
+/// @param f Open source stream.
+/// @param out Receives the decoded value.
+/// @return Non-zero on success.
 static int navmesh3d_read_u64(FILE *f, uint64_t *out) {
     uint8_t b[8];
     if (!out || !navmesh3d_io_read(f, b, sizeof(b)))
@@ -312,11 +399,17 @@ static int navmesh3d_read_u64(FILE *f, uint64_t *out) {
 }
 
 /// @brief Write an int64 to @p f (little-endian two's-complement).
+/// @param f Open destination stream.
+/// @param v Value to serialize.
+/// @return Non-zero on success.
 static int navmesh3d_write_i64(FILE *f, int64_t v) {
     return navmesh3d_write_u64(f, (uint64_t)v);
 }
 
 /// @brief Read a little-endian int64 from @p f into @p out.
+/// @param f Open source stream.
+/// @param out Receives the decoded value.
+/// @return Non-zero on success.
 static int navmesh3d_read_i64(FILE *f, int64_t *out) {
     uint64_t u;
     if (!out || !navmesh3d_read_u64(f, &u))
@@ -326,6 +419,9 @@ static int navmesh3d_read_i64(FILE *f, int64_t *out) {
 }
 
 /// @brief Write a float to @p f as a little-endian uint32 bit pattern (non-finite stored as 0).
+/// @param f Open destination stream.
+/// @param v Float value to serialize.
+/// @return Non-zero on success.
 static int navmesh3d_write_f32(FILE *f, float v) {
     uint32_t u;
     if (!isfinite(v))
@@ -336,6 +432,9 @@ static int navmesh3d_write_f32(FILE *f, float v) {
 
 /// @brief Read a little-endian float bit pattern from @p f, sanitizing non-finite/out-of-range to
 /// 0.
+/// @param f Open source stream.
+/// @param out Receives the sanitized decoded float.
+/// @return Non-zero on success.
 static int navmesh3d_read_f32(FILE *f, float *out) {
     uint32_t u;
     if (!out || !navmesh3d_read_u32(f, &u))
@@ -346,6 +445,9 @@ static int navmesh3d_read_f32(FILE *f, float *out) {
 }
 
 /// @brief Write a double to @p f as a little-endian uint64 bit pattern (non-finite stored as 0).
+/// @param f Open destination stream.
+/// @param v Double value to serialize.
+/// @return Non-zero on success.
 static int navmesh3d_write_f64(FILE *f, double v) {
     uint64_t u;
     if (!isfinite(v))
@@ -355,6 +457,9 @@ static int navmesh3d_write_f64(FILE *f, double v) {
 }
 
 /// @brief Read a little-endian double bit pattern from @p f into @p out.
+/// @param f Open source stream.
+/// @param out Receives the decoded double bit pattern.
+/// @return Non-zero on success.
 static int navmesh3d_read_f64(FILE *f, double *out) {
     uint64_t u;
     if (!out || !navmesh3d_read_u64(f, &u))
@@ -364,6 +469,9 @@ static int navmesh3d_read_f64(FILE *f, double *out) {
 }
 
 /// @brief Write a string to @p f as a uint32 length prefix followed by its raw UTF-8 bytes.
+/// @param f Open destination stream.
+/// @param s Optional runtime string; invalid input is serialized as empty.
+/// @return Non-zero on success, otherwise zero for an oversized string or I/O failure.
 static int navmesh3d_write_string(FILE *f, rt_string s) {
     const char *bytes = (s && rt_string_is_handle(s)) ? rt_string_cstr(s) : "";
     size_t len = bytes ? strlen(bytes) : 0u;
@@ -374,6 +482,10 @@ static int navmesh3d_write_string(FILE *f, rt_string s) {
 }
 
 /// @brief Read a length-prefixed string from @p f (rejecting lengths above @p max_len) into @p out.
+/// @param f Open source stream.
+/// @param out Receives a newly allocated runtime string on success.
+/// @param max_len Maximum accepted byte length.
+/// @return Non-zero on success, otherwise zero without a usable published string.
 static int navmesh3d_read_string(FILE *f, rt_string *out, uint32_t max_len) {
     uint32_t len;
     char *buf;
@@ -397,6 +509,11 @@ static int navmesh3d_read_string(FILE *f, rt_string *out, uint32_t max_len) {
 }
 
 /// @brief Return true when point (x,z) lies inside an axis-aligned XZ rectangle.
+/// @param x Query X coordinate.
+/// @param z Query Z coordinate.
+/// @param min Borrowed three-component rectangle minimum.
+/// @param max Borrowed three-component rectangle maximum.
+/// @return Non-zero when the query lies inside the inclusive epsilon-expanded rectangle.
 static int navmesh3d_point_in_rect_xz(float x, float z, const float *min, const float *max) {
     const float eps = 1e-5f;
     return x >= min[0] - eps && x <= max[0] + eps && z >= min[2] - eps && z <= max[2] + eps;
@@ -404,12 +521,26 @@ static int navmesh3d_point_in_rect_xz(float x, float z, const float *min, const 
 
 /// @brief Signed orientation (twice the triangle area) of points A, B, C in the XZ plane;
 ///   the sign gives the turn direction and zero means collinear.
+/// @param ax Point A X coordinate.
+/// @param az Point A Z coordinate.
+/// @param bx Point B X coordinate.
+/// @param bz Point B Z coordinate.
+/// @param cx Point C X coordinate.
+/// @param cz Point C Z coordinate.
+/// @return Signed doubled XZ triangle area.
 static float navmesh3d_orient_xz(float ax, float az, float bx, float bz, float cx, float cz) {
     return (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
 }
 
 /// @brief True if point (px, pz) is collinear with and lies within segment A→B in the XZ
 ///   plane (with a small epsilon tolerance).
+/// @param ax Segment start X.
+/// @param az Segment start Z.
+/// @param bx Segment end X.
+/// @param bz Segment end Z.
+/// @param px Query point X.
+/// @param pz Query point Z.
+/// @return Non-zero when the query lies on the closed segment within tolerance.
 static int navmesh3d_on_segment_xz(float ax, float az, float bx, float bz, float px, float pz) {
     const float eps = 1e-5f;
     if (fabsf(navmesh3d_orient_xz(ax, az, bx, bz, px, pz)) > eps)
@@ -419,6 +550,15 @@ static int navmesh3d_on_segment_xz(float ax, float az, float bx, float bz, float
 }
 
 /// @brief Closed segment intersection in the XZ plane.
+/// @param ax First segment start X.
+/// @param az First segment start Z.
+/// @param bx First segment end X.
+/// @param bz First segment end Z.
+/// @param cx Second segment start X.
+/// @param cz Second segment start Z.
+/// @param dx Second segment end X.
+/// @param dz Second segment end Z.
+/// @return Non-zero when the closed segments intersect within tolerance.
 static int navmesh3d_segments_intersect_xz(
     float ax, float az, float bx, float bz, float cx, float cz, float dx, float dz) {
     float o1 = navmesh3d_orient_xz(ax, az, bx, bz, cx, cz);
@@ -441,6 +581,11 @@ static int navmesh3d_segments_intersect_xz(
 }
 
 /// @brief Whether a triangle's exact XZ footprint intersects an AABB footprint and vertical span.
+/// @param nm Borrowed navmesh supplying triangle vertices.
+/// @param tri Borrowed triangle descriptor.
+/// @param min Borrowed AABB minimum corner.
+/// @param max Borrowed AABB maximum corner.
+/// @return Non-zero when the triangle and box overlap.
 static int navmesh3d_triangle_overlaps_bounds(const rt_navmesh3d *nm,
                                               const nav_triangle_t *tri,
                                               const float *min,
@@ -493,6 +638,9 @@ static int navmesh3d_triangle_overlaps_bounds(const rt_navmesh3d *nm,
 }
 
 /// @brief Whether a triangle overlaps any authored obstacle volume.
+/// @param nm Borrowed navmesh containing obstacles and vertex data.
+/// @param tri Borrowed triangle descriptor.
+/// @return Non-zero when any authored obstacle overlaps the triangle.
 static int navmesh3d_triangle_blocked_by_obstacle(const rt_navmesh3d *nm,
                                                   const nav_triangle_t *tri) {
     if (!nm || !tri || !nm->obstacles || nm->obstacle_count <= 0 || !nm->vertices)
@@ -508,6 +656,8 @@ static int navmesh3d_triangle_blocked_by_obstacle(const rt_navmesh3d *nm,
 
 /// @brief Intern a nav-area name, returning its 1-based area id and appending it (growing the
 ///   name table) if new.
+/// @param nm Mutable navmesh owning the intern table.
+/// @param area Borrowed runtime string to intern.
 /// @return The 1-based id, 0 for an empty name, or -1 on invalid input or allocation failure.
 static int32_t navmesh3d_ensure_area_id(rt_navmesh3d *nm, rt_string area) {
     if (!nm || !area || !rt_string_is_handle(area))
@@ -540,6 +690,9 @@ static int32_t navmesh3d_ensure_area_id(rt_navmesh3d *nm, rt_string area) {
 
 /// @brief Reverse-lookup the name for a 1-based area id; returns "default" for id 0 or an
 ///   invalid/unset id.
+/// @param nm Borrowed navmesh containing interned names.
+/// @param area_id One-based area identifier.
+/// @return Retained authored name, or the shared `default` string.
 static rt_string navmesh3d_area_name(const rt_navmesh3d *nm, int32_t area_id) {
     if (area_id > 0 && nm && nm->area_names && area_id <= nm->area_name_count &&
         nm->area_names[area_id - 1])
@@ -548,6 +701,9 @@ static rt_string navmesh3d_area_name(const rt_navmesh3d *nm, int32_t area_id) {
 }
 
 /// @brief Sanitized traversal cost of triangle @p tri (1.0 if @p tri is out of range).
+/// @param nm Borrowed navmesh.
+/// @param tri Triangle index.
+/// @return Finite multiplier in `[1, 1e6]`.
 static float navmesh3d_tri_cost(const rt_navmesh3d *nm, int32_t tri) {
     if (!nm || !nm->triangles || tri < 0 || tri >= nm->triangle_count)
         return 1.0f;
@@ -917,6 +1073,12 @@ static int navmesh3d_apply_slope_filter(rt_navmesh3d *nm) {
 ///          the query-grid minimum (the mesh's min XZ). Floor keeps negative coordinates on the
 ///          correct side of the origin. Returns 0 (outputs untouched) when the mesh is not tiled or
 ///          has no spatial grid yet.
+/// @param nm Borrowed tiled navmesh.
+/// @param px World X coordinate.
+/// @param pz World Z coordinate.
+/// @param out_tx Optional output receiving the signed X tile coordinate.
+/// @param out_tz Optional output receiving the signed Z tile coordinate.
+/// @return 1 for a valid tiled mapping, otherwise 0.
 static int navmesh3d_tile_of_point(
     const rt_navmesh3d *nm, double px, double pz, int64_t *out_tx, int64_t *out_tz) {
     if (!nm || nm->tile_size <= 0.0 || nm->qgrid_nx <= 0 || !isfinite(px) || !isfinite(pz) ||
@@ -931,6 +1093,7 @@ static int navmesh3d_tile_of_point(
 }
 
 /// @brief Re-evaluate obstacle blocking for every live triangle.
+/// @param nm Mutable navmesh whose triangle flags and off-mesh endpoints are refreshed.
 static void navmesh3d_reflag_all_triangles(rt_navmesh3d *nm) {
     if (!nm || !nm->triangles)
         return;
@@ -951,6 +1114,10 @@ static void navmesh3d_reflag_all_triangles(rt_navmesh3d *nm) {
 ///          other tile. Triangles outside the tile keep whatever state a prior edit left them in,
 ///          which is exactly what lets one tile be re-carved while the rest of the mesh is stale.
 ///          Returns the number of triangles re-flagged.
+/// @param nm Mutable tiled navmesh.
+/// @param tile_x Signed X tile coordinate.
+/// @param tile_z Signed Z tile coordinate.
+/// @return Number of triangle flags reevaluated.
 static int32_t navmesh3d_reflag_tile(rt_navmesh3d *nm, int64_t tile_x, int64_t tile_z) {
     if (!nm || !nm->triangles || nm->tile_size <= 0.0 || nm->qgrid_nx <= 0)
         return 0;
@@ -979,6 +1146,9 @@ static int32_t navmesh3d_reflag_tile(rt_navmesh3d *nm, int64_t tile_x, int64_t t
 }
 
 /// @brief Re-evaluate dynamic obstacle blocking for all tiles overlapped by an AABB.
+/// @param nm Mutable tiled navmesh.
+/// @param omin Borrowed obstacle minimum corner.
+/// @param omax Borrowed obstacle maximum corner.
 static void navmesh3d_reflag_obstacle_tiles(rt_navmesh3d *nm,
                                             const float *omin,
                                             const float *omax) {
@@ -1015,6 +1185,8 @@ static void navmesh3d_reflag_obstacle_tiles(rt_navmesh3d *nm,
 }
 
 /// @brief True when the navmesh retained fixed-grid voxel source data for tile rebuilds.
+/// @param nm Borrowed navmesh.
+/// @return Non-zero when all required retained voxel and topology arrays are available.
 static int navmesh3d_has_voxel_source(const rt_navmesh3d *nm) {
     return nm && nm->voxel_cell_height && nm->voxel_cell_walkable && nm->voxel_corner_vertices &&
            nm->voxel_nx > 0 && nm->voxel_nz > 0 && nm->voxel_cell_size > 0.0 && nm->vertices &&
@@ -1022,6 +1194,10 @@ static int navmesh3d_has_voxel_source(const rt_navmesh3d *nm) {
 }
 
 /// @brief Return the retained voxel cell index, or SIZE_MAX for an invalid coordinate.
+/// @param nm Borrowed navmesh with retained voxel source.
+/// @param cx X cell coordinate.
+/// @param cz Z cell coordinate.
+/// @return Linear cell index, or @c SIZE_MAX.
 static size_t navmesh3d_voxel_cell_index(const rt_navmesh3d *nm, int32_t cx, int32_t cz) {
     if (!navmesh3d_has_voxel_source(nm) || cx < 0 || cz < 0 || cx >= nm->voxel_nx ||
         cz >= nm->voxel_nz)
@@ -1030,6 +1206,10 @@ static size_t navmesh3d_voxel_cell_index(const rt_navmesh3d *nm, int32_t cx, int
 }
 
 /// @brief Get the fixed source-triangle index pair for a retained voxel cell.
+/// @param nm Borrowed navmesh with fixed two-triangle-per-cell topology.
+/// @param cx X cell coordinate.
+/// @param cz Z cell coordinate.
+/// @return Index of the cell's first triangle, or -1.
 static int32_t navmesh3d_voxel_cell_tri_start(const rt_navmesh3d *nm, int32_t cx, int32_t cz) {
     size_t cell = navmesh3d_voxel_cell_index(nm, cx, cz);
     if (cell == SIZE_MAX || cell > (size_t)INT32_MAX / 2)
@@ -1041,6 +1221,9 @@ static int32_t navmesh3d_voxel_cell_tri_start(const rt_navmesh3d *nm, int32_t cx
 }
 
 /// @brief Recompute one retained voxel corner height from the current tile source cells.
+/// @param nm Mutable navmesh with retained voxel source.
+/// @param ccx X corner coordinate.
+/// @param ccz Z corner coordinate.
 static void navmesh3d_voxel_refresh_corner(rt_navmesh3d *nm, int32_t ccx, int32_t ccz) {
     if (!navmesh3d_has_voxel_source(nm) || ccx < 0 || ccz < 0 || ccx > nm->voxel_nx ||
         ccz > nm->voxel_nz)
@@ -1067,6 +1250,9 @@ static void navmesh3d_voxel_refresh_corner(rt_navmesh3d *nm, int32_t ccx, int32_
 }
 
 /// @brief Recompute one retained voxel cell's two source/current triangles from fixed corners.
+/// @param nm Mutable navmesh with retained fixed-grid topology.
+/// @param cx X cell coordinate.
+/// @param cz Z cell coordinate.
 static void navmesh3d_voxel_refresh_cell(rt_navmesh3d *nm, int32_t cx, int32_t cz) {
     int32_t tri_start = navmesh3d_voxel_cell_tri_start(nm, cx, cz);
     if (tri_start < 0)
@@ -1108,6 +1294,14 @@ static void navmesh3d_voxel_refresh_cell(rt_navmesh3d *nm, int32_t cx, int32_t c
 }
 
 /// @brief Compute the retained voxel-cell range whose centers lie in tile (tile_x,tile_z).
+/// @param nm Borrowed tiled navmesh with retained voxel source.
+/// @param tile_x Signed X tile coordinate.
+/// @param tile_z Signed Z tile coordinate.
+/// @param out_cx0 Optional output receiving minimum X cell.
+/// @param out_cx1 Optional output receiving maximum X cell.
+/// @param out_cz0 Optional output receiving minimum Z cell.
+/// @param out_cz1 Optional output receiving maximum Z cell.
+/// @return 1 for a non-empty in-bounds cell range, otherwise 0.
 static int navmesh3d_voxel_tile_cell_range(const rt_navmesh3d *nm,
                                            int64_t tile_x,
                                            int64_t tile_z,
@@ -1153,6 +1347,10 @@ static int navmesh3d_voxel_tile_cell_range(const rt_navmesh3d *nm,
 }
 
 /// @brief Rebuild one retained voxel tile's geometry/blocked flags in place.
+/// @param nm Mutable tiled navmesh with retained voxel source.
+/// @param tile_x Signed X tile coordinate.
+/// @param tile_z Signed Z tile coordinate.
+/// @return Number of voxel cells rebuilt.
 static int32_t navmesh3d_rebuild_voxel_tile(rt_navmesh3d *nm, int64_t tile_x, int64_t tile_z) {
     int32_t cx0, cx1, cz0, cz1;
     int32_t touched = 0;
@@ -1172,6 +1370,9 @@ static int32_t navmesh3d_rebuild_voxel_tile(rt_navmesh3d *nm, int64_t tile_x, in
 }
 
 /// @brief Transform a point by a row-major Mat4.
+/// @param m Borrowed 16-element row-major transform.
+/// @param p Borrowed three-float point.
+/// @param out Caller-owned three-double transformed point.
 static void navmesh3d_transform_point(const double *m, const float *p, double *out) {
     out[0] = navmesh3d_coord_or(
         m[0] * (double)p[0] + m[1] * (double)p[1] + m[2] * (double)p[2] + m[3], 0.0);
@@ -1182,6 +1383,9 @@ static void navmesh3d_transform_point(const double *m, const float *p, double *o
 }
 
 /// @brief Transform and normalize a normal by the row-major matrix's linear basis.
+/// @param m Borrowed 16-element row-major transform.
+/// @param n Borrowed three-float normal.
+/// @param out Caller-owned normalized three-double result; degenerate input becomes positive Y.
 static void navmesh3d_transform_normal(const double *m, const float *n, double *out) {
     double len;
     out[0] = m[0] * (double)n[0] + m[1] * (double)n[1] + m[2] * (double)n[2];
@@ -1200,6 +1404,9 @@ static void navmesh3d_transform_normal(const double *m, const float *n, double *
 }
 
 /// @brief Append one SceneNode3D mesh into a temporary world-space Mesh3D.
+/// @param dst Mutable temporary destination mesh.
+/// @param node Borrowed scene node whose optional mesh is transformed and appended.
+/// @return 1 when the node is empty or appended successfully, otherwise 0.
 static int navmesh3d_append_scene_node_mesh(rt_mesh3d *dst, rt_scene_node3d *node) {
     rt_mesh3d *src;
     void *world_obj;
@@ -1255,6 +1462,9 @@ static int navmesh3d_append_scene_node_mesh(rt_mesh3d *dst, rt_scene_node3d *nod
 }
 
 /// @brief Gather all Mesh3D-bearing scene nodes into a temporary world-space Mesh3D.
+/// @param scene_obj Borrowed Scene3D handle.
+/// @return New GC-managed aggregate Mesh3D, or null when no usable geometry exists or collection
+///         fails.
 static void *navmesh3d_build_scene_source_mesh(void *scene_obj) {
     rt_scene3d *scene = (rt_scene3d *)rt_g3d_checked_or_null(scene_obj, RT_G3D_SCENE3D_CLASS_ID);
     rt_mesh3d *mesh;
@@ -1321,6 +1531,10 @@ static void *navmesh3d_build_scene_source_mesh(void *scene_obj) {
 /// exceeds the default 45° slope (re-configurable via `_set_max_slope`). Stores agent radius/
 /// height for later edge-pull-in safety. Returns the navmesh handle, or NULL on alloc failure
 /// / degenerate input mesh.
+/// @param mesh_obj Borrowed Mesh3D source.
+/// @param agent_radius Requested positive clearance radius.
+/// @param agent_height Requested positive agent height.
+/// @return New GC-managed NavMesh3D, or null for invalid, empty, oversized, or failed input.
 void *rt_navmesh3d_build(void *mesh_obj, double agent_radius, double agent_height) {
     if (!mesh_obj)
         return NULL;
@@ -1432,6 +1646,9 @@ void *rt_navmesh3d_build(void *mesh_obj, double agent_radius, double agent_heigh
 
 /// @brief Recompute a navmesh triangle's cached geometry (centroid, edges, normal) from its
 ///   vertex positions; returns 0 when any vertex index is out of range.
+/// @param nm Borrowed navmesh supplying vertices.
+/// @param t Mutable triangle whose cached centroid and normal are replaced.
+/// @return 1 when all indices and positions are valid, otherwise 0.
 static int navmesh3d_recompute_triangle_geometry(rt_navmesh3d *nm, nav_triangle_t *t) {
     if (!nm || !t || !nm->vertices)
         return 0;
@@ -1468,6 +1685,9 @@ static int navmesh3d_recompute_triangle_geometry(rt_navmesh3d *nm, nav_triangle_
 
 /// @brief Serialize one navmesh triangle (vertex indices, blocked flag, area id, sanitized
 ///   traversal cost) to @p f.
+/// @param f Open destination stream.
+/// @param t Borrowed triangle record.
+/// @return Non-zero when the complete record is written.
 static int navmesh3d_write_triangle_record(FILE *f, const nav_triangle_t *t) {
     return t && navmesh3d_write_i32(f, t->v[0]) && navmesh3d_write_i32(f, t->v[1]) &&
            navmesh3d_write_i32(f, t->v[2]) && navmesh3d_write_u8(f, t->blocked ? 1u : 0u) &&
@@ -1477,6 +1697,11 @@ static int navmesh3d_write_triangle_record(FILE *f, const nav_triangle_t *t) {
 
 /// @brief Deserialize one navmesh triangle from @p f, validating its vertex and area indices
 ///   against the loaded vertex count and @p area_name_count.
+/// @param f Open source stream.
+/// @param nm Borrowed partially imported navmesh supplying the vertex table.
+/// @param t Caller-owned triangle record to initialize.
+/// @param area_name_count Number of valid imported area names.
+/// @return 1 when the record and derived geometry are valid, otherwise 0.
 static int navmesh3d_read_triangle_record(FILE *f,
                                           rt_navmesh3d *nm,
                                           nav_triangle_t *t,
@@ -1496,6 +1721,9 @@ static int navmesh3d_read_triangle_record(FILE *f,
 
 /// @brief Write a complete navmesh to @p f in the versioned VNAVMSH2 binary format (header
 ///   params, vertices, source + baked triangles, off-mesh links, obstacles, and area names).
+/// @param nm Borrowed complete navmesh to serialize.
+/// @param f Open destination stream.
+/// @return Non-zero when every record is written successfully.
 static int navmesh3d_export_v2(rt_navmesh3d *nm, FILE *f) {
     const char magic[8] = {'V', 'N', 'A', 'V', 'M', 'S', 'H', '2'};
     int32_t vc = nm->vertex_count < 0 ? 0 : nm->vertex_count;
@@ -1555,6 +1783,9 @@ static int navmesh3d_export_v2(rt_navmesh3d *nm, FILE *f) {
 ///   labels, off-mesh links, obstacles, source triangles for future area/obstacle edits, and agent
 ///   params. Runtime-derived adjacency/query grids are rebuilt on import; retained voxel
 ///   heightfield source data is not serialized.
+/// @param obj Opaque NavMesh3D handle.
+/// @param path Runtime string naming the destination file.
+/// @return 1 after atomic temporary-file replacement succeeds, otherwise 0.
 int8_t rt_navmesh3d_export(void *obj, rt_string path) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     if (!nm || !path || !rt_string_is_handle(path))
@@ -1579,6 +1810,9 @@ int8_t rt_navmesh3d_export(void *obj, rt_string path) {
 
 /// @brief Parse a legacy v1 navmesh body (after its magic has been consumed) into a fresh
 ///   NavMesh3D, or NULL on malformed or oversized data.
+/// @param f Open binary stream positioned immediately after the eight-byte version-one magic.
+/// @return New GC-managed NavMesh3D with rebuilt derived indexes, or null after releasing partial
+///         state on malformed input.
 static rt_navmesh3d *navmesh3d_import_v1_after_magic(FILE *f) {
     double params[3];
     int32_t vc = 0;

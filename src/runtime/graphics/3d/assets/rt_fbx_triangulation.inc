@@ -1,5 +1,28 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_fbx_triangulation.inc
+ * @brief Provides recoverable, scale-aware triangulation for imported FBX polygons.
+ *
+ * Polygon vertices are projected onto the dominant Newell-normal plane and ear-clipped
+ * with a bounded quadratic guard. Degenerate or excessively large polygons fall back
+ * to a triangle fan. Every candidate triangle is validated without invoking the
+ * script-facing Mesh3D traps, allowing malformed asset geometry to be skipped or failed
+ * through ordinary loader status paths.
+ */
+
 /// @brief Project a mesh vertex to 2D by dropping one axis (0=X, 1=Y, else Z),
 ///   yielding the (out_x, out_y) plane coordinates used for in-plane triangulation.
+/// @param mesh Source runtime mesh.
+/// @param vertex_index Valid vertex index in @p mesh.
+/// @param drop_axis Axis omitted from the projection: zero for X, one for Y, otherwise Z.
+/// @param[out] out_x Receives the first projected coordinate.
+/// @param[out] out_y Receives the second projected coordinate.
 static void fbx_project_mesh_vertex(
     const rt_mesh3d *mesh, int32_t vertex_index, int drop_axis, double *out_x, double *out_y) {
     const float *p = mesh->vertices[vertex_index].pos;
@@ -17,6 +40,13 @@ static void fbx_project_mesh_vertex(
 
 /// @brief Twice the signed area of triangle (a,b,c) — the 2D cross product of edges
 ///   ab and ac. Positive for counter-clockwise winding, negative for clockwise.
+/// @param ax Vertex A X coordinate.
+/// @param ay Vertex A Y coordinate.
+/// @param bx Vertex B X coordinate.
+/// @param by Vertex B Y coordinate.
+/// @param cx Vertex C X coordinate.
+/// @param cy Vertex C Y coordinate.
+/// @return Twice the signed projected area.
 static double fbx_tri_area2(double ax, double ay, double bx, double by, double cx, double cy) {
     return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 }
@@ -24,6 +54,15 @@ static double fbx_tri_area2(double ax, double ay, double bx, double by, double c
 /// @brief True if point (px,py) lies inside triangle (a,b,c), winding-agnostic.
 /// @details Tests the point against each edge; inside iff the three signed areas
 ///   share one sign (an epsilon tolerance treats edge-coincident points as inside).
+/// @param px Point X coordinate.
+/// @param py Point Y coordinate.
+/// @param ax Triangle vertex A X coordinate.
+/// @param ay Triangle vertex A Y coordinate.
+/// @param bx Triangle vertex B X coordinate.
+/// @param by Triangle vertex B Y coordinate.
+/// @param cx Triangle vertex C X coordinate.
+/// @param cy Triangle vertex C Y coordinate.
+/// @return Non-zero when the point is inside or on an edge of the triangle.
 static int fbx_point_in_tri_2d(
     double px, double py, double ax, double ay, double bx, double by, double cx, double cy) {
     double ab = fbx_tri_area2(ax, ay, bx, by, px, py);
@@ -34,7 +73,15 @@ static int fbx_point_in_tri_2d(
     return !(has_neg && has_pos);
 }
 
-/// @brief Squared 3D triangle area using Mesh3D's authoritative double positions when present.
+/// @brief Compute squared 3D double-area using authoritative mesh positions when present.
+/// @param mesh Source runtime mesh.
+/// @param i0 First valid vertex index.
+/// @param i1 Second valid vertex index.
+/// @param i2 Third valid vertex index.
+/// @param[out] a Receives vertex A as doubles.
+/// @param[out] b Receives vertex B as doubles.
+/// @param[out] c Receives vertex C as doubles.
+/// @return Squared magnitude of `(B - A) cross (C - A)`, equal to squared double-area.
 static double fbx_mesh_tri_area_sq(const rt_mesh3d *mesh,
                                    int32_t i0,
                                    int32_t i1,
@@ -90,7 +137,11 @@ static double fbx_mesh_tri_area_sq(const rt_mesh3d *mesh,
     return nx * nx + ny * ny + nz * nz;
 }
 
-/// @brief Scale-aware area threshold matching Mesh3D.AddTriangle's degeneracy policy.
+/// @brief Compute a scale-aware squared-area threshold matching Mesh3D degeneracy policy.
+/// @param a Triangle vertex A.
+/// @param b Triangle vertex B.
+/// @param c Triangle vertex C.
+/// @return Finite positive squared-area epsilon derived from the longest edge.
 static double fbx_mesh_tri_area_epsilon_sq(const double a[3],
                                            const double b[3],
                                            const double c[3]) {
@@ -109,6 +160,12 @@ static double fbx_mesh_tri_area_epsilon_sq(const double a[3],
 /// @brief Emit a triangle from untrusted FBX geometry without invoking Mesh3D traps.
 /// @details Duplicate, out-of-range, and zero-area imported triangles are dropped. The public
 /// Mesh3D.AddTriangle API still traps for script errors; loader paths must fail recoverably.
+/// @param[in,out] mesh_obj Runtime Mesh3D receiving valid indices.
+/// @param i0 First candidate vertex index.
+/// @param i1 Second candidate vertex index.
+/// @param i2 Third candidate vertex index.
+/// @return Non-zero when the triangle was emitted or recoverably dropped; zero only
+///         when the mesh is invalid or its build state fails.
 static int fbx_try_emit_mesh_triangle(void *mesh_obj, int32_t i0, int32_t i1, int32_t i2) {
     rt_mesh3d *mesh = (rt_mesh3d *)mesh_obj;
     double a[3];
@@ -137,6 +194,9 @@ static int fbx_try_emit_mesh_triangle(void *mesh_obj, int32_t i0, int32_t i1, in
 /// @brief Emit a polygon as a triangle fan anchored at vertex 0.
 /// @details Safe fallback for degenerate or pathologically large N-gons. Index
 ///   validation is handled by fbx_try_emit_mesh_triangle.
+/// @param[in,out] mesh_obj Runtime Mesh3D receiving valid triangles.
+/// @param polygon Ordered emitted-vertex index array.
+/// @param poly_count Number of vertices in @p polygon.
 /// @return 0 on mesh build failure, 1 otherwise.
 static int fbx_emit_polygon_fan(void *mesh_obj, const int32_t *polygon, int32_t poly_count) {
     const rt_mesh3d *mesh = (const rt_mesh3d *)mesh_obj;
@@ -151,6 +211,11 @@ static int fbx_emit_polygon_fan(void *mesh_obj, const int32_t *polygon, int32_t 
 /// @details Fast-paths triangles; for N-gons it derives a projection plane from the
 ///   Newell normal, then ear-clips in 2D (a poly_count² guard bounds the loop). On a
 ///   degenerate/zero-area polygon or stalled clip it falls back to a naive triangle fan.
+/// @param[in,out] mesh_obj Runtime Mesh3D receiving generated triangles.
+/// @param polygon Ordered emitted-vertex index array.
+/// @param poly_count Number of vertices in @p polygon.
+/// @return Non-zero on success or a recoverable invalid/undersized polygon; zero on
+///         allocation or mesh build failure.
 static int fbx_emit_polygon_triangles(void *mesh_obj, const int32_t *polygon, int32_t poly_count) {
     rt_mesh3d *mesh = (rt_mesh3d *)mesh_obj;
     int32_t stack_indices[64];

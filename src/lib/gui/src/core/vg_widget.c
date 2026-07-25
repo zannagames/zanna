@@ -1739,7 +1739,10 @@ void vg_widget_set_visible(vg_widget_t *widget, bool visible) {
         clear_interactive_state_recursive(widget);
     }
     widget_mark_layout_dirty(widget->parent);
-    widget->needs_paint = true;
+    // Damage collection skips invisible subtrees, so a widget hidden this
+    // frame would otherwise leave its stale pixels behind. Flag the visible
+    // ancestor chain so the vacated area is damaged and repainted.
+    vg_widget_invalidate(widget);
     widget_note_semantic_revision(widget);
 }
 

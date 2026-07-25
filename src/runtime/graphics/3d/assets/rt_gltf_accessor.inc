@@ -5,11 +5,24 @@
 // decode/read
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_accessor.inc
+ * @brief Binds glTF accessors to validated byte views, applies sparse overrides,
+ *        decodes component types, and validates primitive attribute/topology data.
+ *
+ * Accessor views borrow dense and sparse bytes from the load-local buffer tables.
+ * All declared offsets, strides, counts, component layouts, and sparse indices are
+ * range checked before readers may access them. This fragment also centralizes skin
+ * influence truncation diagnostics and recoverable triangle emission.
+ */
+
 /// @brief Return the byte size of one glTF accessor component by its GL-enum component type.
 /// @details glTF uses the original GL integer constants for component types:
 ///   5120 = BYTE (1), 5121 = UNSIGNED_BYTE (1), 5122 = SHORT (2), 5123 = UNSIGNED_SHORT (2),
 ///   5125 = UNSIGNED_INT (4), 5126 = FLOAT (4). Returns 0 for unrecognised values so callers
 ///   can treat 0 as an error sentinel.
+/// @param comp_type glTF componentType GL enum.
+/// @return Component width in bytes, or zero when unsupported.
 static int gltf_component_size(int comp_type) {
     switch (comp_type) {
         case 5120:
@@ -28,8 +41,9 @@ static int gltf_component_size(int comp_type) {
 
 /// @brief Return the number of components for a glTF accessor `"type"` string.
 /// @details Maps the glTF type name to its component count: "SCALAR"=1, "VEC2"=2, "VEC3"=3,
-///   "VEC4"=4, "MAT2"=4, "MAT3"=9, "MAT4"=16. Unrecognised strings return 1 as a safe
-///   error sentinel so malformed accessors are rejected instead of being treated as SCALAR.
+///   "VEC4"=4, "MAT2"=4, "MAT3"=9, "MAT4"=16.
+/// @param acc_type Accessor type string.
+/// @return Component count, or zero for NULL/unrecognized input.
 static int gltf_component_count(const char *acc_type) {
     if (!acc_type)
         return 0;
@@ -52,6 +66,14 @@ static int gltf_component_count(const char *acc_type) {
 
 static int gltf_validate_sparse_indices(const gltf_accessor_view_t *view);
 
+/// @brief Initialize accessor scalar layout and extract its buffer-view binding metadata.
+/// @param acc Parsed accessor JSON object.
+/// @param[out] out View initialized with count, packed stride, component type/count,
+///                 and normalized flag.
+/// @param[out] out_bv_idx Receives the bufferView index, or -1 when absent.
+/// @param[out] out_byte_offset_acc Receives the non-negative accessor byteOffset.
+/// @param[out] out_comp_size Receives the component width in bytes.
+/// @return Non-zero for a valid positive count and recognized layout; otherwise zero.
 static int gltf_accessor_init_view(void *acc,
                                    gltf_accessor_view_t *out,
                                    int64_t *out_bv_idx,
@@ -84,6 +106,19 @@ static int gltf_accessor_init_view(void *acc,
     return 1;
 }
 
+/// @brief Bind an accessor view to validated dense bufferView bytes.
+/// @details A negative @p bv_idx represents a sparse-only accessor and succeeds without
+///          dense data. Meshopt-decoded shadow views take precedence over fallback buffers.
+/// @param root Parsed glTF root JSON object.
+/// @param bv_idx BufferView index, or a negative value for no dense payload.
+/// @param byte_offset_acc Accessor-local byte offset.
+/// @param buffers Loaded raw buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param comp_size Component width in bytes.
+/// @param comp_count Components per accessor element.
+/// @param[in,out] out Initialized accessor view receiving stride and borrowed data.
+/// @return Non-zero on success, or zero for invalid indices, bounds, alignment,
+///         stride, count, or unavailable bytes.
 static int gltf_accessor_bind_buffer_view(void *root,
                                           int64_t bv_idx,
                                           size_t byte_offset_acc,
@@ -159,6 +194,15 @@ static int gltf_accessor_bind_buffer_view(void *root,
     return 1;
 }
 
+/// @brief Bind and validate an accessor's optional sparse index/value payloads.
+/// @param root Parsed glTF root JSON object.
+/// @param acc Parsed accessor JSON object.
+/// @param buffers Loaded raw buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param comp_size Dense/sparse component width in bytes.
+/// @param comp_count Components per accessor element.
+/// @param[in,out] out Initialized view receiving borrowed sparse ranges.
+/// @return Non-zero when sparse metadata is absent or valid; otherwise zero.
 static int gltf_accessor_bind_sparse(void *root,
                                      void *acc,
                                      gltf_buffer_t *buffers,
@@ -230,7 +274,14 @@ static int gltf_accessor_bind_sparse(void *root,
     }
 }
 
-/// @brief Resolve a glTF accessor into a typed byte view.
+/// @brief Resolve a glTF accessor into a fully validated typed byte view.
+/// @param root Parsed glTF root JSON object.
+/// @param accessor_idx Zero-based accessor index.
+/// @param buffers Loaded raw buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param[out] out Receives borrowed dense/sparse byte ranges and scalar layout.
+/// @return Non-zero on success, or zero for invalid JSON, bounds, component layout,
+///         or sparse metadata.
 static int gltf_get_accessor_view(void *root,
                                   int64_t accessor_idx,
                                   gltf_buffer_t *buffers,
@@ -257,7 +308,11 @@ static int gltf_get_accessor_view(void *root,
         root, acc, buffers, buf_count, comp_size, out->comp_count, out);
 }
 
-/// @brief Validate sparse accessor metadata globally before importers decide to skip primitives.
+/// @brief Validate sparse accessor metadata globally before importers may skip primitives.
+/// @param root Parsed glTF root JSON object.
+/// @param buffers Loaded raw buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @return Non-zero when every non-empty sparse accessor resolves validly; otherwise zero.
 static int gltf_validate_sparse_accessors(void *root, gltf_buffer_t *buffers, int buf_count) {
     void *accessors = jarr(root, "accessors");
     int64_t accessor_count = jarr_len(accessors);
@@ -273,23 +328,31 @@ static int gltf_validate_sparse_accessors(void *root, gltf_buffer_t *buffers, in
     return 1;
 }
 
-/// @brief Read a little-endian uint16 from the first 2 bytes of @p src.
+/// @brief Read a little-endian unsigned 16-bit integer.
+/// @param src Pointer to at least two readable bytes.
+/// @return Decoded value.
 static uint16_t gltf_read_le_u16(const uint8_t *src) {
     return (uint16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
 }
 
-/// @brief Read a little-endian int16 from the first 2 bytes of @p src.
+/// @brief Read a little-endian signed 16-bit integer.
+/// @param src Pointer to at least two readable bytes.
+/// @return Decoded value.
 static int16_t gltf_read_le_i16(const uint8_t *src) {
     return (int16_t)gltf_read_le_u16(src);
 }
 
-/// @brief Read a little-endian uint32 from the first 4 bytes of @p src.
+/// @brief Read a little-endian unsigned 32-bit integer.
+/// @param src Pointer to at least four readable bytes.
+/// @return Decoded value.
 static uint32_t gltf_read_le_u32(const uint8_t *src) {
     return (uint32_t)src[0] | ((uint32_t)src[1] << 8) | ((uint32_t)src[2] << 16) |
            ((uint32_t)src[3] << 24);
 }
 
-/// @brief Read a little-endian IEEE-754 float from the first 4 bytes of @p src (bit copy).
+/// @brief Read a little-endian IEEE-754 float through an alias-safe bit copy.
+/// @param src Pointer to at least four readable bytes.
+/// @return Decoded float bit pattern.
 static float gltf_read_le_f32(const uint8_t *src) {
     uint32_t bits = gltf_read_le_u32(src);
     float value = 0.0f;
@@ -427,6 +490,9 @@ static int32_t gltf_accessor_sparse_value_index(const gltf_accessor_view_t *view
 /// @details glTF requires sparse indices to be strictly increasing and in accessor range. Without
 ///   this guard duplicate or unsorted indices silently produce inconsistent overrides because the
 ///   runtime lookup performs a binary search over the sparse index table.
+/// @param view Accessor view containing optional sparse indices.
+/// @return Non-zero when no sparse data exists or all indices are strictly increasing
+///         and in range; otherwise zero.
 static int gltf_validate_sparse_indices(const gltf_accessor_view_t *view) {
     uint32_t previous = 0u;
     if (!view || !view->sparse_indices || view->sparse_count <= 0)
@@ -532,7 +598,9 @@ static void gltf_accessor_read_u32(const gltf_accessor_view_t *view,
 /// @brief Per-primitive skin-import diagnostics: how many vertices lost source
 ///        influence data on the way into the fixed 4-slot vertex record.
 typedef struct {
+    /// Vertices with more than four meaningful influences folded to the strongest four.
     uint32_t truncated_vertices;    /**< vertices with >4 meaningful influences folded to top-4 */
+    /// Vertices containing a meaningful joint outside the runtime draw-palette limit.
     uint32_t out_of_range_vertices; /**< vertices whose meaningful joints >= VGFX3D_MAX_BONES */
 } gltf_skin_import_stats_t;
 
@@ -540,6 +608,9 @@ typedef struct {
 /// @details Both the synchronous mesh import and the preloaded-POD commit paths funnel
 ///          their per-primitive stats through here so the two paths produce identical
 ///          AssetDiagnostics3D warnings. No-op when the stats are all zero.
+/// @param mesh_index Zero-based source mesh index used in diagnostics.
+/// @param primitive_index Zero-based primitive index within the source mesh.
+/// @param stats Accumulated per-primitive skin import statistics.
 static void gltf_emit_skin_import_warnings(int mesh_index,
                                            int primitive_index,
                                            const gltf_skin_import_stats_t *stats) {
@@ -591,6 +662,7 @@ static void gltf_emit_skin_import_warnings(int mesh_index,
 /// @param out_weights 4-element weight array, mutated in place.
 /// @param truncated_io Optional flag set to 1 when a meaningful influence is folded away.
 /// @param out_of_range_io Optional flag set to 1 when a meaningful joint is out of range.
+/// @param joint_limit Exclusive accepted joint-index bound.
 static void gltf_add_top_joint_influence_limit(uint32_t joint,
                                                float weight,
                                                uint32_t *out_joints,
@@ -629,7 +701,13 @@ static void gltf_add_top_joint_influence_limit(uint32_t joint,
     out_weights[replace] = weight;
 }
 
-/// @brief Back-compat wrapper: merge one influence with the draw-palette bone limit.
+/// @brief Merge one influence using the runtime draw-palette bone limit.
+/// @param joint Source joint index.
+/// @param weight Source influence weight.
+/// @param[in,out] out_joints Four-element strongest-joint array.
+/// @param[in,out] out_weights Four-element parallel weight array.
+/// @param[in,out] truncated_io Optional flag set when a meaningful influence is dropped.
+/// @param[in,out] out_of_range_io Optional flag set for an out-of-range meaningful joint.
 static void gltf_add_top_joint_influence(uint32_t joint,
                                          float weight,
                                          uint32_t *out_joints,
@@ -651,6 +729,7 @@ static void gltf_add_top_joint_influence(uint32_t joint,
 ///            2. Non-zero sum → scale to 1.
 ///            3. Sum below threshold → leave the tuple alone (a zero-weight vertex is
 ///               a valid "this vertex is unrigged" signal).
+/// @param[in,out] weights Four-element influence tuple.
 static void gltf_normalize_joint_influences(float *weights) {
     float sum = 0.0f;
     if (!weights)
@@ -672,6 +751,12 @@ static void gltf_normalize_joint_influences(float *weights) {
 ///   dropped. This is a safety net for glTF files that include degenerate geometry (exported by
 ///   tools that strip vertices but leave the index buffer unchanged). Returns 1 if the triangle
 ///   was emitted, 0 if it was rejected.
+/// @param[in,out] mesh Runtime Mesh3D receiving a valid triangle.
+/// @param vertex_count Number of vertices addressable by the primitive.
+/// @param i0 First candidate vertex index.
+/// @param i1 Second candidate vertex index.
+/// @param i2 Third candidate vertex index.
+/// @return Non-zero when the triangle is accepted and appended; otherwise zero.
 static int gltf_emit_triangle(
     void *mesh, uint32_t vertex_count, uint32_t i0, uint32_t i1, uint32_t i2) {
     if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count)
@@ -691,6 +776,9 @@ static int gltf_emit_triangle(
 /// @details When @p view is NULL the primitive has no index buffer, so the element index itself
 ///   is used as the vertex index (sequential triangles). This mirrors how GL_TRIANGLES works
 ///   with `glDrawArrays` vs `glDrawElements`.
+/// @param view Optional scalar unsigned index accessor.
+/// @param element_idx Logical index-stream element.
+/// @return Decoded vertex index or @p element_idx for an unindexed primitive.
 static uint32_t gltf_read_index(const gltf_accessor_view_t *view, int32_t element_idx) {
     if (!view)
         return (uint32_t)element_idx;
@@ -699,19 +787,25 @@ static uint32_t gltf_read_index(const gltf_accessor_view_t *view, int32_t elemen
     return value;
 }
 
-/// @brief True if the accessor view has dense data or a complete sparse substitution set.
+/// @brief Test whether an accessor view has dense data or sparse substitution payload.
+/// @param view Accessor view.
+/// @return Non-zero when readable dense or sparse bytes are present.
 static int gltf_accessor_has_payload(const gltf_accessor_view_t *view) {
     return view &&
            (view->data || (view->sparse_count > 0 && view->sparse_indices && view->sparse_values));
 }
 
-/// @brief True if the accessor is a scalar unsigned index stream (u8/u16/u32 component types).
+/// @brief Test whether an accessor is a scalar unsigned index stream.
+/// @param view Accessor view.
+/// @return Non-zero for SCALAR unsigned byte/short/int layouts.
 static int gltf_accessor_is_indices(const gltf_accessor_view_t *view) {
     return view && view->comp_count == 1 &&
            (view->comp_type == 5121 || view->comp_type == 5123 || view->comp_type == 5125);
 }
 
-/// @brief True if the accessor uses one of the four 8/16-bit integer component types.
+/// @brief Test whether an accessor uses an 8/16-bit integer component type.
+/// @param view Accessor view.
+/// @return Non-zero for signed/unsigned byte or short components.
 static int gltf_accessor_is_quantized_int(const gltf_accessor_view_t *view) {
     return view && (view->comp_type == 5120 || view->comp_type == 5121 || view->comp_type == 5122 ||
                     view->comp_type == 5123);
@@ -719,6 +813,8 @@ static int gltf_accessor_is_quantized_int(const gltf_accessor_view_t *view) {
 
 /// @brief True if the accessor is a valid POSITION stream: FLOAT VEC3, or a
 ///        KHR_mesh_quantization 8/16-bit integer VEC3 (normalized or plain).
+/// @param view Accessor view.
+/// @return Non-zero when the layout is accepted for POSITION.
 static int gltf_accessor_is_position(const gltf_accessor_view_t *view) {
     if (!view || view->comp_count != 3)
         return 0;
@@ -727,6 +823,8 @@ static int gltf_accessor_is_position(const gltf_accessor_view_t *view) {
 
 /// @brief True if the accessor is a valid NORMAL stream: FLOAT VEC3, or a
 ///        KHR_mesh_quantization normalized signed byte/short VEC3.
+/// @param view Accessor view.
+/// @return Non-zero when the layout is accepted for NORMAL.
 static int gltf_accessor_is_normal(const gltf_accessor_view_t *view) {
     if (!view || view->comp_count < 3)
         return 0;
@@ -737,6 +835,9 @@ static int gltf_accessor_is_normal(const gltf_accessor_view_t *view) {
 
 /// @brief True if the accessor is a valid TANGENT stream (@p min_components..4): FLOAT,
 ///        or a KHR_mesh_quantization normalized signed byte/short.
+/// @param view Accessor view.
+/// @param min_components Minimum accepted component count.
+/// @return Non-zero when the layout is accepted for TANGENT.
 static int gltf_accessor_is_tangent(const gltf_accessor_view_t *view, int min_components) {
     if (!view || view->comp_count < min_components || view->comp_count > 4)
         return 0;
@@ -747,6 +848,8 @@ static int gltf_accessor_is_tangent(const gltf_accessor_view_t *view, int min_co
 
 /// @brief True if the accessor is a valid UV stream (≥2 components, FLOAT or a
 ///        KHR_mesh_quantization 8/16-bit integer, normalized or plain).
+/// @param view Accessor view.
+/// @return Non-zero when the layout is accepted for a texture coordinate.
 static int gltf_accessor_is_texcoord(const gltf_accessor_view_t *view) {
     return view && view->comp_count >= 2 &&
            (view->comp_type == 5126 || gltf_accessor_is_quantized_int(view));
@@ -754,25 +857,35 @@ static int gltf_accessor_is_texcoord(const gltf_accessor_view_t *view) {
 
 /// @brief True if the accessor is a valid vertex-color stream (3-4 components, FLOAT or
 ///   normalized u8/u16).
+/// @param view Accessor view.
+/// @return Non-zero when the layout is accepted for COLOR_0.
 static int gltf_accessor_is_color(const gltf_accessor_view_t *view) {
     return view && view->comp_count >= 3 && view->comp_count <= 4 &&
            (view->comp_type == 5126 ||
             (view->normalized && (view->comp_type == 5121 || view->comp_type == 5123)));
 }
 
-/// @brief True if the accessor is a joint-index stream (≥4 components, u8 or u16).
+/// @brief Test whether an accessor is a valid joint-index stream.
+/// @param view Accessor view.
+/// @return Non-zero for at least four unsigned byte/short components.
 static int gltf_accessor_is_joints(const gltf_accessor_view_t *view) {
     return view && view->comp_count >= 4 && (view->comp_type == 5121 || view->comp_type == 5123);
 }
 
-/// @brief True if the accessor is a skin-weight stream (≥4 components, FLOAT or normalized u8/u16).
+/// @brief Test whether an accessor is a valid skin-weight stream.
+/// @param view Accessor view.
+/// @return Non-zero for at least four float or normalized unsigned byte/short components.
 static int gltf_accessor_is_weights(const gltf_accessor_view_t *view) {
     return view && view->comp_count >= 4 &&
            (view->comp_type == 5126 ||
             (view->normalized && (view->comp_type == 5121 || view->comp_type == 5123)));
 }
 
-/// @brief True if all @p count floats are finite; false for NULL or negative count.
+/// @brief Test whether every value in a float array is finite.
+/// @param values Float array.
+/// @param count Number of elements to inspect.
+/// @return Non-zero when @p values is non-NULL, @p count is non-negative, and all
+///         elements are finite.
 static int gltf_f32_array_is_finite(const float *values, int32_t count) {
     if (!values || count < 0)
         return 0;
@@ -784,6 +897,7 @@ static int gltf_f32_array_is_finite(const float *values, int32_t count) {
 }
 
 /// @brief Normalize a finite vec3 in place.
+/// @param[in,out] v Three-component vector.
 /// @return 1 when the vector had a useful finite length, 0 for zero/NaN/Inf input.
 static int gltf_normalize_vec3f_in_place(float *v) {
     double len;
@@ -800,6 +914,7 @@ static int gltf_normalize_vec3f_in_place(float *v) {
 }
 
 /// @brief Normalize a glTF tangent vec4 xyz and reduce handedness to ±1.
+/// @param[in,out] tangent Four-component tangent `(xyz, handedness)`.
 /// @return 1 when xyz was usable; 0 when tangent space should be recomputed.
 static int gltf_sanitize_tangent4(float *tangent) {
     if (!tangent || !isfinite(tangent[3]))
@@ -811,6 +926,9 @@ static int gltf_sanitize_tangent4(float *tangent) {
 /// @brief Triangle count yielded by a glTF primitive topology: mode 4 = TRIANGLES
 ///   (count/3), 5/6 = TRIANGLE_STRIP/FAN (count-2). Returns 0 for too few indices and
 ///   -1 for non-triangle modes (points/lines).
+/// @param mode glTF primitive topology mode.
+/// @param index_count Number of logical indices/vertices in the draw.
+/// @return Triangle count, zero for insufficient data, or -1 for unsupported non-triangle modes.
 static int32_t gltf_primitive_triangle_count(int64_t mode, int32_t index_count) {
     if (index_count <= 0)
         return 0;
@@ -881,12 +999,14 @@ static int gltf_append_primitive_indices(void *mesh,
     return 0;
 }
 
-/// @brief Refcount-aware free of `*slot`; nulls the pointer afterwards.
+/// @brief Release a runtime reference slot and set it to NULL.
+/// @param[in,out] slot Address of the reference to release.
 static void gltf_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
-/// @brief Drop a transient GC reference taken during the load (e.g. parsed JSON map).
+/// @brief Drop a transient GC reference taken during the load.
+/// @param obj Transient runtime object, such as the parsed JSON map; NULL is accepted.
 static void gltf_release_local(void *obj) {
     void *tmp = obj;
     gltf_release_ref(&tmp);

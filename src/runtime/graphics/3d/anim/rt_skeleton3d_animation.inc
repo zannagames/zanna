@@ -3,11 +3,21 @@
 // File: src/runtime/graphics/3d/anim/rt_skeleton3d_animation.inc  (#included from rt_skeleton3d.c;
 // not a standalone translation unit) Purpose: Animation3D clip implementation and keyframe sampling
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements Animation3D lifecycle, keyframes, sampling, and retargeting.
+/// @details This fragment is included by `rt_skeleton3d.c`. It owns defensive
+///          reference-slot helpers, time-sorted sparse TRS channel storage,
+///          linear/SLERP and glTF Hermite sampling, tolerance compression, and
+///          alias/name/humanoid-role retargeting with proportional translation.
+
 /*==========================================================================
  * Animation3D implementation
  *=========================================================================*/
 
-/// @brief GC finalizer for Animation3D — releases all keyframe arrays and the name string.
+/// @brief GC finalizer for Animation3D — releases all channel and keyframe arrays.
+/// @note The clip name is stored inline; only channel/keyframe arrays require
+///       release.
+/// @param[in,out] obj Animation3D storage being finalized.
 static void rt_animation3d_finalize(void *obj) {
     rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
     int32_t channel_count;
@@ -26,11 +36,15 @@ static void rt_animation3d_finalize(void *obj) {
 /// @details Mirrors the `scene3d_release_ref` pattern used in rt_scene3d.c — kept
 ///   as a local copy so this translation unit has no dependency on scene3d internals.
 ///   Safe to call with a NULL slot or a slot already holding NULL.
+/// @param[in,out] slot Address of a retained runtime-object slot.
 static void animation3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Release a retained private slot only when it still holds the expected 3D class.
+/// @details A wrong-class non-null value is cleared as unowned corruption.
+/// @param[in,out] slot Address of the retained slot.
+/// @param[in] class_id Expected graphics-runtime class identifier.
 static void animation3d_release_class_ref(void **slot, int64_t class_id) {
     if (!slot || !*slot)
         return;
@@ -42,6 +56,11 @@ static void animation3d_release_class_ref(void **slot, int64_t class_id) {
 }
 
 /// @brief Typed retain/release swap for private animation-runtime object slots.
+/// @details Retains @p value before releasing the prior class-validated slot;
+///          assigning the existing pointer is a no-op.
+/// @param[in,out] slot Address of the retained destination slot.
+/// @param[in] value Borrowed replacement object, or `NULL`.
+/// @param[in] class_id Class expected for the prior slot value.
 static void animation3d_assign_class_ref(void **slot, void *value, int64_t class_id) {
     if (!slot || *slot == value)
         return;
@@ -51,6 +70,8 @@ static void animation3d_assign_class_ref(void **slot, void *value, int64_t class
 }
 
 /// @brief Borrow a private Skeleton3D slot, clearing it if corruption changed its class.
+/// @param[in,out] slot Address of the private skeleton slot.
+/// @return Borrowed typed skeleton pointer, or `NULL`.
 static rt_skeleton3d *animation3d_skeleton_slot(void **slot) {
     if (!slot || !*slot)
         return NULL;
@@ -62,6 +83,8 @@ static rt_skeleton3d *animation3d_skeleton_slot(void **slot) {
 }
 
 /// @brief Borrow a private Animation3D slot, clearing it if corruption changed its class.
+/// @param[in,out] slot Address of the private clip slot.
+/// @return Borrowed typed animation pointer, or `NULL`.
 static rt_animation3d *animation3d_clip_slot(void **slot) {
     if (!slot || !*slot)
         return NULL;
@@ -102,6 +125,10 @@ static void sanitize_keyframe_quat(float *q) {
 
 /// @brief Clamp one sampled animation lane to a finite range that downstream matrix
 ///        multiplication can tolerate.
+/// @param[in] value Sampled float lane.
+/// @param[in] fallback Replacement for non-finite input; itself normalized to
+///                     zero when non-finite.
+/// @return Finite lane clamped to `±SKELETON3D_ANIM_ABS_MAX`.
 static float animation3d_sanitize_lane(float value, float fallback) {
     if (!isfinite(fallback))
         fallback = 0.0f;
@@ -115,6 +142,15 @@ static float animation3d_sanitize_lane(float value, float fallback) {
 }
 
 /// @brief Sanitize sampled TRS data before building local bone matrices.
+/// @details Position and scale lanes use their corresponding fallbacks and
+///          range clamp; rotation uses the complete fallback only when all
+///          four lanes are finite, then is normalized or replaced by identity.
+/// @param[in,out] pos Optional writable three-float translation.
+/// @param[in,out] rot Optional writable four-float quaternion.
+/// @param[in,out] scl Optional writable three-float scale.
+/// @param[in] fallback_pos Optional borrowed translation fallback.
+/// @param[in] fallback_rot Optional borrowed quaternion fallback.
+/// @param[in] fallback_scl Optional borrowed scale fallback.
 static void animation3d_sanitize_trs(float *pos,
                                      float *rot,
                                      float *scl,
@@ -157,6 +193,10 @@ static void animation3d_sanitize_trs(float *pos,
 }
 
 /// @brief Create a new empty animation clip with the given identifier and duration (seconds).
+/// @param[in] name Borrowed runtime name copied to 63 bytes, or `NULL`.
+/// @param[in] duration Requested positive duration; nonpositive/non-finite
+///                     input defaults to one second.
+/// @return New GC-managed Animation3D, or `NULL` after an allocation trap.
 void *rt_animation3d_new(rt_string name, double duration) {
     rt_animation3d *a = (rt_animation3d *)rt_obj_new_i64(RT_G3D_ANIMATION3D_CLASS_ID,
                                                          (int64_t)sizeof(rt_animation3d));
@@ -190,6 +230,13 @@ void *rt_animation3d_new(rt_string name, double duration) {
 /// @details This status-returning internal implementation lets transactional importers reject a
 ///          complete asset when channel/keyframe growth fails. Equal-time keys replace the existing
 ///          value, matching the compatibility void API.
+/// @param[in,out] obj Animation3D to modify.
+/// @param[in] bone_index Target bone index in `[0,1023]`.
+/// @param[in] time Key time; negatives clamp to zero, non-finite or
+///                 non-float-range values fail.
+/// @param[in] position Optional borrowed Vec3 translation.
+/// @param[in] rotation Optional borrowed Quat rotation.
+/// @param[in] scale Optional borrowed Vec3 scale.
 /// @return Nonzero when the key was inserted or replaced.
 int rt_animation3d_try_add_keyframe(
     void *obj, int64_t bone_index, double time, void *position, void *rotation, void *scale) {
@@ -349,6 +396,12 @@ int rt_animation3d_try_add_keyframe(
 
 /// @brief Append one keyframe through the compatibility-preserving public void API.
 /// @details Callers requiring failure status use `rt_animation3d_try_add_keyframe` internally.
+/// @param[in,out] obj Animation3D to modify.
+/// @param[in] bone_index Target bone index.
+/// @param[in] time Key time in seconds.
+/// @param[in] position Optional borrowed Vec3 translation.
+/// @param[in] rotation Optional borrowed Quat rotation.
+/// @param[in] scale Optional borrowed Vec3 scale.
 void rt_animation3d_add_keyframe(
     void *obj, int64_t bone_index, double time, void *position, void *rotation, void *scale) {
     (void)rt_animation3d_try_add_keyframe(obj, bone_index, time, position, rotation, scale);
@@ -356,6 +409,15 @@ void rt_animation3d_add_keyframe(
 
 /// @brief True when @p mid is reproduced within tolerance by interpolating between
 ///   @p a and @p b at @p mid's time (lerp for position/scale, slerp for rotation).
+/// @details Cubic keys, mismatched component-presence masks, invalid spans, and
+///          out-of-segment middle times are never considered redundant.
+/// @param[in] a Previously kept keyframe.
+/// @param[in] mid Candidate keyframe.
+/// @param[in] b Following keyframe.
+/// @param[in] pos_tolerance Maximum absolute translation-lane error.
+/// @param[in] rot_tolerance Maximum `1 - abs(quaternion dot)` error.
+/// @param[in] scl_tolerance Maximum absolute scale-lane error.
+/// @return Nonzero only when every present component is reconstructible.
 static int animation3d_keyframe_is_redundant(const vgfx3d_keyframe_t *a,
                                              const vgfx3d_keyframe_t *mid,
                                              const vgfx3d_keyframe_t *b,
@@ -399,6 +461,10 @@ static int animation3d_keyframe_is_redundant(const vgfx3d_keyframe_t *a,
 ///   reconstructible by interpolating their kept neighbours. Cubic (Hermite)
 ///   keys and keys with mismatched presence masks are always kept, as are the
 ///   first and last key of every channel.
+/// @param[in,out] obj Animation3D whose channels to reduce in place.
+/// @param[in] pos_tolerance Translation-lane error tolerance.
+/// @param[in] rot_tolerance Quaternion-dot error tolerance.
+/// @param[in] scl_tolerance Scale-lane error tolerance.
 /// @return The number of keyframes dropped across all channels.
 int64_t rt_animation3d_compress_keyframes(void *obj,
                                           double pos_tolerance,
@@ -443,6 +509,15 @@ int64_t rt_animation3d_compress_keyframes(void *obj,
 /// @details Import-facing: the glTF loader emits keyframes first (time-sorted) and
 ///   then decorates them with the sampler's authored or derived tangents so
 ///   skeletal playback reproduces the source spline exactly per segment.
+/// @param[in,out] obj Animation3D containing the existing key.
+/// @param[in] bone_index Target channel bone index.
+/// @param[in] time Existing key time matched by runtime tolerance.
+/// @param[in] pos_in Optional borrowed three-float incoming position tangent.
+/// @param[in] pos_out Optional borrowed three-float outgoing position tangent.
+/// @param[in] rot_in Optional borrowed four-float incoming rotation tangent.
+/// @param[in] rot_out Optional borrowed four-float outgoing rotation tangent.
+/// @param[in] scl_in Optional borrowed three-float incoming scale tangent.
+/// @param[in] scl_out Optional borrowed three-float outgoing scale tangent.
 void rt_animation3d_set_keyframe_tangents(void *obj,
                                           int64_t bone_index,
                                           double time,
@@ -491,6 +566,8 @@ void rt_animation3d_set_keyframe_tangents(void *obj,
 }
 
 /// @brief Mark this clip as looping (wraps back to t=0 at end) or one-shot (stops at end).
+/// @param[in,out] obj Animation3D to configure.
+/// @param[in] loop Zero for one-shot; nonzero for looping.
 void rt_animation3d_set_looping(void *obj, int8_t loop) {
     rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
     if (a)
@@ -498,18 +575,24 @@ void rt_animation3d_set_looping(void *obj, int8_t loop) {
 }
 
 /// @brief Read the looping flag (0 = one-shot, 1 = loops).
+/// @param[in] obj Animation3D to inspect.
+/// @return `1` for looping; `0` for one-shot or invalid input.
 int8_t rt_animation3d_get_looping(void *obj) {
     rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
     return a && a->looping ? 1 : 0;
 }
 
 /// @brief Total length of the clip in seconds (0.0 for NULL).
+/// @param[in] obj Animation3D to inspect.
+/// @return Positive finite duration, or `0.0`.
 double rt_animation3d_get_duration(void *obj) {
     rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
     return (a && isfinite(a->duration) && a->duration > 0.0f) ? a->duration : 0.0;
 }
 
 /// @brief The clip's display / lookup name (empty string for NULL).
+/// @param[in] obj Animation3D to inspect.
+/// @return Owned runtime-string copy of the inline name, or an empty string.
 rt_string rt_animation3d_get_name(void *obj) {
     rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
     return a ? rt_const_cstr(a->name) : rt_const_cstr("");
@@ -521,6 +604,9 @@ rt_string rt_animation3d_get_name(void *obj) {
 ///   trailing l/r on limbs), and matches a base joint by keyword. Returns 0 for unrecognized names
 ///   (caller falls back to exact-name then index matching). Bare `leg`/`arm` follow mixamo, where
 ///   `Leg` is the calf and `Arm` the upper arm (`UpLeg`/`ForeArm` disambiguate the others).
+/// @param[in] raw Borrowed NUL-terminated bone name.
+/// @return Zero for no recognized role; otherwise an encoded base-role and
+///         left/right discriminator.
 static int animation3d_humanoid_role(const char *raw) {
     char b[64];
     int n = 0;
@@ -585,9 +671,10 @@ static int animation3d_humanoid_role(const char *raw) {
     return base * 4 + side;
 }
 
-/// @brief Map a source-skeleton bone to the best-matching destination bone for retargeting.
-/// @details Prefers an exact name match, then falls back to a humanoid-role match, then to the same
-///          index if in range. Returns -1 when no correspondence exists.
+/// @brief Build a per-bone cache of inferred humanoid role identifiers.
+/// @param[in] skel Skeleton whose complete safe bone range to classify.
+/// @return Owned `bone_count`-element integer array, or `NULL` for an empty
+///         skeleton, size overflow, or allocation failure.
 static int32_t *animation3d_build_humanoid_role_cache(const rt_skeleton3d *skel) {
     int32_t *roles;
     int32_t bone_count = skeleton3d_safe_bone_count(skel);
@@ -607,6 +694,14 @@ static int32_t *animation3d_build_humanoid_role_cache(const rt_skeleton3d *skel)
 /// @brief Map a source-skeleton bone to the best destination bone for retargeting:
 ///   explicit alias mapping first (`Skeleton3D.SetBoneAlias`), then exact name match,
 ///   then humanoid-role mapping (which handles cross-convention skeletons).
+/// @details A source-side alias reversal is attempted after exact name and
+///          before role inference; if all semantic mappings fail, the same
+///          numeric index is used when it exists in the destination.
+/// @param[in] src Source skeleton.
+/// @param[in] dst Destination skeleton.
+/// @param[in] src_roles Optional source role cache.
+/// @param[in] dst_roles Optional destination role cache.
+/// @param[in] src_bone Source bone index to map.
 /// @return Destination bone index, or -1 if @p src_bone is invalid or has no match.
 static int32_t animation3d_retarget_find_bone(const rt_skeleton3d *src,
                                               const rt_skeleton3d *dst,
@@ -663,6 +758,9 @@ static int32_t animation3d_retarget_find_bone(const rt_skeleton3d *src,
 /// @brief Whether @p anim already has an animation channel targeting @p bone.
 /// @details Guards retargeting against two source bones that map to the same destination
 ///          bone both emitting channels — the first mapping wins, avoiding duplicates.
+/// @param[in] anim Animation3D whose safe channel range to scan.
+/// @param[in] bone Destination bone index.
+/// @return Nonzero when a matching channel already exists.
 static int animation3d_has_channel_for_bone(const rt_animation3d *anim, int32_t bone) {
     int32_t channel_count;
     if (!anim)
@@ -677,6 +775,9 @@ static int animation3d_has_channel_for_bone(const rt_animation3d *anim, int32_t 
 /// @brief Bone length = magnitude of the bind-pose local translation (offset
 ///   from its parent). Used to scale retargeted translations between skeletons
 ///   of different proportions. Row-major translation lives at m[3]/m[7]/m[11].
+/// @param[in] skel Skeleton providing parent-relative bind transforms.
+/// @param[in] bone Zero-based bone index.
+/// @return Finite translation-vector length, or zero.
 static float animation3d_bone_bind_length(const rt_skeleton3d *skel, int32_t bone) {
     const float *m;
     if (!skel || bone < 0 || bone >= skeleton3d_safe_bone_count(skel))
@@ -693,6 +794,12 @@ static float animation3d_bone_bind_length(const rt_skeleton3d *skel, int32_t bon
 /// ratio
 ///          (rotations/scales transfer unchanged) so motion fits a differently-proportioned
 ///          skeleton.
+/// @param[in,out] dst Destination Animation3D with a preallocated free channel
+///                    slot.
+/// @param[in] src Source channel and keyframe array.
+/// @param[in] dst_bone Destination skeleton bone index.
+/// @param[in] pos_scale Positive translation scale; invalid/nonpositive values
+///                      become one.
 /// @return 1 on success, 0 if the channel table is full or a keyframe copy fails.
 static int animation3d_retarget_copy_channel(rt_animation3d *dst,
                                              const vgfx3d_anim_channel_t *src,
@@ -755,6 +862,9 @@ static int animation3d_retarget_copy_channel(rt_animation3d *dst,
 ///          maps its bone to the destination (by humanoid role or index), scales translation
 ///          keys by the bone-length ratio so the motion fits differing proportions, and
 ///          carries rotations/scales over unchanged. Bones with no mapping are skipped.
+/// @param[in] animation Source Animation3D.
+/// @param[in] src_skeleton Source Skeleton3D interpreting channel indexes.
+/// @param[in] dst_skeleton Destination Skeleton3D.
 /// @return New Animation3D handle, or NULL on invalid input or allocation failure.
 void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_skeleton) {
     rt_animation3d *src_anim = animation3d_checked(animation);
@@ -821,6 +931,16 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
  *=========================================================================*/
 
 /// @brief Resolve a keyframe's optional components against bind-pose fallback TRS.
+/// @details Position and scale are resolved lane by lane from presence masks;
+///          rotation is used only when all four lanes are present. The
+///          resulting TRS is sanitized and its quaternion normalized.
+/// @param[in] key Keyframe to resolve.
+/// @param[in] fallback_pos Borrowed three-float bind translation.
+/// @param[in] fallback_rot Borrowed four-float bind quaternion.
+/// @param[in] fallback_scl Borrowed three-float bind scale.
+/// @param[out] out_pos Writable resolved translation.
+/// @param[out] out_rot Writable resolved quaternion.
+/// @param[out] out_scl Writable resolved scale.
 static void keyframe_effective_trs(const vgfx3d_keyframe_t *key,
                                    const float *fallback_pos,
                                    const float *fallback_rot,
@@ -844,6 +964,20 @@ static void keyframe_effective_trs(const vgfx3d_keyframe_t *key,
 }
 
 /// @brief Sample a channel at time t, returning separate TRS components.
+/// @details Missing/empty channels return fallback TRS, one-key channels
+///          return that key, and out-of-range time clamps to the endpoint.
+///          Interior keys are found by binary search. Position and scale use
+///          Hermite only when both bracketing tangent masks agree, otherwise
+///          lerp; rotation uses componentwise normalized Hermite only within
+///          one hemisphere, otherwise shortest-arc SLERP.
+/// @param[in] ch Optional channel with time-sorted keyframes.
+/// @param[in] t Sample time; non-finite input becomes zero.
+/// @param[in] fallback_pos Borrowed three-float bind translation.
+/// @param[in] fallback_rot Borrowed four-float bind quaternion.
+/// @param[in] fallback_scl Borrowed three-float bind scale.
+/// @param[out] out_pos Writable sampled translation.
+/// @param[out] out_rot Writable sampled quaternion.
+/// @param[out] out_scl Writable sampled scale.
 static void sample_channel_trs_with_fallback(const vgfx3d_anim_channel_t *ch,
                                              float t,
                                              const float *fallback_pos,
@@ -961,6 +1095,10 @@ static void sample_channel_trs_with_fallback(const vgfx3d_anim_channel_t *ch,
 
 /// @brief Sample a channel at time t, producing a local TRS matrix; the bone's
 ///   pre-decomposed bind TRS is the fallback (no per-sample matrix decomposition).
+/// @param[in] ch Optional resolved animation channel.
+/// @param[in] t Sample time in seconds.
+/// @param[in] bone Bone providing cached bind TRS.
+/// @param[out] out_local Writable row-major local matrix of 16 floats.
 static void sample_channel_with_fallback(const vgfx3d_anim_channel_t *ch,
                                          float t,
                                          const vgfx3d_bone_t *bone,
@@ -975,6 +1113,12 @@ static void sample_channel_with_fallback(const vgfx3d_anim_channel_t *ch,
 ///   back to the bone's cached bind TRS when the channel is absent. Lets callers
 ///   that pre-resolved the channel skip both the per-bone O(channels) lookup and
 ///   the per-sample bind-matrix decomposition.
+/// @param[in] channel Optional resolved animation channel.
+/// @param[in] time Sample time in seconds.
+/// @param[in] bone Bone providing cached bind TRS.
+/// @param[out] out_pos Writable sampled translation.
+/// @param[out] out_rot Writable sampled quaternion.
+/// @param[out] out_scl Writable sampled scale.
 static void sample_animation_channel_trs(const vgfx3d_anim_channel_t *channel,
                                          float time,
                                          const vgfx3d_bone_t *bone,

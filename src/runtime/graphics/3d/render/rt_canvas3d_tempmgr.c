@@ -23,6 +23,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Canvas3D frame arenas and transient-resource ownership.
+/// @details The module supplies stable bump allocations, a retained late-overlay
+///   arena, duplicate-filtered temporary buffer/object lists, rollback helpers,
+///   and deterministic end-of-frame cleanup.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d_internal.h"
@@ -51,6 +57,8 @@ typedef struct canvas3d_frame_arena_chunk {
 } canvas3d_frame_arena_chunk;
 
 /// @brief Payload base address of a chunk (header rounded up to the alignment).
+/// @param chunk Non-null arena chunk allocated with its payload trailing the header.
+/// @return Aligned first payload byte within @p chunk.
 static uint8_t *canvas3d_frame_arena_chunk_payload(canvas3d_frame_arena_chunk *chunk) {
     size_t header = (sizeof(canvas3d_frame_arena_chunk) + (CANVAS3D_FRAME_ARENA_ALIGN - 1u)) &
                     ~(size_t)(CANVAS3D_FRAME_ARENA_ALIGN - 1u);
@@ -58,6 +66,10 @@ static uint8_t *canvas3d_frame_arena_chunk_payload(canvas3d_frame_arena_chunk *c
 }
 
 /// @brief Allocate a chunk able to serve at least @p payload_bytes.
+/// @details Ordinary requests receive the default chunk capacity; oversized
+///   requests receive a dedicated capacity equal to their requested size.
+/// @param payload_bytes Minimum payload capacity in bytes.
+/// @return Newly allocated empty chunk, or `NULL` on size overflow or allocation failure.
 static canvas3d_frame_arena_chunk *canvas3d_frame_arena_new_chunk(size_t payload_bytes) {
     size_t header = (sizeof(canvas3d_frame_arena_chunk) + (CANVAS3D_FRAME_ARENA_ALIGN - 1u)) &
                     ~(size_t)(CANVAS3D_FRAME_ARENA_ALIGN - 1u);
@@ -75,6 +87,14 @@ static canvas3d_frame_arena_chunk *canvas3d_frame_arena_new_chunk(size_t payload
     return chunk;
 }
 
+/// @brief Allocate aligned, stable scratch storage from the current frame arena.
+/// @details Rounds requests to the arena alignment, advances through retained
+///   chunks, and appends a new chunk when necessary. Returned bytes are uninitialized
+///   and their addresses remain stable until arena reset or destruction.
+/// @param c Canvas owning the frame arena and byte counter.
+/// @param bytes Positive payload size requested by the caller.
+/// @return Sixteen-byte-aligned borrowed storage, or `NULL` for invalid input,
+///   alignment overflow, size overflow, or allocation failure.
 void *canvas3d_frame_arena_alloc(rt_canvas3d *c, size_t bytes) {
     canvas3d_frame_arena_chunk *chunk;
     if (!c || bytes == 0u)
@@ -110,6 +130,11 @@ void *canvas3d_frame_arena_alloc(rt_canvas3d *c, size_t bytes) {
     }
 }
 
+/// @brief Reset the frame arena while retaining a bounded working set of chunks.
+/// @details Invalidates all outstanding arena allocations, zeroes bump offsets and
+///   frame byte accounting, preserves at most the first eight chunks, and frees an
+///   unusually large tail so transient spikes do not become permanent retention.
+/// @param c Canvas whose arena is reset; `NULL` is ignored.
 void canvas3d_frame_arena_reset(rt_canvas3d *c) {
     canvas3d_frame_arena_chunk *chunk;
     int32_t kept = 0;
@@ -137,6 +162,8 @@ void canvas3d_frame_arena_reset(rt_canvas3d *c) {
     c->frame_arena_frame_bytes = 0u;
 }
 
+/// @brief Destroy every frame-arena chunk and clear its canvas state.
+/// @param c Canvas whose arena allocations are invalidated and freed; `NULL` is ignored.
 void canvas3d_frame_arena_free(rt_canvas3d *c) {
     canvas3d_frame_arena_chunk *chunk;
     if (!c)
@@ -177,6 +204,17 @@ static int canvas3d_valid_power_of_two_alignment(size_t alignment) {
 }
 
 /// @brief Allocate stable storage from the retained final-overlay vertex/index arena.
+/// @details Invalid alignment falls back to pointer alignment. The arena may grow
+///   only while empty because moving it after recording a command would invalidate
+///   pointers. A cumulative overflow records its desired high-water mark for the
+///   subsequent reset to grow the next frame's capacity.
+/// @param c Canvas owning the retained overlay arena.
+/// @param bytes Positive number of uninitialized bytes requested.
+/// @param alignment Requested power-of-two byte alignment; invalid or sub-pointer
+///   values are promoted to pointer alignment.
+/// @return Aligned storage valid until overlay-arena reset or canvas destruction,
+///   or `NULL` for invalid input, overflow, allocation failure, or required growth
+///   while existing allocations are live.
 void *canvas3d_alloc_final_overlay_arena(rt_canvas3d *c, size_t bytes, size_t alignment) {
     size_t mask;
     size_t aligned_offset;
@@ -225,6 +263,7 @@ void *canvas3d_alloc_final_overlay_arena(rt_canvas3d *c, size_t bytes, size_t al
 ///   allocations, none individually over capacity) would drop geometry every
 ///   frame forever. Shrinking back below the retain cap only happens when the
 ///   last frame's peak no longer justifies the oversized arena.
+/// @param c Canvas whose outstanding overlay allocations have already been replayed.
 void canvas3d_reset_final_overlay_arena(rt_canvas3d *c) {
     size_t peak;
     if (!c)
@@ -249,6 +288,8 @@ void canvas3d_reset_final_overlay_arena(rt_canvas3d *c) {
 }
 
 /// @brief Clear the per-frame transient-buffer tracking set (all slots empty).
+/// @param c Canvas whose allocated duplicate-filter table is cleared; missing
+///   tables and `NULL` canvases are ignored.
 static void canvas3d_temp_buffer_set_clear(rt_canvas3d *c) {
     if (!c || !c->temp_buffer_set || c->temp_buffer_set_capacity <= 0)
         return;
@@ -303,6 +344,9 @@ static int canvas3d_ensure_temp_buffer_set(rt_canvas3d *c, int32_t count_hint) {
 /// @brief Return whether @p buffer is currently tracked as a per-frame transient buffer.
 /// @details Uses the hash set when available and falls back to a linear scan if scratch allocation
 ///          fails, preserving the old no-duplicate behavior under memory pressure.
+/// @param c Canvas whose frame-owned buffer list is searched.
+/// @param buffer Non-null allocation identity to locate.
+/// @return Nonzero when the exact pointer is tracked; zero when absent or input is invalid.
 static int canvas3d_temp_buffer_set_contains(rt_canvas3d *c, void *buffer) {
     int32_t mask;
     int32_t slot;
@@ -331,6 +375,8 @@ static int canvas3d_temp_buffer_set_contains(rt_canvas3d *c, void *buffer) {
 }
 
 /// @brief Insert @p buffer into the transient-buffer duplicate set.
+/// @param c Canvas owning the duplicate-filter set.
+/// @param buffer Non-null allocation identity to insert without taking additional ownership.
 /// @return Non-zero when the buffer is present in the set after the call.
 static int canvas3d_temp_buffer_set_insert(rt_canvas3d *c, void *buffer) {
     int32_t mask;
@@ -354,6 +400,7 @@ static int canvas3d_temp_buffer_set_insert(rt_canvas3d *c, void *buffer) {
 }
 
 /// @brief Rebuild the transient-buffer hash set from the tracked-buffer list.
+/// @param c Canvas whose existing set is cleared and repopulated; a missing set is ignored.
 static void canvas3d_rebuild_temp_buffer_set(rt_canvas3d *c) {
     if (!c || !c->temp_buffer_set)
         return;
@@ -363,6 +410,13 @@ static void canvas3d_rebuild_temp_buffer_set(rt_canvas3d *c) {
 }
 
 /// @brief Track a malloc'd temp buffer so it is freed at end-of-frame.
+/// @details A pointer already tracked is accepted without adding duplicate ownership.
+///   On success the caller transfers responsibility for freeing @p buffer to @p c.
+/// @param c Canvas that will own the allocation through frame cleanup.
+/// @param buffer Non-null allocation compatible with `free`.
+/// @return Nonzero when the buffer is tracked; zero for invalid input, capacity
+///   overflow, or tracking-array allocation failure. Ownership remains with the
+///   caller on failure.
 int canvas3d_track_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!c || !buffer)
         return 0;
@@ -391,6 +445,10 @@ int canvas3d_track_temp_buffer(rt_canvas3d *c, void *buffer) {
 }
 
 /// @brief Remove a tracked temp buffer without freeing it.
+/// @param c Canvas whose tracking list and duplicate set are updated.
+/// @param buffer Exact allocation pointer to remove.
+/// @return Nonzero when found and removed, transferring ownership back to the
+///   caller; zero when absent or input is invalid.
 int canvas3d_untrack_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!c || !buffer)
         return 0;
@@ -408,6 +466,8 @@ int canvas3d_untrack_temp_buffer(rt_canvas3d *c, void *buffer) {
 }
 
 /// @brief Untrack and free a temp buffer when a later allocation path fails.
+/// @param c Canvas expected to own @p buffer.
+/// @param buffer Allocation to free only if it is currently tracked; `NULL` is ignored.
 void canvas3d_release_tracked_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!buffer)
         return;
@@ -448,6 +508,11 @@ void canvas3d_release_tracked_mesh_snapshot(
 /// Final overlays are recorded before frame finalization and replayed after
 /// post-FX. Their geometry must survive normal End() cleanup, so they use a
 /// separate temp-buffer list cleared after Flip() or ClearOverlay().
+/// @param c Canvas that assumes frame-delayed ownership on success.
+/// @param buffer Non-null allocation compatible with `free`.
+/// @return Nonzero when appended to the final-overlay list; zero for invalid
+///   input, capacity overflow, or allocation failure. This list does not filter
+///   duplicate pointers, so callers must transfer each allocation only once.
 int canvas3d_track_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!c || !buffer)
         return 0;
@@ -471,6 +536,8 @@ int canvas3d_track_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer) {
 }
 
 /// @brief Remove a buffer from the final-overlay temp-buffer tracking list (does not free it).
+/// @param c Canvas whose delayed-cleanup list is updated.
+/// @param buffer Exact allocation pointer whose first occurrence is removed.
 /// @return 1 if it was found and removed, 0 otherwise.
 int canvas3d_untrack_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!c || !buffer)
@@ -488,6 +555,8 @@ int canvas3d_untrack_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer) {
 }
 
 /// @brief Untrack and free a final-overlay temp buffer in one step.
+/// @param c Canvas expected to own @p buffer in its final-overlay list.
+/// @param buffer Allocation to free only when successfully untracked; `NULL` is ignored.
 void canvas3d_release_tracked_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!buffer)
         return;
@@ -496,6 +565,8 @@ void canvas3d_release_tracked_final_overlay_temp_buffer(rt_canvas3d *c, void *bu
 }
 
 /// @brief Clear the per-frame transient-object tracking set (all slots empty).
+/// @param c Canvas whose allocated object duplicate-filter table is cleared;
+///   unavailable tables and `NULL` canvases are ignored.
 void canvas3d_temp_object_set_clear(rt_canvas3d *c) {
     if (!c || !c->temp_object_set || c->temp_object_set_capacity <= 0)
         return;
@@ -504,6 +575,11 @@ void canvas3d_temp_object_set_clear(rt_canvas3d *c) {
 
 /// @brief Ensure the transient-object set has a power-of-two capacity sized for @p count_hint
 /// entries.
+/// @details Growth rebuilds every current list entry into the new open-addressed table.
+/// @param c Canvas owning the retained-object list and duplicate set.
+/// @param count_hint Expected number of tracked objects.
+/// @return Nonzero when the set can represent the hinted count; zero for invalid
+///   input, arithmetic overflow, or allocation failure.
 int canvas3d_ensure_temp_object_set(rt_canvas3d *c, int32_t count_hint) {
     if (!c)
         return 0;
@@ -541,6 +617,11 @@ int canvas3d_ensure_temp_object_set(rt_canvas3d *c, int32_t count_hint) {
 
 /// @brief Whether @p obj is currently tracked as a per-frame transient object (linear-probe
 /// lookup).
+/// @details Rebuilds a missing or undersized hash set when possible and falls
+///   back to a linear scan when growth fails or the count cannot be doubled safely.
+/// @param c Canvas whose retained-object collection is searched.
+/// @param obj Non-null object identity to locate.
+/// @return Nonzero when the exact pointer is tracked; zero when absent or invalid.
 int canvas3d_temp_object_set_contains(rt_canvas3d *c, void *obj) {
     if (!c || !obj || c->temp_obj_count <= 0)
         return 0;
@@ -574,6 +655,10 @@ int canvas3d_temp_object_set_contains(rt_canvas3d *c, void *obj) {
 }
 
 /// @brief Track @p obj as a per-frame transient object (linear-probe insert; grows as needed).
+/// @param c Canvas owning the duplicate set.
+/// @param obj Non-null object identity to insert; no retain is performed here.
+/// @return Nonzero when the pointer is present after insertion; zero for invalid
+///   input, count overflow, allocation failure, or a saturated table.
 int canvas3d_temp_object_set_insert(rt_canvas3d *c, void *obj) {
     if (!c || !obj)
         return 0;
@@ -597,6 +682,7 @@ int canvas3d_temp_object_set_insert(rt_canvas3d *c, void *obj) {
 
 /// @brief Rebuild the transient-object hash set from the tracked-object list (after
 /// growth/removal).
+/// @param c Canvas whose existing object set is cleared and repopulated.
 void canvas3d_rebuild_temp_object_set(rt_canvas3d *c) {
     if (!c || !c->temp_object_set)
         return;
@@ -609,6 +695,10 @@ void canvas3d_rebuild_temp_object_set(rt_canvas3d *c) {
 ///
 /// Retains `obj` immediately so it survives at least until the
 /// frame ends, then releases at end-of-frame via `clear_temp_objects`.
+/// @param c Canvas that assumes one conditional runtime reference on success.
+/// @param obj Non-null GC-managed or retain-compatible object.
+/// @return Nonzero when already tracked or newly retained and appended; zero for
+///   invalid input, count/capacity overflow, set failure, or list allocation failure.
 int canvas3d_track_temp_object(rt_canvas3d *c, void *obj) {
     if (!c || !obj)
         return 0;
@@ -634,6 +724,8 @@ int canvas3d_track_temp_object(rt_canvas3d *c, void *obj) {
 }
 
 /// @brief Untrack a per-frame transient object and release its reference.
+/// @param c Canvas whose retained-object list and duplicate set are updated.
+/// @param obj Exact tracked object pointer. Absent or invalid inputs are ignored.
 void canvas3d_release_tracked_temp_object(rt_canvas3d *c, void *obj) {
     if (!c || !obj)
         return;
@@ -652,6 +744,11 @@ void canvas3d_release_tracked_temp_object(rt_canvas3d *c, void *obj) {
 }
 
 /// @brief Free every tracked transient buffer (called at end of frame).
+/// @details Publishes saturating snapshot-byte diagnostics, frees ordinary temp
+///   allocations, releases retained mesh revisions, resets snapshot/hash state,
+///   and invalidates frame-arena allocations. Final-overlay allocations are not
+///   part of this cleanup phase.
+/// @param c Canvas whose current frame native resources are released; `NULL` is ignored.
 void canvas3d_clear_temp_buffers(rt_canvas3d *c) {
     if (!c)
         return;
@@ -672,6 +769,8 @@ void canvas3d_clear_temp_buffers(rt_canvas3d *c) {
 }
 
 /// @brief Release every tracked transient GC object (called at end of frame).
+/// @param c Canvas whose retained objects are conditionally freed and whose
+///   list/set are reset; `NULL` is ignored.
 void canvas3d_clear_temp_objects(rt_canvas3d *c) {
     if (!c)
         return;

@@ -25,6 +25,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_joints3d.c
+ * @brief Implements distance, spring, hinge, rope, and six-degree-of-freedom joints.
+ *
+ * Each runtime-managed joint retains two Body3D objects and applies a bounded,
+ * finite-state constraint during world stepping. The solvers share body
+ * validation and math helpers, distribute corrections by inverse mass or
+ * effective inertia, and expose a common dispatch surface to Physics3D.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_joints3d.h"
@@ -50,6 +60,8 @@ extern double rt_vec3_z(void *v);
 
 /// @brief True if a body view is solvable: finite, non-negative inverse mass and
 ///        finite position/velocity. Guards the joint solver against NaN bodies.
+/// @param body Borrowed Body3D kinematic prefix to validate.
+/// @return One when all solver-consumed state is finite and inverse mass is non-negative.
 int joint3d_body_is_finite(const rt_body3d_kinematics *body) {
     if (!body || !isfinite(body->inv_mass) || body->inv_mass < 0.0)
         return 0;
@@ -64,6 +76,7 @@ int joint3d_body_is_finite(const rt_body3d_kinematics *body) {
 }
 
 /// @brief Release the GC reference held in `*slot` (if any) and null the slot. Idempotent.
+/// @param slot Address of a retained Body3D pointer slot.
 static void joint3d_release_body_ref(rt_body3d_kinematics **slot) {
     rt_g3d_ref_slot_release_class((void **)slot, RT_G3D_BODY3D_CLASS_ID);
 }
@@ -80,6 +93,7 @@ typedef struct {
 } rt_distance_joint3d;
 
 /// @brief GC finalizer — release the bodies retained by this distance joint.
+/// @param obj DistanceJoint3D payload being finalized.
 static void distance_joint_finalizer(void *obj) {
     rt_distance_joint3d *j = (rt_distance_joint3d *)obj;
     if (!j)
@@ -119,6 +133,8 @@ void *rt_distance_joint3d_new(void *body_a, void *body_b, double distance) {
 }
 
 /// @brief Get the target distance of a distance joint.
+/// @param joint DistanceJoint3D handle to inspect.
+/// @return Sanitized target separation, or zero for an invalid handle.
 double rt_distance_joint3d_get_distance(void *joint) {
     rt_distance_joint3d *j =
         (rt_distance_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_DISTANCEJOINT3D_CLASS_ID);
@@ -126,6 +142,8 @@ double rt_distance_joint3d_get_distance(void *joint) {
 }
 
 /// @brief Change the target distance of a distance joint at runtime.
+/// @param joint DistanceJoint3D handle to modify.
+/// @param distance Requested target separation, sanitized to a non-negative finite value.
 void rt_distance_joint3d_set_distance(void *joint, double distance) {
     rt_distance_joint3d *j =
         (rt_distance_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_DISTANCEJOINT3D_CLASS_ID);
@@ -146,6 +164,8 @@ void rt_distance_joint3d_set_distance(void *joint, double distance) {
 ///   for future XPBD-style step-size-aware variants.
 ///   Early-outs: coincident bodies (no defined direction) and two static
 ///   bodies (both inv_mass = 0) both skip the step cleanly.
+/// @param j Distance joint constraint to solve.
+/// @param dt Physics step duration, reserved for future step-size-aware variants.
 static void solve_distance(rt_distance_joint3d *j, double dt) {
     double delta[3];
     if (!j || !joint3d_body_is_finite(j->body_a) || !joint3d_body_is_finite(j->body_b))
@@ -234,6 +254,7 @@ typedef struct {
 } rt_spring_joint3d;
 
 /// @brief GC finalizer — release the bodies retained by this spring joint.
+/// @param obj SpringJoint3D payload being finalized.
 static void spring_joint_finalizer(void *obj) {
     rt_spring_joint3d *j = (rt_spring_joint3d *)obj;
     if (!j)
@@ -278,6 +299,8 @@ void *rt_spring_joint3d_new(
 }
 
 /// @brief Get the spring constant k.
+/// @param joint SpringJoint3D handle to inspect.
+/// @return Non-negative stiffness, or zero for an invalid handle.
 double rt_spring_joint3d_get_stiffness(void *joint) {
     rt_spring_joint3d *j =
         (rt_spring_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID);
@@ -285,6 +308,8 @@ double rt_spring_joint3d_get_stiffness(void *joint) {
 }
 
 /// @brief Set the spring constant k at runtime.
+/// @param joint SpringJoint3D handle to modify.
+/// @param stiffness Requested spring constant, sanitized to a non-negative finite value.
 void rt_spring_joint3d_set_stiffness(void *joint, double stiffness) {
     rt_spring_joint3d *j =
         (rt_spring_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID);
@@ -293,6 +318,8 @@ void rt_spring_joint3d_set_stiffness(void *joint, double stiffness) {
 }
 
 /// @brief Get the velocity damping coefficient.
+/// @param joint SpringJoint3D handle to inspect.
+/// @return Non-negative damping coefficient, or zero for an invalid handle.
 double rt_spring_joint3d_get_damping(void *joint) {
     rt_spring_joint3d *j =
         (rt_spring_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID);
@@ -300,6 +327,8 @@ double rt_spring_joint3d_get_damping(void *joint) {
 }
 
 /// @brief Set the velocity damping coefficient at runtime.
+/// @param joint SpringJoint3D handle to modify.
+/// @param damping Requested damping coefficient, sanitized to a non-negative finite value.
 void rt_spring_joint3d_set_damping(void *joint, double damping) {
     rt_spring_joint3d *j =
         (rt_spring_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID);
@@ -308,6 +337,8 @@ void rt_spring_joint3d_set_damping(void *joint, double damping) {
 }
 
 /// @brief Get the spring's natural (zero-force) length.
+/// @param joint SpringJoint3D handle to inspect.
+/// @return Non-negative rest length, or zero for an invalid handle.
 double rt_spring_joint3d_get_rest_length(void *joint) {
     rt_spring_joint3d *j =
         (rt_spring_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID);
@@ -323,6 +354,8 @@ double rt_spring_joint3d_get_rest_length(void *joint) {
 ///   constraint: it never corrects positions directly, so over-stiff springs
 ///   can oscillate or explode at the current fixed step — tune `stiffness`
 ///   below the stability ceiling for the caller's step frequency.
+/// @param j Spring joint constraint to solve.
+/// @param dt Physics step duration used to integrate force into velocity.
 static void solve_spring(rt_spring_joint3d *j, double dt) {
     double delta[3];
     dt = joint3d_sanitize_dt(dt);
@@ -400,6 +433,7 @@ typedef struct {
 } rt_hinge_joint3d;
 
 /// @brief GC finalizer: release the hinge's two retained body references.
+/// @param obj HingeJoint3D payload being finalized.
 static void hinge_joint_finalizer(void *obj) {
     rt_hinge_joint3d *j = (rt_hinge_joint3d *)obj;
     if (!j)
@@ -413,6 +447,10 @@ static void hinge_joint_finalizer(void *obj) {
 /// @details Validates the bodies/anchor/axis, then stores the anchor and (normalized) axis in each
 ///          body's local frame so the constraint follows the bodies as they move. Traps on bad
 ///          input.
+/// @param body_a First Body3D handle.
+/// @param body_b Second Body3D handle.
+/// @param anchor Finite Vec3 world-space pivot shared at creation.
+/// @param axis Nonzero finite Vec3 world-space hinge axis.
 /// @return Opaque HingeJoint3D handle, or NULL on validation failure.
 void *rt_hinge_joint3d_new(void *body_a, void *body_b, void *anchor, void *axis) {
     double anchor_world[3];
@@ -482,6 +520,8 @@ void *rt_hinge_joint3d_new(void *body_a, void *body_b, void *anchor, void *axis)
 
 /// @brief Current signed hinge angle (radians) between the bodies' stored
 ///   perpendicular references, projected onto the world hinge axis.
+/// @param j Valid hinge joint whose retained bodies define the current pose.
+/// @return Signed right-handed angle in radians, or zero for degenerate projected references.
 static double hinge_joint_current_angle(const rt_hinge_joint3d *j) {
     double axis_world[3];
     double ra[3];
@@ -511,6 +551,8 @@ static double hinge_joint_current_angle(const rt_hinge_joint3d *j) {
 /// @brief When the hinge angle reaches a configured limit, remove the axial
 ///   relative angular velocity that would carry it further past the bound, so
 ///   the joint stops at the limit (overrides the motor at the stop).
+/// @param j Hinge joint with enabled angle limits.
+/// @param axis_world Normalized current hinge axis in world space.
 static void hinge_joint_apply_limits(rt_hinge_joint3d *j, const double *axis_world) {
     rt_body3d_kinematics *a = j->body_a;
     rt_body3d_kinematics *b = j->body_b;
@@ -550,6 +592,8 @@ static void hinge_joint_apply_limits(rt_hinge_joint3d *j, const double *axis_wor
 ///   so an unbounded motor reaches the target in one step; the clamp models a
 ///   finite motor. Runs after the perpendicular-twist constraint, which leaves
 ///   the axial component free for the motor to drive.
+/// @param j Hinge joint with enabled motor configuration.
+/// @param axis_world Normalized current hinge axis in world space.
 static void hinge_joint_apply_motor(rt_hinge_joint3d *j, const double *axis_world) {
     rt_body3d_kinematics *a = j->body_a;
     rt_body3d_kinematics *b = j->body_b;
@@ -589,6 +633,8 @@ static void hinge_joint_apply_motor(rt_hinge_joint3d *j, const double *axis_worl
 /// motor/limits.
 /// @details Runs positional + linear-velocity anchor correction, removes relative angular velocity
 ///          except about the world hinge axis, then applies the optional motor and angle limits.
+/// @param j Hinge joint constraint to solve.
+/// @param dt Physics step duration, reserved by the position-based solver interface.
 static void solve_hinge(rt_hinge_joint3d *j, double dt) {
     double axis_world[3];
     (void)dt;
@@ -607,6 +653,8 @@ static void solve_hinge(rt_hinge_joint3d *j, double dt) {
 /// @brief Current signed hinge angle (radians) about the axis, measured between
 ///   the two bodies' stored perpendicular references. Reads 0 at creation; grows
 ///   right-handed about the hinge axis as body B rotates relative to body A.
+/// @param joint HingeJoint3D handle to inspect.
+/// @return Signed current angle in radians, or zero for an invalid handle.
 double rt_hinge_joint3d_get_angle(void *joint) {
     if (!rt_g3d_has_class(joint, RT_G3D_HINGEJOINT3D_CLASS_ID))
         return 0.0;
@@ -615,6 +663,9 @@ double rt_hinge_joint3d_get_angle(void *joint) {
 
 /// @brief Constrain the hinge to [min, max] radians (swapped if reversed); the
 ///   solver stops rotation at the bounds. Non-finite limits disable the limit.
+/// @param joint HingeJoint3D handle to modify.
+/// @param min_angle Requested minimum signed angle in radians.
+/// @param max_angle Requested maximum signed angle in radians.
 void rt_hinge_joint3d_set_limits(void *joint, double min_angle, double max_angle) {
     rt_hinge_joint3d *j;
     if (!rt_g3d_has_class(joint, RT_G3D_HINGEJOINT3D_CLASS_ID))
@@ -636,6 +687,10 @@ void rt_hinge_joint3d_set_limits(void *joint, double min_angle, double max_angle
 
 /// @brief Enable/configure a hinge motor that drives rotation about the hinge
 ///   axis toward @p target_velocity (rad/s), bounded by @p max_impulse strength.
+/// @param joint HingeJoint3D handle to modify.
+/// @param enabled Nonzero to enable motor impulses during solving.
+/// @param target_velocity Desired relative angular velocity in radians per second.
+/// @param max_impulse Non-negative per-step motor strength bound.
 void rt_hinge_joint3d_set_motor(void *joint,
                                 int8_t enabled,
                                 double target_velocity,
@@ -661,6 +716,7 @@ typedef struct {
 } rt_rope_joint3d;
 
 /// @brief GC finalizer: release the rope's two retained body references.
+/// @param obj RopeJoint3D payload being finalized.
 static void rope_joint_finalizer(void *obj) {
     rt_rope_joint3d *j = (rt_rope_joint3d *)obj;
     if (!j)
@@ -672,6 +728,9 @@ static void rope_joint_finalizer(void *obj) {
 /// @brief Create a rope joint limiting the distance between two bodies to @p max_length.
 /// @details A rope only resists stretching past its length (it goes slack when closer). The length
 ///          is sanitized non-negative. Traps on non-body inputs or allocation failure.
+/// @param body_a First Body3D handle.
+/// @param body_b Second Body3D handle.
+/// @param max_length Maximum permitted center-to-center separation.
 /// @return Opaque RopeJoint3D handle, or NULL on failure.
 void *rt_rope_joint3d_new(void *body_a, void *body_b, double max_length) {
     if (!rt_g3d_has_class(body_a, RT_G3D_BODY3D_CLASS_ID) ||
@@ -696,6 +755,8 @@ void *rt_rope_joint3d_new(void *body_a, void *body_b, double max_length) {
 }
 
 /// @brief Read the rope's maximum length (0 if the handle is invalid).
+/// @param joint RopeJoint3D handle to inspect.
+/// @return Non-negative maximum length, or zero for an invalid handle.
 double rt_rope_joint3d_get_max_length(void *joint) {
     rt_rope_joint3d *j =
         (rt_rope_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_ROPEJOINT3D_CLASS_ID);
@@ -703,6 +764,8 @@ double rt_rope_joint3d_get_max_length(void *joint) {
 }
 
 /// @brief Set the rope's maximum length (sanitized non-negative).
+/// @param joint RopeJoint3D handle to modify.
+/// @param max_length Requested maximum separation.
 void rt_rope_joint3d_set_max_length(void *joint, double max_length) {
     rt_rope_joint3d *j =
         (rt_rope_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_ROPEJOINT3D_CLASS_ID);
@@ -714,6 +777,8 @@ void rt_rope_joint3d_set_max_length(void *joint, double max_length) {
 /// @details Projects the bodies back to the rope length and removes the separating relative
 /// velocity
 ///          along the rope direction (inverse-mass weighted); does nothing while the rope is slack.
+/// @param j Rope joint constraint to solve.
+/// @param dt Physics step duration, reserved by the position-based solver interface.
 static void solve_rope(rt_rope_joint3d *j, double dt) {
     double delta[3];
     double dist;
@@ -786,6 +851,7 @@ typedef struct {
 } rt_sixdof_joint3d;
 
 /// @brief GC finalizer: release the 6DOF joint's two retained body references.
+/// @param obj SixDofJoint3D payload being finalized.
 static void sixdof_joint_finalizer(void *obj) {
     rt_sixdof_joint3d *j = (rt_sixdof_joint3d *)obj;
     if (!j)
@@ -799,6 +865,10 @@ static void sixdof_joint_finalizer(void *obj) {
 /// six
 ///          axes locked (zero linear/angular range), to be relaxed via the set-limits calls. Traps
 ///          on non-body inputs or non-finite frames.
+/// @param body_a First Body3D handle.
+/// @param body_b Second Body3D handle.
+/// @param frame_a Mat4 whose translation defines body A's local anchor.
+/// @param frame_b Mat4 whose translation defines body B's local anchor.
 /// @return Opaque SixDofJoint3D handle, or NULL on failure.
 void *rt_sixdof_joint3d_new(void *body_a, void *body_b, void *frame_a, void *frame_b) {
     double local_anchor_a[3];
@@ -844,6 +914,9 @@ void *rt_sixdof_joint3d_new(void *body_a, void *body_b, void *frame_a, void *fra
 }
 
 /// @brief Compute body B's pose-angle delta from the SixDof creation pose in body A's frame.
+/// @param j Six-degree-of-freedom joint to inspect.
+/// @param out Receives the three-component rotation vector in body A's joint frame.
+/// @return One when both bodies and the resulting angles are finite, otherwise zero.
 static int sixdof_joint_current_pose_angles(const rt_sixdof_joint3d *j, double *out) {
     double inv_a[4];
     double rel[4];
@@ -861,6 +934,9 @@ static int sixdof_joint_current_pose_angles(const rt_sixdof_joint3d *j, double *
 }
 
 /// @brief World-space unit axis for a SixDof angular limit component.
+/// @param j Six-degree-of-freedom joint defining body A's joint frame.
+/// @param axis Component index from zero through two.
+/// @param out Receives a normalized world-space axis or a deterministic basis fallback.
 static void sixdof_joint_world_axis(const rt_sixdof_joint3d *j, int axis, double *out) {
     double local[3] = {0.0, 0.0, 0.0};
     if (!out) {
@@ -877,6 +953,9 @@ static void sixdof_joint_world_axis(const rt_sixdof_joint3d *j, int axis, double
 }
 
 /// @brief Correct relative orientation when the SixDof pose-angle exits an angular limit.
+/// @param j Six-degree-of-freedom joint whose body orientations are corrected.
+/// @param axis_world Normalized world-space limit axis.
+/// @param violation Signed angular distance outside the permitted interval.
 static void sixdof_joint_apply_pose_angle_correction(rt_sixdof_joint3d *j,
                                                      const double *axis_world,
                                                      double violation) {
@@ -897,6 +976,8 @@ static void sixdof_joint_apply_pose_angle_correction(rt_sixdof_joint3d *j,
 }
 
 /// @brief Remove relative angular velocity that would keep driving a pose-angle outside its limit.
+/// @param j Six-degree-of-freedom joint whose angular velocities are corrected.
+/// @param pose_angles Per-axis pose angles already clamped to their active limits.
 static void sixdof_joint_apply_pose_angle_velocity_stop(rt_sixdof_joint3d *j,
                                                         const double *pose_angles) {
     double rel[3];
@@ -947,6 +1028,7 @@ static void sixdof_joint_apply_pose_angle_velocity_stop(rt_sixdof_joint3d *j,
 }
 
 /// @brief Enforce SixDof per-axis pose-angle limits around the creation relative orientation.
+/// @param j Six-degree-of-freedom joint to constrain.
 static void sixdof_joint_apply_angular_limits(rt_sixdof_joint3d *j) {
     double pose_angles[3];
     double clamped_angles[3];
@@ -977,6 +1059,7 @@ static void sixdof_joint_apply_angular_limits(rt_sixdof_joint3d *j) {
 ///   elevators. The joint frame is body A's axes — matching the angular limits
 ///   — so a piston authored along local X keeps driving along body A's X after
 ///   body A rotates.
+/// @param j Six-degree-of-freedom joint with linear motor configuration.
 static void sixdof_joint_apply_linear_motor(rt_sixdof_joint3d *j) {
     rt_body3d_kinematics *a = j->body_a;
     rt_body3d_kinematics *b = j->body_b;
@@ -1026,6 +1109,10 @@ static void sixdof_joint_apply_linear_motor(rt_sixdof_joint3d *j) {
 
 /// @brief Enable/configure the SixDof linear motor (target relative velocity per
 ///   world axis, bounded by max_impulse). Non-Vec3 velocity is ignored.
+/// @param joint SixDofJoint3D handle to modify.
+/// @param enabled Nonzero to enable the linear motor.
+/// @param velocity Vec3 target relative velocity in body A's joint frame.
+/// @param max_impulse Non-negative per-axis correction bound.
 void rt_sixdof_joint3d_set_linear_motor(void *joint,
                                         int8_t enabled,
                                         void *velocity,
@@ -1045,6 +1132,9 @@ void rt_sixdof_joint3d_set_linear_motor(void *joint,
 /// @brief Set the joint's per-axis linear limits from two Vec3 handles.
 /// @details Limits are canonicalized (min<=max); equal min/max locks that translational axis. Traps
 ///          on non-Vec3 inputs.
+/// @param joint SixDofJoint3D handle to modify.
+/// @param min_obj Vec3 lower linear bounds in body A's joint frame.
+/// @param max_obj Vec3 upper linear bounds in body A's joint frame.
 void rt_sixdof_joint3d_set_linear_limits(void *joint, void *min_obj, void *max_obj) {
     double min_v[3];
     double max_v[3];
@@ -1064,6 +1154,9 @@ void rt_sixdof_joint3d_set_linear_limits(void *joint, void *min_obj, void *max_o
 /// @brief Set the joint's per-axis angular pose limits (radians) from two Vec3 handles.
 /// @details Limits are relative to the creation pose in body A's joint frame; equal min/max locks
 ///          that rotational axis. Traps on non-Vec3 inputs.
+/// @param joint SixDofJoint3D handle to modify.
+/// @param min_obj Vec3 lower angular bounds in radians.
+/// @param max_obj Vec3 upper angular bounds in radians.
 void rt_sixdof_joint3d_set_angular_limits(void *joint, void *min_obj, void *max_obj) {
     double min_v[3];
     double max_v[3];
@@ -1084,6 +1177,8 @@ void rt_sixdof_joint3d_set_angular_limits(void *joint, void *min_obj, void *max_
 /// @details Projects the anchor gap back inside the linear limits, zeroes relative velocity on
 /// locked
 ///          linear axes, holds relative pose angles inside angular limits, then drives the motor.
+/// @param j Six-degree-of-freedom joint constraint to solve.
+/// @param dt Physics step duration, reserved by the position-based solver interface.
 static void solve_sixdof(rt_sixdof_joint3d *j, double dt) {
     (void)dt;
     if (!j)
@@ -1121,6 +1216,12 @@ typedef struct {
 ///   matches the concrete class and then reads that common prefix. It gives
 ///   World3D one safe place to validate same-world membership and purge joints
 ///   that mention a removed body.
+/// @param joint Candidate concrete joint handle.
+/// @param joint_type Expected `RT_JOINT_*` discriminator.
+/// @param out_body_a Optional output receiving the first borrowed Body3D handle.
+/// @param out_body_b Optional output receiving the second borrowed Body3D handle.
+/// @return One when the handle class matches @p joint_type and outputs are populated, otherwise
+/// zero.
 int rt_joint3d_get_bodies(void *joint, int32_t joint_type, void **out_body_a, void **out_body_b) {
     int matches = 0;
     if (out_body_a)

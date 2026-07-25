@@ -22,6 +22,17 @@
 // Links: rt_joints3d.c, rt_physics3d.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_joints3d.h
+ * @brief Declares runtime 3D joint construction, configuration, and solving.
+ *
+ * The API provides distance, spring, hinge, rope, and six-degree-of-freedom
+ * constraints between retained Body3D handles. Public setters configure each
+ * concrete joint; internal helpers expose body membership and dispatch one
+ * solver substep by `RT_JOINT_*` discriminator.
+ */
+
 #pragma once
 
 #include <stdint.h>
@@ -32,58 +43,132 @@ extern "C" {
 
 /* Distance joint — maintains fixed distance between two body centers */
 /// @brief Create a fixed-length distance constraint between two 3D bodies.
+/// @param body_a First Body3D handle.
+/// @param body_b Second Body3D handle.
+/// @param distance Requested non-negative target separation.
+/// @return Newly allocated DistanceJoint3D handle, or NULL after validation or allocation failure.
 void *rt_distance_joint3d_new(void *body_a, void *body_b, double distance);
+
 /// @brief Read the target distance.
+/// @param joint DistanceJoint3D handle to inspect.
+/// @return Non-negative target distance, or zero for an invalid handle.
 double rt_distance_joint3d_get_distance(void *joint);
+
 /// @brief Change the target distance at runtime.
+/// @param joint DistanceJoint3D handle to modify.
+/// @param distance Requested non-negative target separation.
 void rt_distance_joint3d_set_distance(void *joint, double distance);
 
 /* Spring joint — Hooke's law force toward rest length */
 /// @brief Create a 3D spring constraint with rest length, stiffness, and damping coefficients.
+/// @param body_a First Body3D handle.
+/// @param body_b Second Body3D handle.
+/// @param rest_length Natural zero-force length.
+/// @param stiffness Non-negative Hooke's-law spring constant.
+/// @param damping Non-negative relative-velocity damping coefficient.
+/// @return Newly allocated SpringJoint3D handle, or NULL after validation or allocation failure.
 void *rt_spring_joint3d_new(
     void *body_a, void *body_b, double rest_length, double stiffness, double damping);
 /// @brief Read the spring stiffness.
+/// @param joint SpringJoint3D handle to inspect.
+/// @return Non-negative stiffness, or zero for an invalid handle.
 double rt_spring_joint3d_get_stiffness(void *joint);
+
 /// @brief Set the spring stiffness.
+/// @param joint SpringJoint3D handle to modify.
+/// @param stiffness Requested non-negative spring constant.
 void rt_spring_joint3d_set_stiffness(void *joint, double stiffness);
+
 /// @brief Read the spring damping coefficient.
+/// @param joint SpringJoint3D handle to inspect.
+/// @return Non-negative damping coefficient, or zero for an invalid handle.
 double rt_spring_joint3d_get_damping(void *joint);
+
 /// @brief Set the spring damping coefficient.
+/// @param joint SpringJoint3D handle to modify.
+/// @param damping Requested non-negative damping coefficient.
 void rt_spring_joint3d_set_damping(void *joint, double damping);
+
 /// @brief Read the spring rest length.
+/// @param joint SpringJoint3D handle to inspect.
+/// @return Non-negative rest length, or zero for an invalid handle.
 double rt_spring_joint3d_get_rest_length(void *joint);
 
 /* Hinge joint — keeps two local anchors together while allowing twist around an axis */
 /// @brief Create a hinge-like anchor constraint around a normalized world axis.
+/// @param body_a First Body3D handle.
+/// @param body_b Second Body3D handle.
+/// @param anchor Finite Vec3 world-space pivot.
+/// @param axis Nonzero finite Vec3 world-space hinge axis.
+/// @return Newly allocated HingeJoint3D handle, or NULL after validation or allocation failure.
 void *rt_hinge_joint3d_new(void *body_a, void *body_b, void *anchor, void *axis);
+
 /// @brief Configure a hinge motor driving rotation about the axis toward a target
 ///   angular velocity (rad/s), bounded by a max-impulse strength.
+/// @param joint HingeJoint3D handle to modify.
+/// @param enabled Nonzero to enable motor impulses.
+/// @param target_velocity Desired relative angular velocity in radians per second.
+/// @param max_impulse Non-negative per-step motor strength bound.
 void rt_hinge_joint3d_set_motor(void *joint,
                                 int8_t enabled,
                                 double target_velocity,
                                 double max_impulse);
 /// @brief Current signed hinge angle (radians) about the axis; 0 at creation.
+/// @param joint HingeJoint3D handle to inspect.
+/// @return Signed angle in radians, or zero for an invalid handle.
 double rt_hinge_joint3d_get_angle(void *joint);
+
 /// @brief Constrain the hinge to [min, max] radians; non-finite values disable the limit.
+/// @param joint HingeJoint3D handle to modify.
+/// @param min_angle Requested minimum signed angle in radians.
+/// @param max_angle Requested maximum signed angle in radians.
 void rt_hinge_joint3d_set_limits(void *joint, double min_angle, double max_angle);
 
 /* Rope joint — enforces only a maximum center-to-center distance */
 /// @brief Create a maximum-distance rope constraint between two 3D bodies.
+/// @param body_a First Body3D handle.
+/// @param body_b Second Body3D handle.
+/// @param max_length Maximum permitted center-to-center separation.
+/// @return Newly allocated RopeJoint3D handle, or NULL after validation or allocation failure.
 void *rt_rope_joint3d_new(void *body_a, void *body_b, double max_length);
+
 /// @brief Read the maximum rope length.
+/// @param joint RopeJoint3D handle to inspect.
+/// @return Non-negative maximum length, or zero for an invalid handle.
 double rt_rope_joint3d_get_max_length(void *joint);
+
 /// @brief Change the maximum rope length at runtime.
+/// @param joint RopeJoint3D handle to modify.
+/// @param max_length Requested non-negative maximum separation.
 void rt_rope_joint3d_set_max_length(void *joint, double max_length);
 
 /* SixDof joint — configurable frame-anchor constraint */
 /// @brief Create a configurable joint that locks the two frame anchors together by default.
+/// @param body_a First Body3D handle.
+/// @param body_b Second Body3D handle.
+/// @param frame_a Mat4 whose translation defines body A's local anchor.
+/// @param frame_b Mat4 whose translation defines body B's local anchor.
+/// @return Newly allocated SixDofJoint3D handle, or NULL after validation or allocation failure.
 void *rt_sixdof_joint3d_new(void *body_a, void *body_b, void *frame_a, void *frame_b);
+
 /// @brief Set allowed frame-anchor separation along each local/world axis.
+/// @param joint SixDofJoint3D handle to modify.
+/// @param min Vec3 lower bounds in body A's joint frame.
+/// @param max Vec3 upper bounds in body A's joint frame.
 void rt_sixdof_joint3d_set_linear_limits(void *joint, void *min, void *max);
+
 /// @brief Set allowed relative pose angle along each SixDof joint-frame axis.
+/// @param joint SixDofJoint3D handle to modify.
+/// @param min Vec3 lower angular bounds in radians.
+/// @param max Vec3 upper angular bounds in radians.
 void rt_sixdof_joint3d_set_angular_limits(void *joint, void *min, void *max);
+
 /// @brief Configure a linear motor driving relative velocity (Vec3 per world axis)
 ///   along unlocked axes, bounded by a max-impulse strength.
+/// @param joint SixDofJoint3D handle to modify.
+/// @param enabled Nonzero to enable the linear motor.
+/// @param velocity Vec3 target relative velocity in body A's joint frame.
+/// @param max_impulse Non-negative per-axis correction bound.
 void rt_sixdof_joint3d_set_linear_motor(void *joint,
                                         int8_t enabled,
                                         void *velocity,
@@ -94,8 +179,17 @@ void rt_sixdof_joint3d_set_linear_motor(void *joint,
 /// @details Used by World3D to validate that a joint only references bodies registered
 ///   in the same world and to purge constraints when a body is removed. Returns 0
 ///   if @p joint does not match @p joint_type.
+/// @param joint Candidate concrete joint handle.
+/// @param joint_type Expected `RT_JOINT_*` discriminator.
+/// @param out_body_a Optional output receiving the first borrowed Body3D handle.
+/// @param out_body_b Optional output receiving the second borrowed Body3D handle.
+/// @return One when the class matches @p joint_type, otherwise zero.
 int rt_joint3d_get_bodies(void *joint, int32_t joint_type, void **out_body_a, void **out_body_b);
+
 /// @brief Solve one substep of a joint constraint (called internally from `world_step`).
+/// @param joint Concrete joint handle.
+/// @param joint_type Matching `RT_JOINT_*` discriminator.
+/// @param dt Physics step duration in seconds.
 void rt_joint3d_solve(void *joint, int32_t joint_type, double dt);
 
 /* Joint types */

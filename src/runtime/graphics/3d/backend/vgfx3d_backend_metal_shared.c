@@ -22,6 +22,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements platform-neutral packing, validation, and policy helpers for Metal 3D.
+/// @details These routines prepare row-major runtime data for Metal's column-major shader
+///          layouts and centralize deterministic choices for targets, formats, blending,
+///          shadow sampling, cache reuse, and capacity growth.
+
 #include "vgfx3d_backend_metal_shared.h"
 
 #include "vgfx3d_backend_utils.h"
@@ -37,6 +43,8 @@
 ///   CPU→GPU boundary — every matrix bound to a Metal argument goes
 ///   through here first so shader code can continue to use natural
 ///   column-major syntax without the upload site caring.
+/// @param src Borrowed row-major 4x4 source matrix.
+/// @param[out] dst Caller-owned 4x4 destination matrix receiving the transpose.
 static void transpose4x4_local(const float *src, float *dst) {
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++)
@@ -44,6 +52,7 @@ static void transpose4x4_local(const float *src, float *dst) {
 }
 
 /// @brief Store a row-major identity matrix into one fixed bone-palette slot.
+/// @param[out] dst Caller-owned storage for 16 float components.
 static void vgfx3d_metal_store_identity4x4(float *dst) {
     memset(dst, 0, sizeof(float) * 16u);
     dst[0] = 1.0f;
@@ -56,6 +65,9 @@ static void vgfx3d_metal_store_identity4x4(float *dst) {
 /// @details Valid row-major matrices are transposed for MSL's column-major layout;
 ///   unusable matrices become identity. Oversized inputs are clamped to the
 ///   largest palette this backend exposes.
+/// @param[out] dst Caller-owned fixed-size Metal palette receiving all bone slots.
+/// @param src Borrowed array of @p bone_count row-major matrices, or NULL.
+/// @param bone_count Number of source matrices; values above the backend maximum are clamped.
 void vgfx3d_metal_pack_bone_palette(float *dst, const float *src, int32_t bone_count) {
     int32_t first_unused = 0;
 
@@ -79,6 +91,11 @@ void vgfx3d_metal_pack_bone_palette(float *dst, const float *src, int32_t bone_c
 /// @brief Build per-instance Metal buffer entries with column-major transpose for MSL.
 /// Computes the normal matrix from each model matrix; absent prev-frame data falls back
 /// to the current model so motion-vector shaders see zero displacement.
+/// @param[out] dst Caller-owned array receiving @p instance_count packed entries.
+/// @param instance_count Number of instances to populate.
+/// @param instance_matrices Borrowed array of current row-major 4x4 model matrices.
+/// @param prev_instance_matrices Borrowed array of prior model matrices, or NULL.
+/// @param has_prev_instance_matrices Nonzero when @p prev_instance_matrices is valid.
 void vgfx3d_metal_fill_instance_data(vgfx3d_metal_instance_data_t *dst,
                                      int32_t instance_count,
                                      const float *instance_matrices,
@@ -109,6 +126,12 @@ void vgfx3d_metal_fill_instance_data(vgfx3d_metal_instance_data_t *dst,
 
 /// @brief Roll the Metal backend's per-frame VP/inv-VP/cam-pos history forward.
 /// Mirrors the D3D11 / OpenGL helpers; see vgfx3d_d3d11_update_frame_history for semantics.
+/// @param[in,out] history Caller-owned temporal history to advance.
+/// @param vp Borrowed current row-major view-projection matrix.
+/// @param inv_vp Borrowed current row-major inverse view-projection matrix.
+/// @param cam_pos Borrowed three-component camera position, or NULL to retain the prior value.
+/// @param is_overlay_pass Nonzero when the update describes an overlay rather than the scene.
+/// @param uses_separate_overlay_target Nonzero when overlay rendering uses its own attachment.
 void vgfx3d_metal_update_frame_history(vgfx3d_metal_frame_history_t *history,
                                        const float *vp,
                                        const float *inv_vp,
@@ -144,6 +167,9 @@ void vgfx3d_metal_update_frame_history(vgfx3d_metal_frame_history_t *history,
 }
 
 /// @brief Number of mipmap levels needed to reach 1×1 from (width × height).
+/// @param width Base-level width in pixels.
+/// @param height Base-level height in pixels.
+/// @return The complete mip-chain level count; invalid dimensions produce one level.
 int32_t vgfx3d_metal_compute_mip_count(int32_t width, int32_t height) {
     int32_t mip_count = 1;
 
@@ -160,6 +186,8 @@ int32_t vgfx3d_metal_compute_mip_count(int32_t width, int32_t height) {
 }
 
 /// @brief Clamp material sampler anisotropy into the backend cacheable [1,16] range.
+/// @param requested Requested anisotropy level.
+/// @return The requested value clamped to the Metal backend's supported cache range.
 int32_t vgfx3d_metal_sanitize_anisotropy(int32_t requested) {
     if (requested < 1)
         return 1;
@@ -169,11 +197,17 @@ int32_t vgfx3d_metal_sanitize_anisotropy(int32_t requested) {
 }
 
 /// @brief Convert sanitized anisotropy to a compact cache index [0,15].
+/// @param requested Requested anisotropy level before sanitization.
+/// @return Zero-based sampler-cache index corresponding to the clamped anisotropy.
 int32_t vgfx3d_metal_sampler_anisotropy_index(int32_t requested) {
     return vgfx3d_metal_sanitize_anisotropy(requested) - 1;
 }
 
 /// @brief Capacity-doubling growth helper (saturates at INT_MAX).
+/// @param current_capacity Existing element capacity.
+/// @param needed Minimum capacity required by the caller.
+/// @param minimum_capacity Initial capacity used when no positive capacity exists.
+/// @return A positive doubled capacity covering @p needed, with overflow-safe saturation.
 int32_t vgfx3d_metal_next_capacity(int32_t current_capacity,
                                    int32_t needed,
                                    int32_t minimum_capacity) {
@@ -195,6 +229,9 @@ int32_t vgfx3d_metal_next_capacity(int32_t current_capacity,
 }
 
 /// @brief Clamp morph shape count to shader and index-range limits.
+/// @param vertex_count Number of vertices addressed by every morph shape.
+/// @param requested_shape_count Requested number of morph shapes.
+/// @return The usable shape count, or zero when inputs cannot be indexed safely.
 int32_t vgfx3d_metal_clamp_morph_shape_count(uint32_t vertex_count, int32_t requested_shape_count) {
     int32_t shape_count;
     uint32_t max_indexed_vertices;
@@ -215,6 +252,10 @@ int32_t vgfx3d_metal_clamp_morph_shape_count(uint32_t vertex_count, int32_t requ
 }
 
 /// @brief Pick the right render-target classification for the Metal backend.
+/// @param rtt_active Nonzero when rendering into an explicit runtime render target.
+/// @param gpu_postfx_enabled Nonzero when the window scene routes through GPU post-processing.
+/// @param load_existing_color Nonzero when the pass must preserve previously rendered color.
+/// @return The RTT, swapchain, overlay, or offscreen-scene target classification.
 vgfx3d_metal_target_kind_t vgfx3d_metal_choose_target_kind(int8_t rtt_active,
                                                            int8_t gpu_postfx_enabled,
                                                            int8_t load_existing_color) {
@@ -230,6 +271,10 @@ vgfx3d_metal_target_kind_t vgfx3d_metal_choose_target_kind(int8_t rtt_active,
 /// @brief Decide whether the next pass should preserve existing color contents.
 /// Overlay targets only load when this frame already used them; otherwise the
 /// requested-load flag is honored. Used to avoid bandwidth-wasting Clear→Load cycles.
+/// @param target_kind Classification of the target being opened.
+/// @param requested_load_existing_color Nonzero when the caller requests preserved color.
+/// @param overlay_used_this_frame Nonzero when the overlay attachment already has valid content.
+/// @return Nonzero when the render pass should load rather than clear its color attachment.
 int8_t vgfx3d_metal_should_load_existing_color(vgfx3d_metal_target_kind_t target_kind,
                                                int8_t requested_load_existing_color,
                                                int8_t overlay_used_this_frame) {
@@ -241,6 +286,8 @@ int8_t vgfx3d_metal_should_load_existing_color(vgfx3d_metal_target_kind_t target
 }
 
 /// @brief Pick the color format — HDR16F for the scene pass, UNORM8 elsewhere.
+/// @param target_kind Classification of the render target being configured.
+/// @return HDR16F for the offscreen scene target, otherwise UNORM8.
 vgfx3d_metal_color_format_t vgfx3d_metal_choose_color_format(
     vgfx3d_metal_target_kind_t target_kind) {
     return target_kind == VGFX3D_METAL_TARGET_SCENE ? VGFX3D_METAL_COLOR_FORMAT_HDR16F
@@ -248,6 +295,8 @@ vgfx3d_metal_color_format_t vgfx3d_metal_choose_color_format(
 }
 
 /// @brief Map a draw command to its required blend state (alpha vs opaque).
+/// @param cmd Borrowed draw command whose material blend flags are inspected; may be NULL.
+/// @return Additive, alpha, or opaque Metal blend classification.
 vgfx3d_metal_blend_mode_t vgfx3d_metal_choose_blend_mode(const vgfx3d_draw_cmd_t *cmd) {
     if (cmd && cmd->additive_blend)
         return VGFX3D_METAL_BLEND_ADDITIVE;
@@ -256,6 +305,13 @@ vgfx3d_metal_blend_mode_t vgfx3d_metal_choose_blend_mode(const vgfx3d_draw_cmd_t
 }
 
 /// @brief Decide whether terrain splatting has every required texture bound.
+/// @param cmd_has_splat Nonzero when the draw command requests terrain splatting.
+/// @param has_splat_map Nonzero when the blend-weight texture is bound.
+/// @param has_layer0 Nonzero when splat layer zero is bound.
+/// @param has_layer1 Nonzero when splat layer one is bound.
+/// @param has_layer2 Nonzero when splat layer two is bound.
+/// @param has_layer3 Nonzero when splat layer three is bound.
+/// @return Nonzero only when splatting is requested and every required texture is present.
 int vgfx3d_metal_has_complete_splat(int8_t cmd_has_splat,
                                     int has_splat_map,
                                     int has_layer0,
@@ -268,6 +324,9 @@ int vgfx3d_metal_has_complete_splat(int8_t cmd_has_splat,
 /// @brief Decide whether to attach a motion-vector buffer to the current pass.
 /// Only the scene pass with opaque draws gets a motion attachment; alpha-blended
 /// draws and non-scene targets drop motion (TAA can't disambiguate transparency).
+/// @param target_kind Classification of the active render target.
+/// @param cmd Borrowed draw command whose depth and blend behavior are inspected.
+/// @return Color-and-motion for eligible opaque scene draws, otherwise color-only.
 vgfx3d_metal_motion_attachment_mode_t vgfx3d_metal_choose_motion_attachment_mode(
     vgfx3d_metal_target_kind_t target_kind, const vgfx3d_draw_cmd_t *cmd) {
     if (target_kind != VGFX3D_METAL_TARGET_SCENE)
@@ -280,12 +339,17 @@ vgfx3d_metal_motion_attachment_mode_t vgfx3d_metal_choose_motion_attachment_mode
 }
 
 /// @brief Decide whether canvas readback should source the backbuffer or postfx target.
+/// @param gpu_postfx_enabled Nonzero when the GPU post-processing route is active.
+/// @return The post-FX composite source when enabled, otherwise the backbuffer source.
 vgfx3d_metal_readback_kind_t vgfx3d_metal_choose_readback_kind(int8_t gpu_postfx_enabled) {
     return gpu_postfx_enabled ? VGFX3D_METAL_READBACK_POSTFX_COMPOSITE
                               : VGFX3D_METAL_READBACK_BACKBUFFER;
 }
 
 /// @brief Clamp light shadow indices to completed contiguous shadow-map slots.
+/// @param shadow_index Requested zero-based shadow slot.
+/// @param shadow_count Number of complete contiguous slots available for sampling.
+/// @return @p shadow_index when valid, otherwise -1 to disable shadow sampling.
 int32_t vgfx3d_metal_sanitize_shadow_index(int32_t shadow_index, int32_t shadow_count) {
     if (shadow_count <= 0 || shadow_count > VGFX3D_MAX_SHADOW_LIGHTS)
         return -1;
@@ -293,6 +357,11 @@ int32_t vgfx3d_metal_sanitize_shadow_index(int32_t shadow_index, int32_t shadow_
 }
 
 /// @brief Project a world-space point through a shadow VP matrix using MSL sampling rules.
+/// @param shadow_vp Borrowed row-major shadow view-projection matrix.
+/// @param projection_type Orthographic, perspective, or cube shadow projection identifier.
+/// @param world_pos Borrowed three-component world-space point.
+/// @param[out] out_uv_depth Caller-owned UV-depth triplet, zeroed before validation.
+/// @return 1 when projection yields finite texture coordinates, or 0 for unusable input.
 int vgfx3d_metal_project_shadow_coord(const float *shadow_vp,
                                       int32_t projection_type,
                                       const float world_pos[3],
@@ -349,6 +418,13 @@ int vgfx3d_metal_project_shadow_coord(const float *shadow_vp,
 /// @brief Decide whether to reuse a cached morph-target Metal buffer.
 /// Returns 1 if the cached payload (key + revision + shape/vertex counts +
 /// normal-deltas flag) still matches the draw command; 0 otherwise.
+/// @param cached_key Identity key recorded by the cached payload.
+/// @param cached_revision Revision recorded by the cached payload.
+/// @param cached_shape_count Sanitized shape count recorded by the cached payload.
+/// @param cached_vertex_count Vertex count recorded by the cached payload.
+/// @param cached_has_normal_deltas Nonzero when the cached payload includes normal deltas.
+/// @param cmd Borrowed draw command requesting morph data.
+/// @return 1 when every cache identity and layout field matches, otherwise 0.
 int vgfx3d_metal_should_reuse_morph_cache(const void *cached_key,
                                           uint64_t cached_revision,
                                           int32_t cached_shape_count,
@@ -381,6 +457,9 @@ int vgfx3d_metal_should_reuse_morph_cache(const void *cached_key,
 ///   `current_frame <= last_used_frame` is treated as "don't prune" because
 ///   it indicates a counter wraparound or entry-from-the-future state that
 ///   shouldn't trigger a mass eviction.
+/// @param current_frame Current monotonically increasing backend frame number.
+/// @param last_used_frame Frame number on which the cache entry was last referenced.
+/// @param max_age Maximum permitted number of unused frames; zero disables pruning.
 /// @return Non-zero when the entry should be dropped.
 int vgfx3d_metal_should_prune_cache_entry(uint64_t current_frame,
                                           uint64_t last_used_frame,

@@ -23,6 +23,7 @@
 module scene_light_inspector_3d;
 
 bind "scene_light_3d";
+bind "inspector_rows";
 
 bind GUI = Zanna.GUI;
 bind SceneNode = Zanna.Graphics3D.SceneNode;
@@ -120,8 +121,7 @@ class SceneLightInspector3D {
         typeDropdown.AddItem("Volume");
         typeDropdown.SetSelected(scene_light_3d.LIGHT_POINT);
 
-        var appearance = GUI.HBox.New();
-        appearance.SetSpacing(4.0);
+        var appearance = inspector_rows.NewWrapRow();
         group.AddChild(appearance);
         colorOverride = GUI.Checkbox.New(appearance, "Color");
         colorOverride.SetTooltip(
@@ -147,24 +147,21 @@ class SceneLightInspector3D {
         castsShadowsCheck.SetChecked(false);
 
         positionGroup = GUI.GroupBox.New(group, "Local light offset");
-        var positionRow = GUI.HBox.New();
-        positionRow.SetSpacing(4.0);
+        var positionRow = inspector_rows.NewWrapRow();
         positionGroup.AddChild(positionRow);
         positionX = AddSignedSpinner(positionRow, "X", 0.0);
         positionY = AddSignedSpinner(positionRow, "Y", 0.0);
         positionZ = AddSignedSpinner(positionRow, "Z", 0.0);
 
         directionGroup = GUI.GroupBox.New(group, "Local light direction");
-        var directionRow = GUI.HBox.New();
-        directionRow.SetSpacing(4.0);
+        var directionRow = inspector_rows.NewWrapRow();
         directionGroup.AddChild(directionRow);
         directionX = AddSignedSpinner(directionRow, "X", 0.0);
         directionY = AddSignedSpinner(directionRow, "Y", -1.0);
         directionZ = AddSignedSpinner(directionRow, "Z", 0.0);
 
         falloffGroup = GUI.GroupBox.New(group, "Falloff");
-        var falloffRow = GUI.HBox.New();
-        falloffRow.SetSpacing(4.0);
+        var falloffRow = inspector_rows.NewWrapRow();
         falloffGroup.AddChild(falloffRow);
         attenuation = AddSpinner(
             falloffRow, "Atten", 0.001, 1000000.0, 0.01, 3,
@@ -181,8 +178,7 @@ class SceneLightInspector3D {
         decayType.SetSelected(scene_light_3d.DECAY_QUADRATIC);
 
         shapeGroup = GUI.GroupBox.New(group, "Emitter shape");
-        var dimensionRow = GUI.HBox.New();
-        dimensionRow.SetSpacing(4.0);
+        var dimensionRow = inspector_rows.NewWrapRow();
         shapeGroup.AddChild(dimensionRow);
         width = AddSpinner(
             dimensionRow, "Width", 0.001, 1000000.0, 0.1, 2, 1.0);
@@ -190,8 +186,7 @@ class SceneLightInspector3D {
             dimensionRow, "Height", 0.001, 1000000.0, 0.1, 2, 1.0);
         radius = AddSpinner(
             dimensionRow, "Radius", 0.001, 1000000.0, 0.1, 2, 1.0);
-        var coneRow = GUI.HBox.New();
-        coneRow.SetSpacing(4.0);
+        var coneRow = inspector_rows.NewWrapRow();
         shapeGroup.AddChild(coneRow);
         innerCone = AddSpinner(
             coneRow, "Inner °", 0.0, 89.0, 0.5, 2,
@@ -200,8 +195,7 @@ class SceneLightInspector3D {
             coneRow, "Outer °", 0.01, 89.0, 0.5, 2,
             scene_light_3d.DEFAULT_OUTER_CONE);
 
-        var buttons = GUI.HBox.New();
-        buttons.SetSpacing(4.0);
+        var buttons = inspector_rows.NewWrapRow();
         group.AddChild(buttons);
         applyButton = GUI.Button.New(buttons, "Create Light");
         applyButton.SetTooltip(
@@ -622,7 +616,7 @@ class SceneLightInspector3D {
     }
 
 
-    hide func AddSignedSpinner(parent: GUI.HBox,
+    hide func AddSignedSpinner(parent: GUI.Flex,
                                label: String,
                                value: Number) -> GUI.Spinner {
         return AddSpinner(
@@ -632,7 +626,7 @@ class SceneLightInspector3D {
             0.1, 3, value);
     }
 
-    hide func AddSpinner(parent: GUI.HBox,
+    hide func AddSpinner(parent: GUI.Flex,
                          label: String,
                          minimum: Number,
                          maximum: Number,

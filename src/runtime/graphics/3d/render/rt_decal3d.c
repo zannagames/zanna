@@ -10,7 +10,7 @@
 //
 // Key invariants:
 //   - Quad is built from position + normal using arbitrary tangent frame.
-//   - Offset 0.01 along normal prevents z-fighting with surface.
+//   - A size-aware normal offset of at most 0.01 reduces surface z-fighting.
 //   - Alpha fades linearly over last 20% of lifetime.
 //   - Mesh + material are lazily constructed on first draw and reused.
 //
@@ -21,6 +21,12 @@
 // Links: rt_decal3d.h, rt_canvas3d.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements GC-managed, fading, surface-aligned 3D decals.
+/// @details Decals sanitize placement state, lazily construct an unlit textured
+///   quad and material, update lifetime alpha, support floating-origin rebasing,
+///   and safely own their texture and generated runtime resources.
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
@@ -84,16 +90,23 @@ typedef struct {
 /// @details Safe on already-null slots; zeroes the slot after the
 ///          release so the finalizer can run twice without double-free
 ///          (would never happen under normal GC but defensive anyway).
+/// @param slot Address of an owned runtime-reference slot to release and clear.
 static void decal3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Return @p value when finite, else @p fallback.
+/// @param value Candidate scalar.
+/// @param fallback Substitute for NaN or infinity.
+/// @return Finite candidate or the supplied fallback.
 static double decal3d_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Clamp a world-space decal coordinate to a stable finite range.
+/// @param value Candidate coordinate.
+/// @param fallback Substitute used for nonfinite input.
+/// @return Finite coordinate clamped to the supported symmetric world range.
 static double decal3d_coord_or(double value, double fallback) {
     value = decal3d_finite_or(value, fallback);
     if (value > DECAL3D_WORLD_ABS_MAX)
@@ -104,6 +117,9 @@ static double decal3d_coord_or(double value, double fallback) {
 }
 
 /// @brief Clamp alpha/fade values to [0, 1].
+/// @param value Candidate alpha.
+/// @param fallback Substitute used for nonfinite input.
+/// @return Finite alpha clamped to `[0, 1]`.
 static double decal3d_alpha_or(double value, double fallback) {
     value = decal3d_finite_or(value, fallback);
     if (value < 0.0)
@@ -114,11 +130,15 @@ static double decal3d_alpha_or(double value, double fallback) {
 }
 
 /// @brief Return non-zero when @p texture is a valid Pixels handle.
+/// @param texture Candidate runtime object.
+/// @return Nonzero when @p texture resolves to a live Pixels implementation.
 static int decal3d_texture_valid(void *texture) {
     return texture && rt_pixels_checked_impl_or_null(texture) != NULL;
 }
 
 /// @brief Release a retained Pixels slot only if it still points at Pixels.
+/// @param slot Address of a possibly owned face/texture slot. Invalid stale
+///   values are cleared without a release operation.
 static void decal3d_release_texture_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -130,6 +150,8 @@ static void decal3d_release_texture_slot(void **slot) {
 }
 
 /// @brief Release a retained Mesh3D slot only if it still points at Mesh3D.
+/// @param slot Address of a possibly owned mesh slot. Invalid stale values are
+///   cleared without a release operation.
 static void decal3d_release_mesh_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -141,6 +163,8 @@ static void decal3d_release_mesh_slot(void **slot) {
 }
 
 /// @brief Release a retained Material3D slot only if it still points at Material3D.
+/// @param slot Address of a possibly owned material slot. Invalid stale values
+///   are cleared without a release operation.
 static void decal3d_release_material_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -152,6 +176,11 @@ static void decal3d_release_material_slot(void **slot) {
 }
 
 /// @brief Normalise the (x,y,z) vector in place; fall back to +Y on zero/non-finite input.
+/// @details Coordinates are first sanitized to the supported world range and
+///   normalization uses maximum-component scaling to avoid intermediate overflow.
+/// @param x In/out X component.
+/// @param y In/out Y component.
+/// @param z In/out Z component.
 static void decal3d_normalize_or_default(double *x, double *y, double *z) {
     if (!x || !y || !z)
         return;
@@ -181,6 +210,8 @@ static void decal3d_normalize_or_default(double *x, double *y, double *z) {
 }
 
 /// @brief Release invalid cached refs before draw/update paths use them.
+/// @param d Decal whose texture, mesh, and material slots are repaired;
+///   `NULL` is ignored.
 static void decal3d_repair_refs(rt_decal3d *d) {
     if (!d)
         return;
@@ -193,6 +224,15 @@ static void decal3d_repair_refs(rt_decal3d *d) {
 }
 
 /// @brief Add one decal vertex after clamping world coordinates.
+/// @param mesh Borrowed Mesh3D receiver.
+/// @param x Vertex world X coordinate.
+/// @param y Vertex world Y coordinate.
+/// @param z Vertex world Z coordinate.
+/// @param nx Normal X component forwarded unchanged.
+/// @param ny Normal Y component forwarded unchanged.
+/// @param nz Normal Z component forwarded unchanged.
+/// @param u Horizontal texture coordinate.
+/// @param v Vertical texture coordinate.
 static void decal3d_add_vertex_clamped(
     void *mesh, double x, double y, double z, double nx, double ny, double nz, double u, double v) {
     rt_mesh3d_add_vertex(mesh,
@@ -212,6 +252,7 @@ static void decal3d_add_vertex_clamped(
 ///          because `decal3d_release_ref` short-circuits on null, so
 ///          decals that were created but never drawn finalize cleanly
 ///          without special-casing.
+/// @param obj Decal3D payload being finalized; `NULL` is ignored.
 static void decal3d_finalizer(void *obj) {
     rt_decal3d *d = (rt_decal3d *)obj;
     if (!d)
@@ -269,6 +310,8 @@ void *rt_decal3d_new(void *pos_v, void *normal_v, double size, void *texture) {
 /// @details 0 restores the automatic size-scaled bias. Values are clamped to the same ±0.05
 ///          NDC range the software rasterizer enforces. Applies immediately when the decal's
 ///          material already exists.
+/// @param obj Decal3D receiver; invalid handles are ignored.
+/// @param bias Requested constant NDC-scale bias; nonfinite values restore auto mode.
 void rt_decal3d_set_depth_bias(void *obj, double bias) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!d)
@@ -287,6 +330,9 @@ void rt_decal3d_set_depth_bias(void *obj, double bias) {
 }
 
 /// @brief Set how long the decal should live before expiring (< 0 = permanent).
+/// @param obj Decal3D receiver; invalid handles are ignored.
+/// @param seconds Lifetime in seconds. Nonfinite or negative input makes the
+///   decal permanent, zero expires immediately, and large values are capped.
 void rt_decal3d_set_lifetime(void *obj, double seconds) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!d)
@@ -307,6 +353,9 @@ void rt_decal3d_set_lifetime(void *obj, double seconds) {
 }
 
 /// @brief Advance the decal's lifetime timer and apply fade-out in the last 20%.
+/// @param obj Decal3D receiver; invalid handles are ignored.
+/// @param dt Positive elapsed seconds. Nonfinite or nonpositive values are
+///   ignored and extreme steps are capped to the supported lifetime maximum.
 void rt_decal3d_update(void *obj, double dt) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!d || !isfinite(dt) || dt <= 0.0)
@@ -334,6 +383,11 @@ void rt_decal3d_update(void *obj, double dt) {
 }
 
 /// @brief Check if the decal's lifetime has elapsed (permanent decals never expire).
+/// @details Corrupt nonfinite lifetime state is repaired to the permanent,
+///   fully opaque state rather than treated as expired.
+/// @param obj Decal3D receiver.
+/// @return Nonzero for an invalid receiver or an elapsed finite decal; zero
+///   for a live or permanent decal.
 int8_t rt_decal3d_is_expired(void *obj) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!d)
@@ -351,6 +405,10 @@ int8_t rt_decal3d_is_expired(void *obj) {
 
 /// @brief Internal floating-origin hook: subtract the world rebase delta and
 ///   discard cached mesh geometry so the next draw rebuilds at the new origin.
+/// @param obj Decal3D receiver; invalid handles are ignored.
+/// @param dx World-origin X displacement to subtract.
+/// @param dy World-origin Y displacement to subtract.
+/// @param dz World-origin Z displacement to subtract.
 void rt_decal3d_rebase_origin(void *obj, double dx, double dy, double dz) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!d)
@@ -365,8 +423,11 @@ void rt_decal3d_rebase_origin(void *obj, double dx, double dy, double dz) {
     decal3d_release_mesh_slot(&d->mesh);
 }
 
-/// @brief Copy the decal world position into @p out. Used by floating-origin rebase tests to
-///   verify the decal shifted; zeroed if the handle is invalid or @p out is NULL.
+/// @brief Copy the decal world position into @p out.
+/// @details Used by floating-origin consumers to observe rebasing. Invalid
+///   handles produce a zero vector; a null destination is ignored.
+/// @param obj Decal3D receiver.
+/// @param out Output array of three doubles.
 void rt_decal3d_get_position(void *obj, double out[3]) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!out)
@@ -393,6 +454,8 @@ void rt_decal3d_get_position(void *obj, double out[3]) {
 ///          bullet-hole / scorch-mark convention). A small negative depth
 ///          bias is also applied so backends resolve remaining coplanar
 ///          depth ties consistently.
+/// @param d Decal whose owned mesh/material cache is validated or constructed.
+///   Allocation failure leaves missing pieces null so a later draw may retry.
 static void ensure_decal_mesh(rt_decal3d *d) {
     if (!d)
         return;
@@ -507,9 +570,12 @@ static void ensure_decal_mesh(rt_decal3d *d) {
     rt_material3d_set_depth_bias(d->material, bias, -1.0);
 }
 
-/// @brief Render a decal onto the canvas (no-op for expired decals).
-/// Lazily builds the quad mesh and material on first draw, then re-uses them.
-/// Material alpha is refreshed each frame to reflect the current fade level.
+/// @brief Render a live decal onto the canvas.
+/// @details Lazily builds and reuses the quad mesh/material, refreshes material
+///   alpha from the current fade, and submits it with an identity transform.
+///   Invalid, expired, or incompletely constructed decals are ignored.
+/// @param canvas Canvas3D receiver passed to deferred mesh submission.
+/// @param obj Decal3D receiver to draw.
 void rt_canvas3d_draw_decal(void *canvas, void *obj) {
     if (!canvas || !obj)
         return;

@@ -17,7 +17,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements OpenGL geometry caches, vertex layouts, instancing, skinning, and morph data.
+/// @details Static meshes use revision-keyed VBO/IBO entries while changing geometry and instance
+///          payloads use orphaned streaming buffers. The helpers also enforce attribute-slot
+///          contracts and prepare UBO/TBO resources for skeletal and morph deformation.
+
 /// @brief Release every mesh-cache slot's VBO + IBO.
+/// @param ctx Borrowed OpenGL context whose fixed mesh-cache slots are cleared.
 static void gl_destroy_mesh_cache(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -35,6 +42,7 @@ static void gl_destroy_mesh_cache(gl_context_t *ctx) {
 /// Static geometry can otherwise stay resident forever after a level or scene transition because
 /// the fixed-size cache only evicts on new cache misses. Pruning once per frame keeps long-running
 /// sessions bounded even when no new static meshes are submitted after old ones disappear.
+/// @param ctx Borrowed OpenGL context whose stale mesh entries are evicted.
 static void gl_mesh_cache_prune(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -60,6 +68,12 @@ static void gl_mesh_cache_prune(gl_context_t *ctx) {
 /// frames don't re-upload. On miss, finds an empty slot or evicts
 /// the LRU entry. Same key + revision = cache hit. Returns 0 if the
 /// command isn't cacheable (no key or zero revision).
+/// @param ctx Borrowed OpenGL context owning the fixed mesh cache.
+/// @param cmd Borrowed draw command containing geometry data and revision identity.
+/// @param[out] out_vbo Required destination for the resolved vertex-buffer name.
+/// @param[out] out_ibo Required destination for the resolved index-buffer name.
+/// @param[out] out_compact Optional destination indicating the packed vertex layout.
+/// @return 1 for a valid cached or newly uploaded entry, otherwise 0.
 static int gl_lookup_cached_mesh_buffers(gl_context_t *ctx,
                                          const vgfx3d_draw_cmd_t *cmd,
                                          GLuint *out_vbo,
@@ -173,6 +187,12 @@ static int gl_lookup_cached_mesh_buffers(gl_context_t *ctx,
 /// First tries `gl_lookup_cached_mesh_buffers` (static mesh fast path).
 /// On miss, ensures the dynamic streaming buffers are large enough,
 /// orphans them (avoids stalls), and uploads via `BufferSubData`.
+/// @param ctx Borrowed OpenGL context owning cached and streaming geometry buffers.
+/// @param cmd Borrowed draw command containing source vertices and indices.
+/// @param[out] out_vbo Required destination for the selected vertex-buffer name.
+/// @param[out] out_ibo Required destination for the selected index-buffer name.
+/// @param[out] out_compact Optional destination indicating the packed vertex layout.
+/// @return 1 when both buffers contain the requested geometry, otherwise 0.
 static int prepare_mesh_buffers(gl_context_t *ctx,
                                 const vgfx3d_draw_cmd_t *cmd,
                                 GLuint *out_vbo,
@@ -278,6 +298,10 @@ static void set_identity_instance_constants(void) {
 /// conversion (GL_SHORT/GL_HALF_FLOAT/GL_UNSIGNED_BYTE normalized) decodes it
 /// to the same float shader inputs — no shader change.
 /// Also resets instance attributes to identity defaults.
+/// @param ctx Borrowed OpenGL context containing the primary VAO.
+/// @param mesh_vbo Vertex-buffer object holding full or compact vertices.
+/// @param mesh_ibo Index-buffer object for the draw.
+/// @param compact Nonzero when @p mesh_vbo uses `VGFX3D_COMPACT_VERTEX_STRIDE`.
 static void configure_mesh_attributes(gl_context_t *ctx,
                                       GLuint mesh_vbo,
                                       GLuint mesh_ibo,
@@ -341,6 +365,11 @@ static void configure_mesh_attributes(gl_context_t *ctx,
 /// instance matrices (slots 11..14) are uploaded if `prev_instance_matrices`
 /// is non-NULL; otherwise the slots get identity constants for "no
 /// motion this frame" semantics.
+/// @param ctx Borrowed OpenGL context owning current and previous instance buffers.
+/// @param instance_matrices Borrowed array of current row-major 4x4 model matrices.
+/// @param prev_instance_matrices Borrowed prior matrix array, or NULL.
+/// @param instance_count Number of matrices in each supplied array.
+/// @return 1 when current and optional prior attributes are uploaded and configured.
 static int configure_instance_attributes(gl_context_t *ctx,
                                          const float *instance_matrices,
                                          const float *prev_instance_matrices,
@@ -439,6 +468,9 @@ static int configure_instance_attributes(gl_context_t *ctx,
 /// @details Each record is four aligned vec4 lanes: center, right half-axis, up half-axis, and
 ///   color. The ordinary matrix and previous-matrix attributes are disabled, so the vertex shader
 ///   advances exactly 64 bytes per particle and never materializes model/normal matrices.
+/// @param ctx Borrowed OpenGL context owning the instance stream buffer.
+/// @param instances Borrowed array of compact particle records.
+/// @param instance_count Number of records to upload.
 /// @return Non-zero after a successful orphan/upload/bind sequence.
 static int configure_particle_instance_attributes(gl_context_t *ctx,
                                                   const vgfx3d_particle_instance_t *instances,
@@ -482,6 +514,7 @@ static int configure_particle_instance_attributes(gl_context_t *ctx,
 }
 
 /// @brief Write a 4×4 identity matrix into @p dst (row-major).
+/// @param[out] dst Caller-owned storage for 16 float components.
 static void store_identity4x4(float *dst) {
     memset(dst, 0, sizeof(float) * 16u);
     dst[0] = 1.0f;
@@ -495,6 +528,10 @@ static void store_identity4x4(float *dst) {
 /// GLSL's `mat4` UBO layout is column-major; our matrices are row-
 /// major. We transpose during upload so the shader sees the right
 /// layout without per-multiply transposes.
+/// @param ctx Borrowed OpenGL context providing error accounting.
+/// @param ubo Uniform-buffer object receiving the fixed-size palette.
+/// @param bone_palette Borrowed array of row-major 4x4 matrices.
+/// @param bone_count Number of source matrices, clamped to the shader maximum.
 static void upload_bone_palette(gl_context_t *ctx,
                                 GLuint ubo,
                                 const float *bone_palette,
@@ -528,6 +565,8 @@ static void upload_bone_palette(gl_context_t *ctx,
 /// If no `prev_bone_palette` is supplied (e.g., first frame of an
 /// animation), the current palette is used for both — motion blur
 /// then sees zero motion for skinned vertices.
+/// @param ctx Borrowed OpenGL context owning current and previous bone UBOs.
+/// @param cmd Borrowed draw command containing current and optional prior palettes.
 static void upload_active_bone_palettes(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd) {
     if (!ctx || !cmd || !cmd->bone_palette || cmd->bone_count <= 0)
         return;
@@ -548,6 +587,11 @@ static void upload_active_bone_palettes(gl_context_t *ctx, const vgfx3d_draw_cmd
 /// morph-target arrays via the texture-fetch path — no UBO size limits.
 /// Format is `R32F` so each delta is one float; XYZ triples consume
 /// three texels.
+/// @param[in,out] buffer Caller-owned buffer name, generated when zero.
+/// @param[in,out] tbo Caller-owned texture-buffer name, generated when zero.
+/// @param payload Borrowed float payload to upload.
+/// @param bytes Number of bytes in @p payload.
+/// @return 1 when allocation, upload, and texture-buffer binding succeed.
 static int gl_upload_morph_payload_texture(GLuint *buffer,
                                            GLuint *tbo,
                                            const float *payload,
@@ -573,6 +617,8 @@ static int gl_upload_morph_payload_texture(GLuint *buffer,
 /// payloads are uploaded as `R32F`, so each texel is one float. This check keeps
 /// both cached and transient morph uploads inside the hardware TBO address range
 /// before `glTexBuffer` binds the buffer to the shader.
+/// @param ctx Borrowed OpenGL context containing the maximum texture-buffer texel count.
+/// @param bytes Proposed `R32F` payload byte count.
 /// @return Non-zero when @p bytes can be represented by this context's TBO limit.
 static int gl_morph_payload_fits_texture_buffer(const gl_context_t *ctx, size_t bytes) {
     if (!ctx)
@@ -585,6 +631,13 @@ static int gl_morph_payload_fits_texture_buffer(const gl_context_t *ctx, size_t 
 /// Used for non-cached (per-frame-changing) morph payloads. Geometric
 /// resize of the underlying buffer; orphans existing storage so the
 /// driver doesn't stall.
+/// @param ctx Borrowed OpenGL context providing capacity growth and error state.
+/// @param buffer Existing streaming buffer object name.
+/// @param tbo Existing texture-buffer object name.
+/// @param[in,out] capacity_bytes Caller-owned current capacity, updated after growth.
+/// @param payload Borrowed float payload to upload.
+/// @param bytes Number of bytes in @p payload.
+/// @return 1 when storage, upload, and texture-buffer binding succeed.
 static int gl_upload_transient_morph_payload(gl_context_t *ctx,
                                              GLuint buffer,
                                              GLuint tbo,
@@ -609,6 +662,10 @@ static int gl_upload_transient_morph_payload(gl_context_t *ctx,
 /// @brief Compute the byte size of a morph delta texture-buffer payload
 ///   (morph_count × vertex_count × 3 floats) with overflow checking; writes @p out_bytes
 ///   and returns 1, or zeroes it and returns 0 on overflow or zero counts.
+/// @param vertex_count Number of vertices represented by each morph shape.
+/// @param morph_count Number of morph shapes in the payload.
+/// @param[out] out_bytes Required destination for the checked byte count.
+/// @return 1 when a nonzero representable size is written, otherwise 0.
 static int gl_compute_morph_payload_bytes(uint32_t vertex_count,
                                           int32_t morph_count,
                                           size_t *out_bytes) {
@@ -639,6 +696,10 @@ static int gl_compute_morph_payload_bytes(uint32_t vertex_count,
 /// Cache hit → bump LRU and return. Miss with room → claim a fresh slot.
 /// Miss without room → evict the LRU entry. Returns NULL when the
 /// command isn't cacheable (no key or zero revision).
+/// @param ctx Borrowed OpenGL context owning the growable morph cache.
+/// @param cmd Borrowed draw command containing morph identity and payloads.
+/// @param morph_count Sanitized number of morph shapes to cache.
+/// @return Matching or newly uploaded cache entry, or NULL on validation/allocation failure.
 static gl_morph_cache_entry_t *gl_get_cached_morph_entry(gl_context_t *ctx,
                                                          const vgfx3d_draw_cmd_t *cmd,
                                                          int32_t morph_count) {
@@ -728,6 +789,17 @@ static gl_morph_cache_entry_t *gl_get_cached_morph_entry(gl_context_t *ctx,
 /// the fast path; transient morph data goes through the streaming
 /// path. Uniform values fall back to safe zeros when arrays aren't
 /// available so the shader's `if (morphShapeCount > 0)` short-circuits.
+/// @param ctx Borrowed OpenGL context owning deformation buffers.
+/// @param cmd Borrowed draw command containing bone and morph payloads.
+/// @param uHasSkinning Uniform location for the current-palette enable flag.
+/// @param uInstanceBoneStride Uniform location for per-instance palette stride.
+/// @param uMorphShapeCount Uniform location for the active morph count.
+/// @param uVertexCount Uniform location for vertices per morph shape.
+/// @param uMorphWeights Uniform location for current morph weights.
+/// @param uPrevMorphWeights Uniform location for prior-frame morph weights.
+/// @param uMorphDeltas Sampler uniform location for position deltas.
+/// @param uHasMorphNormalDeltas Uniform location for the normal-delta enable flag.
+/// @param uMorphNormalDeltas Sampler uniform location for normal deltas.
 static void bind_morph_payload(gl_context_t *ctx,
                                const vgfx3d_draw_cmd_t *cmd,
                                GLint uHasSkinning,

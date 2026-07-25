@@ -30,6 +30,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_navagent3d.c
+ * @brief Implements path following, bindings, and reciprocal local avoidance for NavAgent3D.
+ *
+ * Agents follow packed NavMesh3D corner paths, optionally synchronize with CharacterController3D
+ * or SceneNode3D objects, and steer around peers through a deterministic sampled RVO solver. A
+ * spatial hash accelerates individual updates, while batch updates snapshot all live agents and
+ * publish results in stable creation order. Numeric inputs are bounded at the runtime boundary,
+ * and all retained object references are released by the GC finalizer.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_navagent3d.h"
@@ -138,11 +149,14 @@ static double navagent_clamp_abs_or(double value, double fallback, double max_ab
 static double navagent_coord_or(double value, double fallback);
 
 /// @brief Validate @p obj as a NavAgent3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Opaque runtime object handle.
+/// @return Typed agent pointer when @p obj has the NavAgent3D class, otherwise null.
 static rt_navagent3d *navagent3d_checked(void *obj) {
     return (rt_navagent3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVAGENT3D_CLASS_ID);
 }
 
 /// @brief Add an agent to the global registry and insert it into the spatial grid at its cell.
+/// @param agent Mutable newly created agent; null is a no-op. Must be called on the main thread.
 static void navagent_register(rt_navagent3d *agent) {
     RT_ASSERT_MAIN_THREAD();
     if (!agent)
@@ -154,6 +168,7 @@ static void navagent_register(rt_navagent3d *agent) {
 }
 
 /// @brief Remove an agent from the spatial grid and unlink it from the global registry.
+/// @param agent Mutable registered agent; null is a no-op. Must be called on the main thread.
 static void navagent_unregister(rt_navagent3d *agent) {
     RT_ASSERT_MAIN_THREAD();
     rt_navagent3d **link = &g_navagent3d_registry;
@@ -174,6 +189,8 @@ static void navagent_unregister(rt_navagent3d *agent) {
 }
 
 /// @brief Squared length of a 3-vector; avoids a sqrt when only ordering/thresholding matters.
+/// @param v Optional borrowed vector; null and invalid lanes are treated as zero.
+/// @return Finite squared length, saturated to @c DBL_MAX on overflow.
 static double navagent_len_sq(const double v[3]) {
     double x = v ? navagent_coord_or(v[0], 0.0) : 0.0;
     double y = v ? navagent_coord_or(v[1], 0.0) : 0.0;
@@ -194,6 +211,8 @@ static double navagent_len_sq(const double v[3]) {
 }
 
 /// @brief Euclidean length of a 3-vector (`sqrt` of the squared length).
+/// @param v Optional borrowed vector; null and invalid lanes are treated as zero.
+/// @return Finite vector length, or zero when the scaled calculation is unusable.
 static double navagent_len(const double v[3]) {
     double x = v ? navagent_coord_or(v[0], 0.0) : 0.0;
     double y = v ? navagent_coord_or(v[1], 0.0) : 0.0;
@@ -210,6 +229,10 @@ static double navagent_len(const double v[3]) {
 }
 
 /// @brief Clamp a finite scalar into ±max_abs, using fallback for NaN/Inf.
+/// @param value Preferred value.
+/// @param fallback Replacement for non-finite @p value; non-finite fallback becomes zero.
+/// @param max_abs Requested finite non-negative absolute cap; invalid input disables the cap.
+/// @return Sanitized value within the requested symmetric bound.
 static double navagent_clamp_abs_or(double value, double fallback, double max_abs) {
     if (!isfinite(fallback))
         fallback = 0.0;
@@ -225,11 +248,18 @@ static double navagent_clamp_abs_or(double value, double fallback, double max_ab
 }
 
 /// @brief Sanitize one world-coordinate lane.
+/// @param value Preferred coordinate.
+/// @param fallback Replacement for non-finite input.
+/// @return Finite coordinate clamped to the runtime world-coordinate bound.
 static double navagent_coord_or(double value, double fallback) {
     return navagent_clamp_abs_or(value, fallback, NAVAGENT_COORD_ABS_MAX);
 }
 
 /// @brief Sanitize a non-negative scalar with an upper cap.
+/// @param value Preferred scalar.
+/// @param fallback Replacement for non-finite input.
+/// @param max_value Optional finite positive upper bound.
+/// @return Finite non-negative scalar constrained by @p max_value when usable.
 static double navagent_nonnegative_capped_or(double value, double fallback, double max_value) {
     value = isfinite(value) ? value : fallback;
     if (!isfinite(value) || value < 0.0)
@@ -240,6 +270,9 @@ static double navagent_nonnegative_capped_or(double value, double fallback, doub
 }
 
 /// @brief Euclidean distance between two points.
+/// @param a Optional borrowed first point; null and invalid lanes become zero.
+/// @param b Optional borrowed second point; null and invalid lanes become zero.
+/// @return Finite distance, or @c DBL_MAX when the difference is unrepresentable.
 static double navagent_dist(const double a[3], const double b[3]) {
     double dx = navagent_coord_or(a ? a[0] : 0.0, 0.0) - navagent_coord_or(b ? b[0] : 0.0, 0.0);
     double dy = navagent_coord_or(a ? a[1] : 0.0, 0.0) - navagent_coord_or(b ? b[1] : 0.0, 0.0);
@@ -250,6 +283,10 @@ static double navagent_dist(const double a[3], const double b[3]) {
 }
 
 /// @brief Assign `(x,y,z)` to `dst[0..2]`. Reads declaratively as "set this vector to …".
+/// @param dst Caller-owned three-component destination.
+/// @param x X coordinate to sanitize and store.
+/// @param y Y coordinate to sanitize and store.
+/// @param z Z coordinate to sanitize and store.
 static void navagent_vec_set(double dst[3], double x, double y, double z) {
     dst[0] = navagent_coord_or(x, 0.0);
     dst[1] = navagent_coord_or(y, 0.0);
@@ -257,6 +294,8 @@ static void navagent_vec_set(double dst[3], double x, double y, double z) {
 }
 
 /// @brief Copy `src[0..2]` into `dst[0..2]` — trivial 3-double `memcpy`-equivalent.
+/// @param dst Caller-owned three-component destination.
+/// @param src Optional borrowed source; null stores the zero vector.
 static void navagent_vec_copy(double dst[3], const double src[3]) {
     if (!src) {
         navagent_vec_set(dst, 0.0, 0.0, 0.0);
@@ -269,11 +308,14 @@ static void navagent_vec_copy(double dst[3], const double src[3]) {
 /// @details Used when rebinding a navmesh / character / scene-node. The slot is zeroed
 ///   so subsequent calls are idempotent, and the finalizer can call this on every slot
 ///   without needing per-field null checks.
+/// @param slot Mutable retained-reference slot to release and clear.
 static void navagent_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Release a retained Graphics3D binding only if it still has the expected class.
+/// @param slot Mutable retained-reference slot. Mismatched objects are cleared without release.
+/// @param class_id Required Graphics3D runtime class identifier.
 static void navagent_release_class_ref(void **slot, int64_t class_id) {
     if (!slot || !*slot)
         return;
@@ -287,6 +329,7 @@ static void navagent_release_class_ref(void **slot, int64_t class_id) {
 /// @brief Release a locally-held GC reference, freeing the object if the refcount reaches zero.
 /// @details Used by navagent cleanup to drop borrowed pointers (mesh, path, etc.)
 ///          that were retained at assignment time.
+/// @param obj Locally retained runtime object; null is a no-op.
 static void navagent_release_local(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -298,6 +341,9 @@ static void navagent_release_local(void *obj) {
 ///   temporary `double[3]` for every read and lets callers memcpy or index
 ///   directly. The caller is responsible for bounds-checking `index`
 ///   against `path_point_count` — this is a raw indexing primitive.
+/// @param agent Borrowed agent with an allocated packed path buffer.
+/// @param index Zero-based, caller-validated path-corner index.
+/// @return Borrowed pointer to the indexed three-double corner.
 static const double *navagent_path_point(const rt_navagent3d *agent, int32_t index) {
     return agent->path_points_xyz + (size_t)index * 3u;
 }
@@ -306,6 +352,7 @@ static const double *navagent_path_point(const rt_navagent3d *agent, int32_t ind
 /// `has_path` false so the next update knows there's nothing to follow. Safe to call
 /// when no path is active. Does NOT zero the velocity; the caller handles that if a
 /// motion reset is also desired.
+/// @param agent Mutable agent whose owned corner buffer and path state are reset.
 static void navagent_clear_path(rt_navagent3d *agent) {
     if (!agent)
         return;
@@ -323,6 +370,7 @@ static void navagent_clear_path(rt_navagent3d *agent) {
 ///   the integrator uses `desired_velocity` as the steering target — if only
 ///   `velocity` were reset, the next step would immediately re-accelerate
 ///   toward the stale desired velocity and produce a visible jitter.
+/// @param agent Mutable agent to stop; null is a no-op.
 static void navagent_zero_motion(rt_navagent3d *agent) {
     if (!agent)
         return;
@@ -331,6 +379,8 @@ static void navagent_zero_motion(rt_navagent3d *agent) {
 }
 
 /// @brief The agent's avoidance radius if positive and finite, else 0 (avoidance disabled).
+/// @param agent Optional borrowed agent.
+/// @return Finite effective radius in the supported range, or zero.
 static double navagent_effective_avoidance_radius(const rt_navagent3d *agent) {
     return agent ? navagent_nonnegative_capped_or(agent->avoidance_radius, 0.0, NAVAGENT_RADIUS_MAX)
                  : 0.0;
@@ -339,6 +389,8 @@ static double navagent_effective_avoidance_radius(const rt_navagent3d *agent) {
 /// @brief An agent's interaction "reach": radius plus a bounded RVO time horizon of travel.
 ///   Two agents can only influence each other within (reachA + reachB), which bounds the grid
 ///   query.
+/// @param agent Optional borrowed agent.
+/// @return Finite non-negative interaction reach capped to the navigation distance bound.
 static double navagent_reach(const rt_navagent3d *agent) {
     double r = navagent_effective_avoidance_radius(agent);
     double s =
@@ -363,6 +415,8 @@ static void navagent_recompute_max_reach(void) {
 
 /// @brief Quantize a world coordinate to its spatial-grid cell index (clamped to ±1e9; 0 if
 /// non-finite).
+/// @param v World-space X or Z coordinate.
+/// @return Clamped integer cell coordinate.
 static int32_t navagent_grid_coord(double v) {
     double c;
     if (!isfinite(v))
@@ -377,6 +431,9 @@ static int32_t navagent_grid_coord(double v) {
 
 /// @brief Hash a 2D cell (cx, cz) to a grid bucket using the Teschner spatial-hash primes.
 /// @details NAVAGENT_GRID_BUCKETS is a power of two, so the mask replaces a modulo.
+/// @param cx Quantized X cell coordinate.
+/// @param cz Quantized Z cell coordinate.
+/// @return Bucket index in `[0, NAVAGENT_GRID_BUCKETS)`.
 static uint32_t navagent_grid_bucket(int32_t cx, int32_t cz) {
     uint32_t h = (uint32_t)cx * 73856093u ^ (uint32_t)cz * 19349663u;
     return h & (NAVAGENT_GRID_BUCKETS - 1u);
@@ -384,6 +441,7 @@ static uint32_t navagent_grid_bucket(int32_t cx, int32_t cz) {
 
 /// @brief Insert an agent into the spatial grid bucket for its current XZ cell (no-op if already
 /// in).
+/// @param agent Mutable registered agent; null or already-inserted input is a no-op.
 static void navagent_grid_insert(rt_navagent3d *agent) {
     RT_ASSERT_MAIN_THREAD();
     uint32_t b;
@@ -398,6 +456,7 @@ static void navagent_grid_insert(rt_navagent3d *agent) {
 }
 
 /// @brief Unlink an agent from its spatial-grid bucket (no-op if not currently in the grid).
+/// @param agent Mutable registered agent; null or absent input is a no-op.
 static void navagent_grid_remove(rt_navagent3d *agent) {
     RT_ASSERT_MAIN_THREAD();
     uint32_t b;
@@ -419,6 +478,7 @@ static void navagent_grid_remove(rt_navagent3d *agent) {
 
 /// @brief Keep @p agent's grid cell current and grow the global reach bound. Called after every
 ///   position sync and on registration; moves the agent between buckets only when its cell changes.
+/// @param agent Mutable registered agent; null is a no-op.
 static void navagent_grid_refresh(rt_navagent3d *agent) {
     RT_ASSERT_MAIN_THREAD();
     double reach;
@@ -445,6 +505,9 @@ static void navagent_grid_refresh(rt_navagent3d *agent) {
 /// @details During an update, `desired_velocity` already holds the freshly computed preferred
 ///   velocity for the current agent. Peers may not have updated yet this frame, so fall back to
 ///   their current path corner and desired speed before using their previous actual velocity.
+/// @param agent Optional borrowed peer agent.
+/// @param out_vx Receives the finite preferred X velocity and is cleared before evaluation.
+/// @param out_vz Receives the finite preferred Z velocity and is cleared before evaluation.
 static void navagent_preferred_velocity_xz(const rt_navagent3d *agent,
                                            double *out_vx,
                                            double *out_vz) {
@@ -506,6 +569,12 @@ static void navagent_preferred_velocity_xz(const rt_navagent3d *agent,
 }
 
 /// @brief Add a velocity candidate after speed clamping and near-duplicate removal.
+/// @param candidates Caller-owned fixed-capacity candidate array.
+/// @param count Current number of initialized candidates.
+/// @param vx Candidate X velocity.
+/// @param vz Candidate Z velocity.
+/// @param max_speed Finite non-negative speed limit.
+/// @return Updated candidate count; invalid, duplicate, or over-capacity input leaves it unchanged.
 static int navagent_add_velocity_candidate(double candidates[NAVAGENT_RVO_MAX_CANDIDATES][2],
                                            int count,
                                            double vx,
@@ -536,6 +605,11 @@ static int navagent_add_velocity_candidate(double candidates[NAVAGENT_RVO_MAX_CA
 }
 
 /// @brief Build a deterministic RVO candidate set around the preferred velocity.
+/// @param pref_x Preferred X velocity.
+/// @param pref_z Preferred Z velocity.
+/// @param max_speed Non-negative admissible speed.
+/// @param candidates Caller-owned fixed-capacity array receiving unique sampled velocities.
+/// @return Number of initialized candidate entries.
 static int navagent_build_velocity_candidates(double pref_x,
                                               double pref_z,
                                               double max_speed,
@@ -572,6 +646,13 @@ static int navagent_build_velocity_candidates(double pref_x,
 /// @brief Penalty for choosing candidate velocity (`cand_x`,`cand_z`) against one peer.
 /// @details This is a reciprocal velocity-obstacle test: it predicts relative motion over the
 ///   bounded time horizon and penalizes candidates that enter the combined avoidance disk.
+/// @param agent Borrowed agent being solved.
+/// @param other Borrowed peer evaluated against @p agent.
+/// @param agent_radius Effective avoidance radius for @p agent.
+/// @param horizon Positive collision-prediction horizon in seconds.
+/// @param cand_x Candidate X velocity for @p agent.
+/// @param cand_z Candidate Z velocity for @p agent.
+/// @return Non-negative collision-risk penalty; unrelated or non-contributing peers return zero.
 static double navagent_rvo_peer_penalty(rt_navagent3d *agent,
                                         rt_navagent3d *other,
                                         double agent_radius,
@@ -774,6 +855,14 @@ static int navagent_collect_avoidance_neighbors(rt_navagent3d *agent,
 }
 
 /// @brief Score one candidate velocity against a pre-collected RVO neighbor list.
+/// @param agent Borrowed agent being solved.
+/// @param neighbors Borrowed array of candidate peer pointers.
+/// @param neighbor_count Number of entries in @p neighbors.
+/// @param agent_radius Effective avoidance radius for @p agent.
+/// @param horizon Positive collision-prediction horizon in seconds.
+/// @param cand_x Candidate X velocity.
+/// @param cand_z Candidate Z velocity.
+/// @return Sum of all contributing peer penalties, or zero for an empty list.
 static double navagent_rvo_neighbor_list_penalty(rt_navagent3d *agent,
                                                  rt_navagent3d *const *neighbors,
                                                  int32_t neighbor_count,
@@ -792,6 +881,13 @@ static double navagent_rvo_neighbor_list_penalty(rt_navagent3d *agent,
 }
 
 /// @brief Evaluate one candidate velocity against the grid or full registry.
+/// @param agent Borrowed registered agent being solved.
+/// @param agent_radius Effective avoidance radius for @p agent.
+/// @param horizon Positive collision-prediction horizon in seconds.
+/// @param use_grid Non-zero to prefer a bounded spatial-grid scan when cheaper.
+/// @param cand_x Candidate X velocity.
+/// @param cand_z Candidate Z velocity.
+/// @return Accumulated peer-collision penalty.
 static double navagent_rvo_candidate_penalty(rt_navagent3d *agent,
                                              double agent_radius,
                                              double horizon,
@@ -840,7 +936,12 @@ static double navagent_rvo_candidate_penalty(rt_navagent3d *agent,
 ///   path-following velocity, scores each against predicted peer collisions over a bounded time
 ///   horizon, and returns the delta from preferred to the best candidate. With @p use_grid it scans
 ///   only the spatial-grid cell neighborhood sized to cover the RVO horizon.
-///   @return 1 if avoidance applies (outputs written), 0 otherwise.
+/// @param agent Mutable agent whose preferred velocity is evaluated.
+/// @param dt Current bounded simulation step in seconds.
+/// @param use_grid Non-zero to prefer spatial-grid peer discovery.
+/// @param out_ax Receives the chosen X-velocity adjustment on success.
+/// @param out_az Receives the chosen Z-velocity adjustment on success.
+/// @return 1 if avoidance applies and outputs were written, otherwise 0.
 static int navagent_compute_avoidance_adjust(
     rt_navagent3d *agent, double dt, int use_grid, double *out_ax, double *out_az) {
     double agent_radius;
@@ -923,6 +1024,8 @@ static int navagent_compute_avoidance_adjust(
 ///   solution. The selected candidate stays within DesiredSpeed, favors the preferred path
 ///   velocity, and predicts peer collisions across a bounded time horizon instead of only pushing
 ///   away after overlap.
+/// @param agent Mutable agent whose desired velocity is adjusted.
+/// @param dt Current bounded simulation step in seconds.
 static void navagent_apply_local_avoidance(rt_navagent3d *agent, double dt) {
     double max_speed;
     double adjust_x = 0.0;
@@ -1441,6 +1544,8 @@ int8_t rt_navagent3d_check_avoidance_grid_parity(void) {
 /// @brief Derive "close enough to this corner" distance from the agent's radius. Half
 /// the radius works well in practice, with a 0.15 unit floor so tiny agents (e.g. radius
 /// 0.2) don't wind up chasing corners forever because their tolerance converged to zero.
+/// @param agent Borrowed valid agent.
+/// @return Positive path-corner tolerance in world units.
 static double navagent_corner_tolerance(const rt_navagent3d *agent) {
     double tol = agent->radius > 0.0 ? agent->radius * 0.5 : 0.2;
     if (tol < 0.15)
@@ -1453,6 +1558,9 @@ static double navagent_corner_tolerance(const rt_navagent3d *agent) {
 /// or when the mesh's closest-point query fails. Used to keep the agent's position, start
 /// of the path, and goal all on the navigable surface regardless of where the caller's
 /// coordinates originated.
+/// @param agent Mutable agent providing the optional NavMesh3D binding.
+/// @param src Optional borrowed world-space point; null is treated as the origin.
+/// @param dst Caller-owned point receiving the sampled or sanitized input.
 static void navagent_sample_point(rt_navagent3d *agent, const double src[3], double dst[3]) {
     if (!agent || !dst) {
         return;
@@ -1476,6 +1584,8 @@ static void navagent_sample_point(rt_navagent3d *agent, const double src[3], dou
 }
 
 /// @brief Resolve a SceneNode3D's world-space position without allocating matrix/vector wrappers.
+/// @param node Borrowed SceneNode3D handle; null yields the origin.
+/// @param out_pos Caller-owned three-component world-position output.
 static void navagent_get_node_world_position(void *node, double out_pos[3]) {
     if (!node) {
         navagent_vec_set(out_pos, 0.0, 0.0, 0.0);
@@ -1499,6 +1609,8 @@ static void navagent_get_node_world_position(void *node, double out_pos[3]) {
 /// after the parent transform is applied. When the node is a root (no parent), the
 /// world position is written directly as the local position. Also falls back to direct
 /// write when the parent's world matrix can't be inverted (degenerate scale, etc.).
+/// @param node Borrowed SceneNode3D handle to reposition.
+/// @param world_pos Borrowed desired world-space position.
 static void navagent_set_node_world_position(void *node, const double world_pos[3]) {
     void *parent;
     if (!node || !world_pos)
@@ -1536,6 +1648,7 @@ static void navagent_set_node_world_position(void *node, const double world_pos[
 /// agent's cached position is already authoritative and this call is a no-op. Called at
 /// the top of every `_update` so external movement of the character or node flows into
 /// pathing decisions.
+/// @param agent Mutable agent whose cached position and grid cell are refreshed.
 static void navagent_sync_position_from_bindings(rt_navagent3d *agent) {
     if (!agent)
         return;
@@ -1563,6 +1676,7 @@ static void navagent_sync_position_from_bindings(rt_navagent3d *agent) {
 /// controller via `rt_character3d_set_position`, the scene node via
 /// `navagent_set_node_world_position`. Used when the agent is warped, or when `_update`
 /// finishes and needs to keep a passive visual rig in sync with the AI mover.
+/// @param agent Mutable agent whose cached position is published to valid bindings.
 static void navagent_push_position_to_bindings(rt_navagent3d *agent) {
     if (!agent)
         return;
@@ -1585,6 +1699,7 @@ static void navagent_push_position_to_bindings(rt_navagent3d *agent) {
 /// in one call so a character moving fast enough to overshoot several waypoints in a
 /// single tick still progresses cleanly. Always leaves `path_index` at the final corner
 /// at the latest (so the goal is never popped off the chase list).
+/// @param agent Mutable agent whose active path cursor is advanced.
 static void navagent_refresh_path_index(rt_navagent3d *agent) {
     double tolerance;
     if (!agent || !agent->has_path || agent->path_point_count <= 0)
@@ -1602,6 +1717,9 @@ static void navagent_refresh_path_index(rt_navagent3d *agent) {
 /// plus every subsequent corner-to-corner segment. Clamped `path_index` into valid
 /// range defensively. Callers expose this via `get_remaining_distance` so AI scripts
 /// can decide "am I almost there?" without repeating the walk themselves.
+/// @param agent Borrowed agent whose current path and position are measured.
+/// @return Remaining polyline length capped to the navigation distance bound, or zero without an
+///         active path.
 static double navagent_compute_remaining_distance(rt_navagent3d *agent) {
     double remaining = 0.0;
     int32_t idx;
@@ -1629,6 +1747,7 @@ static double navagent_compute_remaining_distance(rt_navagent3d *agent) {
 /// Resets the repath timer. On empty or failed path result, zeroes velocity so the agent
 /// stops cleanly instead of following a stale path. The first corner (`path_index = 1`)
 /// is the next waypoint, because corner 0 is the starting position.
+/// @param agent Mutable agent whose owned path buffer and path-following state are replaced.
 static void navagent_rebuild_path(rt_navagent3d *agent) {
     double start[3];
     double goal[3];
@@ -1683,6 +1802,7 @@ static void navagent_rebuild_path(rt_navagent3d *agent) {
 /// @brief GC finalizer for NavAgent3D. Frees the heap-allocated path-points buffer and
 /// drops references to the navmesh and any bound character / scene-node. Binding
 /// references may or may not actually free on release depending on external retains.
+/// @param obj Owned NavAgent3D instance being finalized; null is a no-op.
 static void navagent_finalize(void *obj) {
     rt_navagent3d *agent = (rt_navagent3d *)obj;
     if (!agent)
@@ -1702,6 +1822,11 @@ static void navagent_finalize(void *obj) {
 /// describe the agent's collision capsule (defaults 0.4 / 1.8 if 0). Defaults: stopping_distance
 /// = radius, desired_speed = 4 u/s, auto-repath every 0.25 s, position at origin (snapped to
 /// the navmesh on construction).
+/// @param navmesh Optional borrowed NavMesh3D handle retained by the new agent.
+/// @param radius Requested non-negative capsule and default avoidance radius; zero selects 0.4.
+/// @param height Requested non-negative capsule height; zero selects 1.8.
+/// @return Newly allocated GC-managed NavAgent3D, or null for an invalid navmesh or allocation
+///         failure.
 void *rt_navagent3d_new(void *navmesh, double radius, double height) {
     if (navmesh && !rt_g3d_has_class(navmesh, RT_G3D_NAVMESH3D_CLASS_ID))
         return NULL;
@@ -1740,6 +1865,8 @@ void *rt_navagent3d_new(void *navmesh, double radius, double height) {
 /// @brief Set the agent's destination. The position is snapped onto the navmesh, and a path is
 /// rebuilt immediately. Subsequent `_update` calls steer the agent along the path until it
 /// reaches `_get_stopping_distance` of the target.
+/// @param obj Opaque NavAgent3D handle.
+/// @param position Borrowed Vec3 destination.
 void rt_navagent3d_set_target(void *obj, void *position) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent || !rt_g3d_is_vec3(position))
@@ -1755,6 +1882,7 @@ void rt_navagent3d_set_target(void *obj, void *position) {
 
 /// @brief Cancel the active target and clear the path. Subsequent `_update` calls do nothing
 /// until a new target is set. Velocity is zeroed so AI motion stops cleanly.
+/// @param obj Opaque NavAgent3D handle.
 void rt_navagent3d_clear_target(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent)
@@ -1895,6 +2023,8 @@ static void navagent_apply_prepared_update(rt_navagent3d *agent,
 /// computes a desired velocity toward the next path waypoint, then either moves a bound
 /// CharacterController3D (if any) or integrates position directly. Falls back to snapping to the
 /// navmesh after each step. Stops cleanly when within `stopping_distance` of the target.
+/// @param obj Opaque NavAgent3D handle.
+/// @param dt Frame duration in seconds, sanitized to `[0, NAVAGENT_DT_MAX]`.
 void rt_navagent3d_update(void *obj, double dt) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     double previous_position[3];
@@ -2010,6 +2140,8 @@ int64_t rt_navagent3d_update_batch(void *const *agents, int64_t agent_count, dou
 /// @brief Teleport the agent to `position` (snapped onto the navmesh). Pushes the new position
 /// to any bound character/node, zeros velocity, clears the cached path, and rebuilds the path
 /// if a target is still active.
+/// @param obj Opaque NavAgent3D handle.
+/// @param position Borrowed Vec3 destination.
 void rt_navagent3d_warp(void *obj, void *position) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     double world[3];
@@ -2028,6 +2160,8 @@ void rt_navagent3d_warp(void *obj, void *position) {
 }
 
 /// @brief Read the agent's current world position. Re-syncs from any bound character/node first.
+/// @param obj Opaque NavAgent3D handle.
+/// @return Newly allocated Vec3 owned by the caller; invalid handles produce the origin.
 void *rt_navagent3d_get_position(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     double position[3];
@@ -2039,6 +2173,8 @@ void *rt_navagent3d_get_position(void *obj) {
 }
 
 /// @brief Read the agent's actual velocity (position-delta over the last `_update`'s dt).
+/// @param obj Opaque NavAgent3D handle.
+/// @return Newly allocated bounded Vec3 owned by the caller; invalid handles produce zero.
 void *rt_navagent3d_get_velocity(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent)
@@ -2050,6 +2186,8 @@ void *rt_navagent3d_get_velocity(void *obj) {
 
 /// @brief Read the agent's *desired* velocity — the steering direction it tried to move at this
 /// frame, before character-controller collisions. May differ from `_get_velocity` when blocked.
+/// @param obj Opaque NavAgent3D handle.
+/// @return Newly allocated bounded Vec3 owned by the caller; invalid handles produce zero.
 void *rt_navagent3d_get_desired_velocity(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent)
@@ -2060,6 +2198,8 @@ void *rt_navagent3d_get_desired_velocity(void *obj) {
 }
 
 /// @brief Returns 1 if the agent currently has an active path being followed.
+/// @param obj Opaque NavAgent3D handle.
+/// @return 1 for an active path, otherwise 0, including invalid handles.
 int8_t rt_navagent3d_get_has_path(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     return agent && agent->has_path ? 1 : 0;
@@ -2068,6 +2208,9 @@ int8_t rt_navagent3d_get_has_path(void *obj) {
 /// @brief World-space distance from the agent's current position along the path to the goal.
 /// Updated each `_update` tick. Returns 0 when the agent has no path or is within stopping
 /// distance (use `_get_has_path` to tell those apart), and -1 for an invalid agent handle.
+/// @param obj Opaque NavAgent3D handle.
+/// @return Bounded non-negative remaining path length, zero without a path, or -1 for an invalid
+///         handle.
 double rt_navagent3d_get_remaining_distance(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     return agent ? navagent_nonnegative_capped_or(
@@ -2077,6 +2220,8 @@ double rt_navagent3d_get_remaining_distance(void *obj) {
 
 /// @brief Distance from the goal at which the agent stops moving (default = radius). Returns -1
 /// for an invalid agent handle.
+/// @param obj Opaque NavAgent3D handle.
+/// @return Bounded non-negative stopping distance, or -1 for an invalid handle.
 double rt_navagent3d_get_stopping_distance(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     return agent ? navagent_nonnegative_capped_or(
@@ -2086,6 +2231,8 @@ double rt_navagent3d_get_stopping_distance(void *obj) {
 
 /// @brief Set the stopping distance (clamped to ≥ 0). Larger values cause the agent to halt
 /// further from the goal — useful for combat/stand-back behaviors.
+/// @param obj Opaque NavAgent3D handle.
+/// @param distance Requested stopping distance, bounded to the supported navigation range.
 void rt_navagent3d_set_stopping_distance(void *obj, double distance) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent)
@@ -2095,6 +2242,8 @@ void rt_navagent3d_set_stopping_distance(void *obj, double distance) {
 
 /// @brief Maximum movement speed in world units per second (default 4). Returns -1 for an
 /// invalid agent handle.
+/// @param obj Opaque NavAgent3D handle.
+/// @return Bounded non-negative desired speed, or -1 for an invalid handle.
 double rt_navagent3d_get_desired_speed(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     return agent ? navagent_nonnegative_capped_or(agent->desired_speed, 0.0, NAVAGENT_SPEED_MAX)
@@ -2102,6 +2251,8 @@ double rt_navagent3d_get_desired_speed(void *obj) {
 }
 
 /// @brief Set max movement speed (clamped to ≥ 0). Updates take effect on the next `_update`.
+/// @param obj Opaque NavAgent3D handle.
+/// @param speed Requested movement speed in world units per second.
 void rt_navagent3d_set_desired_speed(void *obj, double speed) {
     RT_ASSERT_MAIN_THREAD();
     rt_navagent3d *agent = navagent3d_checked(obj);
@@ -2113,6 +2264,8 @@ void rt_navagent3d_set_desired_speed(void *obj, double speed) {
 
 /// @brief Returns 1 if the agent automatically rebuilds its path on the repath interval. When
 /// disabled, the path is built once per `_set_target` and never refreshed.
+/// @param obj Opaque NavAgent3D handle.
+/// @return 1 when automatic repathing is enabled, otherwise 0, including invalid handles.
 int8_t rt_navagent3d_get_auto_repath(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     return agent && agent->auto_repath ? 1 : 0;
@@ -2120,6 +2273,8 @@ int8_t rt_navagent3d_get_auto_repath(void *obj) {
 
 /// @brief Toggle automatic re-pathing every 0.25 s. Disable to manually control path freshness
 /// (useful when target is static and rebuilds would waste CPU).
+/// @param obj Opaque NavAgent3D handle.
+/// @param enabled Non-zero to enable periodic path rebuilding.
 void rt_navagent3d_set_auto_repath(void *obj, int8_t enabled) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent)
@@ -2128,12 +2283,16 @@ void rt_navagent3d_set_auto_repath(void *obj, int8_t enabled) {
 }
 
 /// @brief Returns 1 when same-NavMesh local separation steering is enabled.
+/// @param obj Opaque NavAgent3D handle.
+/// @return 1 when local avoidance is enabled, otherwise 0, including invalid handles.
 int8_t rt_navagent3d_get_avoidance_enabled(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     return agent && agent->avoidance_enabled ? 1 : 0;
 }
 
 /// @brief Toggle opt-in same-NavMesh local separation steering.
+/// @param obj Opaque NavAgent3D handle.
+/// @param enabled Non-zero to enable reciprocal local avoidance.
 void rt_navagent3d_set_avoidance_enabled(void *obj, int8_t enabled) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent)
@@ -2143,6 +2302,8 @@ void rt_navagent3d_set_avoidance_enabled(void *obj, int8_t enabled) {
 
 /// @brief Radius used by local avoidance neighbor separation (defaults to the agent radius).
 /// Returns -1 for an invalid agent handle.
+/// @param obj Opaque NavAgent3D handle.
+/// @return Bounded non-negative avoidance radius, or -1 for an invalid handle.
 double rt_navagent3d_get_avoidance_radius(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     return agent ? navagent_nonnegative_capped_or(agent->avoidance_radius, 0.0, NAVAGENT_RADIUS_MAX)
@@ -2150,6 +2311,8 @@ double rt_navagent3d_get_avoidance_radius(void *obj) {
 }
 
 /// @brief Set local avoidance radius (clamped to >= 0). A zero radius disables separation force.
+/// @param obj Opaque NavAgent3D handle.
+/// @param radius Requested non-negative local-avoidance radius.
 void rt_navagent3d_set_avoidance_radius(void *obj, double radius) {
     RT_ASSERT_MAIN_THREAD();
     rt_navagent3d *agent = navagent3d_checked(obj);
@@ -2162,6 +2325,8 @@ void rt_navagent3d_set_avoidance_radius(void *obj, double radius) {
 /// @brief Bind the agent to a CharacterController3D — `_update` will call `_move` on the
 /// controller (respecting collisions) instead of moving the agent's position directly. The
 /// agent's position is then read back from the controller post-move. Replaces any prior binding.
+/// @param obj Opaque NavAgent3D handle.
+/// @param controller Optional CharacterController3D handle to retain; null clears the binding.
 void rt_navagent3d_bind_character(void *obj, void *controller) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent)
@@ -2181,6 +2346,8 @@ void rt_navagent3d_bind_character(void *obj, void *controller) {
 
 /// @brief Bind the agent to a SceneNode3D — the node's world position will be updated to
 /// match the agent each `_update`. Useful for keeping a visual rig in sync with the AI mover.
+/// @param obj Opaque NavAgent3D handle.
+/// @param node Optional SceneNode3D handle to retain; null clears the binding.
 void rt_navagent3d_bind_node(void *obj, void *node) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent)
@@ -2205,6 +2372,8 @@ void rt_navagent3d_bind_node(void *obj, void *node) {
 /// @brief True while the agent's current path segment traverses a registered
 ///        off-mesh link (jump/drop/vent). Lets gameplay trigger the matching
 ///        traversal animation exactly when the agent commits to the link.
+/// @param obj Opaque NavAgent3D handle.
+/// @return 1 when the current path segment matches an off-mesh link, otherwise 0.
 int8_t rt_navagent3d_get_on_offmesh_link(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     if (!agent || !agent->has_path || !agent->navmesh || !agent->path_points_xyz)
@@ -2218,6 +2387,9 @@ int8_t rt_navagent3d_get_on_offmesh_link(void *obj) {
 
 /// @brief The authored kind string of the off-mesh link being traversed
 ///        (empty when not on a link or the link has no kind).
+/// @param obj Opaque NavAgent3D handle.
+/// @return Retained runtime string for the current link kind, or the shared empty string when no
+///         matching kind exists.
 rt_string rt_navagent3d_get_link_kind(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     rt_string kind = NULL;

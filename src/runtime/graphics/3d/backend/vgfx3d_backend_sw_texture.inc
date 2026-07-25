@@ -16,6 +16,17 @@
 // Links: vgfx3d_backend_sw.c, vgfx3d_backend_sw_raster.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file vgfx3d_backend_sw_texture.inc
+ * @brief Implements validated Pixels views, texture addressing, filtering, and UV interpolation
+ *        for the software Graphics3D backend.
+ *
+ * Sampling is allocation-free and supports repeat, mirrored-repeat, and clamp addressing with
+ * nearest or bilinear base-level filtering. Per-material slots may select either UV channel,
+ * apply independent affine transforms, and opt into sRGB-to-linear conversion before lighting.
+ */
+
 /*==========================================================================
  * Texture sampling
  *=========================================================================*/
@@ -31,6 +42,9 @@ typedef struct {
 /// The underlying struct layout is duplicated locally (matches the
 /// public ABI of `rt_pixels_new`). Returns 1 if the view is sampleable
 /// (non-null + non-empty), 0 otherwise.
+/// @param pixels_obj Borrowed opaque @c rt_pixels object.
+/// @param out Receives the validated sampling view.
+/// @return 1 when the dimensions, storage, and signed sampler indexing are valid, otherwise 0.
 static int setup_pixels_view(const void *pixels_obj, sw_pixels_view *out) {
     if (!pixels_obj || !out)
         return 0;
@@ -46,6 +60,10 @@ static int setup_pixels_view(const void *pixels_obj, sw_pixels_view *out) {
 
 /// @brief Validate that a draw has full terrain-splat data (weight map + all 4 layers)
 ///   and open Pixels views over each; returns 0 if splatting is inactive or incomplete.
+/// @param cmd Borrowed draw command containing the splat map and four layer identities.
+/// @param splat_view Receives the validated weight-map view.
+/// @param layer_views Receives four validated layer texture views.
+/// @return 1 when every required texture is present and sampleable, otherwise 0.
 static int sw_setup_complete_splat(const vgfx3d_draw_cmd_t *cmd,
                                    sw_pixels_view *splat_view,
                                    sw_pixels_view layer_views[4]) {
@@ -65,6 +83,9 @@ static int sw_setup_complete_splat(const vgfx3d_draw_cmd_t *cmd,
 /// @brief Wrap a continuous UV coordinate into [0, 1] according to the material wrap mode.
 /// @details CLAMP_TO_EDGE saturates to [0, 1]. MIRRORED_REPEAT folds across even/odd periods
 ///          so the texture reads forward then backward. Default (repeat) uses fract().
+/// @param value Continuous texture coordinate.
+/// @param mode One of the @c RT_MATERIAL3D_TEXTURE_WRAP_* values.
+/// @return Wrapped coordinate in `[0, 1]`, with non-finite input mapped to zero.
 static float sw_wrap_coord(float value, int32_t mode) {
     if (!isfinite(value))
         return 0.0f;
@@ -142,6 +163,16 @@ static int sw_wrap_index(int64_t index, int size, int32_t mode) {
 ///   backends are), so this parity gap is tolerated rather than closed with a full
 ///   screen-space-derivative mip pipeline (which would carry its own determinism
 ///   cost). Revisit if the SW path is ever promoted to the reference.
+/// @param tex Borrowed validated pixel view; invalid input produces opaque white.
+/// @param u Horizontal texture coordinate.
+/// @param v Vertical texture coordinate.
+/// @param wrap_s Horizontal addressing mode.
+/// @param wrap_t Vertical addressing mode.
+/// @param filter Nearest or linear material filter mode.
+/// @param r Receives normalized red.
+/// @param g Receives normalized green.
+/// @param b Receives normalized blue.
+/// @param a Receives normalized alpha.
 static void sample_texture_ex(const sw_pixels_view *tex,
                               float u,
                               float v,
@@ -249,6 +280,8 @@ static void sample_texture(
 ///   otherwise. Used by `sample_texture_srgb` so textures authored in sRGB are lit
 ///   correctly — lighting math is linear, so we have to undo the storage gamma first.
 ///   Alpha is intentionally *not* converted, matching the sRGB spec.
+/// @param value Normalized sRGB-encoded channel.
+/// @return Corresponding normalized linear-light channel with out-of-range input clamped.
 static float sw_srgb_to_linear(float value) {
     if (!(value > 0.0f))
         return 0.0f;
@@ -260,16 +293,22 @@ static float sw_srgb_to_linear(float value) {
 }
 
 /// @brief Return the primary texture S-axis wrap mode from @p cmd, defaulting to REPEAT.
+/// @param cmd Optional borrowed draw command.
+/// @return Command S addressing mode, or repeat when @p cmd is null.
 static int32_t sw_cmd_wrap_s(const vgfx3d_draw_cmd_t *cmd) {
     return cmd ? cmd->texture_wrap_s : RT_MATERIAL3D_TEXTURE_WRAP_REPEAT;
 }
 
 /// @brief Return the primary texture T-axis wrap mode from @p cmd, defaulting to REPEAT.
+/// @param cmd Optional borrowed draw command.
+/// @return Command T addressing mode, or repeat when @p cmd is null.
 static int32_t sw_cmd_wrap_t(const vgfx3d_draw_cmd_t *cmd) {
     return cmd ? cmd->texture_wrap_t : RT_MATERIAL3D_TEXTURE_WRAP_REPEAT;
 }
 
 /// @brief Return the primary texture filter mode from @p cmd, defaulting to LINEAR.
+/// @param cmd Optional borrowed draw command.
+/// @return Command texture filter, or linear when @p cmd is null.
 static int32_t sw_cmd_filter(const vgfx3d_draw_cmd_t *cmd) {
     return cmd ? cmd->texture_filter : RT_MATERIAL3D_TEXTURE_FILTER_LINEAR;
 }
@@ -286,6 +325,9 @@ typedef struct screen_vert_t {
 
 /// @brief Return the S-axis wrap mode for a specific texture slot, falling back to the primary wrap
 /// when out of range.
+/// @param cmd Optional borrowed draw command.
+/// @param slot Material texture-slot index.
+/// @return Slot-specific S addressing mode, or the primary/default mode for an invalid slot.
 static int32_t sw_cmd_slot_wrap_s(const vgfx3d_draw_cmd_t *cmd, int32_t slot) {
     if (!cmd || slot < 0 || slot >= RT_MATERIAL3D_TEXTURE_SLOT_COUNT)
         return sw_cmd_wrap_s(cmd);
@@ -294,6 +336,9 @@ static int32_t sw_cmd_slot_wrap_s(const vgfx3d_draw_cmd_t *cmd, int32_t slot) {
 
 /// @brief Return the T-axis wrap mode for a specific texture slot, falling back to the primary wrap
 /// when out of range.
+/// @param cmd Optional borrowed draw command.
+/// @param slot Material texture-slot index.
+/// @return Slot-specific T addressing mode, or the primary/default mode for an invalid slot.
 static int32_t sw_cmd_slot_wrap_t(const vgfx3d_draw_cmd_t *cmd, int32_t slot) {
     if (!cmd || slot < 0 || slot >= RT_MATERIAL3D_TEXTURE_SLOT_COUNT)
         return sw_cmd_wrap_t(cmd);
@@ -302,6 +347,9 @@ static int32_t sw_cmd_slot_wrap_t(const vgfx3d_draw_cmd_t *cmd, int32_t slot) {
 
 /// @brief Return the filter mode for a specific texture slot, falling back to the primary filter
 /// when out of range.
+/// @param cmd Optional borrowed draw command.
+/// @param slot Material texture-slot index.
+/// @return Slot-specific filter mode, or the primary/default mode for an invalid slot.
 static int32_t sw_cmd_slot_filter(const vgfx3d_draw_cmd_t *cmd, int32_t slot) {
     if (!cmd || slot < 0 || slot >= RT_MATERIAL3D_TEXTURE_SLOT_COUNT)
         return sw_cmd_filter(cmd);
@@ -327,8 +375,12 @@ static int32_t sw_cmd_slot_filter(const vgfx3d_draw_cmd_t *cmd, int32_t slot) {
 /// @param cmd     Draw command containing per-slot UV-set and transform state.
 /// @param slot    Material texture slot index; negative or out-of-range disables per-slot
 /// overrides.
-/// @param b0,b1,b2  Barycentric weights for vertices v0, v1, v2 (must sum to 1).
-/// @param v0,v1,v2  Screen-space vertices holding `u_over_w`, `v_over_w`, `inv_w`, etc.
+/// @param b0 Barycentric weight for @p v0.
+/// @param b1 Barycentric weight for @p v1.
+/// @param b2 Barycentric weight for @p v2.
+/// @param v0 Borrowed first screen-space vertex.
+/// @param v1 Borrowed second screen-space vertex.
+/// @param v2 Borrowed third screen-space vertex.
 /// @param out_u   Receives the perspective-corrected, transformed U coordinate.
 /// @param out_v   Receives the perspective-corrected, transformed V coordinate.
 static void sw_interpolate_uv_for_slot(const vgfx3d_draw_cmd_t *cmd,

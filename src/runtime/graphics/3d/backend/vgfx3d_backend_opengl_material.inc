@@ -17,12 +17,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements OpenGL material, sampler, light, IBL, skybox, and uniform binding.
+/// @details This fragment converts sanitized draw snapshots into program uniforms and texture
+///          bindings, owns the per-context sampler cache, resolves specialized unlit programs,
+///          and records uniform locations for all linked rendering passes.
+
 /// @brief Activate texture unit `unit`, bind `texture`, and tell the program about it.
 ///
 /// One-stop helper that handles the GL "select active unit, then
 /// bind, then push the unit number to the sampler uniform" dance.
 /// Skips the uniform write when the location is invalid (-1) — that
 /// happens when the shader doesn't reference the sampler.
+/// @param uniform_loc Sampler uniform location, or -1 to skip the uniform write.
+/// @param unit Zero-based texture-unit index.
+/// @param target Texture binding target.
+/// @param texture OpenGL texture object name, or zero to unbind.
 static void bind_texture_unit(GLint uniform_loc, int unit, GLenum target, GLuint texture) {
     gl.ActiveTexture(GL_TEXTURE0 + (GLenum)unit);
     gl.BindTexture(target, texture);
@@ -35,6 +45,8 @@ static void bind_texture_unit(GLint uniform_loc, int unit, GLenum target, GLuint
 /// @details RT_MATERIAL3D_TEXTURE_WRAP_CLAMP_TO_EDGE → GL_CLAMP_TO_EDGE,
 ///          RT_MATERIAL3D_TEXTURE_WRAP_MIRRORED_REPEAT → GL_MIRRORED_REPEAT,
 ///          all other values → GL_REPEAT (the GL default).
+/// @param mode Runtime material wrap-mode constant.
+/// @return The corresponding OpenGL wrap enum.
 static GLenum gl_material_wrap_mode(int32_t mode) {
     if (mode == RT_MATERIAL3D_TEXTURE_WRAP_CLAMP_TO_EDGE)
         return GL_CLAMP_TO_EDGE;
@@ -46,6 +58,8 @@ static GLenum gl_material_wrap_mode(int32_t mode) {
 /// @brief Map a Zanna material texture-filter constant to the corresponding OpenGL enum.
 /// @details RT_MATERIAL3D_TEXTURE_FILTER_NEAREST → GL_NEAREST (pixel-art / point sampling);
 ///          all other values → GL_LINEAR (bilinear).
+/// @param mode Runtime material nearest/linear filter constant.
+/// @return The corresponding OpenGL filtering enum.
 static GLenum gl_material_filter_mode(int32_t mode) {
     return mode == RT_MATERIAL3D_TEXTURE_FILTER_NEAREST ? GL_NEAREST : GL_LINEAR;
 }
@@ -96,6 +110,10 @@ static int gl_sampler_wrap_index(int32_t mode) {
 }
 
 /// @brief Resolve the anisotropy value actually usable by this GL context.
+/// @param ctx Borrowed OpenGL context containing extension support and the device maximum.
+/// @param requested Requested material anisotropy.
+/// @param filter Effective nearest/linear filter selection.
+/// @return A supported anisotropy value of at least one.
 static int32_t gl_effective_sampler_anisotropy(gl_context_t *ctx,
                                                int32_t requested,
                                                int32_t filter) {
@@ -117,6 +135,10 @@ static int32_t gl_effective_sampler_anisotropy(gl_context_t *ctx,
 ///          when available. Otherwise generates a new GL sampler, configures WRAP_S/T and
 ///          MIN/MAG filters, stores it in the material sampler cache, and returns it. Returns 0 on
 ///          null context/cmd or GL sampler generation failure.
+/// @param ctx Borrowed OpenGL context owning the sampler cache.
+/// @param cmd Borrowed draw command containing global and per-slot sampler state.
+/// @param slot Texture slot to resolve, or a negative value for global state.
+/// @return A configured cached sampler object name, or zero on failure.
 static GLuint gl_get_material_sampler(gl_context_t *ctx,
                                       const vgfx3d_draw_cmd_t *cmd,
                                       int32_t slot) {
@@ -262,6 +284,9 @@ static void bind_texture_unit_with_sampler(gl_context_t *ctx,
 /// Uniforms are arrays-of-uniforms (one location per light index)
 /// rather than a UBO — simpler to set up and small enough not to
 /// matter performance-wise.
+/// @param ctx Borrowed OpenGL context containing the active program's light locations.
+/// @param lights Borrowed array of light snapshots, or NULL.
+/// @param light_count Number of entries available through @p lights.
 static void upload_light_uniforms(gl_context_t *ctx,
                                   const vgfx3d_light_params_t *lights,
                                   int32_t light_count) {
@@ -315,17 +340,14 @@ static void upload_light_uniforms(gl_context_t *ctx,
     }
 }
 
-/// @brief Push every per-draw uniform the main program needs.
-///
-/// Bundles: matrices (model + prev model + VP + prev VP + normal +
-/// shadow VP), camera + ambient, all material colors / scalars / flags,
-/// PBR scalars, custom params, fog, shadow toggles, light array, and
-/// the morph + skinning state. Effectively the GL counterpart of the
-/// D3D11 backend's per-object/per-scene/per-material cbuffer fills.
 /// @brief Upload one CPU froxel table into the cluster UBOs (or select the flat loop).
 /// @details The u16 offset/index arrays are little-endian, which is exactly the
 ///          std140 uvec4 lane layout the shader unpacks (two u16 per uint lane),
 ///          so the tables upload as-is with no repacking pass.
+/// @param ctx Borrowed OpenGL context owning the cluster UBOs and selector uniform.
+/// @param table Borrowed CPU cluster table to validate and upload.
+/// @param expected_revision Light revision that @p table must describe.
+/// @param light_count Number of lights expected by the draw.
 static void gl_upload_cluster_table(gl_context_t *ctx,
                                     const vgfx3d_cluster_table_t *table,
                                     uint32_t expected_revision,
@@ -349,6 +371,11 @@ static void gl_upload_cluster_table(gl_context_t *ctx,
 /// Enabling IBL from metadata alone makes the shader sample ordinary box-filtered base mips (or
 /// even an invalid LOD span). Require the current cubemap generation and IBL identity to be
 /// present in the native cache before publishing the tail to the shader.
+/// @param ctx Borrowed OpenGL context containing IBL state and cubemap cache entries.
+/// @param cmd Borrowed draw command whose environment-map request is resolved.
+/// @param[out] out_lod_base Required destination for the first prefiltered mip level.
+/// @param[out] out_max_lod Required destination for the effective IBL LOD range.
+/// @return 1 when a complete matching IBL tail is resident, otherwise 0.
 static int gl_cmd_ibl_draw(gl_context_t *ctx,
                            const vgfx3d_draw_cmd_t *cmd,
                            float *out_lod_base,
@@ -390,6 +417,15 @@ static int gl_cmd_ibl_draw(gl_context_t *ctx,
     return 0;
 }
 
+/// @brief Push every per-draw uniform required by the active main or specialized program.
+/// @details Uploads matrices, camera/material state, lighting, fog, shadows, IBL, clustering,
+///          animation flags, and morph payload bindings for a sanitized draw command.
+/// @param ctx Borrowed OpenGL context containing the active program and uniform locations.
+/// @param cmd Borrowed sanitized draw command.
+/// @param lights Borrowed sanitized light array, or NULL.
+/// @param light_count Number of entries available through @p lights.
+/// @param ambient Borrowed three-component ambient color, or NULL for black.
+/// @param instanced Nonzero when matrix instance attributes are active.
 static void upload_main_uniforms(gl_context_t *ctx,
                                  const vgfx3d_draw_cmd_t *cmd,
                                  const vgfx3d_light_params_t *lights,
@@ -562,6 +598,8 @@ static void upload_main_uniforms(gl_context_t *ctx,
 /// rough, 15=AO. Slots 16/17 are reserved for morph TBOs (set by
 /// `bind_morph_payload`). Each `has*` uniform tells the shader which
 /// slots are populated.
+/// @param ctx Borrowed OpenGL context owning texture caches and sampler objects.
+/// @param cmd Borrowed draw command containing every material texture source and sampler state.
 static void bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd) {
     GLuint diffuse_tex = gl_get_material_texture(
         ctx,
@@ -709,6 +747,8 @@ static void bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *c
 /// Slimmer than the main pass — shadow depth doesn't need normals or
 /// previous-frame morph weights. Reuses `bind_morph_payload` with -1
 /// for the unused locations so it skips those uniform writes.
+/// @param ctx Borrowed OpenGL context containing the active shadow program.
+/// @param cmd Borrowed draw command containing skeletal and morph animation payloads.
 static void bind_shadow_anim(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd) {
     bind_morph_payload(ctx,
                        cmd,
@@ -727,6 +767,9 @@ static void bind_shadow_anim(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd) {
 ///
 /// Convenience wrapper around `gl_apply_postfx_chain` that targets the display surface, falling
 /// back to an offscreen final target when the GLX default framebuffer cannot write RGB.
+/// @param ctx Borrowed OpenGL context containing the completed scene texture.
+/// @param chain Borrowed post-processing chain, or NULL for a passthrough resolve.
+/// @return 1 when the scene is composited to the selected final target, otherwise 0.
 static int draw_scene_texture(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chain) {
     int32_t source_width;
     int32_t source_height;
@@ -789,6 +832,8 @@ static int draw_scene_texture(gl_context_t *ctx, const vgfx3d_postfx_chain_t *ch
 /// Reconstructs a world-space ray from the inverse projection and inverse
 /// rotation-only view matrix so perspective and orthographic cameras share one
 /// consistent skybox path.
+/// @param ctx Borrowed OpenGL context with an active target and skybox program.
+/// @param cubemap Borrowed runtime cubemap to resolve through the streaming cache.
 static void gl_draw_skybox_impl(gl_context_t *ctx, const rt_cubemap3d *cubemap) {
     static const float kIdentity4x4[16] = {
         1.0f,
@@ -866,6 +911,7 @@ static void gl_draw_skybox_impl(gl_context_t *ctx, const rt_cubemap3d *cubemap) 
 /// individually with `snprintf`-built names like `uLightPos[3]`.
 /// Locations of -1 (uniform doesn't exist or was optimized out) are
 /// fine — the per-frame `glUniform*` calls handle them gracefully.
+/// @param ctx Borrowed OpenGL context receiving locations from its current main program.
 static void query_main_uniforms(gl_context_t *ctx) {
 #define U(name) ctx->name = gl.GetUniformLocation(ctx->program, #name)
     U(uModelMatrix);
@@ -994,19 +1040,34 @@ static void query_main_uniforms(gl_context_t *ctx) {
     ctx->uShadowTex[3] = gl.GetUniformLocation(ctx->program, "uShadowTex3");
 }
 
+/// @brief Measure the contiguous context-memory span occupied by main uniform locations.
+/// @param ctx Borrowed OpenGL context whose location fields define the span.
+/// @return Number of bytes from `uModelMatrix` through the final light-location array.
 static size_t gl_main_uniform_location_span(gl_context_t *ctx) {
     return (size_t)((unsigned char *)(&ctx->uLightOuterCos[VGFX3D_MAX_LIGHTS]) -
                     (unsigned char *)&ctx->uModelMatrix);
 }
 
+/// @brief Copy the current main-program uniform-location span into caller storage.
+/// @param ctx Borrowed OpenGL context providing the location block and its measured size.
+/// @param[out] storage Caller-owned buffer large enough for `main_uniform_location_bytes`.
 static void gl_save_main_uniform_locations(gl_context_t *ctx, GLint *storage) {
     memcpy(storage, &ctx->uModelMatrix, ctx->main_uniform_location_bytes);
 }
 
+/// @brief Restore a previously saved uniform-location block into the context.
+/// @param ctx Borrowed OpenGL context receiving the location block.
+/// @param storage Borrowed buffer previously populated by gl_save_main_uniform_locations().
 static void gl_load_main_uniform_locations(gl_context_t *ctx, const GLint *storage) {
     memcpy(&ctx->uModelMatrix, storage, ctx->main_uniform_location_bytes);
 }
 
+/// @brief Switch eligible unlit draws to the compact specialized shader program.
+/// @param ctx Borrowed OpenGL context whose active program and locations may be changed.
+/// @param cmd Borrowed draw command used to determine specialization eligibility.
+/// @param[out] saved_locations Caller-owned storage receiving full-program uniform locations.
+/// @param[out] saved_program Caller-owned destination for the full program object name.
+/// @return 1 when the specialized program was selected, otherwise 0.
 static int gl_begin_material_program(gl_context_t *ctx,
                                      const vgfx3d_draw_cmd_t *cmd,
                                      GLint *saved_locations,
@@ -1020,6 +1081,11 @@ static int gl_begin_material_program(gl_context_t *ctx,
     return 1;
 }
 
+/// @brief Restore the full material program after an optional specialized draw.
+/// @param ctx Borrowed OpenGL context whose program and locations are restored.
+/// @param specialized Nonzero when gl_begin_material_program() performed a switch.
+/// @param saved_locations Borrowed full-program location snapshot.
+/// @param saved_program Full shader program object name to restore.
 static void gl_end_material_program(gl_context_t *ctx,
                                     int specialized,
                                     const GLint *saved_locations,
@@ -1033,6 +1099,9 @@ static void gl_end_material_program(gl_context_t *ctx,
     ctx->uploaded_cluster_revision = 0;
 }
 
+/// @brief Query and retain the specialized unlit program's uniform-location layout.
+/// @param ctx Borrowed OpenGL context containing linked full and unlit programs.
+/// @return 1 when the location span fits internal snapshots and is captured, otherwise 0.
 static int gl_query_unlit_uniforms(gl_context_t *ctx) {
     GLint full_locations[GL_MAIN_UNIFORM_SNAPSHOT_CAPACITY];
     GLuint full_program;
@@ -1053,6 +1122,7 @@ static int gl_query_unlit_uniforms(gl_context_t *ctx) {
 }
 
 /// @brief Resolve uniform locations for the depth-only shadow program.
+/// @param ctx Borrowed OpenGL context receiving shadow-program uniform locations.
 static void query_shadow_uniforms(gl_context_t *ctx) {
     ctx->shadow_uModelMatrix = gl.GetUniformLocation(ctx->shadow_program, "uModelMatrix");
     ctx->shadow_uViewProjection = gl.GetUniformLocation(ctx->shadow_program, "uViewProjection");
@@ -1078,6 +1148,7 @@ static void query_shadow_uniforms(gl_context_t *ctx) {
 }
 
 /// @brief Resolve uniform locations for the cubemap skybox program.
+/// @param ctx Borrowed OpenGL context receiving skybox-program uniform locations.
 static void query_skybox_uniforms(gl_context_t *ctx) {
     ctx->skybox_uInverseProjection =
         gl.GetUniformLocation(ctx->skybox_program, "uInverseProjection");
@@ -1089,6 +1160,7 @@ static void query_skybox_uniforms(gl_context_t *ctx) {
 }
 
 /// @brief Resolve every uniform in the post-FX shader (bloom, tonemap, FXAA, etc.).
+/// @param ctx Borrowed OpenGL context receiving post-processing uniform locations.
 static void query_postfx_uniforms(gl_context_t *ctx) {
     ctx->postfx_uSceneTex = gl.GetUniformLocation(ctx->postfx_program, "uSceneTex");
     ctx->postfx_uSceneDepthTex = gl.GetUniformLocation(ctx->postfx_program, "uSceneDepthTex");
@@ -1135,6 +1207,7 @@ static void query_postfx_uniforms(gl_context_t *ctx) {
 }
 
 /// @brief Cache uniform locations for the Plan 05 bloom-chain and TAA pass programs.
+/// @param ctx Borrowed OpenGL context receiving bloom, TAA, and SSR uniform locations.
 static void query_bloom_taa_uniforms(gl_context_t *ctx) {
     ctx->bloom_down_uSrcTex = gl.GetUniformLocation(ctx->bloom_down_program, "uSrcTex");
     ctx->bloom_down_uSrcInvSize = gl.GetUniformLocation(ctx->bloom_down_program, "uSrcInvSize");

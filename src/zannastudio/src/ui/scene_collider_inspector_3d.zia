@@ -22,6 +22,7 @@
 module scene_collider_inspector_3d;
 
 bind "scene_collider_3d";
+bind "inspector_rows";
 
 bind GUI = Zanna.GUI;
 bind SceneNode = Zanna.Graphics3D.SceneNode;
@@ -42,11 +43,11 @@ class SceneColliderInspector3D {
     expose GUI.GroupBox group;
     expose GUI.Label summary;
     expose GUI.Dropdown kindDropdown;
-    expose GUI.HBox extentRow;
+    expose GUI.Flex extentRow;
     expose GUI.Spinner halfX;
     expose GUI.Spinner halfY;
     expose GUI.Spinner halfZ;
-    expose GUI.HBox shapeRow;
+    expose GUI.Flex shapeRow;
     expose GUI.Spinner radius;
     expose GUI.Spinner height;
     expose GUI.Checkbox triggerCheck;
@@ -87,8 +88,7 @@ class SceneColliderInspector3D {
         kindDropdown.AddItem("Mesh bounds");
         kindDropdown.SetSelected(scene_collider_3d.COLLIDER_NONE);
 
-        extentRow = GUI.HBox.New();
-        extentRow.SetSpacing(4.0);
+        extentRow = inspector_rows.NewWrapRow();
         group.AddChild(extentRow);
         halfX = AddSpinner(
             extentRow, "Half X",
@@ -98,8 +98,7 @@ class SceneColliderInspector3D {
         halfZ = AddSpinner(
             extentRow, "Z", scene_collider_3d.DEFAULT_HALF_EXTENT);
 
-        shapeRow = GUI.HBox.New();
-        shapeRow.SetSpacing(4.0);
+        shapeRow = inspector_rows.NewWrapRow();
         group.AddChild(shapeRow);
         radius = AddSpinner(
             shapeRow, "Radius", scene_collider_3d.DEFAULT_RADIUS);
@@ -111,8 +110,7 @@ class SceneColliderInspector3D {
             "Overlap-only sensor: games report contact without blocking");
         triggerCheck.SetChecked(false);
 
-        var buttons = GUI.HBox.New();
-        buttons.SetSpacing(4.0);
+        var buttons = inspector_rows.NewWrapRow();
         group.AddChild(buttons);
         applyButton = GUI.Button.New(buttons, "Apply Collider");
         applyButton.SetTooltip(
@@ -221,7 +219,7 @@ class SceneColliderInspector3D {
         }
     }
 
-    hide func AddSpinner(parent: GUI.HBox,
+    hide func AddSpinner(parent: GUI.Flex,
                          label: String,
                          value: Number) -> GUI.Spinner {
         GUI.Label.New(parent, label);

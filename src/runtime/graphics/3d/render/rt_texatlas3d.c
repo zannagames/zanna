@@ -22,6 +22,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements fixed-capacity shelf-packed TextureAtlas3D objects.
+/// @details Each atlas owns a packed RGBA buffer, replicates source edges into one-pixel borders,
+///   repairs private metadata before use, and lazily rebuilds a borrowed Pixels mirror after
+///   packing changes.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_texatlas3d.h"
@@ -58,6 +64,7 @@ typedef struct {
 } rt_texatlas3d;
 
 /// @brief Drop one GC reference held in `*slot` and clear the slot. NULL-safe.
+/// @param[in,out] slot Address of the retained reference to release and clear.
 static void texatlas3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
@@ -65,6 +72,7 @@ static void texatlas3d_release_ref(void **slot) {
 /// @brief GC finalizer — free the atlas backing pixel buffer and cached Pixels copy.
 /// @details The atlas owns its `data` buffer directly and owns `cached_pixels`
 ///   as a separate Pixels object rebuilt from the backing buffer.
+/// @param obj TextureAtlas3D runtime object being finalized; ignored when `NULL`.
 static void texatlas3d_finalizer(void *obj) {
     rt_texatlas3d *a = (rt_texatlas3d *)obj;
     if (!a)
@@ -75,6 +83,10 @@ static void texatlas3d_finalizer(void *obj) {
 }
 
 /// @brief Compute `width * height` as a checked size_t pixel count.
+/// @param width Atlas width in pixels.
+/// @param height Atlas height in pixels.
+/// @param[out] out_count Destination for the validated pixel count.
+/// @return 1 when dimensions and byte size are positive and representable, or 0 otherwise.
 static int texatlas3d_pixel_count(int32_t width, int32_t height, size_t *out_count) {
     size_t w;
     size_t h;
@@ -93,6 +105,8 @@ static int texatlas3d_pixel_count(int32_t width, int32_t height, size_t *out_cou
 }
 
 /// @brief Number of region slots safe to read after clamping corrupt private counts.
+/// @param a Atlas whose region metadata is inspected.
+/// @return The non-negative region count capped at `ATLAS_MAX_REGIONS`, or zero for invalid input.
 static int32_t texatlas3d_safe_region_count(const rt_texatlas3d *a) {
     if (!a || a->region_count <= 0)
         return 0;
@@ -100,6 +114,7 @@ static int32_t texatlas3d_safe_region_count(const rt_texatlas3d *a) {
 }
 
 /// @brief Validate and compact atlas metadata before reads or packing mutations.
+/// @param a Atlas whose backing storage, regions, shelf cursor, and cache state are normalized.
 static void texatlas3d_repair(rt_texatlas3d *a) {
     if (!a)
         return;
@@ -136,6 +151,11 @@ static void texatlas3d_repair(rt_texatlas3d *a) {
     a->dirty = a->dirty ? 1 : 0;
 }
 
+/// @brief Initialize any supplied UV outputs to the full normalized atlas rectangle.
+/// @param[out] u0 Optional destination for the left coordinate.
+/// @param[out] v0 Optional destination for the top coordinate.
+/// @param[out] u1 Optional destination for the right coordinate.
+/// @param[out] v1 Optional destination for the bottom coordinate.
 static void texatlas3d_full_uv(double *u0, double *v0, double *u1, double *v1) {
     if (u0)
         *u0 = 0.0;
@@ -150,6 +170,10 @@ static void texatlas3d_full_uv(double *u0, double *v0, double *u1, double *v1) {
 /// @brief Construct a 3D texture atlas with `width × height` blank pixels (zero-initialized).
 /// Tracks shelf packing state so subsequent `_add` calls fit textures left-to-right with 1-pixel
 /// padding. Traps if dimensions are outside [16, 8192] or on allocation failure.
+/// @param width Atlas width in pixels.
+/// @param height Atlas height in pixels.
+/// @return A new GC-managed TextureAtlas3D, or `NULL` after trapping on invalid size or allocation
+///   failure.
 void *rt_texatlas3d_new(int64_t width, int64_t height) {
     size_t pixel_count;
     if (width < 16 || height < 16 || width > 8192 || height > 8192) {
@@ -190,6 +214,10 @@ void *rt_texatlas3d_new(int64_t width, int64_t height) {
 /// around the image, advances the shelf cursor, and returns the integer region ID for later
 /// `_get_uv_rect` lookup. Returns -1 if the atlas is full (256 regions) or if the texture
 /// won't fit in the remaining vertical space. Marks the atlas dirty for the next texture rebuild.
+/// @param obj TextureAtlas3D receiving the packed image.
+/// @param pixels Non-empty Pixels source copied into the atlas; the atlas does not retain it.
+/// @return The stable non-negative region identifier on success, or -1 for invalid input, full
+///   capacity, or insufficient space.
 int64_t rt_texatlas3d_add(void *obj, void *pixels) {
     if (!obj || !pixels)
         return -1;
@@ -271,6 +299,8 @@ int64_t rt_texatlas3d_add(void *obj, void *pixels) {
 /// @brief Return the atlas as a Pixels object, lazily rebuilding it from the internal data
 /// buffer when dirty. The returned Pixels is owned by the atlas — do not free or release. Each
 /// call after a `_add` rebuilds; results in stable storage when no changes have been made.
+/// @param obj Candidate TextureAtlas3D instance.
+/// @return A borrowed atlas-owned Pixels mirror, or `NULL` on invalid input or rebuild failure.
 void *rt_texatlas3d_get_texture(void *obj) {
     if (!obj)
         return NULL;
@@ -310,6 +340,12 @@ void *rt_texatlas3d_get_texture(void *obj) {
 /// @brief Output the normalized UV rectangle [0,1] for region `id` into the four out-pointers.
 /// Use these UVs as mesh texture coordinates to sample the packed sub-image. Out-of-range IDs
 /// return the full atlas rect (0..1) so missing textures degrade visibly rather than silently.
+/// @param obj Candidate TextureAtlas3D instance.
+/// @param id Region identifier returned by `rt_texatlas3d_add`.
+/// @param[out] u0 Required destination for the left coordinate.
+/// @param[out] v0 Required destination for the top coordinate.
+/// @param[out] u1 Required destination for the right coordinate.
+/// @param[out] v1 Required destination for the bottom coordinate.
 void rt_texatlas3d_get_uv_rect(
     void *obj, int64_t id, double *u0, double *v0, double *u1, double *v1) {
     if (!u0 || !v0 || !u1 || !v1)

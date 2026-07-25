@@ -21,6 +21,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_textureasset3d_bc6h.inc
+ * @brief Implements clean-room signed and unsigned BC6H block decoding.
+ * @details Uses specification-derived partition, anchor, field-layout, and interpolation tables
+ *          to reconstruct RGB half-float texels for all fourteen modes. The TextureAsset3D
+ *          fallback path converts finite HDR output to clamped RGBA8 Pixels and permits
+ *          individual mip decode misses.
+ */
+
 /* Generated from the Khronos Data Format Specification 1.3 (tables 114, 118,
  * 121, 122); see scripts/gen_bc6h_tables.py-style extraction notes in the
  * enclosing file header. Do not hand-edit the tables. */
@@ -63,9 +72,13 @@ static const uint8_t bc6h_anchor2[32] = {15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
                                          15, 15, 15, 15, 15, 15, 2,  8,  2,  2,  8,
                                          8,  15, 2,  8,  2,  2,  8,  8,  2,  2};
 
+/// @brief Bit-field extraction descriptor for one BC6H mode layout.
 typedef struct {
+    /// Destination variable identifier: mode, endpoint component, or partition bits.
     uint8_t var; /* 0=M, 1..12=R0,G0,B0,R1,G1,B1,R2,G2,B2,R3,G3,B3, 13=PB */
+    /// First stored bit position in the destination variable.
     uint8_t hi;
+    /// Last stored bit position; values above @ref hi indicate reversed storage.
     uint8_t lo; /* hi < lo: bits are stored reversed */
 } bc6h_field_t;
 
@@ -167,12 +180,19 @@ static const bc6h_field_t bc6h_mode15_fields[] = {
     {3, 10, 15},
 };
 
+/// @brief Static endpoint-layout and transform rules for one legal BC6H mode.
 typedef struct {
+    /// Encoded five-bit mode identifier.
     int8_t mode;
+    /// Specification-derived field extraction sequence.
     const bc6h_field_t *fields;
+    /// Number of entries in @ref fields.
     uint8_t field_count;
+    /// Endpoint precision in bits.
     uint8_t epb;         /* endpoint precision bits */
+    /// Whether endpoints after endpoint zero are stored as deltas.
     uint8_t transformed; /* endpoints 1..3 are deltas from endpoint 0 */
+    /// Whether texels select between two endpoint subsets.
     uint8_t two_subset;
 } bc6h_mode_info_t;
 
@@ -212,12 +232,21 @@ static const uint8_t bc6h_weights3[8] = {0, 9, 18, 27, 37, 46, 55, 64};
 static const uint8_t bc6h_weights4[16] = {
     0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64};
 
+/// @brief Bounded LSB-first reader for one 128-bit BC6H block.
 typedef struct {
+    /// Borrowed sixteen-byte block.
     const uint8_t *data;
+    /// Current bit offset in the block.
     uint32_t bit;
+    /// Sticky bounds or argument failure flag.
     int failed;
 } bc6h_reader_t;
 
+/// @brief Read up to 32 LSB-first bits from a 128-bit BC6H block.
+/// @param[in,out] r Block reader advanced by @p count bits.
+/// @param count Number of bits to consume.
+/// @return Decoded unsigned value, or zero after raising failure for invalid arguments
+///         or a read beyond the block.
 static uint32_t bc6h_read_bits(bc6h_reader_t *r, uint32_t count) {
     uint32_t value = 0;
     if (!r || !r->data || count > 32u || r->bit > 128u || count > 128u - r->bit) {
@@ -233,6 +262,10 @@ static uint32_t bc6h_read_bits(bc6h_reader_t *r, uint32_t count) {
     return value;
 }
 
+/// @brief Sign-extend a packed endpoint or delta value.
+/// @param value Packed low-order bits.
+/// @param bits Signed source width.
+/// @return Sign-extended 32-bit value; unchanged when @p bits is outside `(0, 32)`.
 static int32_t bc6h_sign_extend(int32_t value, int bits) {
     if (bits <= 0 || bits >= 32)
         return value;
@@ -240,6 +273,10 @@ static int32_t bc6h_sign_extend(int32_t value, int bits) {
     return (int32_t)(((uint32_t)value ^ sign) - sign);
 }
 
+/// @brief Expand an unsigned endpoint from mode precision to BC6H interpolation precision.
+/// @param x Quantized nonnegative endpoint.
+/// @param epb Endpoint precision in bits.
+/// @return Expanded unsigned endpoint value in the specification's 16-bit domain.
 static int32_t bc6h_unquantize_unsigned(int32_t x, int epb) {
     if (epb >= 15)
         return x;
@@ -253,6 +290,10 @@ static int32_t bc6h_unquantize_unsigned(int32_t x, int epb) {
                      (uint32_t)(epb - 1));
 }
 
+/// @brief Expand a signed endpoint from mode precision to BC6H interpolation precision.
+/// @param x Quantized signed endpoint.
+/// @param epb Endpoint precision in bits.
+/// @return Expanded signed endpoint magnitude in the specification's 16-bit domain.
 static int32_t bc6h_unquantize_signed(int32_t x, int epb) {
     int negative = x < 0;
     int64_t magnitude = negative ? -(int64_t)x : (int64_t)x;
@@ -270,12 +311,18 @@ static int32_t bc6h_unquantize_signed(int32_t x, int epb) {
     return (int32_t)(negative ? -unq : unq);
 }
 
+/// @brief Convert an interpolated unsigned endpoint to binary16 bit representation.
+/// @param i Interpolated unsigned endpoint value.
+/// @return Unsigned BC6H half-float bits, with nonpositive input mapped to zero.
 static uint16_t bc6h_finish_unsigned(int32_t i) {
     if (i <= 0)
         return 0;
     return (uint16_t)(((uint64_t)(uint32_t)i * UINT64_C(31)) >> 6u);
 }
 
+/// @brief Convert an interpolated signed endpoint to sign-magnitude binary16 bits.
+/// @param i Interpolated signed endpoint value.
+/// @return Signed BC6H half-float bit pattern.
 static uint16_t bc6h_finish_signed(int32_t i) {
     int64_t value = i;
     if (value < 0)
@@ -287,13 +334,19 @@ static uint16_t bc6h_finish_signed(int32_t i) {
 /// @details C leaves right-shifting negative signed integers implementation-defined. BC6H endpoint
 ///          interpolation requires the arithmetic result on every compiler, so spell it in terms
 ///          of non-negative unsigned shifts.
+/// @param value Signed interpolation numerator.
+/// @return Mathematical floor of @p value divided by 64.
 static int32_t bc6h_floor_div64(int64_t value) {
     if (value >= 0)
         return (int32_t)((uint64_t)value >> 6u);
     return (int32_t)(-((int64_t)(((uint64_t)(-value) + UINT64_C(63)) >> 6u)));
 }
 
-/// Decode one 16-byte BC6H block into 16 RGB half-float bit triples.
+/// @brief Decode one 16-byte BC6H block into sixteen RGB half-float bit triples.
+/// @details Reserved or malformed modes leave every output RGB component zero.
+/// @param[in] block Sixteen-byte BC6H block.
+/// @param is_signed Non-zero for the signed BC6H variant; zero for unsigned BC6H.
+/// @param[out] out_halves Row-major array of sixteen RGB binary16 bit patterns.
 void bc6h_decode_block(const uint8_t block[16], int is_signed, uint16_t out_halves[16][3]) {
     bc6h_reader_t reader = {block, 0, 0};
     const bc6h_mode_info_t *info = 0;
@@ -410,6 +463,8 @@ void bc6h_decode_block(const uint8_t block[16], int is_signed, uint16_t out_halv
 }
 
 /// @brief Half-float bit pattern to float.
+/// @param h IEEE-754 binary16 bit pattern.
+/// @return Corresponding single-precision value, preserving sign, infinity, and NaN payload bits.
 static float textureasset3d_half_to_float(uint16_t h) {
     uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
     uint32_t exponent = (h >> 10) & 0x1Fu;
@@ -440,6 +495,15 @@ static float textureasset3d_half_to_float(uint16_t h) {
 
 /// @brief Decode one BC6H mip level to an RGBA8 Pixels fallback (halves clamped
 ///   to [0, 1]; alpha forced opaque).
+/// @param[in] data Complete KTX2 source bytes.
+/// @param size Number of readable bytes at @p data.
+/// @param width Logical mip width in texels.
+/// @param height Logical mip height in texels.
+/// @param offset Byte offset of the BC6H mip payload.
+/// @param length Declared payload length.
+/// @param is_signed Non-zero for signed BC6H endpoint decoding.
+/// @return New Pixels fallback, or `NULL` for invalid dimensions/ranges, excessive
+///         fallback size, or allocation failure.
 static void *textureasset3d_decode_bc6h_fallback(const uint8_t *data,
                                                  size_t size,
                                                  uint32_t width,
@@ -497,6 +561,13 @@ static void *textureasset3d_decode_bc6h_fallback(const uint8_t *data,
 }
 
 /// @brief Decode all BC6H mips into a Pixels array (per-mip misses allowed).
+/// @param[in] data Complete KTX2 source bytes.
+/// @param size Number of readable bytes at @p data.
+/// @param[in] mips Validated mip offset, length, and dimension table.
+/// @param mip_count Number of entries in @p mips.
+/// @param is_signed Non-zero for signed BC6H endpoint decoding.
+/// @return Owned array of optional Pixels handles when at least one mip decodes;
+///         `NULL` when arguments, allocation, or every mip decode fails.
 static void **textureasset3d_decode_bc6h_mips(const uint8_t *data,
                                               size_t size,
                                               const textureasset3d_mip *mips,

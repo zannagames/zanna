@@ -21,6 +21,16 @@
 //   vgfx3d_backend_opengl.c, vgfx3d_backend_d3d11.c
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file vgfx3d_brdf_lut.h
+ * @brief Exposes the shared split-sum environment BRDF lookup table.
+ *
+ * Graphics3D backends use one deterministic CPU-generated table for specular image-based
+ * lighting. GPU backends upload its interleaved Fresnel scale/bias pairs, while the software
+ * rasterizer samples the same process-lifetime data directly. Lazy initialization is thread-safe,
+ * and callers never own or free the returned storage.
+ */
 #pragma once
 
 #include <stdint.h>
@@ -29,19 +39,26 @@
 extern "C" {
 #endif
 
-/// @brief Table edge size (NdotV on X, roughness on Y), two floats per texel.
+/// @brief Table edge size, with NdotV on X, roughness on Y, and two floats per texel.
 #define VGFX3D_BRDF_LUT_SIZE 64
 
 /// @brief Build the table if it has not been built yet (thread-safe, exactly once).
+/// @details One caller performs the fixed-sample integration while concurrent callers wait for
+///          publication of the immutable process-lifetime table.
 void vgfx3d_brdf_lut_ensure(void);
 
 /// @brief Borrow the table data: VGFX3D_BRDF_LUT_SIZE^2 texels of (A, B) float
 ///   pairs, row-major with NdotV along X and roughness along Y. Builds the
 ///   table on first use.
+/// @return Borrowed process-lifetime pointer to the initialized interleaved `(A, B)` pairs.
 const float *vgfx3d_brdf_lut_data(void);
 
 /// @brief Bilinear CPU sample of the table; writes scale (A) and bias (B) for
 ///   the split-sum specular term F0 * A + B.
+/// @param ndotv Cosine between the surface normal and view direction, clamped to `[0, 1]`.
+/// @param roughness Perceptual surface roughness, clamped to `[0, 1]`.
+/// @param out_ab Caller-owned two-float output receiving the interpolated scale and bias; must be
+///               non-null.
 void vgfx3d_brdf_lut_sample(float ndotv, float roughness, float *out_ab);
 
 #ifdef __cplusplus

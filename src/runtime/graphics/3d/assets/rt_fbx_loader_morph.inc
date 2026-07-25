@@ -17,7 +17,22 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @brief Return one numeric array lane as double; supports FBX float/double storage.
+/**
+ * @file rt_fbx_loader_morph.inc
+ * @brief Extracts FBX blend-shape channels, deltas, thresholds, and animation bindings.
+ *
+ * Shape Geometry payloads are converted into MorphTarget3D shapes attached to their
+ * source meshes. Control-point deltas are expanded through polygon duplication remaps
+ * or weighted procedural-surface contributions so each emitted runtime vertex receives
+ * the correct position, normal, and tangent delta. Per-channel progressive thresholds
+ * are retained as load-local metadata for the node-animation pass.
+ */
+
+/// @brief Read one finite floating-point FBX array element as a double.
+/// @param property Float- or double-array property.
+/// @param index Zero-based scalar index.
+/// @param[out] out_value Receives the finite converted value.
+/// @return Non-zero on success, or zero for an invalid property, type, index, or value.
 static int fbx_morph_array_number(const fbx_prop_t *property, uint32_t index, double *out_value) {
     double value;
     if (!property || !out_value || (property->type != 'd' && property->type != 'f') ||
@@ -35,7 +50,11 @@ static int fbx_morph_array_number(const fbx_prop_t *property, uint32_t index, do
     return 1;
 }
 
-/// @brief Return one FBX index array lane as a checked int32.
+/// @brief Read one FBX integer-array element as a range-checked 32-bit index.
+/// @param property 32- or 64-bit signed integer-array property.
+/// @param index Zero-based array index.
+/// @param[out] out_index Receives the checked 32-bit value.
+/// @return Non-zero on success, or zero for an invalid property, type, index, or range.
 static int fbx_morph_array_index(const fbx_prop_t *property, uint32_t index, int32_t *out_index) {
     int64_t value;
     if (!property || !out_index || (property->type != 'i' && property->type != 'l') ||
@@ -53,7 +72,11 @@ static int fbx_morph_array_index(const fbx_prop_t *property, uint32_t index, int
     return 1;
 }
 
-/// @brief Find the extracted mesh-array index for one Geometry id.
+/// @brief Find the extracted mesh-array index associated with an FBX Geometry identifier.
+/// @param bindings Geometry-ID to runtime-mesh binding array.
+/// @param binding_count Number of initialized entries in @p bindings.
+/// @param geometry_id FBX Geometry object identifier to match.
+/// @return Zero-based binding/mesh index, or -1 when no match exists.
 static int32_t fbx_morph_mesh_index(const fbx_mesh_binding_t *bindings,
                                     int32_t binding_count,
                                     int64_t geometry_id) {
@@ -65,7 +88,13 @@ static int32_t fbx_morph_mesh_index(const fbx_mesh_binding_t *bindings,
     return -1;
 }
 
-/// @brief Find a parent object connected from @p child_id with a node and optional subtype.
+/// @brief Find a connected parent object with a required node name and optional subtype.
+/// @param objects Parsed FBX `Objects` node used for identifier lookup.
+/// @param ct Connection table containing child-to-parent adjacency.
+/// @param child_id Identifier whose outgoing parent connections are searched.
+/// @param node_name Required parent node name.
+/// @param subtype Optional required third-property subtype, or NULL to accept any subtype.
+/// @return Borrowed pointer to the first matching parent object, or NULL when none exists.
 static fbx_node_t *fbx_morph_find_parent(fbx_node_t *objects,
                                          const fbx_conn_table_t *ct,
                                          int64_t child_id,
@@ -83,6 +112,8 @@ static fbx_node_t *fbx_morph_find_parent(fbx_node_t *objects,
 }
 
 /// @brief Release native metadata used to translate BlendShapeChannel animation curves.
+/// @param[in,out] bindings Heap binding array and its owned shape/threshold arrays.
+/// @param count Number of initialized entries in @p bindings.
 static void fbx_morph_channel_bindings_free(fbx_morph_channel_binding_t *bindings, int32_t count) {
     if (!bindings)
         return;
@@ -93,7 +124,19 @@ static void fbx_morph_channel_bindings_free(fbx_morph_channel_binding_t *binding
     free(bindings);
 }
 
-/// @brief Set one imported delta on all runtime vertices originating at a control point.
+/// @brief Apply one imported control-point delta to all corresponding runtime vertices.
+/// @details Procedural meshes distribute and accumulate the delta using tensor-product
+///          control weights. Polygon meshes fan it out through the control-to-emitted
+///          vertex lists. A direct vertex-index fallback is used when no remap is available.
+/// @param[in,out] morph Runtime MorphTarget3D resource to update.
+/// @param shape Runtime shape index receiving the delta.
+/// @param remap Optional source-control remap for the mesh.
+/// @param mesh Source runtime mesh used to validate vertex bounds.
+/// @param control_index Source FBX control-point index.
+/// @param delta_kind Delta selector: zero for position, one for normal, two for tangent.
+/// @param x X component of the imported delta.
+/// @param y Y component of the imported delta.
+/// @param z Z component of the imported delta.
 static void fbx_morph_set_remapped_delta(void *morph,
                                          int64_t shape,
                                          const fbx_mesh_remap_t *remap,
@@ -176,7 +219,23 @@ static void fbx_morph_set_remapped_delta(void *morph,
     }
 }
 
-/// @brief Import complete BlendShapeChannel metadata/deltas and attach morphs to source meshes.
+/// @brief Import BlendShapeChannel metadata and deltas, then attach morphs to source meshes.
+/// @details Resolves each `Geometry -> BlendShape -> BlendShapeChannel -> Shape`
+///          connection chain, creates one morph container per affected mesh, imports
+///          progressive shape thresholds, and records channel bindings for animation.
+///          Invalid optional normal/tangent payloads and thresholds produce warnings;
+///          hard allocation or budget failures roll back the entire pass.
+/// @param[in,out] asset Staged FBX asset that receives owned morph-target references.
+/// @param objects Parsed FBX `Objects` node.
+/// @param ct Validated object connection table.
+/// @param z_up Non-zero to convert imported deltas from Z-up to runtime Y-up coordinates.
+/// @param mesh_bindings Geometry-ID to mesh binding array.
+/// @param mesh_binding_count Number of entries in @p mesh_bindings.
+/// @param mesh_remaps Geometry control-to-runtime-vertex remap array.
+/// @param mesh_remap_count Number of entries in @p mesh_remaps.
+/// @param[out] out_bindings Receives the newly allocated channel-binding array.
+/// @param[out] out_binding_count Receives the number of initialized channel bindings.
+/// @param[in,out] context Loader context charged for morph and binding allocations.
 /// @return Nonzero on success; zero on allocation/budget failure so the whole load rolls back.
 static int fbx_load_extract_morphs(rt_fbx_asset *asset,
                                    fbx_node_t *objects,

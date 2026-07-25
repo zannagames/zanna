@@ -1026,9 +1026,10 @@ void vgfx_set_clip(vgfx_window_t window, int32_t x, int32_t y, int32_t w, int32_
     win->clip_w = (int32_t)(right - left);
     win->clip_h = (int32_t)(bottom - top);
     win->clip_enabled = 1;
-    if (win->clip_limit_enabled) {
-        intersect_current_clip(
-            win, win->clip_limit_x, win->clip_limit_y, win->clip_limit_w, win->clip_limit_h);
+    if (win->clip_limit_depth > 0) {
+        const struct vgfx_clip_limit_frame *limit =
+            &win->clip_limit_stack[win->clip_limit_depth - 1];
+        intersect_current_clip(win, limit->limit_x, limit->limit_y, limit->limit_w, limit->limit_h);
     }
 }
 
@@ -1045,11 +1046,13 @@ void vgfx_clear_clip(vgfx_window_t window) {
     if (!win)
         return;
 
-    if (win->clip_limit_enabled) {
-        win->clip_x = win->clip_limit_x;
-        win->clip_y = win->clip_limit_y;
-        win->clip_w = win->clip_limit_w;
-        win->clip_h = win->clip_limit_h;
+    if (win->clip_limit_depth > 0) {
+        const struct vgfx_clip_limit_frame *limit =
+            &win->clip_limit_stack[win->clip_limit_depth - 1];
+        win->clip_x = limit->limit_x;
+        win->clip_y = limit->limit_y;
+        win->clip_w = limit->limit_w;
+        win->clip_h = limit->limit_h;
         win->clip_enabled = 1;
     } else {
         win->clip_enabled = 0;
@@ -1104,59 +1107,58 @@ int vgfx_get_clip(
     return active ? 1 : 0;
 }
 
-/// @brief Establish one allocation-free clip ceiling for a retained compositor.
+/// @brief Establish one allocation-free clip ceiling scope.
 /// @details See the public declaration for the contract. The requested rectangle is first
 ///          canonicalized by the ordinary clip implementation so coordinate scaling and window
-///          clipping remain identical. A pre-existing clip is then intersected into the ceiling.
+///          clipping remain identical; that step also intersects against the innermost active
+///          ceiling, so nested scopes compose. A pre-existing clip is then intersected into the
+///          new ceiling.
 /// @param window Window whose drawing state is constrained.
 /// @param x Requested limit left edge in drawing coordinates.
 /// @param y Requested limit top edge in drawing coordinates.
 /// @param w Requested limit width.
 /// @param h Requested limit height.
-/// @return 1 when the non-nesting scope was established; otherwise 0.
+/// @return 1 when the scope was established; 0 for a NULL window or exhausted nesting depth.
 int vgfx_push_clip_limit(vgfx_window_t window, int32_t x, int32_t y, int32_t w, int32_t h) {
     struct vgfx_window *win = (struct vgfx_window *)window;
-    if (!win || win->clip_limit_enabled)
+    if (!win || win->clip_limit_depth >= VGFX_CLIP_LIMIT_MAX_DEPTH)
         return 0;
 
-    win->clip_limit_saved_enabled = win->clip_enabled;
-    win->clip_limit_saved_x = win->clip_x;
-    win->clip_limit_saved_y = win->clip_y;
-    win->clip_limit_saved_w = win->clip_w;
-    win->clip_limit_saved_h = win->clip_h;
+    struct vgfx_clip_limit_frame *frame = &win->clip_limit_stack[win->clip_limit_depth];
+    frame->saved_enabled = win->clip_enabled;
+    frame->saved_x = win->clip_x;
+    frame->saved_y = win->clip_y;
+    frame->saved_w = win->clip_w;
+    frame->saved_h = win->clip_h;
 
+    // vgfx_set_clip canonicalizes coordinates and intersects with the current
+    // innermost ceiling (depth unchanged so far), making nested scopes compose.
     vgfx_set_clip(window, x, y, w, h);
-    if (win->clip_limit_saved_enabled) {
-        intersect_current_clip(win,
-                               win->clip_limit_saved_x,
-                               win->clip_limit_saved_y,
-                               win->clip_limit_saved_w,
-                               win->clip_limit_saved_h);
+    if (frame->saved_enabled) {
+        intersect_current_clip(
+            win, frame->saved_x, frame->saved_y, frame->saved_w, frame->saved_h);
     }
-    win->clip_limit_x = win->clip_x;
-    win->clip_limit_y = win->clip_y;
-    win->clip_limit_w = win->clip_w;
-    win->clip_limit_h = win->clip_h;
-    win->clip_limit_enabled = 1;
+    frame->limit_x = win->clip_x;
+    frame->limit_y = win->clip_y;
+    frame->limit_w = win->clip_w;
+    frame->limit_h = win->clip_h;
+    win->clip_limit_depth++;
     return 1;
 }
 
-/// @brief Restore the exact clip captured by @ref vgfx_push_clip_limit.
-/// @param window Window whose active limit scope ends; NULL is ignored.
+/// @brief End the innermost clip-limit scope and restore the clip captured by its push.
+/// @param window Window whose innermost limit scope ends; NULL is ignored.
 void vgfx_pop_clip_limit(vgfx_window_t window) {
     struct vgfx_window *win = (struct vgfx_window *)window;
-    if (!win || !win->clip_limit_enabled)
+    if (!win || win->clip_limit_depth <= 0)
         return;
-    win->clip_enabled = win->clip_limit_saved_enabled;
-    win->clip_x = win->clip_limit_saved_x;
-    win->clip_y = win->clip_limit_saved_y;
-    win->clip_w = win->clip_limit_saved_w;
-    win->clip_h = win->clip_limit_saved_h;
-    win->clip_limit_enabled = 0;
-    win->clip_limit_x = 0;
-    win->clip_limit_y = 0;
-    win->clip_limit_w = 0;
-    win->clip_limit_h = 0;
+    win->clip_limit_depth--;
+    const struct vgfx_clip_limit_frame *frame = &win->clip_limit_stack[win->clip_limit_depth];
+    win->clip_enabled = frame->saved_enabled;
+    win->clip_x = frame->saved_x;
+    win->clip_y = frame->saved_y;
+    win->clip_w = frame->saved_w;
+    win->clip_h = frame->saved_h;
 }
 
 //===----------------------------------------------------------------------===//

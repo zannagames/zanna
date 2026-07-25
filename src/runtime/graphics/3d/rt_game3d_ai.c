@@ -24,6 +24,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Game3D perception, hearing stimuli, and behavior-tree execution.
+/// @details Perception uses deterministic entity-order scans, sight hysteresis, and bounded event
+///   buffers. Behavior-tree definitions are shared while timers, running-child cursors, targets,
+///   and pending custom-leaf state remain local to each attached instance.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_game3d.h"
@@ -84,12 +90,18 @@ typedef struct rt_game3d_perception {
     int8_t seen_changed; /* one-shot: any seen/lost transition this step */
 } rt_game3d_perception;
 
+/// @brief Detach a perception component from its non-owning entity back-reference.
+/// @param obj Perception3D allocation being finalized.
 static void game3d_perception_finalize(void *obj) {
     rt_game3d_perception *sense = (rt_game3d_perception *)obj;
     if (sense)
         sense->entity = NULL;
 }
 
+/// @brief Allocate a perception component and attach it to an entity.
+/// @details The component starts with a 15-unit, 110-degree sight cone and all-layer masks.
+/// @param entity_obj Entity3D that will own the component.
+/// @return A new Perception3D handle, or NULL when validation or allocation fails.
 void *rt_game3d_perception_new(void *entity_obj) {
     rt_game3d_entity *entity =
         (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
@@ -123,6 +135,10 @@ void *rt_game3d_perception_new(void *entity_obj) {
     return sense;
 }
 
+/// @brief Validate and cast an opaque handle to a perception component.
+/// @param obj Candidate Perception3D handle.
+/// @param method Trap message emitted when @p obj has the wrong runtime class.
+/// @return The validated component, or NULL after reporting an invalid handle.
 static rt_game3d_perception *game3d_perception_checked(void *obj, const char *method) {
     rt_game3d_perception *sense =
         (rt_game3d_perception *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_PERCEPTION_CLASS_ID);
@@ -131,6 +147,11 @@ static rt_game3d_perception *game3d_perception_checked(void *obj, const char *me
     return sense;
 }
 
+/// @brief Configure a perception component's sight range, cone, and eye offset.
+/// @param obj Perception3D component to configure.
+/// @param range Positive sight distance, clamped to 512 world units.
+/// @param fov_degrees Full cone angle, clamped to 360 degrees.
+/// @param eye_height Finite vertical offset applied to the owner's world position.
 void rt_game3d_perception_set_sight(void *obj,
                                     double range,
                                     double fov_degrees,
@@ -147,6 +168,9 @@ void rt_game3d_perception_set_sight(void *obj,
         sense->eye_height = eye_height;
 }
 
+/// @brief Configure the range at which a unit-loudness sound is audible.
+/// @param obj Perception3D component to configure.
+/// @param range_at_loudness1 Non-negative base range, clamped to 512 world units.
 void rt_game3d_perception_set_hearing(void *obj, double range_at_loudness1) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.SetHearing: invalid component");
@@ -154,6 +178,9 @@ void rt_game3d_perception_set_hearing(void *obj, double range_at_loudness1) {
         sense->hearing_range = range_at_loudness1 > 512.0 ? 512.0 : range_at_loudness1;
 }
 
+/// @brief Set the entity-layer mask eligible for visual tracking.
+/// @param obj Perception3D component to configure.
+/// @param mask Bit mask tested against each candidate entity's layer.
 void rt_game3d_perception_set_target_mask(void *obj, int64_t mask) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.SetTargetMask: invalid component");
@@ -161,6 +188,9 @@ void rt_game3d_perception_set_target_mask(void *obj, int64_t mask) {
         sense->target_mask = mask;
 }
 
+/// @brief Set the collision-layer mask used by sight occlusion raycasts.
+/// @param obj Perception3D component to configure.
+/// @param mask Bit mask of layers that can block line of sight.
 void rt_game3d_perception_set_los_mask(void *obj, int64_t mask) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.SetLosMask: invalid component");
@@ -168,6 +198,9 @@ void rt_game3d_perception_set_los_mask(void *obj, int64_t mask) {
         sense->los_mask = mask;
 }
 
+/// @brief Count tracks whose sight hysteresis currently marks them visible.
+/// @param obj Perception3D component to query.
+/// @return The number of visible tracks, or 0 for an invalid component.
 int64_t rt_game3d_perception_seen_count(void *obj) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.SeenCount: invalid component");
@@ -180,6 +213,10 @@ int64_t rt_game3d_perception_seen_count(void *obj) {
     return count;
 }
 
+/// @brief Retrieve a live target by its compact visible-list index.
+/// @param obj Perception3D component to query.
+/// @param index Zero-based index among tracks currently marked visible.
+/// @return A retained Entity3D handle, or NULL when the index is invalid or the target died.
 void *rt_game3d_perception_seen_target(void *obj, int64_t index) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.SeenTarget: invalid component");
@@ -203,6 +240,9 @@ void *rt_game3d_perception_seen_target(void *obj, int64_t index) {
 }
 
 /// @brief Last world position where @p target was seen (its live position while seen).
+/// @param obj Perception3D component containing the target tracks.
+/// @param target Entity3D whose track should be queried.
+/// @return A new Vec3 containing the last-known position, or the zero vector when unavailable.
 void *rt_game3d_perception_last_known_position(void *obj, void *target) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.LastKnownPosition: invalid component");
@@ -218,6 +258,8 @@ void *rt_game3d_perception_last_known_position(void *obj, void *target) {
 }
 
 /// @brief One-shot: any seen/lost transition since the last call.
+/// @param obj Perception3D component whose change flag is consumed.
+/// @return 1 when any track changed visibility, or 0 when unchanged or invalid.
 int8_t rt_game3d_perception_seen_changed(void *obj) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.SeenChanged: invalid component");
@@ -228,12 +270,19 @@ int8_t rt_game3d_perception_seen_changed(void *obj) {
     return changed;
 }
 
+/// @brief Count sound stimuli buffered for the current perception interval.
+/// @param obj Perception3D component to query.
+/// @return The buffered event count, or 0 for an invalid component.
 int64_t rt_game3d_perception_heard_count(void *obj) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.HeardCount: invalid component");
     return sense ? sense->heard_count : 0;
 }
 
+/// @brief Retrieve the world-space origin of a buffered sound stimulus.
+/// @param obj Perception3D component to query.
+/// @param index Zero-based heard-event index.
+/// @return A new Vec3 containing the event position, or the zero vector when out of range.
 void *rt_game3d_perception_heard_position(void *obj, int64_t index) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.HeardPosition: invalid component");
@@ -244,6 +293,10 @@ void *rt_game3d_perception_heard_position(void *obj, int64_t index) {
                        sense->heard[index].position[2]);
 }
 
+/// @brief Retrieve the application-defined tag of a buffered sound stimulus.
+/// @param obj Perception3D component to query.
+/// @param index Zero-based heard-event index.
+/// @return The event tag, or 0 when the index or component is invalid.
 int64_t rt_game3d_perception_heard_tag(void *obj, int64_t index) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.HeardTag: invalid component");
@@ -256,6 +309,9 @@ int64_t rt_game3d_perception_heard_tag(void *obj, int64_t index) {
 /// @details Slots key on the entity pointer AND its stable id, so a freed
 ///   entity's heap address reused by a new entity starts from a fresh track
 ///   instead of inheriting stale seen/last_known state.
+/// @param sense Perception component whose bounded track table is searched.
+/// @param target Live entity and stable identifier to match.
+/// @return The mutable matching track, or NULL when the entity is not tracked.
 static rt_game3d_percept_track *game3d_perception_find_track(rt_game3d_perception *sense,
                                                              const rt_game3d_entity *target) {
     for (int32_t i = 0; i < sense->track_count; ++i)
@@ -269,6 +325,9 @@ static rt_game3d_percept_track *game3d_perception_find_track(rt_game3d_perceptio
 ///   visible — so distant never-seen entities cannot hog slots. Dead tracks are
 ///   compacted away at the end of every perception tick, so the table cannot
 ///   fill permanently.
+/// @param sense Perception component whose track table receives the entry.
+/// @param target Live entity associated with the new entry.
+/// @return The zero-initialized track, or NULL when all track slots are occupied.
 static rt_game3d_percept_track *game3d_perception_create_track(rt_game3d_perception *sense,
                                                                rt_game3d_entity *target) {
     if (sense->track_count >= PERCEPTION3D_MAX_TRACKED)
@@ -282,6 +341,7 @@ static rt_game3d_percept_track *game3d_perception_create_track(rt_game3d_percept
 
 /// @brief Drop tracks that the current tick did not touch (dead/removed/filtered
 ///   entities), compacting the table so slots are always reclaimable.
+/// @param sense Perception component whose track table is compacted in place.
 static void game3d_perception_compact_tracks(rt_game3d_perception *sense) {
     int32_t kept = 0;
     for (int32_t i = 0; i < sense->track_count; ++i) {
@@ -295,6 +355,11 @@ static void game3d_perception_compact_tracks(rt_game3d_perception *sense) {
 }
 
 /// @brief Per-step sight update (cone + LoS + hysteresis) for one perceiver.
+/// @details The scan follows world entity order, refreshes last-known positions, and expires the
+///   previous step's heard-event buffer before new stimuli are reported.
+/// @param world World3D containing candidate targets and the physics query interface.
+/// @param owner Entity3D that owns the perception component.
+/// @param dt Deterministic simulation interval in seconds.
 void game3d_perception_tick(rt_game3d_world *world, rt_game3d_entity *owner, double dt) {
     rt_game3d_perception *sense = (rt_game3d_perception *)rt_g3d_checked_or_null(
         owner->perception, RT_G3D_GAME3D_PERCEPTION_CLASS_ID);
@@ -401,6 +466,12 @@ void game3d_perception_tick(rt_game3d_world *world, rt_game3d_entity *owner, dou
 }
 
 /// @brief World stimulus: deliver a sound event to every hearing perceiver in range.
+/// @details A listener's effective range is its unit-loudness range multiplied by @p loudness;
+///   listeners with full bounded event buffers skip the stimulus.
+/// @param world_obj World3D whose live perception components receive the stimulus.
+/// @param position Vec3 containing the sound's world-space origin.
+/// @param loudness Positive finite loudness multiplier.
+/// @param tag Application-defined value copied into each delivered event.
 void rt_game3d_world_report_sound(void *world_obj, void *position, double loudness, int64_t tag) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.World3D.ReportSound: invalid world");
@@ -490,10 +561,14 @@ typedef struct rt_game3d_bt_instance {
     int32_t pending_custom_node;
 } rt_game3d_bt_instance;
 
+/// @brief Finalize a behavior-tree definition that owns no external resources.
+/// @param obj BehaviorTree3D allocation being finalized.
 static void game3d_btree_finalize(void *obj) {
     (void)obj;
 }
 
+/// @brief Allocate an empty behavior-tree definition with no selected root.
+/// @return A new BehaviorTree3D handle, or NULL when allocation fails.
 void *rt_game3d_btree_new(void) {
     rt_game3d_btree *tree = (rt_game3d_btree *)rt_obj_new_i64(RT_G3D_GAME3D_BTREE_CLASS_ID,
                                                               (int64_t)sizeof(rt_game3d_btree));
@@ -507,6 +582,10 @@ void *rt_game3d_btree_new(void) {
     return tree;
 }
 
+/// @brief Validate and cast an opaque handle to a behavior-tree definition.
+/// @param obj Candidate BehaviorTree3D handle.
+/// @param method Trap message emitted when @p obj has the wrong runtime class.
+/// @return The validated tree, or NULL after reporting an invalid handle.
 static rt_game3d_btree *game3d_btree_checked(void *obj, const char *method) {
     rt_game3d_btree *tree =
         (rt_game3d_btree *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_BTREE_CLASS_ID);
@@ -515,6 +594,10 @@ static rt_game3d_btree *game3d_btree_checked(void *obj, const char *method) {
     return tree;
 }
 
+/// @brief Append a zero-initialized node of the requested internal type.
+/// @param tree BehaviorTree3D definition to extend.
+/// @param type One of the internal BT3D_NODE_* discriminants.
+/// @return The new node index, or -1 after reporting an invalid or full tree.
 static int64_t game3d_btree_add_node(rt_game3d_btree *tree, int32_t type) {
     if (!tree || tree->node_count >= BT3D_MAX_NODES) {
         rt_trap("Game3D.BehaviorTree3D: node budget (128) exceeded");
@@ -526,29 +609,45 @@ static int64_t game3d_btree_add_node(rt_game3d_btree *tree, int32_t type) {
     return tree->node_count++;
 }
 
+/// @brief Append a sequence composite that fails on its first failing child.
+/// @param obj BehaviorTree3D definition to extend.
+/// @return The new node index, or -1 when the tree is invalid or full.
 int64_t rt_game3d_btree_sequence(void *obj) {
     rt_game3d_btree *tree =
         game3d_btree_checked(obj, "Game3D.BehaviorTree3D.Sequence: invalid tree");
     return tree ? game3d_btree_add_node(tree, BT3D_NODE_SEQUENCE) : -1;
 }
 
+/// @brief Append a selector composite that succeeds on its first successful child.
+/// @param obj BehaviorTree3D definition to extend.
+/// @return The new node index, or -1 when the tree is invalid or full.
 int64_t rt_game3d_btree_selector(void *obj) {
     rt_game3d_btree *tree =
         game3d_btree_checked(obj, "Game3D.BehaviorTree3D.Selector: invalid tree");
     return tree ? game3d_btree_add_node(tree, BT3D_NODE_SELECTOR) : -1;
 }
 
+/// @brief Append a decorator that swaps its child's success and failure results.
+/// @param obj BehaviorTree3D definition to extend.
+/// @return The new node index, or -1 when the tree is invalid or full.
 int64_t rt_game3d_btree_inverter(void *obj) {
     rt_game3d_btree *tree =
         game3d_btree_checked(obj, "Game3D.BehaviorTree3D.Inverter: invalid tree");
     return tree ? game3d_btree_add_node(tree, BT3D_NODE_INVERTER) : -1;
 }
 
+/// @brief Append a leaf that tests whether the instance target is currently visible.
+/// @param obj BehaviorTree3D definition to extend.
+/// @return The new node index, or -1 when the tree is invalid or full.
 int64_t rt_game3d_btree_can_see(void *obj) {
     rt_game3d_btree *tree = game3d_btree_checked(obj, "Game3D.BehaviorTree3D.CanSee: invalid tree");
     return tree ? game3d_btree_add_node(tree, BT3D_NODE_CAN_SEE) : -1;
 }
 
+/// @brief Append a leaf that remains running for a configured duration.
+/// @param obj BehaviorTree3D definition to extend.
+/// @param seconds Positive finite wait duration; other values produce an immediate wait.
+/// @return The new node index, or -1 when the tree is invalid or full.
 int64_t rt_game3d_btree_wait(void *obj, double seconds) {
     rt_game3d_btree *tree = game3d_btree_checked(obj, "Game3D.BehaviorTree3D.Wait: invalid tree");
     if (!tree)
@@ -559,6 +658,11 @@ int64_t rt_game3d_btree_wait(void *obj, double seconds) {
     return node;
 }
 
+/// @brief Append a leaf that moves the owner toward the current target entity.
+/// @param obj BehaviorTree3D definition to extend.
+/// @param speed Positive movement speed, or an invalid value to use 2 world units per second.
+/// @param arrive_distance Positive success radius, or an invalid value to use 0.5 world units.
+/// @return The new node index, or -1 when the tree is invalid or full.
 int64_t rt_game3d_btree_move_to_target(void *obj, double speed, double arrive_distance) {
     rt_game3d_btree *tree =
         game3d_btree_checked(obj, "Game3D.BehaviorTree3D.MoveToTarget: invalid tree");
@@ -573,6 +677,11 @@ int64_t rt_game3d_btree_move_to_target(void *obj, double speed, double arrive_di
     return node;
 }
 
+/// @brief Append a leaf that moves the owner toward its target's last-known position.
+/// @param obj BehaviorTree3D definition to extend.
+/// @param speed Positive movement speed, or an invalid value to use 2 world units per second.
+/// @param arrive_distance Positive success radius, or an invalid value to use 0.5 world units.
+/// @return The new node index, or -1 when the tree is invalid or full.
 int64_t rt_game3d_btree_move_to_last_known(void *obj, double speed, double arrive_distance) {
     rt_game3d_btree *tree =
         game3d_btree_checked(obj, "Game3D.BehaviorTree3D.MoveToLastKnown: invalid tree");
@@ -587,6 +696,10 @@ int64_t rt_game3d_btree_move_to_last_known(void *obj, double speed, double arriv
     return node;
 }
 
+/// @brief Append a leaf whose completion is polled and resolved by application code.
+/// @param obj BehaviorTree3D definition to extend.
+/// @param id Application-defined identifier exposed while the leaf is pending.
+/// @return The new node index, or -1 when the tree is invalid or full.
 int64_t rt_game3d_btree_custom(void *obj, int64_t id) {
     rt_game3d_btree *tree = game3d_btree_checked(obj, "Game3D.BehaviorTree3D.Custom: invalid tree");
     if (!tree)
@@ -597,6 +710,11 @@ int64_t rt_game3d_btree_custom(void *obj, int64_t id) {
     return node;
 }
 
+/// @brief Append a child index to a composite or decorator node.
+/// @details Invalid indices and self-links are ignored; exceeding eight children reports a trap.
+/// @param obj BehaviorTree3D containing both nodes.
+/// @param parent Index of the node that will own the child.
+/// @param child Index of the node to append.
 void rt_game3d_btree_add_child(void *obj, int64_t parent, int64_t child) {
     rt_game3d_btree *tree =
         game3d_btree_checked(obj, "Game3D.BehaviorTree3D.AddChild: invalid tree");
@@ -611,6 +729,9 @@ void rt_game3d_btree_add_child(void *obj, int64_t parent, int64_t child) {
     node->children[node->child_count++] = (int32_t)child;
 }
 
+/// @brief Select the node at which behavior-tree evaluation begins.
+/// @param obj BehaviorTree3D definition to configure.
+/// @param node Valid node index to use as the root.
 void rt_game3d_btree_set_root(void *obj, int64_t node) {
     rt_game3d_btree *tree =
         game3d_btree_checked(obj, "Game3D.BehaviorTree3D.SetRoot: invalid tree");
@@ -622,6 +743,8 @@ void rt_game3d_btree_set_root(void *obj, int64_t node) {
  * Instance
  *-------------------------------------------------------------------------*/
 
+/// @brief Detach an instance from its entity and release its retained tree.
+/// @param obj BehaviorTreeInstance3D allocation being finalized.
 static void game3d_bt_instance_finalize(void *obj) {
     rt_game3d_bt_instance *instance = (rt_game3d_bt_instance *)obj;
     if (!instance)
@@ -630,6 +753,10 @@ static void game3d_bt_instance_finalize(void *obj) {
     game3d_release_ref(&instance->tree);
 }
 
+/// @brief Allocate per-entity execution state for a rooted behavior tree.
+/// @param entity_obj Entity3D that will own and tick the instance.
+/// @param tree_obj Rooted BehaviorTree3D definition retained by the instance.
+/// @return A new BehaviorTreeInstance3D handle, or NULL when validation or allocation fails.
 void *rt_game3d_bt_instance_new(void *entity_obj, void *tree_obj) {
     rt_game3d_entity *entity =
         (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
@@ -661,6 +788,10 @@ void *rt_game3d_bt_instance_new(void *entity_obj, void *tree_obj) {
     return instance;
 }
 
+/// @brief Validate and cast an opaque handle to behavior-tree instance state.
+/// @param obj Candidate BehaviorTreeInstance3D handle.
+/// @param method Trap message emitted when @p obj has the wrong runtime class.
+/// @return The validated instance, or NULL after reporting an invalid handle.
 static rt_game3d_bt_instance *game3d_bt_instance_checked(void *obj, const char *method) {
     rt_game3d_bt_instance *instance =
         (rt_game3d_bt_instance *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_BTINSTANCE_CLASS_ID);
@@ -669,6 +800,9 @@ static rt_game3d_bt_instance *game3d_bt_instance_checked(void *obj, const char *
     return instance;
 }
 
+/// @brief Set or clear the entity consumed by target-aware behavior leaves.
+/// @param obj BehaviorTreeInstance3D to configure.
+/// @param target_entity Candidate Entity3D handle, or NULL to clear the target.
 void rt_game3d_bt_instance_set_target(void *obj, void *target_entity) {
     rt_game3d_bt_instance *instance = game3d_bt_instance_checked(
         obj, "Game3D.BehaviorTreeInstance3D.SetTarget: invalid instance");
@@ -680,6 +814,8 @@ void rt_game3d_bt_instance_set_target(void *obj, void *target_entity) {
 }
 
 /// @brief Pending Custom-leaf id awaiting game resolution (0 = none).
+/// @param obj BehaviorTreeInstance3D to query.
+/// @return The pending application identifier, or 0 when no custom leaf is waiting.
 int64_t rt_game3d_bt_instance_pending_custom(void *obj) {
     rt_game3d_bt_instance *instance = game3d_bt_instance_checked(
         obj, "Game3D.BehaviorTreeInstance3D.get_PendingCustom: invalid instance");
@@ -687,6 +823,8 @@ int64_t rt_game3d_bt_instance_pending_custom(void *obj) {
 }
 
 /// @brief Resolve the pending Custom leaf (1 = success, 0 = failure).
+/// @param obj BehaviorTreeInstance3D containing the pending custom leaf.
+/// @param success Non-zero to return success from the leaf; zero to return failure.
 void rt_game3d_bt_instance_resolve(void *obj, int8_t success) {
     rt_game3d_bt_instance *instance =
         game3d_bt_instance_checked(obj, "Game3D.BehaviorTreeInstance3D.Resolve: invalid instance");
@@ -698,6 +836,13 @@ void rt_game3d_bt_instance_resolve(void *obj, int8_t success) {
     instance->pending_custom_node = -1;
 }
 
+/// @brief Move an entity toward a point for one simulation interval.
+/// @param entity Entity3D whose world position is updated.
+/// @param target Three-component destination in world space.
+/// @param speed Movement speed in world units per second.
+/// @param arrive Success radius around @p target.
+/// @param dt Deterministic simulation interval in seconds.
+/// @return BT3D_SUCCESS when already within range, BT3D_RUNNING after movement, or BT3D_FAILURE.
 static int game3d_bt_move_toward(
     rt_game3d_entity *entity, const double target[3], double speed, double arrive, double dt) {
     double pos[3];
@@ -717,12 +862,27 @@ static int game3d_bt_move_toward(
     return BT3D_RUNNING;
 }
 
+/// @brief Recursively evaluate one behavior-tree node for the current interval.
+/// @param world World3D supplying shared simulation services.
+/// @param instance Per-entity execution state.
+/// @param tree Shared behavior-tree definition.
+/// @param node_index Index of the node to evaluate.
+/// @param dt Deterministic simulation interval in seconds.
+/// @return One of BT3D_FAILURE, BT3D_SUCCESS, or BT3D_RUNNING.
 static int game3d_bt_tick_node(rt_game3d_world *world,
                                rt_game3d_bt_instance *instance,
                                rt_game3d_btree *tree,
                                int32_t node_index,
                                double dt);
 
+/// @brief Evaluate a sequence or selector while preserving its running-child cursor.
+/// @param world World3D supplying shared simulation services.
+/// @param instance Per-entity execution state.
+/// @param tree Shared behavior-tree definition.
+/// @param node_index Index of the composite node.
+/// @param dt Deterministic simulation interval in seconds.
+/// @param stop_on Child status that terminates the composite immediately.
+/// @return The terminating child status, BT3D_RUNNING, or the composite's inverse terminal status.
 static int game3d_bt_tick_composite(rt_game3d_world *world,
                                     rt_game3d_bt_instance *instance,
                                     rt_game3d_btree *tree,
@@ -748,6 +908,15 @@ static int game3d_bt_tick_composite(rt_game3d_world *world,
     return stop_on == BT3D_FAILURE ? BT3D_SUCCESS : BT3D_FAILURE;
 }
 
+/// @brief Dispatch one behavior node and update the instance-local execution state.
+/// @details Composite cursors, wait timers, and custom-leaf handshakes survive across calls;
+///   movement leaves update the owner directly using deterministic @p dt.
+/// @param world World3D supplying shared simulation services.
+/// @param instance Per-entity execution state.
+/// @param tree Shared behavior-tree definition.
+/// @param node_index Index of the node to evaluate.
+/// @param dt Deterministic simulation interval in seconds.
+/// @return One of BT3D_FAILURE, BT3D_SUCCESS, or BT3D_RUNNING.
 static int game3d_bt_tick_node(rt_game3d_world *world,
                                rt_game3d_bt_instance *instance,
                                rt_game3d_btree *tree,
@@ -832,6 +1001,11 @@ static int game3d_bt_tick_node(rt_game3d_world *world,
 }
 
 /// @brief Per-step AI tick for one entity: perception first, then the tree.
+/// @details Ordering lets newly refreshed perception state drive behavior and movement in the same
+///   simulation step.
+/// @param world World3D containing the entity and simulation services.
+/// @param entity Live Entity3D whose attached AI components are advanced.
+/// @param dt Deterministic simulation interval in seconds.
 void game3d_ai_tick(rt_game3d_world *world, rt_game3d_entity *entity, double dt) {
     if (entity->perception)
         game3d_perception_tick(world, entity, dt);

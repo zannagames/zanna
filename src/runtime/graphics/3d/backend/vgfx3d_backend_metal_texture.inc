@@ -17,6 +17,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Metal texture, cubemap, IBL, skinning, and morph-resource preparation.
+/// @details This implementation fragment manages generation-keyed resource caches and
+///          budget-paced uploads. It publishes cache generations only after complete transfers
+///          and prepares the transient or persistent buffers consumed by deformation shaders.
+
 typedef enum {
     METAL_UPLOAD_FAILED = -1,
     METAL_UPLOAD_PENDING = 0,
@@ -24,6 +30,9 @@ typedef enum {
 } metal_upload_status_t;
 
 /// @brief Retire a texture upload that cannot make progress and memoize its generation.
+/// @param ctx Borrowed Metal context used to stamp the cache entry's last-used frame; may be NULL.
+/// @param entry Borrowed texture-cache entry whose partial resource and cursors are cleared.
+/// @param generation Failed source generation to memoize and avoid repeated work.
 static void metal_fail_texture_upload(VGFXMetalContext *ctx,
                                       VGFXMetalTextureCacheEntry *entry,
                                       uint64_t generation) {
@@ -42,6 +51,9 @@ static void metal_fail_texture_upload(VGFXMetalContext *ctx,
 }
 
 /// @brief Retire a cubemap upload that cannot make progress and memoize its generation.
+/// @param ctx Borrowed Metal context used to stamp the cache entry's last-used frame; may be NULL.
+/// @param entry Borrowed cubemap-cache entry whose partial resource and cursors are cleared.
+/// @param generation Failed cubemap generation to memoize and avoid repeated work.
 static void metal_fail_cubemap_upload(VGFXMetalContext *ctx,
                                       VGFXMetalCubemapCacheEntry *entry,
                                       uint64_t generation) {
@@ -64,6 +76,8 @@ static void metal_fail_cubemap_upload(VGFXMetalContext *ctx,
 
 /// @brief Map a native compressed mip's format/block size to the matching MTLPixelFormat (0 if
 /// unsupported).
+/// @param mip Borrowed native mip descriptor containing format and block dimensions.
+/// @return The matching Metal compressed format, or `MTLPixelFormatInvalid` when unsupported.
 static MTLPixelFormat metal_native_texture_pixel_format(const vgfx3d_native_texture_mip_t *mip) {
     if (!mip)
         return MTLPixelFormatInvalid;
@@ -114,6 +128,8 @@ static MTLPixelFormat metal_native_texture_pixel_format(const vgfx3d_native_text
 
 /// @brief Bytes per block-row of a native compressed mip (block columns × block byte size,
 /// overflow-safe).
+/// @param mip Borrowed compressed mip descriptor to measure.
+/// @return The byte count for one compressed block row, or zero for invalid/overflowing input.
 static uint64_t metal_native_texture_row_bytes(const vgfx3d_native_texture_mip_t *mip) {
     uint64_t cols;
     if (!mip || mip->width <= 0 || mip->block_width <= 0 || mip->block_bytes <= 0)
@@ -126,6 +142,8 @@ static uint64_t metal_native_texture_row_bytes(const vgfx3d_native_texture_mip_t
 }
 
 /// @brief Bytes still to upload for a cached texture entry (native or RGBA streaming path).
+/// @param entry Borrowed texture-cache entry whose active cursor is measured.
+/// @return Remaining upload bytes, or zero when no entry/upload is available.
 static uint64_t metal_texture_pending_bytes(VGFXMetalTextureCacheEntry *entry) {
     if (!entry)
         return 0;
@@ -141,6 +159,8 @@ static uint64_t metal_texture_pending_bytes(VGFXMetalTextureCacheEntry *entry) {
 }
 
 /// @brief Bytes still to upload for a cached cubemap entry across its remaining faces/rows.
+/// @param entry Borrowed cubemap-cache entry whose base and IBL cursors are measured.
+/// @return Saturating sum of remaining base-face and prefiltered-IBL bytes.
 static uint64_t metal_cubemap_pending_bytes(VGFXMetalCubemapCacheEntry *entry) {
     uint64_t base_bytes;
     if (!entry)
@@ -153,6 +173,8 @@ static uint64_t metal_cubemap_pending_bytes(VGFXMetalCubemapCacheEntry *entry) {
 }
 
 /// @brief Total bytes still pending across all in-progress texture/cubemap uploads (saturating).
+/// @param ctx_ptr Borrowed `VGFXMetalContext` whose caches are inspected.
+/// @return Saturating total number of pending upload bytes, or zero for an invalid context.
 static uint64_t metal_get_texture_upload_pending_bytes(void *ctx_ptr) {
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
     uint64_t total = 0;
@@ -176,6 +198,8 @@ static uint64_t metal_get_texture_upload_pending_bytes(void *ctx_ptr) {
 }
 
 /// @brief Set the per-frame byte budget that paces streaming texture uploads on this context.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` whose upload budget is updated.
+/// @param bytes Maximum bytes to upload during a frame; `UINT64_MAX` represents no finite cap.
 static void metal_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
     if (ctx)
@@ -183,7 +207,10 @@ static void metal_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
 }
 
 /// @brief Upload more of an in-progress native compressed texture, bounded by the upload budget.
-/// @return 1 if the upload finished this call, 0 if more mips remain.
+/// @param ctx Borrowed Metal context providing the current budget and accounting counters.
+/// @param entry Borrowed cache entry containing the destination texture and native upload cursor.
+/// @return `METAL_UPLOAD_COMPLETE` when all mips publish, `METAL_UPLOAD_PENDING` when budget-paused,
+///         or `METAL_UPLOAD_FAILED` for invalid source/resource state.
 static metal_upload_status_t metal_continue_native_texture_upload(
     VGFXMetalContext *ctx, VGFXMetalTextureCacheEntry *entry) {
     if (!ctx || !entry || !entry.textureAsset || !entry.uploadInProgress || !entry.texture)
@@ -275,6 +302,13 @@ static metal_upload_status_t metal_continue_native_texture_upload(
 
 /// @brief Begin uploading a native compressed TextureAsset3D: create the texture and seed the
 /// cursor.
+/// @param ctx Borrowed Metal context providing capabilities, device allocation, and budget state.
+/// @param entry Borrowed texture-cache entry initialized for the new upload.
+/// @param asset Borrowed native `TextureAsset3D` source.
+/// @param cache_key Stable source generation published after the upload completes.
+/// @param mip_start First resident native mip to upload.
+/// @param mip_count Number of consecutive resident mips to upload.
+/// @return Complete, pending, or failed upload status after attempting the first transfer slice.
 static metal_upload_status_t metal_start_native_texture_upload(VGFXMetalContext *ctx,
                                                                VGFXMetalTextureCacheEntry *entry,
                                                                void *asset,
@@ -334,7 +368,11 @@ static metal_upload_status_t metal_start_native_texture_upload(VGFXMetalContext 
 
 /// @brief Upload more rows of an in-progress RGBA texture (swizzled to BGRA), bounded by the
 /// budget.
-/// @return 1 if the upload finished this call, 0 if more rows remain.
+/// @param ctx Borrowed Metal context providing the current budget and accounting counters.
+/// @param entry Borrowed cache entry containing the destination texture and row cursor.
+/// @param pixels_ptr Borrowed runtime Pixels source.
+/// @return `METAL_UPLOAD_COMPLETE` when all rows publish, `METAL_UPLOAD_PENDING` when budget-paused,
+///         or `METAL_UPLOAD_FAILED` for invalid source/resource state.
 static metal_upload_status_t metal_continue_texture_upload(VGFXMetalContext *ctx,
                                                            VGFXMetalTextureCacheEntry *entry,
                                                            const void *pixels_ptr) {
@@ -385,6 +423,11 @@ static metal_upload_status_t metal_continue_texture_upload(VGFXMetalContext *ctx
 
 /// @brief Begin uploading an RGBA Pixels texture: allocate the BGRA texture and seed the row
 /// cursor.
+/// @param ctx Borrowed Metal context providing the allocation device and upload budget.
+/// @param entry Borrowed texture-cache entry initialized for the new upload.
+/// @param pixels_ptr Borrowed runtime Pixels source.
+/// @param cache_key Stable Pixels generation published after all rows upload.
+/// @return Complete, pending, or failed upload status after attempting the first row band.
 static metal_upload_status_t metal_start_texture_upload(VGFXMetalContext *ctx,
                                                         VGFXMetalTextureCacheEntry *entry,
                                                         const void *pixels_ptr,
@@ -434,9 +477,12 @@ static metal_upload_status_t metal_start_texture_upload(VGFXMetalContext *ctx,
     return metal_continue_texture_upload(ctx, entry, pixels_ptr);
 }
 
-/// MTL-03: Retrieve or create a cached MTLTexture from a Pixels object pointer.
-/// Cache uses the stable Pixels cache key so allocator-reused addresses do not
-/// alias a fresh image to an older GPU upload. Conversion is RGBA→BGRA.
+/// @brief Retrieve or create a cached Metal texture from a runtime Pixels object.
+/// @details The cache uses the stable Pixels cache key so allocator-reused addresses do not alias
+///          a fresh image to an older GPU upload. Conversion is RGBA→BGRA and may span frames.
+/// @param ctx Borrowed Metal context owning the texture cache and upload budget.
+/// @param pixels_ptr Borrowed runtime Pixels object used as both source and cache identity.
+/// @return The complete cached texture, or nil while uploading or after a memoized failure.
 static id<MTLTexture> metal_get_cached_texture(VGFXMetalContext *ctx, const void *pixels_ptr) {
     uint64_t cache_key;
     NSValue *key;
@@ -474,6 +520,12 @@ static id<MTLTexture> metal_get_cached_texture(VGFXMetalContext *ctx, const void
 /// @brief Get the Metal texture for a native TextureAsset3D, creating/streaming it on a cache miss.
 /// @details Keyed by the asset's native cache key; returns nil while an upload is still in
 /// progress.
+/// @param ctx Borrowed Metal context owning the texture cache and native-format capabilities.
+/// @param asset Borrowed native `TextureAsset3D` source and cache identity.
+/// @param cache_key Stable native snapshot key, or zero to query it from @p asset.
+/// @param mip_start First resident mip, or a negative value to query it from @p asset.
+/// @param mip_count Resident mip count, or a non-positive value to query it from @p asset.
+/// @return The complete cached native texture, or nil while uploading/unsupported/failed.
 static id<MTLTexture> metal_get_cached_native_texture(
     VGFXMetalContext *ctx, void *asset, uint64_t cache_key, int64_t mip_start, int64_t mip_count) {
     NSValue *key;
@@ -522,6 +574,12 @@ static id<MTLTexture> metal_get_cached_native_texture(
 }
 
 /// @brief Resolve a material's texture to an MTLTexture, preferring native blocks then RGBA Pixels.
+/// @param ctx Borrowed Metal context owning both native and decoded texture caches.
+/// @param asset Borrowed native texture asset, or NULL when only decoded Pixels are available.
+/// @param pixels_ptr Borrowed decoded Pixels fallback, or NULL.
+/// @param asset_cache_key Stable native asset generation.
+/// @param mip_start First resident native mip.
+/// @param mip_count Number of resident native mips.
 /// @return The texture to bind, or nil if neither source is uploadable yet.
 static id<MTLTexture> metal_get_material_texture(VGFXMetalContext *ctx,
                                                  void *asset,
@@ -538,6 +596,13 @@ static id<MTLTexture> metal_get_material_texture(VGFXMetalContext *ctx,
 }
 
 /// @brief Upload one full face image (BGRA-swizzled) to a specific cubemap mip level.
+/// @param tex Borrowed destination BGRA8 cubemap texture.
+/// @param rgba Borrowed tightly packed RGBA8 face image.
+/// @param w Source image width in pixels.
+/// @param h Source image height in pixels.
+/// @param face Destination cubemap face index in `[0, 5]`.
+/// @param level Destination mip level.
+/// @return 1 after successful validation, conversion, and replacement; otherwise 0.
 static int metal_upload_rgba_to_bgra_cubemap_level(
     id<MTLTexture> tex, const uint8_t *rgba, int32_t w, int32_t h, int32_t face, int32_t level) {
     uint8_t *bgra;
@@ -580,6 +645,11 @@ static int metal_upload_rgba_to_bgra_cubemap_level(
 }
 
 /// @brief Validate and measure a cubemap's complete prefiltered IBL tail without decoding it.
+/// @param cubemap Borrowed runtime cubemap containing the prefiltered face images.
+/// @param face_size Validated base cubemap face size.
+/// @param[out] out_level_base Required destination for the first IBL mip level.
+/// @param[out] out_bytes Required destination for the complete six-face upload byte count.
+/// @return 1 when every IBL image has the expected extent and byte size, otherwise 0.
 static int metal_measure_ibl_upload(const rt_cubemap3d *cubemap,
                                     int32_t face_size,
                                     int32_t *out_level_base,
@@ -628,6 +698,9 @@ static int metal_measure_ibl_upload(const rt_cubemap3d *cubemap,
 ///   uploads honor the frame budget, while one oversize chain may run at the start of a nonzero-
 ///   budget frame so it cannot starve forever. Invalid identities are memoized until content
 ///   changes.
+/// @param ctx Borrowed Metal context providing budget state and upload accounting.
+/// @param entry Borrowed complete cubemap-cache entry receiving the IBL mip tail.
+/// @param cubemap Borrowed runtime cubemap containing validated prefiltered images.
 static void metal_apply_ibl_mips(VGFXMetalContext *ctx,
                                  VGFXMetalCubemapCacheEntry *entry,
                                  const rt_cubemap3d *cubemap) {
@@ -704,7 +777,11 @@ cleanup:
 }
 
 /// @brief Upload more of an in-progress cubemap (face by face, row band by row band) within budget.
-/// @return 1 if all six faces finished this call, 0 if more remains.
+/// @param ctx Borrowed Metal context providing the current budget and accounting counters.
+/// @param entry Borrowed cubemap-cache entry containing the destination and face/row cursor.
+/// @param cubemap Borrowed runtime cubemap source.
+/// @return `METAL_UPLOAD_COMPLETE` when all faces publish, `METAL_UPLOAD_PENDING` when budget-paused,
+///         or `METAL_UPLOAD_FAILED` for invalid source/resource state.
 static metal_upload_status_t metal_continue_cubemap_upload(VGFXMetalContext *ctx,
                                                            VGFXMetalCubemapCacheEntry *entry,
                                                            const rt_cubemap3d *cubemap) {
@@ -770,6 +847,11 @@ static metal_upload_status_t metal_continue_cubemap_upload(VGFXMetalContext *ctx
 }
 
 /// @brief Begin uploading a cubemap: create the cube texture and seed the face/row cursor.
+/// @param ctx Borrowed Metal context providing the allocation device and upload budget.
+/// @param entry Borrowed cubemap-cache entry initialized for the new upload.
+/// @param cubemap Borrowed runtime cubemap source.
+/// @param generation Stable source generation published after all six faces upload.
+/// @return Complete, pending, or failed upload status after attempting the first row band.
 static metal_upload_status_t metal_start_cubemap_upload(VGFXMetalContext *ctx,
                                                         VGFXMetalCubemapCacheEntry *entry,
                                                         const rt_cubemap3d *cubemap,
@@ -814,6 +896,9 @@ static metal_upload_status_t metal_start_cubemap_upload(VGFXMetalContext *ctx,
 
 /// @brief Get the Metal cubemap texture for a Cubemap3D, creating/streaming it on a cache miss.
 /// @details Returns nil while the cubemap upload is still in progress.
+/// @param ctx Borrowed Metal context owning the cubemap cache and upload budget.
+/// @param cubemap Borrowed runtime cubemap used as source and cache identity.
+/// @return The complete cached cubemap texture, or nil while uploading or after failure.
 static id<MTLTexture> metal_get_cached_cubemap(VGFXMetalContext *ctx, const rt_cubemap3d *cubemap) {
     uint64_t generation;
     NSValue *key;
@@ -858,6 +943,9 @@ typedef struct {
 } metal_morph_bind_status_t;
 
 /// @brief Compute the byte size of a morph-target GPU payload for a vertex count and channel set.
+/// @param vertex_count Number of vertices represented in every morph shape.
+/// @param morph_count Number of morph shapes in the payload.
+/// @param[out] out_bytes Required destination for the computed byte count.
 /// @return 1 with the size written, 0 on overflow or invalid inputs.
 static int metal_compute_morph_payload_bytes(uint32_t vertex_count,
                                              int32_t morph_count,
@@ -884,6 +972,10 @@ static int metal_compute_morph_payload_bytes(uint32_t vertex_count,
 
 /// @brief Get or build the cached GPU morph-delta buffer for a mesh's morph targets.
 /// @details Keyed by mesh + morph revision so it rebuilds when the deltas change. NULL on failure.
+/// @param ctx Borrowed Metal context owning the morph-buffer cache.
+/// @param cmd Borrowed draw command containing morph identity, deltas, and vertex count.
+/// @param morph_count Sanitized number of morph shapes to upload.
+/// @return A complete cache entry matching @p cmd, or nil on validation/allocation failure.
 static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *ctx,
                                                               const vgfx3d_draw_cmd_t *cmd,
                                                               int32_t morph_count) {
@@ -935,6 +1027,11 @@ static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *
 ///          measurable frame-time cost. The palette stays identity-padded to the full
 ///          VGFX3D_METAL_MAX_BONES because the shader clamps bone indices to the palette
 ///          size, not the draw's bone count (the MSL PerScene/PerObject ABI is contractual).
+/// @param ctx Borrowed Metal context with an active encoder and transient upload ring.
+/// @param cmd Borrowed draw command containing current and optional prior bone matrices.
+/// @param has_skinning Nonzero when the current palette should be uploaded.
+/// @param has_prev_skinning Nonzero when a previous-frame palette should also be attempted.
+/// @param[out] out_prev_ok Optional destination set nonzero when the prior palette binds.
 /// @return 1 on success, 0 if the palette is missing or the upload failed.
 static int metal_bind_bone_palettes(VGFXMetalContext *ctx,
                                     const vgfx3d_draw_cmd_t *cmd,
@@ -981,6 +1078,9 @@ static int metal_bind_bone_palettes(VGFXMetalContext *ctx,
 ///   upload failed (CPU fallback already handled 8-weight meshes before the
 ///   backend advertised gpu_skinning_extras, so failure = fewer influences,
 ///   never corruption).
+/// @param ctx Borrowed Metal context with an active encoder and influence cache.
+/// @param cmd Borrowed draw command containing the optional side-stream and geometry identity.
+/// @return 1 when a valid side-stream buffer is bound, otherwise 0.
 static int metal_bind_extra_influences(VGFXMetalContext *ctx, const vgfx3d_draw_cmd_t *cmd) {
     id<MTLBuffer> buf = nil;
     const void *key;
@@ -1023,6 +1123,8 @@ static int metal_bind_extra_influences(VGFXMetalContext *ctx, const vgfx3d_draw_
 }
 
 /// @brief Bind a mesh's morph delta buffer and per-shape weights for a draw.
+/// @param ctx Borrowed Metal context with an active encoder and morph-buffer cache.
+/// @param cmd Borrowed draw command containing morph deltas, weights, and cache identity.
 /// @return A status enum indicating whether morphing is bound, skipped, or failed.
 static metal_morph_bind_status_t metal_bind_morph_payload(VGFXMetalContext *ctx,
                                                           const vgfx3d_draw_cmd_t *cmd) {
@@ -1075,6 +1177,8 @@ static metal_morph_bind_status_t metal_bind_morph_payload(VGFXMetalContext *ctx,
 /// @brief Ensure the CPU-side instance staging scratch can hold @p instance_count instances.
 /// @details GPU storage is a per-draw slice of the transient ring (see
 ///          metal_upload_transient_buffer); only the packing scratch persists here.
+/// @param ctx Borrowed Metal context owning the mutable instance scratch allocation.
+/// @param instance_count Minimum number of packed instance entries required.
 static void metal_ensure_instance_storage(VGFXMetalContext *ctx, int32_t instance_count) {
     int32_t needed_capacity;
     int32_t next_capacity;

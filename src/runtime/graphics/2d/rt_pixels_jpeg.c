@@ -6,16 +6,38 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/2d/rt_pixels_jpeg.c
-// Purpose: Baseline JPEG decode with Huffman tables, IDCT, MCU reconstruction, and RGBA32 output.
+// Purpose: Dependency-free baseline sequential JPEG decoding with checked
+//   marker parsing, canonical Huffman tables, fixed-point IDCT, MCU/component
+//   reconstruction, EXIF orientation, and opaque RGBA32 output.
 // Key invariants:
 //   - JPEG decode failures return NULL and report asset diagnostics.
 //   - Decoding remains dependency-free and bounded by JPEG_MAX_PIXELS.
+//   - Only 8-bit baseline DCT with one grayscale or three YCbCr components in
+//     one interleaved sequential scan is accepted.
+//   - Marker lengths, entropy codes, restart cadence, sampling ratios,
+//     coefficient ranges, and EOI padding are validated before use.
+//   - Direct-buffer decode requires encoded dimensions to match exactly and
+//     rejects EXIF transforms that would need replacement storage.
 // Ownership/Lifetime:
 //   - Loaded Pixels objects are GC-managed and owned by the caller.
-//   - Temporary file/decode buffers are released before return.
-// Links: rt_pixels.h, rt_pixels_io_internal.h, rt_asset_error.h
+//   - Raw-buffer decode returns malloc-owned storage to the caller.
+//   - Direct-buffer decode borrows caller storage and never frees it.
+//   - Temporary file, component, orientation, and decode buffers are released
+//     on every success and failure path.
+// Links: src/runtime/graphics/2d/rt_pixels.h (public Pixels API),
+//        src/runtime/graphics/2d/rt_pixels_io_internal.h (checked I/O),
+//        src/runtime/graphics/2d/rt_pixels_io.c (format dispatch),
+//        src/runtime/graphics/3d/assets/rt_asset_error.h (load diagnostics)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements bounded baseline JPEG decoding to canonical Pixels RGBA.
+///
+/// The decoder implements the required marker, Huffman, dequantization,
+/// inverse-DCT, sampling, restart, color-conversion, and EXIF orientation
+/// stages directly. It deliberately distinguishes structurally corrupt data
+/// from well-formed JPEG variants outside the supported baseline subset.
 
 #include "rt_pixels_io_internal.h"
 
@@ -27,30 +49,42 @@
 // JPEG Decoder (Baseline DCT, Huffman-coded)
 //=============================================================================
 
-// JPEG marker constants
+/// JPEG Start Of Image marker.
 #define JPEG_SOI 0xFFD8
+/// JPEG End Of Image marker.
 #define JPEG_EOI 0xFFD9
+/// Baseline DCT Start Of Frame marker.
 #define JPEG_SOF0 0xFFC0 // Baseline DCT
+/// Define Huffman Table marker.
 #define JPEG_DHT 0xFFC4
+/// Define Quantization Table marker.
 #define JPEG_DQT 0xFFDB
+/// Start Of Scan marker.
 #define JPEG_SOS 0xFFDA
+/// Define Restart Interval marker.
 #define JPEG_DRI 0xFFDD
+/// First restart marker; the remaining seven are contiguous.
 #define JPEG_RST0 0xFFD0
+/// Maximum accepted decoded pixel count.
 #define JPEG_MAX_PIXELS ((size_t)64u * 1024u * 1024u)
 
+/// @brief Structured outcome used to distinguish unsupported JPEG variants.
 typedef enum {
     JPEG_DECODE_STATUS_OK = 0,
     JPEG_DECODE_STATUS_CORRUPT = 1,
     JPEG_DECODE_STATUS_UNSUPPORTED = 2,
 } jpeg_decode_status_t;
 
-// Zigzag order for 8x8 block
+/// Maps JPEG zigzag coefficient positions to natural 8x8 row-major indices.
 static const uint8_t jpeg_zigzag[64] = {
     0,  1,  8,  16, 9,  2,  3,  10, 17, 24, 32, 25, 18, 11, 4,  5,  12, 19, 26, 33, 40, 48,
     41, 34, 27, 20, 13, 6,  7,  14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23,
     30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63};
 
-// Huffman table (max 16-bit codes)
+/// @brief Canonical JPEG Huffman table and its derived decoder boundaries.
+/// @details `bits[1..16]` and `huffval` retain the transmitted table;
+///          `mincode`, `maxcode`, and `valptr` provide Annex C canonical-code
+///          lookup without allocating a tree.
 typedef struct {
     uint8_t bits[17];     // bits[i] = number of codes of length i (1..16)
     uint8_t huffval[256]; // symbol values
@@ -60,7 +94,10 @@ typedef struct {
     int mincode[17]; // minimum code for each length
 } jpeg_huff_t;
 
-// JPEG decoder context
+/// @brief Mutable state for one in-memory baseline JPEG decode.
+/// @details The context borrows the encoded byte buffer. Marker metadata,
+///          quantization and Huffman tables, scan mappings, entropy state, and
+///          differential DC predictors live here for the duration of decode.
 typedef struct {
     const uint8_t *data;
     size_t len;
@@ -107,14 +144,19 @@ typedef struct {
 // or arithmetic coding — is supported. Layout follows ITU-T T.81.
 // ---------------------------------------------------------------------------
 
-/// @brief Read one byte from the JPEG stream. Returns -1 at EOF.
+/// @brief Read one byte from the marker stream.
+/// @param ctx Decoder context whose absolute position advances on success.
+/// @return The unsigned byte value, or -1 at end of input.
 static int jpeg_read_u8(jpeg_ctx_t *ctx) {
     if (ctx->pos >= ctx->len)
         return -1;
     return ctx->data[ctx->pos++];
 }
 
-/// @brief Read a big-endian uint16 from the JPEG stream. Returns -1 on short read.
+/// @brief Read one big-endian 16-bit value from the marker stream.
+/// @param ctx Decoder context whose absolute position advances by two on
+///        success.
+/// @return The decoded unsigned value as an `int`, or -1 on a short read.
 static int jpeg_read_u16(jpeg_ctx_t *ctx) {
     if (ctx->pos + 2 > ctx->len)
         return -1;
@@ -182,13 +224,15 @@ static uint32_t jpeg_tiff_read_u32(const uint8_t *p, int big) {
                : ((uint32_t)p[3] << 24 | (uint32_t)p[2] << 16 | (uint32_t)p[1] << 8 | p[0]);
 }
 
-/// @brief Pull the next entropy-coded byte, transparent to byte-stuffing & RST markers.
-///
-/// JPEG escapes literal `0xFF` bytes inside the entropy segment as
-/// `FF 00`; this strips the stuff. Restart markers (`FF D0..D7`)
-/// are silently skipped — the higher-level scan loop is responsible
-/// for resetting DC predictors at restart boundaries. Any other
-/// `FF xx` sequence is an unexpected marker (returns -1).
+/// @brief Pull the next entropy byte while removing JPEG byte stuffing.
+/// @details A literal `0xFF` is encoded as `FF 00`; the zero is consumed and
+///          `0xFF` is returned. Any unstuffed marker prefix, including a
+///          restart marker, returns -1. Restart markers are instead consumed
+///          and validated by `jpeg_consume_restart_marker()` at exact MCU
+///          interval boundaries.
+/// @param ctx Decoder context positioned inside entropy-coded scan data.
+/// @return The next logical entropy byte, or -1 on truncation or an unexpected
+///         marker.
 static int jpeg_next_byte(jpeg_ctx_t *ctx) {
     while (ctx->pos < ctx->len) {
         uint8_t b = ctx->data[ctx->pos++];
@@ -232,6 +276,10 @@ static int jpeg_consume_restart_marker(jpeg_ctx_t *ctx, int expected_rst) {
 /// Refills the 32-bit shift register one stuffed byte at a time
 /// until at least `count` bits are available, then shifts them out
 /// of the high end. Returns -1 on EOF/marker error.
+/// @param ctx Decoder context with entropy bit-buffer state.
+/// @param count Number of bits to consume, from zero through 24.
+/// @return The requested unsigned bit field as an `int`, zero for a zero-bit
+///         request, or -1 for an invalid count or entropy-stream failure.
 static int jpeg_get_bits(jpeg_ctx_t *ctx, int count) {
     if (count < 0 || count > 24)
         return -1;
@@ -254,6 +302,8 @@ static int jpeg_get_bits(jpeg_ctx_t *ctx, int count) {
 /// (`bits[1..16]`). This expands them into the cumulative
 /// `mincode`/`maxcode` per length used by `jpeg_huff_decode` for
 /// fast symbol lookup.
+/// @param h Table containing transmitted code-length counts and symbols;
+///        derived arrays are written in place.
 /// @return 1 when the table is not over-subscribed and has at least one symbol.
 static int jpeg_build_huff(jpeg_huff_t *h) {
     int code = 0;
@@ -279,7 +329,11 @@ static int jpeg_build_huff(jpeg_huff_t *h) {
     return si > 0;
 }
 
-/// @brief Decode one Huffman symbol from the JPEG bitstream.
+/// @brief Decode one canonical Huffman symbol from the entropy bitstream.
+/// @param ctx Decoder context with entropy bit-buffer state.
+/// @param h Previously validated and derived Huffman table.
+/// @return The decoded byte-valued symbol, or -1 for a truncated or invalid
+///         code.
 static int jpeg_huff_decode(jpeg_ctx_t *ctx, jpeg_huff_t *h) {
     int code = 0;
     for (int i = 1; i <= 16; i++) {
@@ -303,6 +357,10 @@ static int jpeg_huff_decode(jpeg_ctx_t *ctx, jpeg_huff_t *h) {
 /// values are encoded as 1s-complement. Convert back to a signed
 /// integer by subtracting `(1 << bits) - 1` whenever the high bit
 /// indicates negativity.
+/// @param val Unsigned magnitude bits.
+/// @param bits Encoded coefficient category width.
+/// @return The reconstructed signed coefficient delta; zero for a zero-width
+///         category.
 static int jpeg_extend(int val, int bits) {
     if (bits == 0)
         return 0;
@@ -320,6 +378,12 @@ static int jpeg_extend(int val, int bits) {
 /// (00 — fill remainder with zeros) and ZRL (F0 — skip 16 zeros).
 /// Multiplies each non-zero coefficient by the matching quant
 /// table entry and stores it in natural row order using `jpeg_zigzag`.
+/// @param ctx Decoder context with entropy and DC-predictor state.
+/// @param block Receives 64 dequantized coefficients in natural row order.
+/// @param dc_ht Valid DC Huffman table for the component.
+/// @param ac_ht Valid AC Huffman table for the component.
+/// @param dc_pred In/out differential DC predictor for the component.
+/// @param qt Component quantization table in natural row order.
 /// @return 0 on success, -1 on bitstream / Huffman decode failure.
 static int jpeg_decode_block(jpeg_ctx_t *ctx,
                              int32_t block[64],
@@ -398,7 +462,11 @@ static int jpeg_decode_block(jpeg_ctx_t *ctx,
 // 1D IDCT in 32-bit integers without overflow. The full 8×8 IDCT
 // is `jpeg_idct_block` which calls `_row` × 8 then `_col` × 8.
 // ---------------------------------------------------------------------------
+/// Fixed-point unit at twelve fractional bits.
 #define JPEG_FIX_1 4096
+/// Convert a positive floating-point IDCT constant to 12-bit fixed point.
+/// @param x Compile-time coefficient.
+/// @return Rounded signed 32-bit fixed-point coefficient.
 #define JPEG_FIX(x) ((int32_t)((x) * 4096.0 + 0.5))
 
 /// @brief Descale a fixed-point JPEG intermediate with symmetric rounding.
@@ -431,7 +499,10 @@ static int32_t jpeg_saturate_i32(int64_t value) {
     return (int32_t)value;
 }
 
-/// @brief One-dimensional AAN IDCT applied to an 8-coefficient row, in place.
+/// @brief Apply the one-dimensional AAN IDCT to an eight-coefficient row.
+/// @details All products use 64-bit intermediates and each published
+///          workspace element saturates to signed 32-bit range.
+/// @param row In/out pointer to eight consecutive workspace coefficients.
 static void jpeg_idct_row(int32_t *row) {
     int64_t x0 = row[0], x1 = row[1], x2 = row[2], x3 = row[3];
     int64_t x4 = row[4], x5 = row[5], x6 = row[6], x7 = row[7];
@@ -476,7 +547,11 @@ static void jpeg_idct_row(int32_t *row) {
     row[7] = jpeg_saturate_i32(e0 - o3);
 }
 
-/// @brief One-dimensional AAN IDCT applied to column `col` of an 8×8 workspace.
+/// @brief Apply the one-dimensional AAN IDCT to one workspace column.
+/// @details The column pass performs the final five-bit descale before
+///          saturating each stored result.
+/// @param workspace In/out 8x8 row-major IDCT workspace.
+/// @param col Zero-based column index in `[0, 7]`.
 static void jpeg_idct_col(int32_t *workspace, int col) {
     int64_t x0 = workspace[col + 0 * 8], x1 = workspace[col + 1 * 8];
     int64_t x2 = workspace[col + 2 * 8], x3 = workspace[col + 3 * 8];
@@ -527,6 +602,8 @@ static void jpeg_idct_col(int32_t *workspace, int col) {
 /// Applies `jpeg_idct_row` × 8 then `jpeg_idct_col` × 8 with the
 /// AAN-required pre-/post-scale. After descaling and biasing by
 /// 128 (level shift), the samples are clamped to [0, 255].
+/// @param block Array of 64 dequantized coefficients in natural row order.
+/// @param out Receives 64 level-shifted, clamped samples in row-major order.
 static void jpeg_idct_block(const int32_t block[64], uint8_t out[64]) {
     int32_t workspace[64];
     for (int i = 0; i < 64; i++)
@@ -553,6 +630,8 @@ static void jpeg_idct_block(const int32_t block[64], uint8_t out[64]) {
 
 // Clamp int to [0, 255]
 /// @brief Saturate an integer to the [0, 255] range as a byte.
+/// @param val Integer channel sample.
+/// @return @p val clamped to the unsigned eight-bit range.
 static uint8_t jpeg_clamp(int val) {
     if (val < 0)
         return 0;
@@ -561,6 +640,13 @@ static uint8_t jpeg_clamp(int val) {
     return (uint8_t)val;
 }
 
+/// @brief Validate RGBA dimensions and compute their bounded pixel count.
+/// @details Requires positive dimensions representable in `size_t`, checks
+///          multiplication overflow, and applies `JPEG_MAX_PIXELS`.
+/// @param width Candidate decoded width.
+/// @param height Candidate decoded height.
+/// @param out_count Receives the pixel count on success and zero on failure.
+/// @return Nonzero when the dimensions and count are accepted; zero otherwise.
 static int jpeg_rgba_pixel_count_checked(int64_t width, int64_t height, size_t *out_count) {
     if (out_count)
         *out_count = 0;
@@ -578,6 +664,11 @@ static int jpeg_rgba_pixel_count_checked(int64_t width, int64_t height, size_t *
     return 1;
 }
 
+/// @brief Allocate zero-filled raw RGBA storage for bounded dimensions.
+/// @param width Positive decoded width.
+/// @param height Positive decoded height.
+/// @return A malloc-owned `width * height` array, or null for invalid
+///         dimensions, byte-size overflow, or allocation failure.
 static uint32_t *jpeg_rgba_alloc(int64_t width, int64_t height) {
     size_t count;
     if (!jpeg_rgba_pixel_count_checked(width, height, &count))
@@ -587,6 +678,18 @@ static uint32_t *jpeg_rgba_alloc(int64_t width, int64_t height) {
     return (uint32_t *)calloc(count, sizeof(uint32_t));
 }
 
+/// @brief Apply an EXIF orientation transform to malloc-owned RGBA storage.
+/// @details Orientations 2 through 8 allocate a correctly dimensioned
+///          replacement, remap every source pixel, free the original, and
+///          publish the new pointer and dimensions atomically after success.
+///          Missing storage, invalid output pointers, orientation 1, and
+///          out-of-range orientation values are treated as unchanged success.
+/// @param pixels In/out pointer to malloc-owned raw RGBA storage.
+/// @param width In/out image width.
+/// @param height In/out image height.
+/// @param orientation EXIF orientation value.
+/// @return Nonzero when no transform is needed or replacement succeeds; zero
+///         only when required replacement allocation fails.
 static int jpeg_rgba_apply_orientation(uint32_t **pixels,
                                        int64_t *width,
                                        int64_t *height,
@@ -658,7 +761,11 @@ static int jpeg_rgba_apply_orientation(uint32_t **pixels,
 ///          returning a structured status for callers that need diagnostics. When
 ///          @p direct_pixels is non-NULL, decoded pixels are written into caller-owned
 ///          storage only after the encoded dimensions have been validated against
-///          @p direct_width and @p direct_height.
+///          @p direct_width and @p direct_height. Direct storage is not
+///          transactional: later EOI or trailing-data failure can leave decoded
+///          bytes in the caller's buffer even though the function returns zero.
+///          On ordinary output, success transfers malloc ownership through
+///          @p out_pixels; failure clears all three output values.
 /// @param data Pointer to JPEG data.
 /// @param len Length of @p data.
 /// @param out_pixels Receives malloc-owned RGBA32 pixels on success.
@@ -1196,7 +1303,19 @@ jpeg_fail:
     return 0;
 }
 
-/// @brief Decode a JPEG image from a memory buffer to malloc-owned raw RGBA32 pixels.
+/// @brief Decode baseline JPEG bytes to malloc-owned raw RGBA32 pixels.
+/// @details Supports one-component grayscale and three-component YCbCr,
+///          restart intervals, common sampling factors, and EXIF orientations.
+///          Output words use canonical opaque `0xRRGGBBFF`. On failure the
+///          output pointer is null and dimensions are zero.
+/// @param data Borrowed encoded JPEG bytes beginning with SOI.
+/// @param len Number of readable bytes in @p data.
+/// @param out_pixels Receives malloc-owned RGBA words on success; the caller
+///        releases them with `free()`.
+/// @param out_width Receives the post-orientation width on success.
+/// @param out_height Receives the post-orientation height on success.
+/// @return Nonzero on success; zero for invalid arguments, corrupt or
+///         unsupported input, bounds failure, or allocation failure.
 int rt_jpeg_decode_buffer_rgba32(const uint8_t *data,
                                  size_t len,
                                  uint32_t **out_pixels,
@@ -1211,6 +1330,18 @@ int rt_jpeg_decode_buffer_rgba32(const uint8_t *data,
 ///          @c rt_jpeg_decode_buffer_rgba32 when a caller already owns a frame-sized
 ///          destination. The destination is only accepted for non-orienting JPEGs
 ///          whose encoded dimensions exactly match @p dst_width and @p dst_height.
+///          Output words are opaque `0xRRGGBBFF`. A zero return does not
+///          promise to preserve destination contents because structural
+///          validation continues after scan reconstruction.
+/// @param data Borrowed encoded JPEG bytes beginning with SOI.
+/// @param len Number of readable bytes in @p data.
+/// @param dst_pixels Caller-owned destination with room for
+///        `dst_width * dst_height` words.
+/// @param dst_width Required encoded width.
+/// @param dst_height Required encoded height.
+/// @return Nonzero on complete success; zero for invalid arguments,
+///         dimension mismatch, orientation requirements, corrupt or
+///         unsupported input, or bounds failure.
 int rt_jpeg_decode_buffer_into_rgba32(
     const uint8_t *data, size_t len, uint32_t *dst_pixels, int64_t dst_width, int64_t dst_height) {
     uint32_t *unused_pixels = NULL;
@@ -1229,10 +1360,14 @@ int rt_jpeg_decode_buffer_into_rgba32(
                                            dst_height);
 }
 
-/// @brief Decode a JPEG image from a memory buffer.
+/// @brief Decode JPEG bytes into a new GC-managed Pixels object.
+/// @details Uses the malloc-owned raw decoder, validates the returned pixel
+///          count again, copies canonical words into embedded Pixels storage,
+///          and frees the intermediate buffer on every path.
 /// @param data Pointer to JPEG data (must start with 0xFFD8 SOI marker).
 /// @param len Length of data in bytes.
-/// @return New Pixels object, or NULL on failure. Caller does NOT free data.
+/// @return New caller-owned Pixels object, or NULL on failure. The borrowed
+///         encoded @p data is never freed.
 void *rt_jpeg_decode_buffer(const uint8_t *data, size_t len) {
     uint32_t *raw_pixels = NULL;
     int64_t width = 0;
@@ -1255,7 +1390,15 @@ void *rt_jpeg_decode_buffer(const uint8_t *data, size_t len) {
     return pixels;
 }
 
-/// @brief Load a JPEG image from a file path (wrapper around rt_jpeg_decode_buffer).
+/// @brief Load a bounded baseline JPEG file into a Pixels object.
+/// @details Reads at most 256 MiB through the UTF-8 stdio adapter, decodes at
+///          most `JPEG_MAX_PIXELS`, and reports missing, unreadable, too-large,
+///          unsupported-variant, or corrupt outcomes through the asset-error
+///          context. Temporary file and raw RGBA buffers are always released.
+/// @param path Runtime string handle naming the UTF-8 input path; null or an
+///        invalid string traps.
+/// @return A caller-owned GC-managed Pixels handle on success; null on load,
+///         decode, bounds, or allocation failure.
 void *rt_pixels_load_jpeg(void *path) {
     rt_asset_error_begin_load();
     if (!path) {

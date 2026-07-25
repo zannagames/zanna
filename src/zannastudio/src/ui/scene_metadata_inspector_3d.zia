@@ -19,6 +19,8 @@
 
 module scene_metadata_inspector_3d;
 
+bind "inspector_rows";
+
 bind GUI = Zanna.GUI;
 bind SceneNode = Zanna.Graphics3D.SceneNode;
 bind Seq = Zanna.Collections.Seq;
@@ -90,8 +92,7 @@ class SceneMetadataInspector3D {
         keyInput.SetAccessibleName("Node metadata key");
         keyInput.SetPlaceholder("Metadata key");
 
-        var valueRow = GUI.HBox.New();
-        valueRow.SetSpacing(4.0);
+        var valueRow = inspector_rows.NewWrapRow();
         group.AddChild(valueRow);
         typeDropdown = GUI.Dropdown.New(valueRow);
         typeDropdown.SetAccessibleName("Node metadata type");
@@ -106,8 +107,7 @@ class SceneMetadataInspector3D {
         valueInput.SetPlaceholder("Metadata value");
         valueInput.SetFlex(1.0);
 
-        var actions = GUI.HBox.New();
-        actions.SetSpacing(4.0);
+        var actions = inspector_rows.NewWrapRow();
         group.AddChild(actions);
         newButton = GUI.Button.New(actions, "New");
         newButton.SetTooltip("Clear the fields to add node metadata");

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_pixels_transform.c
+// File: src/runtime/graphics/2d/rt_pixels_transform.c
 // Purpose: Geometric transforms and image processing effects for
 //   Zanna.Graphics.Pixels. Includes flips, rotations (90/180/arbitrary),
 //   scaling, color inversion, grayscale conversion, tinting, box blur,
@@ -13,21 +13,36 @@
 //
 // Key invariants:
 //   - All transforms return a NEW Pixels object; the source is never modified.
-//   - Arbitrary rotation uses bilinear interpolation for quality.
+//   - Interpolation and blur operate in premultiplied-alpha space before
+//     returning canonical straight-alpha pixels, preventing transparent-edge
+//     color bleed.
+//   - Arbitrary rotation uses bilinear interpolation and transparent samples
+//     beyond the source bounds.
 //   - Box blur uses separable convolution (horizontal then vertical); the kernel
 //     is a uniform (2r+1) box, not a Gaussian.
-//   - Resize uses bilinear interpolation with proper subpixel addressing.
+//   - Resize uses endpoint-aligned bilinear interpolation for mild changes and
+//     a source-footprint box average when either destination axis is strictly
+//     less than half its source axis.
 //   - Pixel format is 32-bit RGBA: 0xRRGGBBAA in row-major order.
 //
 // Ownership/Lifetime:
 //   - Returned Pixels objects are GC-managed via pixels_alloc().
-//   - Temporary buffers (blur kernel, etc.) are malloc/freed within each function.
+//   - Temporary maps and intermediate images are malloc/freed within the
+//     owning transform.
 //
-// Links: src/runtime/graphics/rt_pixels_internal.h (shared struct),
-//        src/runtime/graphics/rt_pixels.c (core operations),
-//        src/runtime/graphics/rt_pixels.h (public API)
+// Links: src/runtime/graphics/2d/rt_pixels_internal.h (shared representation),
+//        src/runtime/graphics/2d/rt_pixels.c (core operations),
+//        src/runtime/graphics/2d/rt_pixels.h (public API)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements non-mutating Pixels transforms, resampling, and effects.
+///
+/// Every public operation validates the source handle and publishes a distinct
+/// GC-managed result. Geometry and allocation sizes are overflow-checked;
+/// helpers use extended or fixed-point arithmetic where endpoint mapping and
+/// extreme dimensions would otherwise lose definition.
 
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
@@ -46,6 +61,8 @@
 /// @brief Clamp an int64_t to the [0, 255] range and return as uint8_t.
 /// @details Used when converting premultiplied-alpha intermediate values back to
 ///   straight-alpha 8-bit channels after bilinear interpolation or blur passes.
+/// @param value Channel value to clamp.
+/// @return @p value saturated to the unsigned eight-bit range.
 static uint8_t pixels_clamp_u8_i64(int64_t value) {
     if (value <= 0)
         return 0;
@@ -201,10 +218,10 @@ static uint32_t pixels_average_rgba_premul(int64_t sum_premul_r,
     return pixels_pack_rgba_pm(premul_r, premul_g, premul_b, a);
 }
 
-/// @brief Map a destination pixel index to the corresponding nearest-neighbor source index.
-/// @details Computes floor(dst * (src_size - 1) / (dst_size - 1)), clamped to
-///   [0, src_size - 1], so the first and last destination pixels exactly sample
-///   the first and last source pixels.
+/// @brief Map a destination index to its nearest endpoint-aligned source index.
+/// @details Computes `dst * (src_size - 1) / (dst_size - 1)`, rounds to the
+///   closest integer, and clamps to `[0, src_size - 1]`, so the first and last
+///   destination pixels exactly sample the first and last source pixels.
 ///   Used by the nearest-neighbor scale pass (rt_pixels_scale).  Long double arithmetic
 ///   avoids integer rounding errors on large images.
 /// @param dst       Destination pixel coordinate (0-based).
@@ -253,6 +270,8 @@ static int64_t pixels_map_fixed_256(int64_t dst, int64_t src_size, int64_t dst_s
 ///          and produces no output). A zero-or-fraction extent rounds up to 1
 ///          so degenerate inputs still return a 1-pixel buffer rather than
 ///          allocating a 0-byte array.
+/// @param extent Non-negative finite output extent to ceiling-round.
+/// @param out Receives a pixel count of at least one on success.
 /// @return 1 on success (out written), 0 if @p extent is invalid or overflows i64.
 static int8_t pixels_long_double_extent_to_i64(long double extent, int64_t *out) {
     if (!out || !isfinite(extent) || extent < 0.0L)
@@ -310,7 +329,12 @@ static int8_t pixels_transform_checked_layout(const rt_pixels_impl *p,
     return 1;
 }
 
-/// @brief Mirror the pixel buffer horizontally (left↔right). Returns a new Pixels.
+/// @brief Return a horizontally mirrored copy of a Pixels buffer.
+/// @details Reverses columns within every row while preserving dimensions and
+///          exact RGBA words. Empty dimensions produce a valid empty copy.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @return A distinct caller-owned Pixels handle, or null after invalid input
+///         or allocation failure.
 void *rt_pixels_flip_h(void *pixels) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.FlipH: null pixels");
     if (!p)
@@ -333,7 +357,12 @@ void *rt_pixels_flip_h(void *pixels) {
     return result;
 }
 
-/// @brief Mirror the pixel buffer vertically (top↔bottom). Returns a new Pixels.
+/// @brief Return a vertically mirrored copy of a Pixels buffer.
+/// @details Copies complete rows in reverse order after validating row-byte
+///          arithmetic. Dimensions and exact RGBA words are preserved.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @return A distinct caller-owned Pixels handle, or null after validation,
+///         layout, or allocation failure.
 void *rt_pixels_flip_v(void *pixels) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.FlipV: null pixels");
     if (!p)
@@ -357,7 +386,12 @@ void *rt_pixels_flip_v(void *pixels) {
     return result;
 }
 
-/// @brief Rotate 90° clockwise. Returns a NEW Pixels (dimensions swap: w×h → h×w).
+/// @brief Return a copy rotated 90 degrees clockwise.
+/// @details Maps source coordinates to the swapped `height`-by-`width`
+///          destination without interpolation, preserving exact RGBA words.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @return A distinct caller-owned Pixels handle with swapped dimensions, or
+///         null after invalid input or allocation failure.
 void *rt_pixels_rotate_cw(void *pixels) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.RotateCW: null pixels");
     if (!p)
@@ -382,7 +416,12 @@ void *rt_pixels_rotate_cw(void *pixels) {
     return result;
 }
 
-/// @brief Rotate 90° counter-clockwise. Returns a NEW Pixels (dimensions swap).
+/// @brief Return a copy rotated 90 degrees counter-clockwise.
+/// @details Maps source coordinates to the swapped `height`-by-`width`
+///          destination without interpolation, preserving exact RGBA words.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @return A distinct caller-owned Pixels handle with swapped dimensions, or
+///         null after invalid input or allocation failure.
 void *rt_pixels_rotate_ccw(void *pixels) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.RotateCCW: null pixels");
     if (!p)
@@ -408,7 +447,12 @@ void *rt_pixels_rotate_ccw(void *pixels) {
     return result;
 }
 
-/// @brief Rotate 180° (equivalent to flip-h then flip-v). Returns a NEW Pixels.
+/// @brief Return a copy rotated 180 degrees.
+/// @details Reverses the complete row-major word sequence, equivalent to
+///          horizontal and vertical mirroring while preserving dimensions.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @return A distinct caller-owned Pixels handle, or null after validation,
+///         layout, or allocation failure.
 void *rt_pixels_rotate_180(void *pixels) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.Rotate180: null pixels");
     if (!p)
@@ -433,9 +477,19 @@ void *rt_pixels_rotate_180(void *pixels) {
     return result;
 }
 
-/// @brief Rotate by an arbitrary `angle_degrees` (positive = clockwise). Output Pixels
-/// is sized to fit the rotated rectangle; corners outside become transparent. Bilinear sampling
-/// for smooth interpolation. Returns a NEW Pixels.
+/// @brief Return a copy rotated clockwise by an arbitrary angle.
+/// @details Normalizes finite @p angle_degrees modulo 360. Values within
+///          0.001 degrees of a cardinal orientation use exact copy or
+///          quarter-turn paths. Other angles allocate the ceiling-rounded
+///          axis-aligned bounds of the rotated pixel-center rectangle and
+///          inverse-map each destination sample with premultiplied-alpha
+///          bilinear interpolation; source neighbors beyond the image are
+///          transparent black. A source with either empty dimension produces
+///          a 0-by-0 result.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @param angle_degrees Clockwise angle in degrees; non-finite input traps.
+/// @return A distinct caller-owned Pixels handle, or null when validation,
+///         dimension calculation, or allocation fails.
 void *rt_pixels_rotate(void *pixels, double angle_degrees) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.Rotate: null pixels");
     if (!p)
@@ -576,8 +630,16 @@ void *rt_pixels_rotate(void *pixels, double angle_degrees) {
     return result;
 }
 
-/// @brief Resize via nearest-neighbor sampling to (`new_width`, `new_height`). Returns a NEW
-/// Pixels. Use `_resize` for bilinear filtering.
+/// @brief Resize to positive dimensions with nearest-neighbor sampling.
+/// @details Endpoint-aligned mapping makes destination corners sample source
+///          corners exactly. A source with either empty dimension produces a
+///          transparent result of the requested size. An X-coordinate map is
+///          precomputed for reuse across destination rows.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @param new_width Positive destination width.
+/// @param new_height Positive destination height.
+/// @return A distinct caller-owned Pixels handle, or null for non-positive
+///         dimensions, map-size overflow, or allocation failure.
 void *rt_pixels_scale(void *pixels, int64_t new_width, int64_t new_height) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.Scale: null pixels");
     if (!p)
@@ -630,8 +692,12 @@ void *rt_pixels_scale(void *pixels, int64_t new_width, int64_t new_height) {
 // Image Processing
 //=============================================================================
 
-/// @brief Negate every RGB channel (255 - r, 255 - g, 255 - b). Alpha preserved.
-/// Returns a NEW Pixels.
+/// @brief Return a copy with every RGB channel inverted.
+/// @details Replaces each color channel with `255 - channel` while preserving
+///          alpha and dimensions exactly.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @return A distinct caller-owned Pixels handle, or null after layout or
+///         allocation failure.
 void *rt_pixels_invert(void *pixels) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.Invert: null pixels");
     if (!p)
@@ -660,8 +726,12 @@ void *rt_pixels_invert(void *pixels) {
     return result;
 }
 
-/// @brief Convert to grayscale using ITU-R BT.601 luma weights (0.299 R + 0.587 G + 0.114 B).
-/// Returns a NEW Pixels with the luma value replicated to R/G/B; alpha preserved.
+/// @brief Return a BT.601-luma grayscale copy.
+/// @details Computes rounded integer luma as `(77R + 150G + 29B + 128) >> 8`,
+///          replicates it to RGB, and preserves source alpha and dimensions.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @return A distinct caller-owned Pixels handle, or null after layout or
+///         allocation failure.
 void *rt_pixels_grayscale(void *pixels) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.Grayscale: null pixels");
     if (!p)
@@ -693,9 +763,15 @@ void *rt_pixels_grayscale(void *pixels) {
     return result;
 }
 
-/// @brief Multiply each pixel by `color` (per-channel modulation, 8-bit normalized). Useful for
-/// hue shifts, color-coded variants. Alpha is multiplied when `color` carries an alpha channel.
-/// Returns a NEW Pixels.
+/// @brief Return a per-channel multiply-tinted copy.
+/// @details Canvas `0x00RRGGBB` supplies opaque tint alpha. Untagged raw
+///          `0xRRGGBBAA` and tagged runtime `Color.RGBA` supply all four
+///          modulation channels. Each result channel uses integer
+///          `(source * tint) / 255`; dimensions are preserved.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @param color Canvas RGB, raw Pixels RGBA, or tagged runtime color.
+/// @return A distinct caller-owned Pixels handle, or null after layout or
+///         allocation failure.
 void *rt_pixels_tint(void *pixels, int64_t color) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.Tint: null pixels");
     if (!p)
@@ -748,8 +824,16 @@ void *rt_pixels_tint(void *pixels, int64_t color) {
     return result;
 }
 
-/// @brief Box blur with a (2*radius+1)-wide kernel applied separately on X then Y for
-/// O(n*radius) cost. Larger radius = softer image; radius 0 returns a copy. Returns a NEW Pixels.
+/// @brief Return a separable premultiplied-alpha box-blurred copy.
+/// @details Applies a uniform horizontal window followed by a uniform vertical
+///          window for `O(width * height * radius)` work. Edge windows average
+///          only in-bounds samples. A non-positive radius returns a clone and
+///          values above ten clamp to ten. Empty images preserve their
+///          dimensions. The temporary horizontal-pass image is always freed.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @param radius Requested half-width of each one-dimensional box window.
+/// @return A distinct caller-owned Pixels handle, or null after layout,
+///         temporary-storage, or result allocation failure.
 void *rt_pixels_blur(void *pixels, int64_t radius) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.Blur: null pixels");
     if (!p)
@@ -832,9 +916,18 @@ void *rt_pixels_blur(void *pixels, int64_t radius) {
     return result;
 }
 
-/// @brief Resize via bilinear filtering, switching to an area (box) filter for large
-/// downscales (>2x on either axis) so shrunk images don't alias. Use `_scale` for
-/// nearest-neighbor sampling when preserving hard pixel edges. Returns a NEW Pixels.
+/// @brief Resize with alpha-correct bilinear or source-footprint filtering.
+/// @details When either requested axis is strictly less than integer
+///          `source_axis / 2`, each destination pixel averages all source
+///          texels in its integer footprint in premultiplied-alpha space.
+///          Other downscales and all upscales use endpoint-aligned 8.8
+///          fixed-point bilinear interpolation. A source with either empty
+///          dimension produces a transparent result of the requested size.
+/// @param pixels Opaque source Pixels handle; null or invalid input traps.
+/// @param new_width Positive destination width.
+/// @param new_height Positive destination height.
+/// @return A distinct caller-owned Pixels handle, or null for non-positive
+///         dimensions or allocation failure.
 void *rt_pixels_resize(void *pixels, int64_t new_width, int64_t new_height) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.Resize: null pixels");
     if (!p)

@@ -114,12 +114,15 @@ static void groupbox_arrange(vg_widget_t *widget, float x, float y, float width,
     float content_w = width - pad * 2.0f;
     if (content_w < 0.0f)
         content_w = 0.0f;
-    float cy = y + groupbox_title_height(gb);
+    // Children are stored parent-relative like every flow container: the
+    // painters and vg_widget_get_screen_bounds sum ancestor origins, so
+    // including this card's own (x, y) here would double-offset the content.
+    float cy = groupbox_title_height(gb);
     for (vg_widget_t *c = widget->first_child; c; c = c->next_sibling) {
         if (!c->visible)
             continue;
         float ch = c->measured_height;
-        vg_widget_arrange(c, x + pad, cy, content_w, ch);
+        vg_widget_arrange(c, pad, cy, content_w, ch);
         cy += ch + gb->spacing;
     }
 }

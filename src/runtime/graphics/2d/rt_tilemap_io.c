@@ -5,22 +5,28 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_tilemap_io.c
+// File: src/runtime/graphics/2d/rt_tilemap_io.c
 // Purpose: File I/O (JSON save/load, CSV import), duration-aware animation
 // persistence, and auto-tiling for tilemaps.
 //
 // Key invariants:
 //   - JSON format version 1 retains layers, imported layout, collision,
 //     properties, and animation durations while accepting legacy omissions.
-//   - CSV import creates a single-layer tilemap from comma-separated values.
-//   - Auto-tiling uses 4-bit neighbor bitmask (up|right|down|left) → 16 variants.
-//   - Tile properties are stored in a flat array indexed by tile ID.
+//   - JSON numeric fields that control identity/shape must convert exactly to
+//     int64 and files are bounded to 256 MiB.
+//   - Saving is transactional through a temporary file and atomic-style replace.
+//   - CSV import requires a rectangular nonempty grid of strict integer fields.
+//   - Auto-tiling rewrites the base layer from a two-pass 4-bit N/E/S/W mask.
+//   - Tile properties are bounded fixed storage indexed by raw tile ID.
 //
 // Ownership/Lifetime:
 //   - LoadFromFile/LoadCSV return newly allocated tilemaps.
-//   - Property storage is embedded in the tilemap struct.
+//   - Deserialized Pixels are transferred into Tilemap-owned base/layer slots.
+//   - Temporary Maps, Seqs, strings, buffers, and failed partial tilemaps are
+//     released on every cleanup path. Property/rule storage is embedded.
 //
-// Links: rt_tilemap.h, rt_json.h, rt_csv.h,
+// Links: src/runtime/graphics/2d/rt_tilemap.h,
+//   src/runtime/graphics/2d/rt_tilemap_internal.h,
 //   docs/adr/0144-complete-tiled-map-import.md
 //
 //===----------------------------------------------------------------------===//
@@ -80,6 +86,8 @@ static int tmio_read_exact(FILE *f, void *data, size_t len) {
 
 /// @brief Validate-and-return a Tilemap pointer; NULL for NULL or wrong class.
 /// @details Soft check used by every public Tilemap I/O entry point.
+/// @param tm Candidate opaque Tilemap handle.
+/// @return Validated implementation pointer, or `NULL` for invalid input.
 static rt_tilemap_impl *tilemap_io_checked(void *tm) {
     if (!tm || !rt_obj_is_instance(tm, RT_TILEMAP_CLASS_ID, sizeof(rt_tilemap_impl)))
         return NULL;
@@ -94,6 +102,7 @@ static rt_tilemap_impl *tilemap_io_checked(void *tm) {
 ///          reference, and writes NULL into @p *slot so a subsequent reload
 ///          cannot accidentally double-free. NULL @p slot or NULL @c *slot
 ///          are no-ops.
+/// @param slot Address of an owned runtime-object pointer.
 static void tilemap_io_release_ref(void **slot) {
     if (!slot || !*slot)
         return;
@@ -124,6 +133,12 @@ static int tilemap_io_grid_supported(int64_t width, int64_t height) {
 /// @brief Set the tile property of the tilemap.
 /// @details Keys that exceed the fixed on-object storage slot are rejected so
 ///          two distinct long keys cannot collapse to the same truncated name.
+///          Existing keys are updated; new keys are ignored when the per-tile
+///          table is full.
+/// @param tm Candidate Tilemap handle.
+/// @param tile_index Index in the fixed tile-property table.
+/// @param key Borrowed case-sensitive runtime key.
+/// @param value Signed value to store.
 void rt_tilemap_set_tile_property(void *tm, int64_t tile_index, rt_string key, int64_t value) {
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
     if (!tilemap || tile_index < 0 || tile_index >= MAX_TILE_PROPS || !key)
@@ -155,6 +170,11 @@ void rt_tilemap_set_tile_property(void *tm, int64_t tile_index, rt_string key, i
 /// @brief Look up a custom integer property attached to tile `tile_index` (e.g., "damage",
 /// "speed_modifier"). Returns `default_val` if the tile has no such property or inputs are
 /// invalid. Properties are stored per-tile-type (not per-cell), max 8 keys per tile.
+/// @param tm Candidate Tilemap handle.
+/// @param tile_index Index in the fixed tile-property table.
+/// @param key Borrowed case-sensitive runtime key.
+/// @param default_val Fallback for invalid input or an absent key.
+/// @return Stored value when present, otherwise @p default_val.
 int64_t rt_tilemap_get_tile_property(void *tm,
                                      int64_t tile_index,
                                      rt_string key,
@@ -176,7 +196,11 @@ int64_t rt_tilemap_get_tile_property(void *tm,
     return default_val;
 }
 
-/// @brief Has the tile property of the tilemap.
+/// @brief Test whether a tile type has a case-sensitive integer property.
+/// @param tm Candidate Tilemap handle.
+/// @param tile_index Index in the fixed tile-property table.
+/// @param key Borrowed runtime key.
+/// @return `1` when present, otherwise `0`.
 int8_t rt_tilemap_has_tile_property(void *tm, int64_t tile_index, rt_string key) {
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
     if (!tilemap || tile_index < 0 || tile_index >= MAX_TILE_PROPS || !key)
@@ -199,7 +223,11 @@ int8_t rt_tilemap_has_tile_property(void *tm, int64_t tile_index, rt_string key)
 // Auto-Tiling
 //=============================================================================
 
-/// Find or create an autotile rule for a base tile
+/// @brief Find an existing auto-tile rule or allocate a default active slot.
+/// @details New rules initially map all 16 masks back to @p base_tile.
+/// @param tilemap Valid Tilemap implementation.
+/// @param base_tile Raw tile identifier used as the rule key.
+/// @return Borrowed rule pointer, or `NULL` when the fixed table is full.
 static autotile_rule *find_or_create_rule(rt_tilemap_impl *tilemap, int64_t base_tile) {
     for (int32_t i = 0; i < tilemap->autotile_count; i++) {
         if (tilemap->autotile_rules[i].base_tile == base_tile)
@@ -220,6 +248,16 @@ static autotile_rule *find_or_create_rule(rt_tilemap_impl *tilemap, int64_t base
 /// `vN` is the tile index to use for one of the 16 neighbor-bitmask cases. Pair with
 /// `_set_autotile_hi` to cover variants 8..15. Splits across two calls because the runtime ABI
 /// caps function args at 8.
+/// @param tm Candidate Tilemap handle.
+/// @param base_tile Rule key and default for newly allocated variants.
+/// @param v0 Replacement for mask 0.
+/// @param v1 Replacement for mask 1.
+/// @param v2 Replacement for mask 2.
+/// @param v3 Replacement for mask 3.
+/// @param v4 Replacement for mask 4.
+/// @param v5 Replacement for mask 5.
+/// @param v6 Replacement for mask 6.
+/// @param v7 Replacement for mask 7.
 void rt_tilemap_set_autotile_lo(void *tm,
                                 int64_t base_tile,
                                 int64_t v0,
@@ -250,6 +288,16 @@ void rt_tilemap_set_autotile_lo(void *tm,
 /// @brief Register the *high half* (variants 8..15) of an autotile rule for `base_tile`. The
 /// 16 entries jointly cover every neighbor pattern (4-bit bitmask of N/E/S/W or NW/NE/SW/SE
 /// adjacency). Marks the rule active so `_apply_autotile_region` will start substituting tiles.
+/// @param tm Candidate Tilemap handle.
+/// @param base_tile Rule key and default for newly allocated variants.
+/// @param v8 Replacement for mask 8.
+/// @param v9 Replacement for mask 9.
+/// @param v10 Replacement for mask 10.
+/// @param v11 Replacement for mask 11.
+/// @param v12 Replacement for mask 12.
+/// @param v13 Replacement for mask 13.
+/// @param v14 Replacement for mask 14.
+/// @param v15 Replacement for mask 15.
 void rt_tilemap_set_autotile_hi(void *tm,
                                 int64_t base_tile,
                                 int64_t v8,
@@ -277,7 +325,9 @@ void rt_tilemap_set_autotile_hi(void *tm,
     r->active = 1;
 }
 
-/// @brief Clear the autotile of the tilemap.
+/// @brief Deactivate an auto-tile rule without reclaiming its fixed slot.
+/// @param tm Candidate Tilemap handle.
+/// @param base_tile Rule key to deactivate.
 void rt_tilemap_clear_autotile(void *tm, int64_t base_tile) {
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
     if (!tilemap)
@@ -291,6 +341,8 @@ void rt_tilemap_clear_autotile(void *tm, int64_t base_tile) {
 }
 
 /// @brief Find the active autotile rule whose `base_tile` exactly matches `tile`.
+/// @param tilemap Valid Tilemap implementation.
+/// @param tile Raw base tile identifier.
 /// @return Pointer to the matching rule, or NULL if no rule is registered for this base tile.
 static autotile_rule *find_rule(rt_tilemap_impl *tilemap, int64_t tile) {
     for (int32_t i = 0; i < tilemap->autotile_count; i++) {
@@ -306,6 +358,9 @@ static autotile_rule *find_rule(rt_tilemap_impl *tilemap, int64_t tile) {
 ///   be counted as connected. Without variant checking, placing any variant (e.g., the
 ///   corners or edge variants) next to another tile of the same type would break the
 ///   connectivity mask because the neighbour would no longer equal `base` exactly.
+/// @param tilemap Tilemap containing active rules.
+/// @param tile Candidate neighboring identifier.
+/// @param base Canonical rule identifier.
 /// @return 1 if the tiles are considered the same autotile type, 0 otherwise.
 static int8_t is_same_base(rt_tilemap_impl *tilemap, int64_t tile, int64_t base) {
     if (tile == base)
@@ -325,6 +380,8 @@ static int8_t is_same_base(rt_tilemap_impl *tilemap, int64_t tile, int64_t base)
 /// @details First tries an exact base_tile match via find_rule; on failure scans all active
 ///          rules' 16-slot variant arrays. Used when placing any variant of an autotile set,
 ///          not just the canonical base tile.
+/// @param tilemap Tilemap containing active rules.
+/// @param tile Base or variant identifier to classify.
 /// @return Pointer to the governing autotile rule, or NULL if tile belongs to no active set.
 static autotile_rule *find_rule_for_tile(rt_tilemap_impl *tilemap, int64_t tile) {
     autotile_rule *rule = find_rule(tilemap, tile);
@@ -341,7 +398,15 @@ static autotile_rule *find_rule_for_tile(rt_tilemap_impl *tilemap, int64_t tile)
     return NULL;
 }
 
-/// @brief Apply the autotile region of the tilemap.
+/// @brief Apply active four-neighbor auto-tile rules to a clipped base-layer region.
+/// @details Reads all outcomes into temporary storage before writing so traversal
+///          order cannot affect connectivity. Mask bits are up=1, right=2,
+///          down=4, and left=8.
+/// @param tm Candidate Tilemap handle.
+/// @param rx Requested first logical column.
+/// @param ry Requested first logical row.
+/// @param rw Requested width.
+/// @param rh Requested height.
 void rt_tilemap_apply_autotile_region(void *tm, int64_t rx, int64_t ry, int64_t rw, int64_t rh) {
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
     if (!tilemap)
@@ -407,7 +472,8 @@ void rt_tilemap_apply_autotile_region(void *tm, int64_t rx, int64_t ry, int64_t 
     free(resolved);
 }
 
-/// @brief Apply the autotile of the tilemap.
+/// @brief Apply active auto-tile rules across the complete base layer.
+/// @param tm Candidate Tilemap handle.
 void rt_tilemap_apply_autotile(void *tm) {
     if (!tm)
         return;
@@ -422,6 +488,9 @@ void rt_tilemap_apply_autotile(void *tm) {
 /// @details Accepts boxed i64 values directly and boxed f64 values only when they are
 ///          finite, integral, and within JSON's exact integer range. This prevents
 ///          dimensions, tile IDs, and animation indices from being silently rounded.
+/// @param boxed Candidate runtime numeric box.
+/// @param out Required destination for the exact integer.
+/// @return `1` on exact conversion, otherwise `0`.
 static int8_t boxed_to_i64_exact(void *boxed, int64_t *out) {
     int64_t i64_value;
     double f64_value;
@@ -446,6 +515,10 @@ static int8_t boxed_to_i64_exact(void *boxed, int64_t *out) {
 /// @details Returns 1 only for exact boxed integers or finite integral doubles in
 ///          JSON's safe integer range. This is the strict path used for dimensions
 ///          and tile IDs where silent coercion would corrupt a tilemap.
+/// @param map Runtime Map to query.
+/// @param key Required NUL-terminated key.
+/// @param out Required exact-integer destination.
+/// @return `1` when the key exists as an exactly convertible number.
 static int8_t map_get_i64_checked(void *map, const char *key, int64_t *out) {
     if (!map || !key || !out)
         return 0;
@@ -455,6 +528,9 @@ static int8_t map_get_i64_checked(void *map, const char *key, int64_t *out) {
 /// @brief Read an optional integral numeric value from a JSON map, defaulting to zero.
 /// @details Compatibility wrapper for optional metadata. Invalid or missing values
 ///          return zero so legacy files with absent optional fields still load.
+/// @param map Runtime Map to query.
+/// @param key NUL-terminated key.
+/// @return Exact stored integer, or `0` when absent/invalid.
 static int64_t map_get_i64(void *map, const char *key) {
     int64_t value = 0;
     (void)map_get_i64_checked(map, key, &value);
@@ -465,6 +541,10 @@ static int64_t map_get_i64(void *map, const char *key) {
 /// @details Both JSON integer and floating-point boxes are accepted. Non-numeric,
 ///          non-finite, and missing values are rejected so imported projection
 ///          metadata cannot inject undefined coordinate arithmetic.
+/// @param map Runtime Map to query.
+/// @param key Required NUL-terminated key.
+/// @param out Required finite-double destination.
+/// @return `1` for a present finite numeric value, otherwise `0`.
 static int8_t map_get_f64_checked(void *map, const char *key, double *out) {
     if (!map || !key || !out)
         return 0;
@@ -478,6 +558,7 @@ static int8_t map_get_f64_checked(void *map, const char *key, double *out) {
 /// @brief Create a Seq that owns its elements so they are released when the Seq
 ///        is collected. Used for the per-serialized-object pixel data arrays so the
 ///        boxed integer elements are freed along with the containing sequence.
+/// @return A caller-owned Seq configured to own elements, or `NULL` on allocation failure.
 static void *seq_new_owned(void) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -490,6 +571,9 @@ static void *seq_new_owned(void) {
 ///          avoid a leak. tilemap_io_release_ref handles refcount 0 by freeing.
 ///          NULL @p value is treated as "skip" so the map never contains NULL
 ///          entries.
+/// @param map Destination runtime Map.
+/// @param key NUL-terminated destination key.
+/// @param value Caller-owned runtime object whose local reference is consumed.
 static void map_set_owned(void *map, const char *key, void *value) {
     if (!map || !value)
         return;
@@ -502,6 +586,8 @@ static void map_set_owned(void *map, const char *key, void *value) {
 ///          tilemap load when each parsed tile/layer/object is appended into
 ///          its parent sequence and the loader's temporary reference must be
 ///          released afterward.
+/// @param seq Destination runtime Seq.
+/// @param value Caller-owned runtime object whose local reference is consumed.
 static void seq_push_owned(void *seq, void *value) {
     if (!seq || !value)
         return;
@@ -512,6 +598,9 @@ static void seq_push_owned(void *seq, void *value) {
 /// @brief Box and append an integer to an owning Seq.
 /// @details Centralizes the `rt_box_i64` allocation check so JSON serialization can
 ///          fail cleanly when trap hooks return after an allocation failure.
+/// @param seq Destination owning Seq.
+/// @param value Signed integer to box and transfer.
+/// @return `1` when boxed/appended, otherwise `0`.
 static int8_t seq_push_i64_owned(void *seq, int64_t value) {
     if (!seq)
         return 0;
@@ -525,6 +614,10 @@ static int8_t seq_push_i64_owned(void *seq, int64_t value) {
 /// @brief Write exactly @p len bytes to @p f unless an I/O error occurs.
 /// @details Loops around `fwrite` so unusual streams that accept partial writes
 ///          do not cause a valid JSON buffer to be reported as fully written.
+/// @param f Open output stream.
+/// @param bytes Source byte buffer.
+/// @param len Number of bytes to write.
+/// @return `1` when every byte is written, otherwise `0`.
 static int8_t tmio_write_all(FILE *f, const char *bytes, size_t len) {
     size_t offset = 0;
     if (!f || (!bytes && len > 0))
@@ -543,6 +636,9 @@ static int8_t tmio_write_all(FILE *f, const char *bytes, size_t len) {
 /// @details `rt_string_from_bytes` allocates a new rt_string; after `rt_map_set` retains
 ///   it, the caller's reference is released via `release_check0/free`. An empty string
 ///   is substituted when @p value is NULL so the map always contains a valid entry.
+/// @param map Destination runtime Map.
+/// @param key NUL-terminated destination key.
+/// @param value NUL-terminated bytes to copy, or `NULL` for empty.
 static void map_set_string_copy(void *map, const char *key, const char *value) {
     rt_string copy = rt_string_from_bytes(value ? value : "", value ? strlen(value) : 0);
     if (!copy)
@@ -558,6 +654,8 @@ static void map_set_string_copy(void *map, const char *key, const char *value) {
 ///   JSON save file, making tilemap files self-contained. Each pixel is stored as an
 ///   int64_t to stay within JSON's safe integer range. Returns NULL for NULL input or
 ///   zero-dimension images.
+/// @param pixels Borrowed Pixels object to encode.
+/// @return A caller-owned Map blob, or `NULL` for invalid geometry/data or allocation failure.
 static void *serialize_pixels_blob(void *pixels) {
     if (!pixels)
         return NULL;
@@ -594,9 +692,11 @@ static void *serialize_pixels_blob(void *pixels) {
 /// @brief Reconstruct a Pixels object from a serialized blob map (inverse of
 ///        `serialize_pixels_blob`).
 /// @details Reads "width" and "height" from the blob, allocates a new Pixels, then
-///   copies each element of the "pixels" Seq by unboxing it as float64 and casting to
-///   uint32_t. If the Seq length does not match `width * height` the partially
-///   constructed Pixels is released and NULL is returned to signal a corrupt save file.
+///   converts each `"pixels"` element to an exact integer in the `uint32_t` range.
+///   If dimensions, sequence length, or any element is invalid, the partially
+///   constructed Pixels is released and NULL is returned.
+/// @param blob Runtime Map produced by `serialize_pixels_blob()`.
+/// @return A caller-owned Pixels object, or `NULL` for corrupt input or allocation failure.
 static void *deserialize_pixels_blob(void *blob) {
     if (!blob)
         return NULL;
@@ -638,6 +738,8 @@ static void *deserialize_pixels_blob(void *blob) {
 /// @details The tileset metrics (tileset_cols/rows, tile_count) are derived from the
 ///   image dimensions divided by the tile size, so they must be recalculated whenever
 ///   the tileset changes. Layer 0 mirrors the base tileset, so its copy is updated too.
+/// @param tm Tilemap whose owned base slot should change.
+/// @param pixels Owned deserialized Pixels to transfer, or `NULL` to clear.
 static void assign_base_tileset(rt_tilemap_impl *tm, void *pixels) {
     if (!tm)
         return;
@@ -662,6 +764,9 @@ static void assign_base_tileset(rt_tilemap_impl *tm, void *pixels) {
 ///   (e.g., background layer on a larger tileset, foreground on a smaller one).
 ///   A NULL @p pixels clears the per-layer override so the layer reverts to the
 ///   tilemap's default tileset during rendering.
+/// @param tm Tilemap containing the destination layer.
+/// @param layer Valid zero-based layer index.
+/// @param pixels Owned deserialized Pixels to transfer, or `NULL` to clear.
 static void assign_layer_tileset(rt_tilemap_impl *tm, int64_t layer, void *pixels) {
     if (!tm || layer < 0 || layer >= tm->layer_count)
         return;
@@ -683,6 +788,9 @@ static void assign_layer_tileset(rt_tilemap_impl *tm, int64_t layer, void *pixel
 ///          table is small (typically < 32 entries) so a linear scan is
 ///          cheaper than maintaining a hash. Returns NULL if no matching
 ///          animation exists or if @p tm is NULL.
+/// @param tm Candidate Tilemap implementation.
+/// @param base_tile Raw animation key.
+/// @return Borrowed animation entry, or `NULL` when absent.
 static tm_tile_anim *find_tile_anim(rt_tilemap_impl *tm, int64_t base_tile) {
     if (!tm)
         return NULL;
@@ -696,6 +804,12 @@ static tm_tile_anim *find_tile_anim(rt_tilemap_impl *tm, int64_t base_tile) {
 /// @brief Serialize the tilemap to a JSON file at `path`. Includes version (1), dimensions,
 /// tile size, every layer's data + tileset reference, tile properties, and autotile rules.
 /// Returns 1 on success, 0 on null inputs / missing path / I/O error.
+/// @details Also persists imported layout/layer metadata, collision, and complete
+///          variable-duration animation state. The destination is replaced only
+///          after a temporary file is fully written and closed.
+/// @param tm Candidate Tilemap handle.
+/// @param path Borrowed runtime string containing a UTF-8 destination path.
+/// @return `1` after successful replacement, otherwise `0`.
 int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
     if (!tilemap || !path)
@@ -967,10 +1081,14 @@ cleanup:
     return result;
 }
 
-/// @brief Load a tilemap from a `.vtile` (or compatible) file at `path`. Reads dimensions,
-/// layer data, tile properties, and autotile rules. Returns a fresh tilemap handle on success
-/// or NULL on I/O / parse failure (file missing, version mismatch, truncated). See
-/// `_save_to_file` for the binary layout.
+/// @brief Load a versioned JSON tilemap saved by `rt_tilemap_save_to_file()`.
+/// @details Reads at most 256 MiB, requires exact integral shape/identity fields,
+///          validates every grid and embedded Pixels blob, then reconstructs
+///          imported layout, layers, collision, properties, rules, and animations.
+///          Any fatal schema/allocation failure releases the partial object.
+/// @param path Borrowed runtime string containing a UTF-8 source path.
+/// @return A caller-owned Tilemap, or `NULL` for I/O, size, parse, version,
+///         schema, validation, or allocation failure.
 void *rt_tilemap_load_from_file(rt_string path) {
     if (!path)
         return NULL;
@@ -1382,6 +1500,9 @@ cleanup:
 /// @details Returns a pointer to the first non-space byte and updates @p len_io to
 ///          the trimmed length from that returned pointer. Interior whitespace is
 ///          preserved so fields like `" 12 "` still parse as 12.
+/// @param line Mutable NUL-terminated line buffer.
+/// @param len_io Required destination for trimmed length.
+/// @return Pointer within @p line to the first non-space byte.
 static char *csv_trim_line(char *line, size_t *len_io) {
     if (!line || !len_io)
         return line;
@@ -1400,6 +1521,8 @@ static char *csv_trim_line(char *line, size_t *len_io) {
 /// @brief Count comma-delimited fields on a non-empty CSV row.
 /// @details Empty rows are handled by the caller. A row with no comma has one
 ///          field; every comma adds one more field.
+/// @param line NUL-terminated trimmed row.
+/// @return Field count, or `0` for null/empty input.
 static int64_t csv_count_columns(const char *line) {
     int64_t cols = 1;
     if (!line || !*line)
@@ -1416,6 +1539,9 @@ static int64_t csv_count_columns(const char *line) {
 ///          garbage such as `12abc` are rejected so tile IDs cannot be silently
 ///          coerced. Numeric overflow preserves the legacy CSV contract by
 ///          clamping to INT64_MIN or INT64_MAX after validating the token syntax.
+/// @param field Mutable NUL-terminated field text.
+/// @param out Required destination for the parsed/clamped identifier.
+/// @return `1` for a syntactically valid integer field, otherwise `0`.
 static int8_t csv_parse_tile_field(char *field, int64_t *out) {
     if (!field || !out)
         return 0;
@@ -1445,6 +1571,14 @@ static int8_t csv_parse_tile_field(char *field, int64_t *out) {
 /// reader: first scans for max columns and row count, then allocates a single-layer tilemap of
 /// that size and parses values. Empty lines are skipped; lines longer than 16 KiB fail cleanly.
 /// Returns NULL on missing path / empty file / allocation failure.
+/// @details Every nonempty row must have the same number of fields. Whitespace
+///          around strict integer fields is accepted; malformed fields abort and
+///          release the partial Tilemap.
+/// @param path Borrowed runtime string containing a UTF-8 CSV path.
+/// @param tile_w Logical tile width passed through constructor normalization.
+/// @param tile_h Logical tile height passed through constructor normalization.
+/// @return A caller-owned one-layer Tilemap, or `NULL` for invalid input, I/O,
+///         nonrectangular/malformed data, excessive size, or allocation failure.
 void *rt_tilemap_load_csv(rt_string path, int64_t tile_w, int64_t tile_h) {
     if (!path)
         return NULL;

@@ -1,8 +1,31 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/render/rt_canvas3d_render_pass.inc  (#included from rt_canvas3d.c;
-// not a standalone translation unit) Purpose: Canvas3D shadow/main render passes and frame end
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
 //===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/render/rt_canvas3d_render_pass.inc
+// Purpose: Canvas3D shadow/main render passes, deferred submission, and frame end.
+// Key invariants:
+//   - Included only by rt_canvas3d.c; this is not a standalone translation unit.
+//   - Shadow reuse signatures include every stable input that shapes depth.
+//   - Main-pass culling never rejects draws lacking trustworthy bounds.
+// Ownership/Lifetime:
+//   - Pass helpers borrow frame-owned deferred commands and backend resources.
+//   - Canvas3D owns reusable shadow-index and auto-instancing scratch storage.
+// Links: rt_canvas3d.c, rt_canvas3d_internal.h, rt_canvas3d_occlusion.inc
+//
+//===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements Canvas3D shadow rendering, main deferred replay, and frame termination.
+/// @details The fragment selects and caches shadow casters, batches compatible
+///   opaque draws, applies conservative frustum/occlusion decisions, submits
+///   transparent and overlay work in order, and records per-pass diagnostics.
+
+/// @brief Recompute the canvas's latest backend texture-upload byte counter.
+/// @param c Canvas3D whose latest-frame diagnostic is replaced; `NULL` is ignored.
 static void canvas3d_refresh_texture_upload_bytes(rt_canvas3d *c) {
     uint64_t bytes = 0;
 
@@ -13,6 +36,7 @@ static void canvas3d_refresh_texture_upload_bytes(rt_canvas3d *c) {
 }
 
 /// @brief Recompute the canvas's latest backend GPU frame-time counter.
+/// @param c Canvas3D whose latest-frame diagnostic is replaced; `NULL` is ignored.
 static void canvas3d_refresh_frame_gpu_time(rt_canvas3d *c) {
     uint64_t us = 0;
 
@@ -83,6 +107,13 @@ static int32_t canvas3d_prepare_shadow_draw_indices(rt_canvas3d *c,
 }
 
 /// @brief Ensure the auto-instancing matrix scratch holds @p needed instance matrices.
+/// @details Grows the canvas-owned contiguous matrix array geometrically and preserves
+///   its previous allocation if growth fails. Existing matrix contents are scratch
+///   data and have no lifetime guarantee across a successful call.
+/// @param c Canvas that owns the reusable matrix scratch allocation.
+/// @param needed Positive number of 4-by-4 matrices required by the pending batch.
+/// @return Nonzero when capacity is available; zero for invalid input, overflow, or
+///   allocation failure.
 static int canvas3d_reserve_auto_instance_matrices(rt_canvas3d *c, int32_t needed) {
     int32_t new_capacity;
     float *grown;
@@ -114,6 +145,10 @@ static int canvas3d_reserve_auto_instance_matrices(rt_canvas3d *c, int32_t neede
 ///   outside the model transform pair. Only draws whose previous transform equals
 ///   the current one qualify (static this frame): the instanced path carries one
 ///   cmd-level previous matrix, so batching a mover would corrupt its motion vector.
+/// @param a First borrowed deferred mesh draw in the state-sorted opaque sequence.
+/// @param b Second borrowed deferred mesh draw to compare with @p a.
+/// @return Nonzero when both draws may be represented by one instanced backend
+///   submission; zero for null, non-mesh, mutable, or state-incompatible draws.
 static int canvas3d_draws_auto_instance_compatible(const deferred_draw_t *a,
                                                    const deferred_draw_t *b) {
     const vgfx3d_draw_cmd_t *ca;
@@ -157,6 +192,10 @@ static int canvas3d_draws_auto_instance_compatible(const deferred_draw_t *a,
 ///   weight buffers mutate in place), instanced draws (matrix payloads are
 ///   transient), and transient geometry with no stable key (per-frame temp
 ///   buffers can be reallocated at the same address with new contents).
+/// @param sig Running nonzero signature for the shadow slot; zero remains poisoned.
+/// @param dd Borrowed candidate caster whose depth-affecting state is inspected.
+/// @return Updated nonzero signature for cacheable stable content, or zero when
+///   the input is invalid or cannot be represented by a reliable reuse signature.
 static uint64_t canvas3d_shadow_hash_caster(uint64_t sig, const deferred_draw_t *dd) {
     const vgfx3d_draw_cmd_t *cmd;
     if (sig == 0 || !dd)
@@ -190,6 +229,13 @@ static uint64_t canvas3d_shadow_hash_caster(uint64_t sig, const deferred_draw_t 
 /// @brief Seed a shadow-slot signature from everything that shapes the depth pass
 ///   besides the casters: the light view-projection, target identity/resolution,
 ///   and the bias applied at shadow_end.
+/// @param c Canvas supplying the current shadow-bias configuration.
+/// @param shadow_rt Borrowed render target whose identity and depth storage
+///   participate in the cache key.
+/// @param shadow_resolution Effective pixel resolution of the target slot.
+/// @param light_vp Sixteen-element column-major light view-projection matrix.
+/// @return Nonzero signature seed, or zero when a required pointer is null or the
+///   resolution is not positive.
 static uint64_t canvas3d_shadow_slot_signature_seed(const rt_canvas3d *c,
                                                     const vgfx3d_rendertarget_t *shadow_rt,
                                                     int32_t shadow_resolution,
@@ -219,6 +265,11 @@ static uint64_t canvas3d_shadow_slot_signature_seed(const rt_canvas3d *c,
 /// @details Compares the computed signature against the slot's stored one and, on a
 ///   match, asks the backend to re-arm the persisted depth (shadow_reuse hook).
 ///   On success Canvas3D skips the whole begin/draw/end pass for the slot.
+/// @param c Canvas owning the slot cache and backend.
+/// @param slot Zero-based shadow slot to test.
+/// @param signature Complete nonzero signature for the requested slot contents.
+/// @param shadow_rt Borrowed target whose persisted depth buffer would be reused.
+/// @param light_vp Sixteen-element light view-projection matrix passed to the backend.
 /// @return 1 when the slot was reused; 0 to render normally.
 static int canvas3d_shadow_slot_try_reuse(rt_canvas3d *c,
                                           int32_t slot,
@@ -250,6 +301,15 @@ static int canvas3d_shadow_slot_try_reuse(rt_canvas3d *c,
 ///   directional light has consumed its cascade slots. The helper owns slot validation, light VP
 ///   construction, backend begin/draw/end, and writing the packed `shadow_lights` entry consumed by
 ///   main-pass light parameter patching.
+/// @param c Canvas whose next shadow slot and backend are used.
+/// @param cmds Mutable deferred draw array indexed by @p shadow_indices.
+/// @param shadow_indices Borrowed array of candidate caster indices.
+/// @param shadow_index_count Number of valid entries in @p shadow_indices.
+/// @param shadow_world_min Three-element minimum corner of the aggregate caster bounds.
+/// @param shadow_world_max Three-element maximum corner of the aggregate caster bounds.
+/// @param selected_light Borrowed light parameters to render; copied before modification.
+/// @param shadow_lights Output array of `VGFX3D_MAX_SHADOW_LIGHTS` packed light
+///   entries; the claimed slot is written on success.
 /// @return 1 when a shadow slot was rendered and `c->shadow_count` advanced, 0 otherwise.
 static int canvas3d_render_shadow_light_slot(
     rt_canvas3d *c,
@@ -388,6 +448,16 @@ static int canvas3d_render_shadow_light_slot(
 /// @details Claims VGFX3D_SHADOW_CUBE_FACES consecutive slots (atlas tiles on GPU
 ///   backends). The light entry advertises the FIRST slot with the CUBE projection
 ///   type; shaders select the face by the dominant axis of light->fragment.
+/// @param c Canvas whose consecutive shadow slots and backend are used.
+/// @param cmds Mutable deferred draw array indexed by @p shadow_indices.
+/// @param shadow_indices Borrowed array of candidate caster indices.
+/// @param shadow_index_count Number of valid entries in @p shadow_indices.
+/// @param shadow_world_min Three-element minimum corner of the aggregate caster bounds.
+/// @param shadow_world_max Three-element maximum corner of the aggregate caster bounds.
+/// @param selected_light Borrowed point-light parameters; copied before modification.
+/// @param shadow_lights Output array of `VGFX3D_MAX_SHADOW_LIGHTS` packed light
+///   entries; the base face slot is published on success.
+/// @param slot_cap Exclusive upper bound on shadow slots available to this backend.
 /// @return 1 when all six faces rendered and the light was granted, 0 otherwise.
 static int canvas3d_render_point_shadow_cube(
     rt_canvas3d *c,
@@ -506,8 +576,13 @@ static int canvas3d_render_point_shadow_cube(
 
 /// @brief Render the directional, spot, and cascaded shadow-map pass for the queued
 ///   3D draws.
-///   Extracted from rt_canvas3d_end; populates c->shadow_rts and stamps shadow params
-///   onto the draw commands. Self-contained scratch (shadow_lights/cascades).
+/// @details Populates the canvas-owned shadow targets, selects lights within the
+///   configured budget, reuses cacheable slots, and stamps the resulting shadow
+///   parameters onto main-pass commands. Unsupported or unavailable shadow work
+///   degrades to zero active shadow slots rather than consuming draw commands.
+/// @param c Canvas with an active backend and the frame's shadow configuration.
+/// @param cmds Mutable array of at least `c->draw_count` deferred commands; light
+///   parameters and shadow-slot metadata may be patched in place.
 static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
     vgfx3d_light_params_t shadow_lights[VGFX3D_MAX_SHADOW_LIGHTS];
     vgfx3d_light_params_t selected_lights[VGFX3D_MAX_SHADOW_LIGHTS];
@@ -752,6 +827,7 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
 ///   with a read-only LessEqual depth state, so after the opaque pass it shades only
 ///   pixels no opaque draw covered. The software path has no draw_skybox hook and keeps
 ///   its CPU pre-pass composite in rt_canvas3d_end.
+/// @param c Canvas whose skybox state is inspected and, when eligible, marked drawn.
 static void canvas3d_draw_backend_skybox_after_opaque(rt_canvas3d *c) {
     if (!c || c->skybox_pass_done || c->frame_is_2d || c->frame_is_view_model || !c->skybox ||
         !c->backend || !c->backend->draw_skybox)
@@ -760,8 +836,15 @@ static void canvas3d_draw_backend_skybox_after_opaque(rt_canvas3d *c) {
     c->backend->draw_skybox(c->backend_ctx, c->skybox);
 }
 
-/// @brief Render the main 3D pass: frustum/occlusion culling then opaque+blended draws.
-///   Extracted from rt_canvas3d_end; reads c->cached_vp and the queued draw commands.
+/// @brief Render the main 3D pass with visibility filtering and ordered submission.
+/// @details Applies configured frustum and hierarchical or CPU occlusion tests,
+///   submits opaque draws in depth/state order with opportunistic auto-instancing,
+///   draws the backend skybox, resolves opaque targets when needed, and finally
+///   replays transparent draws back-to-front. Allocation failures report a runtime
+///   trap and stop the remaining main-pass submission.
+/// @param c Canvas supplying cached camera state, backend hooks, and scratch storage.
+/// @param cmds Mutable array of at least `c->draw_count` deferred commands; visibility
+///   flags are updated and temporary sorted copies may be produced.
 static void canvas3d_render_main_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
     vgfx3d_frustum_t visibility_frustum;
     canvas3d_occlusion_grid_t occlusion_grid;
@@ -954,6 +1037,8 @@ static void canvas3d_render_main_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
 ///          drains temp-buffer + temp-object queues, resets `in_frame`.
 ///          Post-FX, final overlay replay, screenshots, and presentation happen
 ///          in `FinalizeFrame`, `ScreenshotFinal`, and `Flip`, not here.
+/// @param obj Canvas3D receiver or supported stack-wrapper handle. Invalid or
+///   inactive receivers are ignored; a backend-less active frame is safely reset.
 void rt_canvas3d_end(void *obj) {
     deferred_draw_t *cmds;
     int32_t queued_draw_count;

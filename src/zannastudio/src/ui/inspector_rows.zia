@@ -1,0 +1,49 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/inspector_rows.zia
+// Purpose: Shared wrapping-row builder for scene inspector panes.
+// Key invariants:
+//   - Rows report truthful wrapped measurements at the offered width, so
+//     narrow inspector panes never ratchet wider than their scroll viewport.
+//   - The builder owns no widgets; callers parent the returned row.
+// Ownership/Lifetime:
+//   - Stateless module function; the caller's widget tree owns each row.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module inspector_rows;
+
+bind GUI = Zanna.GUI;
+
+// ============================================================================
+// MODULE: inspector_rows
+// PURPOSE: One row idiom for inspector control groups. HBox rows report the
+//          sum of their children's intrinsic widths even when children could
+//          flex-shrink, which inflates scrollable panes past their viewport
+//          (content wider than a vertical pane is unreachable). Wrap-flex rows
+//          measure against the offered width instead and drop controls to the
+//          next line when the pane is narrow.
+//
+// WHERE-THIS-FITS: Both scene editors and their leaf inspectors build labeled
+//          control rows through this helper.
+// ============================================================================
+
+/// @brief Build a wrapping, vertically centered control row.
+/// @details Direction row, wrap enabled, 4px gaps: the established inspector
+///          row idiom. The caller adds the row to its parent container.
+/// @return The configured, unparented flex row.
+expose func NewWrapRow() -> GUI.Flex {
+    var row = GUI.Flex.New();
+    row.SetDirection(GUI.FlexDirection.Row);
+    row.SetWrap(GUI.FlexWrap.Wrap);
+    row.SetAlign(GUI.Align.Center);
+    row.SetGap(4.0);
+    return row;
+}

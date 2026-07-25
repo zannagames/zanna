@@ -6,16 +6,36 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/2d/rt_pixels_png.c
-// Purpose: PNG image decode/encode, including zlib inflate, unfilter, and RGBA32 conversion.
+// Purpose: Dependency-free PNG decode and encode, including checked chunk
+//   parsing, zlib/DEFLATE validation, scanline filtering, Adam7 reconstruction,
+//   palette/transparency expansion, and canonical RGBA32 conversion.
 // Key invariants:
 //   - PNG decode failures return NULL and report asset diagnostics.
+//   - Chunk extents and CRCs, legal color/bit-depth combinations, ordering,
+//     zlib headers, exact inflated sizes, and Adler-32 are validated.
+//   - Decoded images are bounded by PNG_MAX_PIXELS and compressed IDAT
+//     retention is derived from the exact filtered payload size.
+//   - Saving emits 8-bit non-interlaced RGBA, chooses the lowest-residual
+//     standard filter for each row, and transactionally replaces the path.
 //   - PNG save retains its integer success/failure contract.
 // Ownership/Lifetime:
 //   - Loaded Pixels objects are GC-managed and owned by the caller.
-//   - Temporary file/decode buffers are released before return.
-// Links: rt_pixels.h, rt_pixels_io_internal.h, rt_asset_error.h
+//   - Raw-buffer decode returns malloc-owned RGBA words to the caller.
+//   - Temporary chunk, inflate, pass, row, compression, and file buffers are
+//     released on every success and failure path.
+// Links: src/runtime/graphics/2d/rt_pixels.h (public Pixels API),
+//        src/runtime/graphics/2d/rt_pixels_io_internal.h (checked I/O),
+//        src/runtime/graphics/2d/rt_pixels_io.c (format dispatch),
+//        src/runtime/graphics/3d/assets/rt_asset_error.h (load diagnostics)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements bounded PNG decoding and transactional RGBA encoding.
+///
+/// The decoder accepts the standard PNG color types and their legal sample
+/// depths, including Adam7 input and `PLTE`/`tRNS` transparency. Every result
+/// is normalized to row-major raw `0xRRGGBBAA` before entering Pixels storage.
 
 #include "rt_pixels_io_internal.h"
 
@@ -23,8 +43,19 @@
 #include "rt_file_stdio.h"
 #include "rt_trap.h"
 
+/// Maximum accepted decoded pixel count.
 #define PNG_MAX_PIXELS ((size_t)64u * 1024u * 1024u)
 
+/// @brief Compute a checked encoded row stride for PNG sample geometry.
+/// @details Sub-byte samples are packed and rounded up to the next byte;
+///          byte-aligned samples multiply width, channel count, and sample
+///          bytes with overflow checks.
+/// @param width Row width in pixels.
+/// @param bit_depth Bits per channel sample.
+/// @param samples_per_pixel Positive channel count.
+/// @param stride_out Optional destination for the encoded byte count.
+/// @return Nonzero when the stride is representable; zero for invalid channel
+///         count or overflow.
 static int px_png_stride_checked(uint32_t width,
                                  uint8_t bit_depth,
                                  int samples_per_pixel,
@@ -164,7 +195,9 @@ static uint32_t png_crc32_update_state(uint32_t crc, const uint8_t *data, size_t
 //=============================================================================
 
 // PNG uses big-endian integers
-/// @brief Read a big-endian uint32 from a PNG chunk header / data.
+/// @brief Read a big-endian 32-bit value from PNG bytes.
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded host-endian unsigned value.
 static uint32_t png_read_u32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
@@ -185,6 +218,10 @@ static int png_chunk_is_critical(const uint8_t *chunk_type) {
 ///          and @c b (mod 65521) are updated per byte; the result packs them as
 ///          (b << 16) | a. Used by the PNG decoder to verify deflate output before
 ///          touching the pixel buffer.
+/// @param data Byte sequence to checksum; callers provide readable storage for
+///        every byte in @p len.
+/// @param len Number of bytes to process.
+/// @return RFC 1950 Adler-32 value.
 static uint32_t png_adler32(const uint8_t *data, size_t len) {
     uint32_t a = 1;
     uint32_t b = 0;
@@ -209,6 +246,9 @@ static uint32_t png_adler32(const uint8_t *data, size_t len) {
 ///          3. (CMF * 256 + FLG) must be a multiple of 31 (FCHECK validity).
 ///          4. FDICT bit (0x20 of FLG) must be 0 — preset dictionaries are
 ///             illegal in PNG IDAT streams.
+/// @param data Concatenated IDAT byte stream.
+/// @param len Total stream length, including two header and four checksum
+///        bytes.
 /// @return 1 if the header is well-formed for PNG, 0 otherwise.
 static int png_validate_zlib_header(const uint8_t *data, size_t len) {
     if (!data || len < 6)
@@ -232,6 +272,10 @@ static int png_validate_zlib_header(const uint8_t *data, size_t len) {
 /// Predicts the current pixel as whichever of `a` (left), `b`
 /// (above), or `c` (upper-left) is closest to `p = a + b - c` —
 /// the linear extrapolation. Used as filter type 4.
+/// @param a Reconstructed byte immediately to the left.
+/// @param b Reconstructed byte immediately above.
+/// @param c Reconstructed byte diagonally above-left.
+/// @return The selected neighbor byte.
 static uint8_t paeth_predict(uint8_t a, uint8_t b, uint8_t c) {
     int p = (int)a + (int)b - (int)c;
     int pa = p > (int)a ? p - (int)a : (int)a - p;
@@ -387,7 +431,18 @@ static void png_write_best_filtered_row(
 /// scanline using the standard 5 filters (None, Sub, Up, Average,
 /// Paeth) and converts to RGBA. Supports color types 2 (RGB), 6
 /// (RGBA), 0 (grayscale), 4 (gray + alpha), and 3 (palette via
-/// PLTE/tRNS chunks).
+/// PLTE/tRNS chunks). Legal 1/2/4/8/16-bit combinations and both
+/// non-interlaced and Adam7 layouts are handled. Unknown critical chunks,
+/// invalid chunk ordering or CRC, noncontiguous IDAT, malformed zlib data,
+/// inflate-length mismatch, invalid filter rows, and palette bounds fail
+/// closed. Output values use canonical `0xRRGGBBAA`.
+/// @param file_data Borrowed complete PNG byte buffer.
+/// @param file_len Number of readable bytes in @p file_data; input above
+///        256 MiB is rejected.
+/// @param out_pixels Receives malloc-owned RGBA words on success and null on
+///        failure; the caller releases successful output with `free()`.
+/// @param out_width Receives decoded width on success and zero on failure.
+/// @param out_height Receives decoded height on success and zero on failure.
 /// @return 1 on success, 0 on any decode failure.
 int rt_png_decode_buffer_rgba32(const uint8_t *file_data,
                                 size_t file_len,
@@ -918,7 +973,16 @@ cleanup:
     return 1;
 }
 
-/// @brief Decode a PNG file into a Pixels object.
+/// @brief Load a PNG file into a GC-managed Pixels object.
+/// @details Reads at most 256 MiB through the UTF-8 stdio adapter, delegates
+///          full validation and conversion to
+///          `rt_png_decode_buffer_rgba32()`, copies the raw result into
+///          embedded Pixels storage, and releases both encoded and decoded
+///          temporary buffers. Asset diagnostics distinguish missing,
+///          unreadable, too-large, bad-magic, and corrupt input where the
+///          wrapper has that information.
+/// @param path Runtime string handle naming the UTF-8 input path; null or an
+///        invalid string traps.
 /// @return GC-managed `rt_pixels_impl*` on success, NULL on any decode failure.
 void *rt_pixels_load_png(void *path) {
     rt_asset_error_begin_load();
@@ -1019,14 +1083,19 @@ void *rt_pixels_load_png(void *path) {
     return pixels;
 }
 
-/// @brief Save a Pixels object as an RGBA PNG file.
-///
-/// Writes the 8-byte signature, IHDR (color type 6 / RGBA, bit
-/// depth 8, default filter & interlace methods), a single IDAT
-/// chunk containing all scanlines compressed with our in-tree
-/// DEFLATE encoder (each row prefixed with filter byte 0 = None),
-/// and IEND. Each chunk's CRC32 is computed over `type ‖ data` per
-/// RFC 2083 §5.3.
+/// @brief Save a Pixels object as a transactional 8-bit RGBA PNG.
+/// @details Writes the signature, non-interlaced color-type-6 IHDR, one IDAT
+///          zlib stream produced by the in-tree DEFLATE encoder, and IEND.
+///          Every row independently selects None, Sub, Up, Average, or Paeth
+///          using the minimum absolute signed-residual score. Adler-32 covers
+///          the filtered stream and every chunk receives its PNG CRC. The
+///          complete file is flushed and closed in a sibling temporary path
+///          before replacement; failure removes that temporary file and
+///          preserves the prior destination.
+/// @param pixels_ptr Opaque source Pixels handle. Null returns zero; a nonnull
+///        invalid handle traps and returns zero.
+/// @param path Runtime string handle naming the UTF-8 destination. Null,
+///        invalid, or unusable paths return zero.
 /// @return 1 on success, 0 on any failure.
 int64_t rt_pixels_save_png(void *pixels_ptr, void *path) {
     if (!pixels_ptr || !path)

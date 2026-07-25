@@ -16,11 +16,18 @@
 //   - Charts write TEXCOORD_1 directly into mesh vertices; the atlas applies
 //     through Material3D lightmap slots on per-node material instances.
 // Ownership/Lifetime:
-//   - Baker/grid are GC-managed; they retain the scene, explicit lights, and
-//     output atlas until finalized.
+//   - Baker/grid are GC-managed; the baker retains its scene and output atlas.
+//   - Explicit light state is copied at AddLight time rather than retained.
+//   - Bakers and grids own their native BVH, atlas, validity, and SH arrays.
 // Links: misc/plans/thirdpersonupgrade/14-baked-gi.md, docs/adr/0088.
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements deterministic lightmap baking and SH-9 irradiance probe grids.
+/// @details Static scene geometry is flattened into a triangle BVH, sampled by
+///   deterministic direct/indirect radiance estimators, packed into a lightmap
+///   atlas, and reused to bake, sample, save, and load spatial probe grids.
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
@@ -45,6 +52,11 @@ extern double rt_vec3_y(void *v);
 extern double rt_vec3_z(void *v);
 
 /// @brief Read a Vec3's components; returns 0 for a non-Vec3 handle.
+/// @param v Candidate Vec3 runtime handle.
+/// @param x Output X component.
+/// @param y Output Y component.
+/// @param z Output Z component.
+/// @return Nonzero when @p v has the Vec3 class and all outputs were written.
 static int baker_read_vec3(void *v, double *x, double *y, double *z) {
     if (!v || rt_obj_class_id(v) != RT_VEC3_CLASS_ID)
         return 0;
@@ -76,11 +88,17 @@ extern int64_t rt_pixels_height(void *pixels);
  * Deterministic sampler (per-texel seeded LCG)
  *=========================================================================*/
 
+/// @brief Advance the deterministic per-sample linear congruential generator.
+/// @param state In/out 32-bit generator state.
+/// @return Newly advanced raw generator value.
 static uint32_t baker_lcg_next(uint32_t *state) {
     *state = *state * 1664525u + 1013904223u;
     return *state;
 }
 
+/// @brief Draw one deterministic uniform scalar from the baker generator.
+/// @param state In/out 32-bit generator state.
+/// @return Value in `[0, 1)` derived from the upper 24 random bits.
 static double baker_lcg_unit(uint32_t *state) {
     return (double)(baker_lcg_next(state) >> 8) / 16777216.0;
 }
@@ -156,6 +174,13 @@ typedef struct rt_lightbaker3d {
  * Gathering static geometry
  *=========================================================================*/
 
+/// @brief Snapshot bake-relevant albedo and emissive color from a material.
+/// @details Defaults to white diffuse and black emission, releases the fresh
+///   color Vec3 returned by the public accessor, and reads emissive state only
+///   from a validated Material3D implementation.
+/// @param material Borrowed optional Material3D handle.
+/// @param albedo Output three-element linear diffuse color.
+/// @param emissive Output three-element intensity-scaled emission color.
 static void baker_read_material_colors(void *material, double albedo[3], double emissive[3]) {
     albedo[0] = albedo[1] = albedo[2] = 1.0;
     emissive[0] = emissive[1] = emissive[2] = 0.0;
@@ -181,6 +206,14 @@ static void baker_read_material_colors(void *material, double albedo[3], double 
     }
 }
 
+/// @brief Flatten static scene meshes into deterministic world-space triangle soup.
+/// @details Traverses a bounded explicit stack, records up to the configured node
+///   and triangle caps, copies transformed positions/material colors, repairs
+///   degenerate normals, and preserves source node/triangle indices for chart UVs.
+///   A previously completed gather is reused.
+/// @param baker Baker retaining the source scene and owning gathered arrays.
+/// @return Nonzero when at least one triangle is available; zero for missing
+///   roots, allocation failure, or an empty eligible scene.
 static int baker_gather_scene(rt_lightbaker3d *baker) {
     if (baker->gathered)
         return 1;
@@ -310,6 +343,10 @@ static int baker_gather_scene(rt_lightbaker3d *baker) {
  * BVH build (median split) + ray intersection
  *=========================================================================*/
 
+/// @brief Compute an exact axis-aligned bound for one gathered triangle.
+/// @param tri Borrowed triangle.
+/// @param min_b Output three-element minimum corner.
+/// @param max_b Output three-element maximum corner.
 static void baker_tri_bounds(const baker_tri *tri, double min_b[3], double max_b[3]) {
     for (int a = 0; a < 3; ++a) {
         double v0 = tri->p0[a], v1 = tri->p1[a], v2 = tri->p2[a];
@@ -318,6 +355,14 @@ static void baker_tri_bounds(const baker_tri *tri, double min_b[3], double max_b
     }
 }
 
+/// @brief Recursively build a deterministic median-split BVH subtree.
+/// @details Bounds the indexed range, emits leaves containing at most four
+///   triangles, otherwise insertion-sorts by longest-axis centroid before
+///   recursing into two balanced ranges.
+/// @param baker Baker owning triangles, order indices, and preallocated nodes.
+/// @param first First index in the current order-array range.
+/// @param count Positive number of triangles in the range.
+/// @return Created node index, or `-1` when node capacity is exhausted.
 static int baker_bvh_build_recurse(rt_lightbaker3d *baker, int32_t first, int32_t count) {
     if (baker->bvh_node_count >= baker->tri_count * 2 + 1)
         return -1;
@@ -378,6 +423,10 @@ static int baker_bvh_build_recurse(rt_lightbaker3d *baker, int32_t first, int32_
     return node_index;
 }
 
+/// @brief Allocate and build the baker's triangle BVH once.
+/// @param baker Baker with a nonempty gathered triangle array.
+/// @return Nonzero when an existing or newly rooted BVH is available; zero on
+///   allocation or recursive construction failure.
 static int baker_bvh_build(rt_lightbaker3d *baker) {
     if (baker->bvh_nodes)
         return 1;
@@ -392,6 +441,13 @@ static int baker_bvh_build(rt_lightbaker3d *baker) {
     return baker_bvh_build_recurse(baker, 0, baker->tri_count) == 0;
 }
 
+/// @brief Test a ray interval against an axis-aligned BVH node.
+/// @param origin Three-element ray origin.
+/// @param inv_dir Three-element reciprocal ray direction.
+/// @param min_b Three-element box minimum.
+/// @param max_b Three-element box maximum.
+/// @param t_max Exclusive working maximum distance.
+/// @return Nonzero when the forward interval intersects before @p t_max.
 static int baker_ray_aabb(const double origin[3],
                           const double inv_dir[3],
                           const double min_b[3],
@@ -416,6 +472,15 @@ static int baker_ray_aabb(const double origin[3],
     return 1;
 }
 
+/// @brief Intersect a ray with one two-sided triangle using Moller-Trumbore math.
+/// @param origin Three-element ray origin.
+/// @param dir Three-element ray direction.
+/// @param tri Borrowed triangle.
+/// @param t_out Output positive hit distance.
+/// @param u_out Output first barycentric coordinate.
+/// @param v_out Output second barycentric coordinate.
+/// @return Nonzero for a hit beyond the self-intersection epsilon; outputs are
+///   written only on success.
 static int baker_ray_tri(const double origin[3],
                          const double dir[3],
                          const baker_tri *tri,
@@ -451,6 +516,12 @@ static int baker_ray_tri(const double origin[3],
 }
 
 /// @brief Closest-hit trace. Returns tri index or -1; fills t.
+/// @param baker Baker containing a completed BVH and order table.
+/// @param origin Three-element ray origin.
+/// @param dir Three-element ray direction.
+/// @param t_max Maximum search distance.
+/// @param t_out Optional output closest distance, written only for a hit.
+/// @return Gathered triangle index of the closest hit, or `-1` when none.
 static int32_t baker_trace(const rt_lightbaker3d *baker,
                            const double origin[3],
                            const double dir[3],
@@ -493,6 +564,14 @@ static int32_t baker_trace(const rt_lightbaker3d *baker,
  * Radiance estimation
  *=========================================================================*/
 
+/// @brief Accumulate unshadowed direct irradiance from the baker's copied lights.
+/// @details Directional lights use parallel rays; other retained light kinds use
+///   position and inverse-quadratic attenuation. BVH shadow rays reject occluded
+///   contributions, and negative surface cosines contribute nothing.
+/// @param baker Baker containing copied lights and trace geometry.
+/// @param point Three-element world-space surface point.
+/// @param normal Three-element oriented surface normal.
+/// @param out_rgb Output three-element irradiance initialized to black.
 static void baker_direct_light(const rt_lightbaker3d *baker,
                                const double point[3],
                                const double normal[3],
@@ -537,6 +616,9 @@ static void baker_direct_light(const rt_lightbaker3d *baker,
 }
 
 /// @brief Cosine-weighted hemisphere direction around @p normal.
+/// @param rng In/out deterministic sampler state.
+/// @param normal Three-element unit surface normal.
+/// @param out_dir Output three-element sampled unit direction.
 static void baker_cosine_dir(uint32_t *rng, const double normal[3], double out_dir[3]) {
     double r1 = baker_lcg_unit(rng);
     double r2 = baker_lcg_unit(rng);
@@ -567,6 +649,15 @@ static void baker_cosine_dir(uint32_t *rng, const double normal[3], double out_d
 }
 
 /// @brief Estimate incoming irradiance at a surface point (direct + bounced + sky).
+/// @details Adds copied-light direct illumination, then recursively follows one
+///   deterministic cosine-weighted bounce per level. Misses add sky color;
+///   hits apply receiving-triangle albedo and emission.
+/// @param baker Baker containing BVH, copied lights, and sky color.
+/// @param point Three-element world-space shading point.
+/// @param normal Three-element oriented unit normal.
+/// @param rng In/out deterministic sampler state.
+/// @param bounces Remaining nonnegative indirect-bounce depth.
+/// @param out_rgb Output three-element irradiance.
 static void baker_radiance(const rt_lightbaker3d *baker,
                            const double point[3],
                            const double normal[3],
@@ -609,6 +700,8 @@ static void baker_radiance(const rt_lightbaker3d *baker,
  * LightBaker3D public surface
  *=========================================================================*/
 
+/// @brief Finalize a baker and release its retained/native resources.
+/// @param obj LightBaker3D payload; `NULL` is ignored.
 static void lightbaker3d_finalize(void *obj) {
     rt_lightbaker3d *baker = (rt_lightbaker3d *)obj;
     if (!baker)
@@ -626,6 +719,10 @@ static void lightbaker3d_finalize(void *obj) {
     free(baker->atlas_coverage);
 }
 
+/// @brief Create a deterministic light baker for one retained Scene3D.
+/// @param scene Live Scene3D retained until baker finalization.
+/// @return New GC-managed baker with default density, samples, bounces, and
+///   atlas size, or `NULL` after reporting invalid input or allocation failure.
 void *rt_lightbaker3d_new(void *scene) {
     if (!scene || !rt_g3d_has_class(scene, RT_G3D_SCENE3D_CLASS_ID)) {
         rt_trap("LightBaker3D.New: scene must be a SceneGraph");
@@ -648,6 +745,10 @@ void *rt_lightbaker3d_new(void *scene) {
     return baker;
 }
 
+/// @brief Resolve a LightBaker3D and report a caller-specific trap on failure.
+/// @param obj Candidate runtime object.
+/// @param method Trap message used for invalid input.
+/// @return Borrowed baker implementation, or `NULL`.
 static rt_lightbaker3d *lightbaker3d_checked(void *obj, const char *method) {
     rt_lightbaker3d *baker =
         (rt_lightbaker3d *)rt_g3d_checked_or_null(obj, RT_G3D_LIGHTBAKER3D_CLASS_ID);
@@ -656,6 +757,9 @@ static rt_lightbaker3d *lightbaker3d_checked(void *obj, const char *method) {
     return baker;
 }
 
+/// @brief Set the chart-density target for subsequent bake steps.
+/// @param obj LightBaker3D receiver; invalid handles report a trap.
+/// @param texels Positive texels per world unit, capped at 64; other values are ignored.
 void rt_lightbaker3d_set_texels_per_unit(void *obj, double texels) {
     rt_lightbaker3d *baker =
         lightbaker3d_checked(obj, "LightBaker3D.set_TexelsPerUnit: invalid baker");
@@ -663,34 +767,54 @@ void rt_lightbaker3d_set_texels_per_unit(void *obj, double texels) {
         baker->texels_per_unit = texels > 64.0 ? 64.0 : texels;
 }
 
+/// @brief Return the configured lightmap texel density.
+/// @param obj LightBaker3D receiver.
+/// @return Texels per world unit, or zero after invalid-handle reporting.
 double rt_lightbaker3d_get_texels_per_unit(void *obj) {
     rt_lightbaker3d *baker =
         lightbaker3d_checked(obj, "LightBaker3D.get_TexelsPerUnit: invalid baker");
     return baker ? baker->texels_per_unit : 0.0;
 }
 
+/// @brief Set deterministic samples evaluated per lightmap texel.
+/// @param obj LightBaker3D receiver.
+/// @param samples Positive sample count capped at 1024; nonpositive values are ignored.
 void rt_lightbaker3d_set_samples(void *obj, int64_t samples) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.set_Samples: invalid baker");
     if (baker && samples > 0)
         baker->samples = samples > 1024 ? 1024 : samples;
 }
 
+/// @brief Return the configured per-texel sample count.
+/// @param obj LightBaker3D receiver.
+/// @return Sample count, or zero after invalid-handle reporting.
 int64_t rt_lightbaker3d_get_samples(void *obj) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.get_Samples: invalid baker");
     return baker ? baker->samples : 0;
 }
 
+/// @brief Set maximum recursive indirect-light bounce depth.
+/// @param obj LightBaker3D receiver.
+/// @param bounces Nonnegative depth capped at eight; negative values are ignored.
 void rt_lightbaker3d_set_bounces(void *obj, int64_t bounces) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.set_Bounces: invalid baker");
     if (baker && bounces >= 0)
         baker->bounces = bounces > 8 ? 8 : bounces;
 }
 
+/// @brief Return the configured indirect bounce depth.
+/// @param obj LightBaker3D receiver.
+/// @return Bounce count, or zero after invalid-handle reporting.
 int64_t rt_lightbaker3d_get_bounces(void *obj) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.get_Bounces: invalid baker");
     return baker ? baker->bounces : 0;
 }
 
+/// @brief Set nonnegative radiance returned by rays that miss the scene.
+/// @param obj LightBaker3D receiver.
+/// @param r Red sky radiance; nonfinite or nonpositive input becomes zero.
+/// @param g Green sky radiance; nonfinite or nonpositive input becomes zero.
+/// @param b Blue sky radiance; nonfinite or nonpositive input becomes zero.
 void rt_lightbaker3d_set_sky_color(void *obj, double r, double g, double b) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.SetSkyColor: invalid baker");
     if (!baker)
@@ -700,11 +824,20 @@ void rt_lightbaker3d_set_sky_color(void *obj, double r, double g, double b) {
     baker->sky_color[2] = isfinite(b) && b > 0.0 ? b : 0.0;
 }
 
+/// @brief Return normalized triangle-bake progress.
+/// @param obj LightBaker3D receiver.
+/// @return Stored progress in ordinary operation, or zero after invalid-handle reporting.
 double rt_lightbaker3d_get_progress(void *obj) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.get_Progress: invalid baker");
     return baker ? baker->progress : 0.0;
 }
 
+/// @brief Snapshot one enabled non-ambient Light3D into the bake input.
+/// @details Copies type, transform, color, intensity, and attenuation immediately;
+///   the baker does not retain the source light and later mutations do not affect
+///   this bake. Inputs beyond the sixteen-light cap are ignored.
+/// @param obj LightBaker3D receiver.
+/// @param light_obj Light3D to copy; invalid handles report a trap.
 void rt_lightbaker3d_add_light(void *obj, void *light_obj) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.AddLight: invalid baker");
     rt_light3d *light = (rt_light3d *)rt_g3d_checked_or_null(light_obj, RT_G3D_LIGHT3D_CLASS_ID);
@@ -725,6 +858,13 @@ void rt_lightbaker3d_add_light(void *obj, void *light_obj) {
 }
 
 /// @brief Allocate a chart rect on the atlas shelf packer. Returns 0 when full.
+/// @param baker Baker containing atlas dimensions and mutable shelf cursor.
+/// @param w Positive chart width in texels.
+/// @param h Positive chart height in texels.
+/// @param x Output atlas X origin.
+/// @param y Output atlas Y origin.
+/// @return Nonzero when the padded chart fits and cursor state advances; zero
+///   when the atlas is full.
 static int baker_alloc_chart(rt_lightbaker3d *baker, int32_t w, int32_t h, int32_t *x, int32_t *y) {
     if (baker->cursor_x + w + 1 > baker->atlas_dim) {
         baker->cursor_x = 0;
@@ -743,6 +883,11 @@ static int baker_alloc_chart(rt_lightbaker3d *baker, int32_t w, int32_t h, int32
 
 /// @brief Run one bake slice: gathers on the first call, then bakes triangles
 ///   in deterministic order until the slice budget is spent.
+/// @details Each call processes at most 64 charts, writes source mesh UV1 values,
+///   and updates progress. Terminal gather/BVH/allocation failure is represented
+///   as a completed bake without an atlas. Completion dilates one texel ring and
+///   publishes an 8-bit atlas with two-times radiance headroom.
+/// @param obj LightBaker3D receiver.
 /// @return 1 when the bake is complete, 0 when more steps remain.
 int8_t rt_lightbaker3d_bake_step(void *obj) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.BakeStep: invalid baker");
@@ -911,6 +1056,10 @@ int8_t rt_lightbaker3d_bake_step(void *obj) {
 }
 
 /// @brief Install the baked atlas on every baked node via material instances.
+/// @details Clones each source material or creates a default, assigns the
+///   retained atlas, installs the instance on its scene node, and releases the
+///   temporary creation reference. Incomplete or atlas-less bakes are ignored.
+/// @param obj LightBaker3D receiver.
 void rt_lightbaker3d_apply(void *obj) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.Apply: invalid baker");
     if (!baker || !baker->done || !baker->atlas)
@@ -933,6 +1082,10 @@ void rt_lightbaker3d_apply(void *obj) {
     }
 }
 
+/// @brief Acquire the completed lightmap atlas.
+/// @param obj LightBaker3D receiver.
+/// @return Retained Pixels handle that the caller must eventually release, or
+///   `NULL` when unavailable or the receiver is invalid.
 void *rt_lightbaker3d_get_atlas(void *obj) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.get_Atlas: invalid baker");
     if (!baker || !baker->atlas)
@@ -955,6 +1108,8 @@ typedef struct rt_lightprobegrid3d {
     int8_t baked;
 } rt_lightprobegrid3d;
 
+/// @brief Finalize a probe grid and free coefficient/validity arrays.
+/// @param obj LightProbeGrid3D payload; `NULL` is ignored.
 static void lightprobegrid3d_finalize(void *obj) {
     rt_lightprobegrid3d *grid = (rt_lightprobegrid3d *)obj;
     if (!grid)
@@ -963,6 +1118,15 @@ static void lightprobegrid3d_finalize(void *obj) {
     free(grid->valid);
 }
 
+/// @brief Create a bounded regular SH-9 irradiance probe grid.
+/// @details Copies Vec3 bounds, defaults invalid or tiny spacing to one,
+///   computes two through sixty-four samples per axis, and allocates zeroed
+///   probe-major coefficient and validity arrays.
+/// @param min_v Vec3 minimum grid origin, copied on success.
+/// @param max_v Vec3 requested maximum extent, copied only through derived counts.
+/// @param spacing Positive world-unit distance between probes.
+/// @return New GC-managed grid, or `NULL` after reporting invalid bounds or
+///   object allocation failure.
 void *rt_lightprobegrid3d_new(void *min_v, void *max_v, double spacing) {
     double min_b[3], max_b[3];
     if (!baker_read_vec3(min_v, &min_b[0], &min_b[1], &min_b[2]) ||
@@ -1002,6 +1166,10 @@ void *rt_lightprobegrid3d_new(void *min_v, void *max_v, double spacing) {
     return grid;
 }
 
+/// @brief Resolve a LightProbeGrid3D and report a caller-specific trap on failure.
+/// @param obj Candidate runtime object.
+/// @param method Trap message used for invalid input.
+/// @return Borrowed grid implementation, or `NULL`.
 static rt_lightprobegrid3d *lightprobegrid3d_checked(void *obj, const char *method) {
     rt_lightprobegrid3d *grid =
         (rt_lightprobegrid3d *)rt_g3d_checked_or_null(obj, RT_G3D_LIGHTPROBEGRID3D_CLASS_ID);
@@ -1010,6 +1178,9 @@ static rt_lightprobegrid3d *lightprobegrid3d_checked(void *obj, const char *meth
     return grid;
 }
 
+/// @brief Return the total regular-grid probe count.
+/// @param obj LightProbeGrid3D receiver.
+/// @return Product of three axis counts, or zero after invalid-handle reporting.
 int64_t rt_lightprobegrid3d_get_probe_count(void *obj) {
     rt_lightprobegrid3d *grid =
         lightprobegrid3d_checked(obj, "LightProbeGrid3D.get_ProbeCount: invalid grid");
@@ -1017,6 +1188,8 @@ int64_t rt_lightprobegrid3d_get_probe_count(void *obj) {
 }
 
 /// @brief Evaluate the 9 SH basis functions for a direction.
+/// @param d Three-element sample direction.
+/// @param out Output array of nine real SH basis values.
 static void probe_sh_basis(const double d[3], double out[9]) {
     out[0] = 0.282095;
     out[1] = 0.488603 * d[1];
@@ -1032,7 +1205,13 @@ static void probe_sh_basis(const double d[3], double out[9]) {
 /// @brief Bake the probe grid against a baker's gathered scene + lights.
 /// @details Reuses the baker's BVH and radiance estimator so probes and
 ///   lightmaps agree; the baker must be constructed over the same scene (its
-///   gather runs here when the baker has not baked yet).
+///   gather runs here when the baker has not baked yet). Directions are sampled
+///   uniformly on the sphere with deterministic seeds. Probes likely inside
+///   geometry are marked invalid and opportunistically in-filled from an
+///   adjacent valid probe.
+/// @param obj LightProbeGrid3D receiver whose coefficient arrays are overwritten.
+/// @param baker_obj LightBaker3D providing scene BVH, copied lights, sky, samples,
+///   and bounce depth.
 void rt_lightprobegrid3d_bake(void *obj, void *baker_obj) {
     rt_lightprobegrid3d *grid =
         lightprobegrid3d_checked(obj, "LightProbeGrid3D.Bake: invalid grid");
@@ -1126,6 +1305,14 @@ void rt_lightprobegrid3d_bake(void *obj, void *baker_obj) {
 }
 
 /// @brief Trilinear-sample the grid's SH irradiance for @p normal at @p position.
+/// @details Clamps the containing cell to the grid boundary, blends all eight
+///   probe coefficient sets, applies cosine-convolution factors, and clamps
+///   negative or nonfinite output. A missing normal uses positive Y.
+/// @param obj Baked or loaded LightProbeGrid3D receiver.
+/// @param position Vec3 world-space sample position; invalid input returns black.
+/// @param normal Optional Vec3 surface normal.
+/// @return Newly allocated Vec3 irradiance, or a newly allocated black Vec3
+///   for invalid grid/position input.
 void *rt_lightprobegrid3d_sample(void *obj, void *position, void *normal) {
     rt_lightprobegrid3d *grid =
         lightprobegrid3d_checked(obj, "LightProbeGrid3D.Sample: invalid grid");
@@ -1200,11 +1387,17 @@ void *rt_lightprobegrid3d_sample(void *obj, void *position, void *normal) {
 }
 
 /*==========================================================================
- * Serialization (.vlpg — versioned little-endian probe grids)
+ * Serialization (.vlpg — versioned native-binary probe grids)
  *=========================================================================*/
 
 #define VLPG_MAGIC "VLPG0001"
 
+/// @brief Save a baked probe grid to the versioned VLPG binary layout.
+/// @details Writes magic, native double/int metadata, validity bytes, and
+///   probe-major float coefficients. The file is not published transactionally.
+/// @param obj Baked LightProbeGrid3D receiver.
+/// @param path Runtime string naming the output filesystem path.
+/// @return Nonzero only when every write and file open succeeds.
 int8_t rt_lightprobegrid3d_save(void *obj, rt_string path) {
     rt_lightprobegrid3d *grid =
         lightprobegrid3d_checked(obj, "LightProbeGrid3D.Save: invalid grid");
@@ -1226,6 +1419,14 @@ int8_t rt_lightprobegrid3d_save(void *obj, rt_string path) {
     return ok ? 1 : 0;
 }
 
+/// @brief Load a versioned VLPG binary into an existing probe grid.
+/// @details Validates magic, dimensions, and spacing, then reads replacement
+///   arrays before freeing current storage so malformed or truncated files
+///   leave the grid unchanged.
+/// @param obj LightProbeGrid3D receiver to replace on success.
+/// @param path Runtime string naming the input filesystem path.
+/// @return Nonzero on a complete valid load; zero for invalid input, I/O,
+///   validation, or allocation failure.
 int8_t rt_lightprobegrid3d_load(void *obj, rt_string path) {
     rt_lightprobegrid3d *grid =
         lightprobegrid3d_checked(obj, "LightProbeGrid3D.Load: invalid grid");

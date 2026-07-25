@@ -30,6 +30,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic CPU froxel binning for clustered forward-plus lighting.
+/// @details Local lights are conservatively projected into the fixed backend cluster grid while
+/// directional and ambient lights remain in a global prefix. Tables are revision-keyed against
+/// flattened light snapshots and cached in a small canvas-owned ring.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d_clusters.h"
@@ -41,10 +47,14 @@
 #define CLUSTER_LIGHT_EPSILON (1.0f / 255.0f)
 
 /// @brief Compute the world-space influence radius of a point/spot light.
-/// @details Solves `intensity / (1 + k*d^2) < eps` for d: beyond the returned
+/// @details Solves `intensity / (1 + k times d squared) < eps` for d: beyond the returned
 ///          radius the light contributes less than one 8-bit step. Zero (or
 ///          denormal) attenuation never falls off — return a negative sentinel
 ///          meaning "unbounded" so the caller bins it into every cluster.
+/// @param intensity Finite non-negative light intensity.
+/// @param attenuation Quadratic distance-falloff coefficient.
+/// @return Zero for no contribution, a negative sentinel for unbounded influence, or the finite
+/// positive radius in world units where contribution reaches `CLUSTER_LIGHT_EPSILON`.
 float canvas3d_cluster_light_radius(float intensity, float attenuation) {
     float ratio;
     if (!isfinite(intensity) || intensity <= 0.0f)
@@ -58,6 +68,11 @@ float canvas3d_cluster_light_radius(float intensity, float attenuation) {
 }
 
 /// @brief Map a view depth to its exponential Z slice (clamped to the grid).
+/// @param depth Positive view-space depth in world units.
+/// @param znear Positive near-plane distance.
+/// @param zfar Far-plane distance greater than @p znear.
+/// @return Zero-based slice index in the valid cluster Z range. Invalid clip ranges and depths at
+/// or before the near plane map to zero.
 int32_t canvas3d_cluster_z_slice(float depth, float znear, float zfar) {
     float t;
     int32_t slice;
@@ -77,6 +92,10 @@ int32_t canvas3d_cluster_z_slice(float depth, float znear, float zfar) {
 }
 
 /// @brief Project one world point through a row-major VP into NDC.
+/// @param vp Borrowed row-major 4-by-4 view-projection matrix.
+/// @param p Borrowed three-component world-space point.
+/// @param[out] ndc_x Writable normalized-device X coordinate on success.
+/// @param[out] ndc_y Writable normalized-device Y coordinate on success.
 /// @return 0 when the point is at/behind the eye plane (w <= epsilon).
 static int cluster_project_point(const float *vp, const float p[3], float *ndc_x, float *ndc_y) {
     float x = vp[0] * p[0] + vp[1] * p[1] + vp[2] * p[2] + vp[3];
@@ -90,6 +109,13 @@ static int cluster_project_point(const float *vp, const float p[3], float *ndc_x
 }
 
 /// @brief Conservative NDC bounding rect of a world sphere via its AABB corners.
+/// @param vp Borrowed row-major view-projection matrix.
+/// @param center Borrowed three-component sphere center in world space.
+/// @param radius Non-negative sphere radius in world units.
+/// @param[out] min_x Writable minimum NDC X.
+/// @param[out] min_y Writable minimum NDC Y.
+/// @param[out] max_x Writable maximum NDC X.
+/// @param[out] max_y Writable maximum NDC Y.
 /// @return 0 when any corner projects behind the eye (caller must assume full screen).
 static int cluster_sphere_ndc_bounds(const float *vp,
                                      const float center[3],
@@ -132,6 +158,10 @@ static int cluster_sphere_ndc_bounds(const float *vp,
 ///          range: the min edge's cluster starts at or before it and the max
 ///          edge's cluster ends after it. @p toward_max only picks the clamp
 ///          side for non-finite input.
+/// @param ndc Normalized-device coordinate to quantize.
+/// @param dim Positive number of cells along the axis.
+/// @param toward_max Non-zero to map non-finite input to the last cell; zero maps it to the first.
+/// @return Clamped zero-based cell index.
 static int32_t cluster_axis_from_ndc(float ndc, int32_t dim, int toward_max) {
     float t = ndc * 0.5f + 0.5f;
     int32_t idx;
@@ -153,6 +183,11 @@ typedef struct {
 } cluster_range_t;
 
 /// @brief Return a conservative world-space influence radius for a finite local light.
+/// @details Area and volume emitters combine their physical extent with finite range. Point and
+/// spot lights use their attenuation threshold. Directional/ambient lights are classified before
+/// this helper is called.
+/// @param light Borrowed flattened local-light parameters.
+/// @return Zero for no influence, a negative unbounded sentinel, or a conservative positive radius.
 static float cluster_local_light_radius(const vgfx3d_light_params_t *light) {
     float emitter_radius;
     float reach;
@@ -178,6 +213,14 @@ static float cluster_local_light_radius(const vgfx3d_light_params_t *light) {
 }
 
 /// @brief Compute the conservative cluster ranges covered by one local light.
+/// @details The output is initialized to full-grid coverage. Finite bounds narrow it; an empty
+/// range is represented by `x1 == -1`, while projection uncertainty deliberately preserves
+/// over-inclusion.
+/// @param c Borrowed canvas providing cached camera vectors and view-projection state.
+/// @param light Borrowed flattened local-light parameters.
+/// @param znear Sanitized positive cluster near distance.
+/// @param zfar Sanitized cluster far distance greater than @p znear.
+/// @param[out] out Inclusive X, Y, and Z cell ranges.
 static void cluster_range_for_light(const rt_canvas3d *c,
                                     const vgfx3d_light_params_t *light,
                                     float znear,
@@ -237,6 +280,8 @@ static void cluster_range_for_light(const rt_canvas3d *c,
 }
 
 /// @brief Sort-order key: directional(0)/ambient(2) precede every finite local light.
+/// @param type Flattened runtime light-type identifier.
+/// @return Non-zero for directional or ambient lights; zero for locally binned types.
 int canvas3d_cluster_light_is_global(int32_t type) {
     return type == 0 || type == 2;
 }
@@ -246,6 +291,11 @@ int canvas3d_cluster_light_is_global(int32_t type) {
 ///          (see build_light_params). Uses the canvas's cached render-space camera
 ///          state, so call only between Begin and End of a 3D frame. Never fails;
 ///          overflow truncates per cluster and is counted in `overflow_count`.
+/// @param c Borrowed canvas providing cached camera state and per-cluster budget.
+/// @param lights Borrowed globals-first flattened light array.
+/// @param light_count Number of valid entries in @p lights; capped at `VGFX3D_MAX_LIGHTS`.
+/// @param lights_revision Non-zero revision stamped onto the resulting table.
+/// @param[out] out Caller-owned table that is always zero-initialized before validation.
 void canvas3d_build_cluster_table(const rt_canvas3d *c,
                                   const vgfx3d_light_params_t *lights,
                                   int32_t light_count,
@@ -336,6 +386,12 @@ void canvas3d_build_cluster_table(const rt_canvas3d *c,
 /// @brief Shader-mirror: compute the cluster index for a screen point + view depth.
 /// @details Mirrors the fragment-shader lookup exactly (uv in [0,1], row 0 at the
 ///          top). Exposed for the conservativeness unit test.
+/// @param u Horizontal normalized screen coordinate.
+/// @param v Vertical normalized screen coordinate, with zero at the top.
+/// @param depth Positive view-space depth.
+/// @param znear Cluster near-plane distance.
+/// @param zfar Cluster far-plane distance.
+/// @return Flattened cluster index after clamping all three axes to the fixed grid.
 int32_t canvas3d_cluster_index_for_point(float u, float v, float depth, float znear, float zfar) {
     int32_t x = (int32_t)(u * (float)VGFX3D_CLUSTER_DIM_X);
     int32_t y = (int32_t)(v * (float)VGFX3D_CLUSTER_DIM_Y);
@@ -360,6 +416,12 @@ int32_t canvas3d_cluster_index_for_point(float u, float v, float depth, float zn
 ///          exactly mirroring the Plan 04 constant-upload gating. Returns NULL when
 ///          clustering is disabled or the backend keeps the flat loop (software and
 ///          test backends, identified by the absence of GPU window post-FX).
+/// @param c Canvas owning the revision-keyed ring; may allocate the ring on first use.
+/// @param lights Borrowed globals-first flattened light array.
+/// @param light_count Number of valid entries in @p lights.
+/// @param revision Non-zero flattened-light revision used as the cache key.
+/// @return Borrowed pointer into the canvas-owned ring, valid until that slot is overwritten or the
+/// canvas is finalized; NULL when clustering is inapplicable or ring allocation fails.
 const vgfx3d_cluster_table_t *canvas3d_cluster_table_for_revision(
     rt_canvas3d *c, const vgfx3d_light_params_t *lights, int32_t light_count, uint32_t revision) {
     vgfx3d_cluster_table_t *ring;

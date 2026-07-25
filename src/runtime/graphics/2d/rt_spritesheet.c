@@ -5,21 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_spritesheet.c
-// Purpose: Sprite atlas (sprite sheet) manager for Zanna games. Wraps a single
-//   Pixels buffer representing a tiled atlas and maps integer frame indices to
-//   rectangular sub-regions. Supports uniform-tile sheets (all frames the same
-//   size, packed in row-major order) and named-region sheets (arbitrary rects
-//   stored by name). Callers extract individual frames as Pixels regions for
-//   use with Sprite, SpriteBatch, or direct Canvas blitting.
+// File: src/runtime/graphics/2d/rt_spritesheet.c
+// Purpose: Implements a named-region SpriteSheet over one retained Pixels
+//   atlas. Regions may be defined individually or generated from an exactly
+//   divisible uniform grid, enumerated in insertion order, queried by name,
+//   removed, and extracted as independent Pixels copies.
 //
 // Key invariants:
-//   - A uniform sheet divides the atlas into (atlas_width / frame_w) columns
-//     and (atlas_height / frame_h) rows. Frame N is at:
+//   - A grid sheet requires atlas dimensions to be exact multiples of cell
+//     dimensions. Numeric names are assigned in row-major order:
 //       col = N % cols,  row = N / cols
 //       src_x = col * frame_w,  src_y = row * frame_h
-//   - Named regions are stored in an associative array (string → rect). Lookup
-//     is linear in the number of regions unless a hash map is used internally.
+//   - Names and rectangles occupy parallel dynamic arrays; lookup is a
+//     case-sensitive linear scan. Reusing a name replaces its rectangle without
+//     changing insertion order.
+//   - Empty names and rectangles outside the atlas are silently rejected.
 //   - The atlas Pixels buffer is retained by the sheet and released on destroy.
 //     Extracted frame Pixels objects are independent copies; they do not hold
 //     a reference back to the atlas.
@@ -27,11 +27,12 @@
 //     can detect a misspelled frame ID without crashing.
 //
 // Ownership/Lifetime:
-//   - SpriteSheet objects are GC-managed (rt_obj_new_i64). The atlas Pixels
-//     buffer and the named-region array are freed by the GC finalizer.
+//   - Constructors return caller-owned runtime reference-counted objects.
+//   - The finalizer releases the retained atlas and frees copied C names and
+//     both parallel metadata arrays.
 //
-// Links: src/runtime/graphics/rt_spritesheet.h (public API),
-//        src/runtime/graphics/rt_sprite.h (consumer of atlas frames),
+// Links: src/runtime/graphics/2d/rt_spritesheet.h (public API),
+//        src/runtime/graphics/2d/rt_sprite.h (consumer of atlas frames),
 //        docs/zannalib/game.md (SpriteSheet section)
 //
 //===----------------------------------------------------------------------===//
@@ -51,10 +52,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Stored atlas-space rectangle for one named SpriteSheet region.
 typedef struct {
     int64_t x, y, w, h;
 } ss_region;
 
+/// @brief Private runtime-managed SpriteSheet state.
+/// @details `regions[i]` and `names[i]` describe the same entry for every
+///          index below @c count. The atlas reference and every name are owned.
 typedef struct {
     void *vptr;
     void *atlas;
@@ -69,6 +74,9 @@ typedef struct {
 /// @brief Validate-and-return a SpriteSheet pointer; NULL for NULL or wrong class.
 /// @details Soft check (no trap) — used by every public SpriteSheet entry
 ///          and the GC finalizer so wrong-class handles silently no-op.
+/// @param obj Candidate opaque SpriteSheet handle.
+/// @return Validated implementation pointer, or `NULL` for null, undersized, or
+///         wrong-class objects.
 static rt_spritesheet_impl *spritesheet_checked_or_null(void *obj) {
     if (!obj || !rt_obj_is_instance(obj, RT_SPRITESHEET_CLASS_ID, sizeof(rt_spritesheet_impl)))
         return NULL;
@@ -78,6 +86,8 @@ static rt_spritesheet_impl *spritesheet_checked_or_null(void *obj) {
 /// @brief Test whether @p pixels is a non-NULL Pixels handle (correct class id).
 /// @details Used during atlas swap-in / region extraction to reject foreign
 ///          handles before they reach rt_pixels_get / rt_pixels_blit.
+/// @param pixels Candidate opaque Pixels handle.
+/// @return Nonzero when @p pixels has a valid Pixels class and payload size.
 static int8_t spritesheet_is_valid_pixels(void *pixels) {
     return pixels && rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl));
 }
@@ -88,6 +98,7 @@ static int8_t spritesheet_is_valid_pixels(void *pixels) {
 ///   The `regions` and `names` pointer arrays are plain `malloc` blocks freed with
 ///   `free()`. The atlas Pixels is GC-managed so it gets a proper `release_check0`/
 ///   `free` pair rather than a raw `free`.
+/// @param obj Candidate SpriteSheet supplied by the runtime finalizer.
 static void ss_finalizer(void *obj) {
     rt_spritesheet_impl *ss = spritesheet_checked_or_null(obj);
     if (ss) {
@@ -113,6 +124,9 @@ static void ss_finalizer(void *obj) {
 ///   acceptable. If performance becomes a concern a hash map could replace this, but
 ///   the allocation complexity of the current sequential two-array layout favors the
 ///   simple approach.
+/// @param ss Valid SpriteSheet implementation.
+/// @param name NUL-terminated case-sensitive name to find.
+/// @return Zero-based region index, or `-1` when absent.
 static int64_t find_region(rt_spritesheet_impl *ss, const char *name) {
     int64_t i;
     for (i = 0; i < ss->count; i++) {
@@ -127,6 +141,11 @@ static int64_t find_region(rt_spritesheet_impl *ss, const char *name) {
 ///   the region does not exceed the right/bottom edge. The arithmetic `w > atlas_w - x`
 ///   is safe because x < atlas_w guarantees atlas_w - x > 0. Callers can use this to
 ///   reject out-of-bounds regions before they cause buffer overreads during `GetRegion`.
+/// @param ss SpriteSheet providing the retained atlas dimensions.
+/// @param x Proposed nonnegative left edge.
+/// @param y Proposed nonnegative top edge.
+/// @param w Proposed positive width.
+/// @param h Proposed positive height.
 /// @return 1 if the region is within bounds, 0 otherwise.
 static int8_t spritesheet_region_valid(
     rt_spritesheet_impl *ss, int64_t x, int64_t y, int64_t w, int64_t h) {
@@ -148,6 +167,7 @@ static int8_t spritesheet_region_valid(
 ///   two-array parallel structure (regions and names) cannot be grown by a single
 ///   realloc call, so this approach avoids the asymmetric state that would result from
 ///   one realloc succeeding and the other failing.
+/// @param ss SpriteSheet whose parallel arrays may need to grow.
 /// @return 1 if capacity is sufficient (or was successfully grown), 0 on overflow/OOM.
 static int8_t ensure_cap(rt_spritesheet_impl *ss) {
     if (ss->count < ss->capacity)
@@ -189,6 +209,9 @@ static int8_t ensure_cap(rt_spritesheet_impl *ss) {
 /// @brief Construct a SpriteSheet that wraps an existing Pixels atlas. The atlas is retained;
 /// regions are added later via `_set_region` or `_from_grid`. Returns NULL if `atlas_pixels`
 /// is NULL or on allocation failure (which also traps).
+/// @param atlas_pixels Valid Pixels object retained as the complete atlas.
+/// @return A caller-owned empty SpriteSheet, or `NULL` for an invalid Pixels
+///         handle or allocation failure.
 void *rt_spritesheet_new(void *atlas_pixels) {
     rt_spritesheet_impl *ss;
     if (!spritesheet_is_valid_pixels(atlas_pixels))
@@ -229,6 +252,14 @@ void *rt_spritesheet_new(void *atlas_pixels) {
 /// @brief Build a SpriteSheet from an atlas auto-sliced into a uniform `frame_w × frame_h` grid.
 /// Frames are named "0", "1", ... in row-major order (left-to-right, top-to-bottom). Useful for
 /// engine-friendly sprite sheets where each frame is the same size.
+/// @details Both atlas dimensions must be exact multiples of their cell
+///          dimensions; partial edge cells are not created.
+/// @param atlas_pixels Valid Pixels object retained by the returned sheet.
+/// @param frame_w Positive cell width in pixels.
+/// @param frame_h Positive cell height in pixels.
+/// @return A caller-owned SpriteSheet, or `NULL` for invalid input, a
+///         non-divisible grid, arithmetic overflow, or initial sheet allocation
+///         failure. A later region-allocation failure can leave a partial sheet.
 void *rt_spritesheet_from_grid(void *atlas_pixels, int64_t frame_w, int64_t frame_h) {
     void *sheet;
     int64_t atlas_w, atlas_h, cols, rows, idx, iy, ix;
@@ -266,6 +297,14 @@ void *rt_spritesheet_from_grid(void *atlas_pixels, int64_t frame_w, int64_t fram
 /// @brief Define or update a named region (sub-rectangle) within the atlas. If a region with
 /// `name` already exists, its bounds are overwritten in place; otherwise a new entry is appended,
 /// growing the internal arrays as needed. The name string is copied internally.
+/// @details Null/invalid sheets or strings, empty names, and nonpositive or
+///          out-of-bounds rectangles are silently ignored.
+/// @param obj Candidate SpriteSheet handle.
+/// @param name Borrowed runtime string containing the case-sensitive name.
+/// @param x Nonnegative atlas-space left edge.
+/// @param y Nonnegative atlas-space top edge.
+/// @param w Positive region width.
+/// @param h Positive region height.
 void rt_spritesheet_set_region(
     void *obj, rt_string name, int64_t x, int64_t y, int64_t w, int64_t h) {
     rt_spritesheet_impl *ss;
@@ -314,6 +353,10 @@ void rt_spritesheet_set_region(
 /// @brief Extract the named region as a freshly allocated Pixels copy. Returns NULL if the
 /// region doesn't exist or on allocation failure. The returned Pixels is independent of the
 /// atlas — modifying it has no effect on the source sheet.
+/// @param obj Candidate SpriteSheet handle.
+/// @param name Borrowed runtime string containing the case-sensitive name.
+/// @return A caller-owned Pixels copy, or `NULL` for invalid input, a missing
+///         region, or allocation failure.
 void *rt_spritesheet_get_region(void *obj, rt_string name) {
     rt_spritesheet_impl *ss;
     const char *cstr;
@@ -342,7 +385,10 @@ void *rt_spritesheet_get_region(void *obj, rt_string name) {
     return dst;
 }
 
-/// @brief Has the region of the spritesheet.
+/// @brief Test whether a case-sensitive region name exists.
+/// @param obj Candidate SpriteSheet handle.
+/// @param name Borrowed runtime string to look up.
+/// @return `1` when present, otherwise `0`.
 int8_t rt_spritesheet_has_region(void *obj, rt_string name) {
     rt_spritesheet_impl *ss;
     const char *cstr;
@@ -357,7 +403,9 @@ int8_t rt_spritesheet_has_region(void *obj, rt_string name) {
     return find_region(ss, cstr) >= 0 ? 1 : 0;
 }
 
-/// @brief Return the count of elements in the spritesheet.
+/// @brief Get the number of defined named regions.
+/// @param obj Candidate SpriteSheet handle.
+/// @return Region count, or `0` for an invalid sheet.
 int64_t rt_spritesheet_region_count(void *obj) {
     rt_spritesheet_impl *ss = spritesheet_checked_or_null(obj);
     if (!ss)
@@ -365,7 +413,9 @@ int64_t rt_spritesheet_region_count(void *obj) {
     return ss->count;
 }
 
-/// @brief Width the spritesheet.
+/// @brief Get the retained atlas width.
+/// @param obj Candidate SpriteSheet handle.
+/// @return Atlas width in pixels, or `0` for an invalid sheet.
 int64_t rt_spritesheet_width(void *obj) {
     rt_spritesheet_impl *ss = spritesheet_checked_or_null(obj);
     if (!ss)
@@ -373,7 +423,9 @@ int64_t rt_spritesheet_width(void *obj) {
     return rt_pixels_width(ss->atlas);
 }
 
-/// @brief Height the spritesheet.
+/// @brief Get the retained atlas height.
+/// @param obj Candidate SpriteSheet handle.
+/// @return Atlas height in pixels, or `0` for an invalid sheet.
 int64_t rt_spritesheet_height(void *obj) {
     rt_spritesheet_impl *ss = spritesheet_checked_or_null(obj);
     if (!ss)
@@ -383,6 +435,11 @@ int64_t rt_spritesheet_height(void *obj) {
 
 /// @brief Return a Seq of all defined region names (as rt_strings) in insertion order. Empty
 /// Seq for a NULL handle. Useful for enumerating the sheet's frames in editor/debug tools.
+/// @details Each internal C name is converted to a runtime string and pushed
+///          into a newly owned sequence. The sheet remains unchanged.
+/// @param obj Candidate SpriteSheet handle.
+/// @return A caller-owned Seq of runtime strings; invalid handles produce a
+///         newly allocated empty Seq.
 void *rt_spritesheet_region_names(void *obj) {
     rt_spritesheet_impl *ss;
     void *seq;
@@ -401,7 +458,12 @@ void *rt_spritesheet_region_names(void *obj) {
     return seq;
 }
 
-/// @brief Remove the region of the spritesheet.
+/// @brief Remove a case-sensitive named region.
+/// @details Frees the copied name and shifts later entries left, preserving
+///          insertion order among the survivors.
+/// @param obj Candidate SpriteSheet handle.
+/// @param name Borrowed runtime string to remove.
+/// @return `1` when an entry is removed, otherwise `0`.
 int8_t rt_spritesheet_remove_region(void *obj, rt_string name) {
     rt_spritesheet_impl *ss;
     const char *cstr;

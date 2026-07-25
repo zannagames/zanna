@@ -5,9 +5,23 @@
 // extraction
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_anim.inc
+ * @brief Implements glTF skin import and skeletal or scene-node animation conversion.
+ * @details This implementation fragment is included by `rt_gltf.c` after the shared importer
+ *          types and accessor helpers are available. It constructs runtime skeletons from glTF
+ *          joint graphs, remaps mesh influences, validates animation samplers, samples or
+ *          preserves their interpolation, and emits both skeleton-oriented `Animation3D` clips
+ *          and general `NodeAnimation3D` channels. All scratch arrays allocated here are either
+ *          transferred into the asset or released before the importing phase returns.
+ */
+
 /// @brief Reverse-lookup: given a glTF node index, return the local joint slot within
 ///        this skin (or -1 if the node isn't part of it). Linear scan is fine because
 ///        typical skins have fewer than ~64 joints.
+/// @param skin Skin whose joint-node table is searched.
+/// @param node_idx glTF node index to locate.
+/// @return Zero-based joint slot, or -1 when the skin is invalid or does not contain the node.
 static int gltf_skin_find_joint(const gltf_skin_t *skin, int32_t node_idx) {
     int32_t joint_count = gltf_skin_safe_joint_count(skin);
     if (!skin)
@@ -110,6 +124,8 @@ static int64_t gltf_add_skin_joint_recursive(gltf_skin_t *skin,
 /// @brief Release the per-skin scratch buffers held in an array produced by
 ///        `gltf_parse_skins`. Does NOT release the skeleton object itself — that is
 ///        owned by `asset->skeletons` and lives beyond the parse step.
+/// @param skins Scratch skin array to release; may be NULL.
+/// @param skin_count Number of initialized array slots to inspect.
 static void gltf_free_skins(gltf_skin_t *skins, int32_t skin_count) {
     if (!skins)
         return;
@@ -121,6 +137,8 @@ static void gltf_free_skins(gltf_skin_t *skins, int32_t skin_count) {
 }
 
 /// @brief Release Skeleton3D handles stored in skin scratch entries and clear the slots.
+/// @param skins Scratch skin array whose skeleton handles are released; may be NULL.
+/// @param skin_count Number of entries in @p skins.
 static void gltf_release_skin_skeletons(gltf_skin_t *skins, int32_t skin_count) {
     if (!skins)
         return;
@@ -128,8 +146,14 @@ static void gltf_release_skin_skeletons(gltf_skin_t *skins, int32_t skin_count) 
         gltf_release_ref(&skins[i].skeleton);
 }
 
+/// @brief Validate an inverse-bind accessor before copying it into a skeleton.
+/// @param view Accessor view expected to contain one float MAT4 per joint.
+/// @param joint_count Number of joints whose matrices must be present.
+/// @return Non-zero when the accessor has the required shape and finite values.
 static int gltf_inverse_bind_accessor_valid(const gltf_accessor_view_t *view, int32_t joint_count);
 
+/// @brief Remove all skeleton-array bookkeeping from an asset after skin import failure.
+/// @param asset Asset whose skeleton array is freed and reset; may be NULL.
 static void gltf_parse_skins_clear_asset(rt_gltf_asset *asset) {
     if (!asset)
         return;
@@ -139,6 +163,15 @@ static void gltf_parse_skins_clear_asset(rt_gltf_asset *asset) {
     asset->skeleton_capacity = 0;
 }
 
+/// @brief Roll back every allocation and retained handle created while parsing skins.
+/// @details Raises the caller's accumulated hard-error flag, releases skeleton objects before
+///          their scratch owners, clears the asset-visible skeleton table, and frees the node
+///          parent lookup.
+/// @param asset Asset whose partial skeleton state is discarded.
+/// @param skins Per-skin scratch array to destroy.
+/// @param skin_count Number of entries in @p skins.
+/// @param node_parents Heap-allocated node-parent table to free.
+/// @param hard_error Optional accumulated error flag set to one.
 static void gltf_parse_skins_fail(rt_gltf_asset *asset,
                                   gltf_skin_t *skins,
                                   int32_t skin_count,
@@ -152,6 +185,13 @@ static void gltf_parse_skins_fail(rt_gltf_asset *asset,
     gltf_free_skins(skins, skin_count);
 }
 
+/// @brief Build a reverse parent lookup for the glTF node hierarchy.
+/// @details Initializes every node as parentless, then records each valid child reference found
+///          in the JSON `children` arrays. If malformed input names a child more than once, the
+///          last encountered parent is retained.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param node_count Number of entries in @p nodes_arr.
+/// @return Heap-allocated table indexed by node, with -1 for roots, or NULL on allocation failure.
 static int32_t *gltf_build_node_parent_table(void *nodes_arr, int32_t node_count) {
     int32_t *node_parents = (int32_t *)malloc((size_t)node_count * sizeof(*node_parents));
     if (!node_parents)
@@ -170,6 +210,14 @@ static int32_t *gltf_build_node_parent_table(void *nodes_arr, int32_t node_count
     return node_parents;
 }
 
+/// @brief Allocate the shared scratch and asset-visible arrays used by skin parsing.
+/// @param asset Asset that receives an empty skeleton handle array.
+/// @param nodes_arr glTF JSON `nodes` array used to build the parent lookup.
+/// @param skin_count Number of skin scratch entries and skeleton slots to allocate.
+/// @param node_count Number of nodes represented by the parent lookup.
+/// @param out_node_parents Receives the allocated node-parent table on success.
+/// @param out_skins Receives the zero-initialized per-skin scratch array on success.
+/// @return Non-zero on success; zero after cleaning all partial allocations on failure.
 static int gltf_parse_skins_alloc_state(rt_gltf_asset *asset,
                                         void *nodes_arr,
                                         int32_t skin_count,
@@ -200,6 +248,10 @@ static int gltf_parse_skins_alloc_state(rt_gltf_asset *asset,
     return 1;
 }
 
+/// @brief Initialize the mutable storage and runtime skeleton for one glTF skin.
+/// @param skin Zero-initialized destination skin entry.
+/// @param joint_count Number of joint-node and joint-to-bone mappings to allocate.
+/// @return Non-zero on success, or zero after returning @p skin to an empty state.
 static int gltf_skin_init_entry(gltf_skin_t *skin, int32_t joint_count) {
     skin->joint_nodes = (int32_t *)calloc((size_t)joint_count, sizeof(int32_t));
     skin->joint_to_bone = (int32_t *)malloc((size_t)joint_count * sizeof(int32_t));
@@ -218,6 +270,14 @@ static int gltf_skin_init_entry(gltf_skin_t *skin, int32_t joint_count) {
     return 1;
 }
 
+/// @brief Validate and copy a skin's JSON joint indices into its scratch mapping.
+/// @details Rejects out-of-range and duplicate node indices and initializes every corresponding
+///          engine bone mapping to the unresolved value -1.
+/// @param skin Initialized skin entry that receives the joint indices.
+/// @param joints glTF skin `joints` array.
+/// @param joint_count Number of indices to read from @p joints.
+/// @param node_count Total node count used for range validation.
+/// @return Non-zero when every joint index is valid and unique; otherwise zero.
 static int gltf_skin_read_joint_nodes(gltf_skin_t *skin,
                                       void *joints,
                                       int32_t joint_count,
@@ -236,6 +296,14 @@ static int gltf_skin_read_joint_nodes(gltf_skin_t *skin,
     return 1;
 }
 
+/// @brief Register all joints in hierarchy order and recover disconnected joint subtrees.
+/// @details The first pass begins at joints whose parent is outside the skin. A second pass
+///          retries unresolved entries as roots so malformed or disconnected input cannot leave
+///          otherwise usable joints unregistered.
+/// @param skin Skin being converted to runtime bones.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param node_parents Parent-node table indexed by glTF node.
+/// @param node_count Number of nodes covered by @p node_parents.
 static void gltf_skin_register_joints(gltf_skin_t *skin,
                                       void *nodes_arr,
                                       const int32_t *node_parents,
@@ -254,6 +322,14 @@ static void gltf_skin_register_joints(gltf_skin_t *skin,
     }
 }
 
+/// @brief Override computed inverse-bind matrices with a valid glTF accessor.
+/// @details Reads column-major glTF MAT4 values, transposes them into the runtime's row-major
+///          storage, and updates only joints that resolved to valid skeleton bones.
+/// @param root glTF JSON root used to resolve the accessor.
+/// @param skin_json JSON object for the current skin.
+/// @param buffers Loaded glTF buffers referenced by the accessor.
+/// @param buf_count Number of entries in @p buffers.
+/// @param skin Skin and runtime skeleton to update.
 static void gltf_skin_apply_inverse_bind(
     void *root, void *skin_json, gltf_buffer_t *buffers, int buf_count, gltf_skin_t *skin) {
     int32_t joint_count = gltf_skin_safe_joint_count(skin);
@@ -278,6 +354,17 @@ static void gltf_skin_apply_inverse_bind(
     }
 }
 
+/// @brief Parse one glTF skin object into a scratch mapping and runtime skeleton.
+/// @param asset Asset that receives the completed skeleton handle.
+/// @param root glTF JSON root used for accessor resolution.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param skin_json Skin JSON object to parse.
+/// @param buffers Loaded glTF buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param node_parents Parent-node table indexed by glTF node.
+/// @param node_count Number of nodes available to the skin.
+/// @param skin Destination scratch entry.
+/// @return 1 on success, 0 on allocation/runtime creation failure, or -1 for malformed joint data.
 static int gltf_parse_skin_entry(rt_gltf_asset *asset,
                                  void *root,
                                  void *nodes_arr,
@@ -335,6 +422,7 @@ static int gltf_parse_skin_entry(rt_gltf_asset *asset,
 /// @param out_skins Optional; receives a per-skin scratch array (caller frees via
 ///                  `gltf_free_skins`). Needed later to map vertex bone indices.
 /// @param out_skin_count Optional; receives the count that was written.
+/// @param hard_error Optional accumulated error flag raised for any skin parse failure.
 static void gltf_parse_skins(rt_gltf_asset *asset,
                              void *root,
                              gltf_buffer_t *buffers,
@@ -459,6 +547,8 @@ static void gltf_apply_skin_to_mesh(void *mesh_obj, const gltf_skin_t *skin) {
 /// @brief Deep-clone a mesh for per-node variant use.
 /// @details `rt_mesh3d_clone` already clones attached morph targets, so this wrapper
 ///          deliberately avoids a second clone/reattach pass.
+/// @param source_mesh Mesh object to clone; may be NULL.
+/// @return A newly retained mesh clone, or NULL when the source is absent or cloning fails.
 static void *gltf_clone_mesh_variant(void *source_mesh) {
     if (!source_mesh)
         return NULL;
@@ -471,6 +561,14 @@ static void *gltf_clone_mesh_variant(void *source_mesh) {
 ///          `gltf_clone_mesh_variant`, applies the skin's inverse-bind matrices, and writes the
 ///          initial morph weights. Returns NULL on clone failure so callers can fail
 ///          the import rather than silently binding mutable state to a shared mesh.
+/// @param asset Asset containing the shared imported meshes.
+/// @param mesh_index Index of the source mesh in `asset->meshes`.
+/// @param skin_ref glTF skin index, or a negative/out-of-range value for no skin.
+/// @param weights_arr Optional JSON node-level morph-weight array.
+/// @param skins Per-skin joint and skeleton mappings.
+/// @param skin_count Number of entries in @p skins.
+/// @return The borrowed shared mesh when no variant is needed, a new variant when mutable state is
+///         required, or NULL for an invalid source or clone failure.
 static void *gltf_make_node_mesh_variant(rt_gltf_asset *asset,
                                          int32_t mesh_index,
                                          int64_t skin_ref,
@@ -496,13 +594,21 @@ static void *gltf_make_node_mesh_variant(rt_gltf_asset *asset,
     return variant;
 }
 
+/// @brief Resolved skeletal animation channel targeting one runtime bone property.
 typedef struct {
+    /// Whether accessor resolution and validation succeeded.
     int8_t valid;
+    /// Skeletal path index: 0 for translation, 1 for rotation, or 2 for scale.
     int32_t path; /* 0=translation, 1=rotation, 2=scale */
+    /// Source glTF target-node index.
     int32_t node_idx;
+    /// Runtime skeleton bone index corresponding to @ref node_idx.
     int32_t bone_idx;
+    /// Borrowed glTF interpolation string, or NULL for the default linear mode.
     const char *interpolation;
+    /// Validated scalar input-time accessor.
     gltf_accessor_view_t input;
+    /// Validated vector or quaternion output accessor.
     gltf_accessor_view_t output;
 } gltf_anim_curve_t;
 
@@ -510,6 +616,11 @@ typedef struct {
 /// @details glTF leaves duplicate animation channels for the same target undefined. The
 ///          runtime stores a single TRS curve per bone property, so importing later duplicates
 ///          would otherwise mix their key times while sampling only one curve.
+/// @param curves Previously resolved curve array.
+/// @param count Number of entries to search.
+/// @param bone_idx Runtime bone index being checked.
+/// @param path Skeletal property path index being checked.
+/// @return Non-zero if a valid matching curve is already present.
 static int gltf_anim_curve_already_targets(const gltf_anim_curve_t *curves,
                                            int32_t count,
                                            int32_t bone_idx,
@@ -524,6 +635,12 @@ static int gltf_anim_curve_already_targets(const gltf_anim_curve_t *curves,
 }
 
 /// @brief Return non-zero if a node animation channel already owns this node/path pair.
+/// @param nodes Parallel array of target-node indices for accepted channels.
+/// @param paths Parallel array of runtime path constants for accepted channels.
+/// @param count Number of initialized entries in @p nodes and @p paths.
+/// @param node_idx Candidate target-node index.
+/// @param path Candidate runtime animation path.
+/// @return Non-zero when the node/path pair has already been accepted.
 static int gltf_node_anim_channel_seen(
     const int32_t *nodes, const int32_t *paths, int32_t count, int32_t node_idx, int32_t path) {
     if (!nodes || !paths || count <= 0 || node_idx < 0)
@@ -536,6 +653,8 @@ static int gltf_node_anim_channel_seen(
 }
 
 /// @brief Look up the engine bone index for a glTF node in a specific skin.
+/// @param skin Skin mapping to search.
+/// @param node_idx glTF node index whose runtime bone is requested.
 /// @return Engine bone index, or -1 if the node is not a joint in this skin.
 static int32_t gltf_skin_bone_for_node(const gltf_skin_t *skin, int32_t node_idx) {
     int32_t joint;
@@ -550,6 +669,9 @@ static int32_t gltf_skin_bone_for_node(const gltf_skin_t *skin, int32_t node_idx
 /// @brief Read the time value at @p index from a glTF animation input accessor as a double.
 /// @details glTF animation times are stored as float32 scalars in the input accessor;
 ///          this function reads one float and promotes it to double for precision.
+/// @param view Scalar float accessor containing animation key times.
+/// @param index Element index to read.
+/// @return Selected key time promoted to double.
 static double gltf_curve_time(const gltf_accessor_view_t *view, int32_t index) {
     float t = 0.0f;
     gltf_accessor_read_f32(view, index, &t, 1);
@@ -560,6 +682,10 @@ static double gltf_curve_time(const gltf_accessor_view_t *view, int32_t index) {
 ///        needed. Ignores values within 1e-6 of an existing entry (de-dup tolerance
 ///        mirrors typical DCC exporter precision). The buffer doubles on growth
 ///        starting at 16 entries so amortized cost is O(N log N) total.
+/// @param times Address of the heap buffer, updated if reallocation moves it.
+/// @param count In/out number of initialized time values.
+/// @param capacity In/out allocated element capacity.
+/// @param value Finite, non-negative time value to insert.
 /// @return 1 on success, 0 on allocation failure (caller must free `*times` later).
 static int gltf_anim_insert_time(double **times, int32_t *count, int32_t *capacity, double value) {
     int32_t pos = 0;
@@ -595,6 +721,9 @@ static int gltf_anim_insert_time(double **times, int32_t *count, int32_t *capaci
 /// @details Animation3D has linear/slerp playback only. Adding a hold key just before the next
 ///          authored key preserves glTF STEP semantics closely enough for skeletal clips while
 ///          avoiding duplicate-time replacement in Animation3D.
+/// @param current Time of the value that should be held.
+/// @param next Time of the following authored key.
+/// @return A time shortly before @p next, or -1 when the interval cannot safely hold another key.
 static double gltf_anim_step_hold_time(double current, double next) {
     double gap = next - current;
     double eps;
@@ -609,6 +738,11 @@ static double gltf_anim_step_hold_time(double current, double next) {
 }
 
 /// @brief Insert all sample times for a skeletal curve, expanding STEP curves with hold keys.
+/// @param times Address of the sorted time buffer, updated on growth.
+/// @param count In/out number of time values.
+/// @param capacity In/out allocated time-buffer capacity.
+/// @param curve Validated skeletal curve whose input times are inserted.
+/// @return Non-zero on success; zero on allocation failure or excessive key count.
 static int gltf_anim_insert_curve_times(double **times,
                                         int32_t *count,
                                         int32_t *capacity,
@@ -638,6 +772,9 @@ static int gltf_anim_insert_curve_times(double **times,
 ///          accessor holds 3N entries and the actual "value" element we want is
 ///          `key_index * 3 + 1`. STEP and LINEAR samplers store one entry per key and
 ///          map identity.
+/// @param curve Curve whose interpolation determines the output layout.
+/// @param key_index Logical keyframe index.
+/// @return Physical output-accessor index, or -1 when the logical index cannot be represented.
 static int32_t gltf_curve_output_index(const gltf_anim_curve_t *curve, int32_t key_index) {
     if (key_index < 0)
         return -1;
@@ -653,6 +790,10 @@ static int32_t gltf_curve_output_index(const gltf_anim_curve_t *curve, int32_t k
 /// @details Thin wrapper around `gltf_accessor_read_f32` that accepts a pre-multiplied index
 ///          (CUBICSPLINE callers pass `key * 3 + 1` for the value sample; linear callers pass
 ///          `key`).
+/// @param curve Curve owning the output accessor.
+/// @param output_index Physical accessor element to read.
+/// @param out Destination for the decoded components.
+/// @param components Number of float components to write, from one through four.
 static void gltf_curve_read_output_value(const gltf_anim_curve_t *curve,
                                          int32_t output_index,
                                          float *out,
@@ -665,6 +806,10 @@ static void gltf_curve_read_output_value(const gltf_anim_curve_t *curve,
 
 /// @brief Read `components` floats for one logical keyframe from the curve's output
 ///        accessor, handling the CUBICSPLINE stride quirk transparently.
+/// @param curve Curve owning the output accessor.
+/// @param key_index Logical keyframe index.
+/// @param out Destination for the decoded components.
+/// @param components Number of float components to write.
 static void gltf_curve_read_value(const gltf_anim_curve_t *curve,
                                   int32_t key_index,
                                   float *out,
@@ -677,6 +822,8 @@ static void gltf_curve_read_value(const gltf_anim_curve_t *curve,
 ///          (element, component) pair, reads a full element into a temporary buffer, then
 ///          returns the requested component. Used to read per-vertex weight scalars from
 ///          multi-component accessor views.
+/// @param view Accessor to address as a contiguous scalar sequence.
+/// @param flat_index Zero-based scalar component index.
 /// @return The float value at @p flat_index, or 0.0 on out-of-range or null view.
 static float gltf_accessor_read_flat_f32(const gltf_accessor_view_t *view, int32_t flat_index) {
     float tmp[16];
@@ -697,6 +844,10 @@ static float gltf_accessor_read_flat_f32(const gltf_accessor_view_t *view, int32
 }
 
 /// @brief Return non-zero when a float accessor region contains only finite values.
+/// @param view Float accessor to validate.
+/// @param element_count Number of leading elements to inspect.
+/// @param components Number of components decoded from each element.
+/// @return Non-zero only when the requested region is valid and every decoded value is finite.
 static int gltf_accessor_f32_values_are_finite(const gltf_accessor_view_t *view,
                                                int32_t element_count,
                                                int32_t components) {
@@ -714,14 +865,24 @@ static int gltf_accessor_f32_values_are_finite(const gltf_accessor_view_t *view,
     return 1;
 }
 
+/// @brief Internal interpolation modes decoded from glTF sampler strings.
 enum {
+    /// Invalid or unsupported interpolation string.
     GLTF_ANIM_INTERP_INVALID = -1,
+    /// Linear vector interpolation or quaternion slerp.
     GLTF_ANIM_INTERP_LINEAR = 0,
+    /// Previous-key value hold.
     GLTF_ANIM_INTERP_STEP = 1,
+    /// glTF cubic Hermite spline interpolation.
     GLTF_ANIM_INTERP_CUBICSPLINE = 2
 };
 
 /// @brief Validate glTF animation sampler input times (SCALAR FLOAT, finite, sorted).
+/// @details STEP channels may repeat a key time, while interpolated channels must increase by
+///          more than the importer's time de-duplication tolerance.
+/// @param input Candidate animation input accessor.
+/// @param interpolation_mode Decoded interpolation mode controlling duplicate-time acceptance.
+/// @return Non-zero when the accessor is a valid non-negative time sequence.
 static int gltf_animation_input_accessor_valid(const gltf_accessor_view_t *input,
                                                int32_t interpolation_mode) {
     double previous = -1.0;
@@ -739,13 +900,19 @@ static int gltf_animation_input_accessor_valid(const gltf_accessor_view_t *input
     return 1;
 }
 
+/// Maximum authored keys accepted for one general node-animation channel.
 #define GLTF_NODE_ANIM_KEY_COUNT_MAX 1000000
+/// Maximum scalar width accepted for one node-animation sample.
 #define GLTF_NODE_ANIM_VALUE_WIDTH_MAX 4096
+/// Maximum decoded scalar values allocated for one node-animation channel.
 #define GLTF_NODE_ANIM_VALUE_COUNT_MAX 4000000
+/// Maximum authored keys accepted for a skeletal animation channel.
 #define GLTF_SKIN_ANIM_KEY_COUNT_MAX RT_ANIMATION3D_MAX_KEYFRAMES_PER_CHANNEL
 
 /// @brief Decode a glTF sampler interpolation string, applying only the spec's absent-field
 /// default.
+/// @param interpolation Borrowed sampler string, or NULL/empty when the glTF default applies.
+/// @return One of the internal interpolation modes, or `GLTF_ANIM_INTERP_INVALID`.
 static int32_t gltf_animation_interpolation_mode(const char *interpolation) {
     if (!interpolation || interpolation[0] == '\0' || strcmp(interpolation, "LINEAR") == 0)
         return GLTF_ANIM_INTERP_LINEAR;
@@ -757,6 +924,11 @@ static int32_t gltf_animation_interpolation_mode(const char *interpolation) {
 }
 
 /// @brief Validate translation/rotation/scale animation sampler outputs.
+/// @param input Validated input-time accessor defining the logical key count.
+/// @param output Candidate float vector or quaternion output accessor.
+/// @param components Required output width: three for vectors or four for quaternions.
+/// @param cubic Non-zero when three output elements are required per logical key.
+/// @return Non-zero when the output shape, count, and values are valid.
 static int gltf_animation_trs_output_accessor_valid(const gltf_accessor_view_t *input,
                                                     const gltf_accessor_view_t *output,
                                                     int32_t components,
@@ -772,6 +944,9 @@ static int gltf_animation_trs_output_accessor_valid(const gltf_accessor_view_t *
 }
 
 /// @brief Validate inverseBindMatrices accessors before overriding computed bind data.
+/// @param view Candidate inverse-bind accessor.
+/// @param joint_count Required number of MAT4 elements.
+/// @return Non-zero when @p view is a finite float MAT4 array with one element per joint.
 static int gltf_inverse_bind_accessor_valid(const gltf_accessor_view_t *view, int32_t joint_count) {
     if (!view || joint_count <= 0 || view->comp_type != 5126 || view->comp_count != 16 ||
         view->count != joint_count)
@@ -783,6 +958,8 @@ static int gltf_inverse_bind_accessor_valid(const gltf_accessor_view_t *view, in
 /// @details glTF CUBICSPLINE and linear interpolation can drift the magnitude of rotation
 ///          quaternions away from unit length; renormalization prevents visual artifacts.
 ///          Non-quaternion paths (translation/scale with components ≠ 4) are left unchanged.
+/// @param out Sample buffer to normalize or repair in place.
+/// @param components Number of valid components in @p out.
 static void gltf_normalize_sample_if_quat(float *out, int32_t components) {
     if (!out)
         return;
@@ -801,6 +978,9 @@ static void gltf_normalize_sample_if_quat(float *out, int32_t components) {
 }
 
 /// @brief Replace non-finite sampled components with the caller's pre-sample fallback.
+/// @param out Sample buffer repaired and quaternion-normalized in place.
+/// @param fallback Optional finite component values used for invalid samples.
+/// @param components Number of sample components, from one through four.
 static void gltf_sanitize_sample_or(float *out, const float *fallback, int32_t components) {
     if (!out || components <= 0 || components > 4)
         return;
@@ -817,6 +997,10 @@ static void gltf_sanitize_sample_or(float *out, const float *fallback, int32_t c
 ///          negative, `q1` is negated to ensure slerp travels the shortest arc (< 180°).
 ///          When the quaternions are nearly parallel (dot > 0.9995), plain nlerp is used
 ///          to avoid division-by-zero in the sin/cos path. Result is always renormalized.
+/// @param a First XYZW quaternion.
+/// @param b Second XYZW quaternion.
+/// @param alpha Interpolation fraction, clamped to the inclusive range [0, 1].
+/// @param out Destination XYZW quaternion; may not be NULL.
 static void gltf_slerp_quat(const float *a, const float *b, double alpha, float *out) {
     float q0[4];
     float q1[4];
@@ -873,6 +1057,11 @@ static void gltf_slerp_quat(const float *a, const float *b, double alpha, float 
 ///          may legitimately differ, giving velocity discontinuities); between keys
 ///          the spline's derivative is returned for both, so re-emitting keys at
 ///          union times reproduces the source spline exactly per segment.
+/// @param curve Candidate CUBICSPLINE curve.
+/// @param time Time at which tangents are requested.
+/// @param out_in_tangent Destination for the incoming derivative.
+/// @param out_out_tangent Destination for the outgoing derivative.
+/// @param components Number of curve components to write, from one through four.
 /// @return 1 when tangents were produced (curve is CUBICSPLINE and valid), else 0.
 static int gltf_sample_curve_tangents(const gltf_anim_curve_t *curve,
                                       double time,
@@ -1091,6 +1280,9 @@ static void gltf_sample_curve(const gltf_anim_curve_t *curve,
     }
 }
 
+/// @brief Map a glTF skeletal channel path to the importer's compact TRS index.
+/// @param path Borrowed glTF target path string.
+/// @return 0 for translation, 1 for rotation, 2 for scale, or -1 for unsupported paths.
 static int32_t gltf_skin_anim_path_index(const char *path) {
     if (!path)
         return -1;
@@ -1103,6 +1295,21 @@ static int32_t gltf_skin_anim_path_index(const char *path) {
     return -1;
 }
 
+/// @brief Resolve and validate one glTF channel as a skeletal animation curve.
+/// @details A channel is accepted only when it targets a node in @p skin, uses a supported TRS
+///          path and interpolation mode, does not duplicate an earlier bone/path pair, and has
+///          accessors with the exact shape required by that path. Accepted key times also extend
+///          the animation duration.
+/// @param root glTF JSON root used to resolve accessors.
+/// @param nodes_arr glTF JSON `nodes` array used for target bounds validation.
+/// @param samplers Animation sampler array.
+/// @param channels Animation channel array.
+/// @param channel_index Channel slot to resolve and populate in @p curves.
+/// @param buffers Loaded glTF buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param skin Skin used to translate the target node to a runtime bone.
+/// @param curves Zero-initialized curve table indexed in parallel with @p channels.
+/// @param duration_io In/out maximum accepted key time.
 static void gltf_skin_anim_resolve_curve(void *root,
                                          void *nodes_arr,
                                          void *samplers,
@@ -1162,6 +1369,18 @@ static void gltf_skin_anim_resolve_curve(void *root,
     }
 }
 
+/// @brief Allocate and resolve the skeletal curve table for one animation and skin.
+/// @param root glTF JSON root.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param samplers Animation sampler array.
+/// @param channels Animation channel array.
+/// @param channel_count Number of entries in @p channels.
+/// @param buffers Loaded glTF buffers used by accessor resolution.
+/// @param buf_count Number of entries in @p buffers.
+/// @param skin Skin used for node-to-bone mapping.
+/// @param duration_io In/out maximum key time accumulated from valid curves.
+/// @return Heap-allocated curve table, including invalid zeroed slots, or NULL on allocation
+///         failure.
 static gltf_anim_curve_t *gltf_skin_anim_build_curves(void *root,
                                                       void *nodes_arr,
                                                       void *samplers,
@@ -1180,6 +1399,20 @@ static gltf_anim_curve_t *gltf_skin_anim_build_curves(void *root,
     return curves;
 }
 
+/// @brief Gather the union of sample times and TRS curves targeting one runtime bone.
+/// @details The returned sorted time array includes STEP hold samples where needed. Each output
+///          curve pointer is either the single accepted channel for that property or NULL, so
+///          the emitter can retain the node's bind-pose component for missing properties.
+/// @param curves Resolved skeletal curves for the current animation.
+/// @param channel_count Number of entries in @p curves.
+/// @param bone Runtime bone index to collect.
+/// @param out_times Receives a heap-allocated sorted time array on success.
+/// @param out_time_count Receives the number of collected times.
+/// @param out_node_idx Receives the glTF node used to obtain the bind pose.
+/// @param out_curve_t Receives the translation curve, if present.
+/// @param out_curve_r Receives the rotation curve, if present.
+/// @param out_curve_s Receives the scale curve, if present.
+/// @return Non-zero when at least one valid curve and time were collected; otherwise zero.
 static int gltf_skin_anim_collect_bone_curves(const gltf_anim_curve_t *curves,
                                               int32_t channel_count,
                                               int32_t bone,
@@ -1227,6 +1460,20 @@ static int gltf_skin_anim_collect_bone_curves(const gltf_anim_curve_t *curves,
     return 1;
 }
 
+/// @brief Sample and emit all merged TRS keyframes for one bone track.
+/// @details Initializes each sample from the node's bind pose, applies any available translation,
+///          rotation, and scale curves, creates temporary runtime values, and attaches exact or
+///          derived Hermite tangents for cubic channels.
+/// @param anim Runtime `Animation3D` receiving keyframes.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param bone Runtime bone index receiving the track.
+/// @param node_idx glTF node index used for the bind-pose fallback.
+/// @param curve_t Optional translation curve.
+/// @param curve_r Optional rotation curve.
+/// @param curve_s Optional scale curve.
+/// @param times Sorted sample-time array.
+/// @param time_count Number of entries in @p times.
+/// @return Non-zero if at least one complete keyframe was emitted.
 static int gltf_skin_anim_emit_bone_samples(void *anim,
                                             void *nodes_arr,
                                             int32_t bone,
@@ -1283,6 +1530,13 @@ static int gltf_skin_anim_emit_bone_samples(void *anim,
     return emitted;
 }
 
+/// @brief Collect curves and emit the complete animation track for one runtime bone.
+/// @param anim Runtime `Animation3D` receiving the track.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param curves Resolved skeletal curve table.
+/// @param channel_count Number of entries in @p curves.
+/// @param bone Runtime bone index to process.
+/// @return Non-zero when one or more keyframes were emitted for the bone.
 static int gltf_skin_anim_emit_bone_track(void *anim,
                                           void *nodes_arr,
                                           const gltf_anim_curve_t *curves,
@@ -1311,6 +1565,13 @@ static int gltf_skin_anim_emit_bone_track(void *anim,
     return emitted;
 }
 
+/// @brief Emit every populated bone track for one runtime animation clip.
+/// @param anim Runtime `Animation3D` receiving tracks.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param curves Resolved skeletal curve table.
+/// @param channel_count Number of entries in @p curves.
+/// @param bone_limit Exclusive upper bound on runtime bone indices.
+/// @return Non-zero when at least one bone track emitted keyframes.
 static int gltf_skin_anim_emit_clip_bones(void *anim,
                                           void *nodes_arr,
                                           const gltf_anim_curve_t *curves,
@@ -1461,6 +1722,10 @@ static void gltf_parse_animations(rt_gltf_asset *asset,
 /// @brief Return non-zero if @p node_idx is a joint in any of the @p skin_count skins.
 /// @details Used during scene-graph construction to decide whether a node should be excluded
 ///          from the scene hierarchy (skin joints are already represented inside the skeleton).
+/// @param skins Skin mappings to search.
+/// @param skin_count Number of entries in @p skins.
+/// @param node_idx glTF node index being classified.
+/// @return Non-zero if any skin resolves @p node_idx to a runtime bone.
 static int gltf_node_is_skin_joint(const gltf_skin_t *skins, int32_t skin_count, int32_t node_idx) {
     if (!skins || skin_count <= 0)
         return 0;
@@ -1472,6 +1737,7 @@ static int gltf_node_is_skin_joint(const gltf_skin_t *skins, int32_t skin_count,
 }
 
 /// @brief Map a glTF animation channel path string to the engine's RT_NODE_ANIM_PATH_* constant.
+/// @param path Borrowed glTF target path string.
 /// @return RT_NODE_ANIM_PATH_TRANSLATION / ROTATION / SCALE / WEIGHTS, or -1 for unknown paths.
 static int32_t gltf_node_anim_path(const char *path) {
     if (!path)
@@ -1492,6 +1758,9 @@ static int32_t gltf_node_anim_path(const char *path) {
 ///          The importer represents multi-primitive meshes as a parent node plus child primitive
 ///          nodes, then applies animated weights to the subtree, so every morphed primitive with
 ///          targets must agree on the same count.
+/// @param root glTF JSON root containing nodes and meshes.
+/// @param node_idx Target node whose referenced mesh is inspected.
+/// @return Consistent positive morph-target count, or zero for invalid or incompatible data.
 static int32_t gltf_node_weights_target_count(void *root, int32_t node_idx) {
     void *nodes_arr = jarr(root, "nodes");
     void *meshes_arr = jarr(root, "meshes");
@@ -1540,6 +1809,12 @@ static int32_t gltf_node_weights_target_count(void *root, int32_t node_idx) {
 /// @details For TRANSLATION/SCALE the width is 3 (XYZ); for ROTATION it is 4 (XYZW quaternion).
 ///          For the WEIGHTS path the width is derived by dividing the total output components by
 ///          the number of input keyframes (× 3 for CUBICSPLINE). Returns 0 for degenerate data.
+/// @param path Runtime node-animation path constant.
+/// @param input Animation input-time accessor.
+/// @param output Animation output-value accessor.
+/// @param interpolation_mode Decoded sampler interpolation mode.
+/// @param cubic Non-zero when the output stores cubic tangent/value triplets.
+/// @return Validated number of scalar values per logical key, or zero for invalid data.
 static int32_t gltf_node_anim_width_for_path(int32_t path,
                                              const gltf_accessor_view_t *input,
                                              const gltf_accessor_view_t *output,
@@ -1569,18 +1844,45 @@ static int32_t gltf_node_anim_width_for_path(int32_t path,
     return (int32_t)(total_components / divisor);
 }
 
+/// @brief Fully resolved data layout for one general scene-node animation channel.
 typedef struct {
+    /// Runtime node-animation path constant.
     int32_t path;
+    /// Target glTF node index.
     int32_t node_idx;
+    /// Borrowed interpolation string from the sampler.
     const char *interpolation;
+    /// Decoded `GLTF_ANIM_INTERP_*` value.
     int32_t interpolation_mode;
+    /// Non-zero when the sampler uses CUBICSPLINE layout.
     int cubic;
+    /// Validated scalar key-time accessor.
     gltf_accessor_view_t input;
+    /// Validated output-value accessor.
     gltf_accessor_view_t output;
+    /// Number of scalar values in each logical key.
     int32_t width;
+    /// Total decoded scalar count allocated for the value buffer.
     int64_t value_count;
 } gltf_node_anim_channel_t;
 
+/// @brief Resolve and validate one channel for general scene-node animation import.
+/// @details Filters unsupported or duplicate targets, routes non-weight skin-joint channels to the
+///          skeletal importer, validates sampler accessors and allocation limits, and returns a
+///          compact description suitable for sample allocation and emission.
+/// @param root glTF JSON root.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param samplers Current animation's sampler array.
+/// @param channel Channel JSON object to resolve.
+/// @param buffers Loaded glTF buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param skins Parsed skin mappings used to identify skeletal targets.
+/// @param skin_count Number of entries in @p skins.
+/// @param seen_nodes Accepted target-node indices.
+/// @param seen_paths Accepted target paths parallel to @p seen_nodes.
+/// @param seen_count Number of initialized entries in the seen arrays.
+/// @param out Receives the resolved channel description on success.
+/// @return Non-zero when the channel is valid and should be emitted; otherwise zero.
 static int gltf_node_anim_resolve_channel(void *root,
                                           void *nodes_arr,
                                           void *samplers,
@@ -1659,6 +1961,11 @@ static int gltf_node_anim_resolve_channel(void *root,
     return 1;
 }
 
+/// @brief Free all sample buffers allocated for one node-animation channel.
+/// @param times Heap-allocated key-time array, or NULL.
+/// @param values Heap-allocated logical sample values, or NULL.
+/// @param in_tangents Optional heap-allocated cubic incoming tangents.
+/// @param out_tangents Optional heap-allocated cubic outgoing tangents.
 static void gltf_node_anim_free_samples(double *times,
                                         float *values,
                                         float *in_tangents,
@@ -1669,6 +1976,16 @@ static void gltf_node_anim_free_samples(double *times,
     free(out_tangents);
 }
 
+/// @brief Allocate the decoded sample arrays required by a resolved node channel.
+/// @details Always allocates times and values; cubic channels additionally receive matching
+///          incoming and outgoing tangent arrays. Output pointers are cleared before allocation
+///          and remain NULL if any allocation fails.
+/// @param channel Validated channel describing key count, width, and interpolation layout.
+/// @param out_times Receives the key-time buffer.
+/// @param out_values Receives the logical sample-value buffer.
+/// @param out_in_tangents Receives cubic incoming tangents, or NULL for non-cubic channels.
+/// @param out_out_tangents Receives cubic outgoing tangents, or NULL for non-cubic channels.
+/// @return Non-zero on success; zero after freeing all partial allocations.
 static int gltf_node_anim_alloc_samples(const gltf_node_anim_channel_t *channel,
                                         double **out_times,
                                         float **out_values,
@@ -1699,6 +2016,14 @@ static int gltf_node_anim_alloc_samples(const gltf_node_anim_channel_t *channel,
     return 1;
 }
 
+/// @brief Decode one morph-weight key and its optional cubic tangents into flat arrays.
+/// @details Weight outputs may span multiple accessor elements, so the function addresses them
+///          as a contiguous scalar stream using `gltf_accessor_read_flat_f32`.
+/// @param channel Resolved weights channel.
+/// @param key_index Logical key index to decode.
+/// @param values Destination logical value array.
+/// @param in_tangents Destination cubic incoming tangents, when applicable.
+/// @param out_tangents Destination cubic outgoing tangents, when applicable.
 static void gltf_node_anim_fill_weight_key(const gltf_node_anim_channel_t *channel,
                                            int32_t key_index,
                                            float *values,
@@ -1721,6 +2046,16 @@ static void gltf_node_anim_fill_weight_key(const gltf_node_anim_channel_t *chann
     }
 }
 
+/// @brief Decode one translation, rotation, or scale key and optional cubic tangents.
+/// @details Rotation values are normalized before storage. For cubic channels @p source_key
+///          identifies the middle value element, while tangent elements are addressed from the
+///          logical @p key_index.
+/// @param channel Resolved TRS channel.
+/// @param key_index Logical destination key index.
+/// @param source_key Physical output-accessor element containing the key value.
+/// @param values Destination logical value array.
+/// @param in_tangents Destination cubic incoming tangents, when applicable.
+/// @param out_tangents Destination cubic outgoing tangents, when applicable.
 static void gltf_node_anim_fill_trs_key(const gltf_node_anim_channel_t *channel,
                                         int32_t key_index,
                                         int32_t source_key,
@@ -1748,6 +2083,15 @@ static void gltf_node_anim_fill_trs_key(const gltf_node_anim_channel_t *channel,
     }
 }
 
+/// @brief Decode every time, value, and optional tangent for a node-animation channel.
+/// @details Non-finite input times are repaired to zero defensively, and the maximum decoded time
+///          extends the owning animation duration.
+/// @param channel Resolved channel to decode.
+/// @param times Destination array with one entry per logical key.
+/// @param values Destination flat sample-value array.
+/// @param in_tangents Optional destination cubic incoming-tangent array.
+/// @param out_tangents Optional destination cubic outgoing-tangent array.
+/// @param duration_io In/out maximum key time for the animation.
 static void gltf_node_anim_fill_samples(const gltf_node_anim_channel_t *channel,
                                         double *times,
                                         float *values,
@@ -1772,6 +2116,22 @@ static void gltf_node_anim_fill_samples(const gltf_node_anim_channel_t *channel,
     }
 }
 
+/// @brief Add one decoded general node-animation channel to the runtime animation.
+/// @details Resolves the stable target name, chooses the cubic or ordinary runtime constructor,
+///          records the original target-node index, and marks the node/path pair as accepted only
+///          after successful emission.
+/// @param node_anim Runtime `NodeAnimation3D` receiving the channel.
+/// @param nodes_arr glTF JSON `nodes` array used for target naming.
+/// @param channel Resolved channel description.
+/// @param times Decoded key-time array.
+/// @param values Decoded logical sample values.
+/// @param in_tangents Optional cubic incoming tangents.
+/// @param out_tangents Optional cubic outgoing tangents.
+/// @param seen_nodes Mutable array of accepted target-node indices.
+/// @param seen_paths Mutable array of accepted target paths.
+/// @param seen_count In/out initialized length of the seen arrays.
+/// @param channel_count Capacity of the seen arrays.
+/// @return Non-zero if the runtime accepted the channel; otherwise zero.
 static int gltf_node_anim_emit_channel(void *node_anim,
                                        void *nodes_arr,
                                        const gltf_node_anim_channel_t *channel,
@@ -1825,6 +2185,24 @@ static int gltf_node_anim_emit_channel(void *node_anim,
     return 1;
 }
 
+/// @brief Resolve, decode, and emit one glTF channel into a node animation.
+/// @details Owns all transient sample arrays for the operation and releases them after emission,
+///          regardless of whether the runtime accepts the resulting channel.
+/// @param node_anim Runtime `NodeAnimation3D` receiving the channel.
+/// @param root glTF JSON root.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param samplers Current animation's sampler array.
+/// @param channel_json Channel JSON object to process.
+/// @param buffers Loaded glTF buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param skins Parsed skin mappings used to filter skeletal targets.
+/// @param skin_count Number of entries in @p skins.
+/// @param seen_nodes Mutable accepted-node array.
+/// @param seen_paths Mutable accepted-path array.
+/// @param seen_count In/out accepted-channel count.
+/// @param channel_count Capacity of the seen arrays.
+/// @param duration_io In/out maximum decoded key time.
+/// @return Non-zero when the channel was emitted successfully.
 static int gltf_node_anim_process_channel(void *node_anim,
                                           void *root,
                                           void *nodes_arr,
@@ -1883,6 +2261,12 @@ static int gltf_node_anim_process_channel(void *node_anim,
 ///          the animation duration, and emits per-track keyframe data. Animations with no
 ///          valid channels are skipped. Named or auto-named (`"node_animation_N"`) animations
 ///          are stored in `asset->node_animations` for retrieval by the caller.
+/// @param asset Receiver for emitted node-animation objects.
+/// @param root glTF JSON root containing animation, node, and accessor data.
+/// @param buffers Loaded glTF buffers used to resolve sampler accessors.
+/// @param buf_count Number of entries in @p buffers.
+/// @param skins Parsed skin mappings used to exclude skeletal TRS targets.
+/// @param skin_count Number of entries in @p skins.
 static void gltf_parse_node_animations(rt_gltf_asset *asset,
                                        void *root,
                                        gltf_buffer_t *buffers,

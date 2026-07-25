@@ -18,77 +18,151 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_fbx_loader_constraints.inc
+ * @brief Parses, orders, and evaluates bounded FBX transform constraints.
+ *
+ * The parser resolves all roles by numeric model ID, validates required source
+ * and target relationships, rejects dependency cycles, and retains an explicit
+ * stable evaluation order. A shared finite pose evaluator supports position,
+ * rotation, scale, parent, aim, and single-chain IK constraints for both static
+ * scene extraction and animation baking. All persistent and temporary arrays
+ * are charged to the current FBX load budget.
+ */
+/// @brief Supported FBX constraint evaluator categories.
 typedef enum {
+    /// Preserved custom or unrecognized constraint.
     FBX_CONSTRAINT_UNKNOWN = 0,
+    /// Weighted source-position constraint.
     FBX_CONSTRAINT_POSITION,
+    /// Weighted source-rotation constraint.
     FBX_CONSTRAINT_ROTATION,
+    /// Weighted source-scale constraint.
     FBX_CONSTRAINT_SCALE,
+    /// Weighted source-parent transform constraint.
     FBX_CONSTRAINT_PARENT,
+    /// Aim-axis and up-vector orientation constraint.
     FBX_CONSTRAINT_AIM,
+    /// Root-to-end single-chain inverse-kinematics constraint.
     FBX_CONSTRAINT_SINGLE_CHAIN_IK,
 } fbx_constraint_kind_t;
 
+/// @brief One weighted source model and its parent-constraint offsets.
 typedef struct {
+    /// Numeric source Model identifier.
     int64_t model_id;
+    /// Authored source contribution; nonpositive values are ignored during averaging.
     double weight;
+    /// Source-local translation offset.
     double translation_offset[3];
+    /// Source-local Euler rotation offset in degrees.
     double rotation_offset[3];
+    /// Source-local scale multiplier.
     double scale_offset[3];
 } fbx_constraint_source_t;
 
+/// @brief Parsed state and role bindings for one FBX Constraint object.
 typedef struct {
+    /// Numeric Constraint identifier.
     int64_t id;
+    /// Borrowed source node containing properties.
     fbx_node_t *source_node;
+    /// Evaluator category selected from the type text.
     fbx_constraint_kind_t kind;
+    /// Nonzero when evaluation is enabled.
     int active;
+    /// Imported lock flag.
     int locked;
+    /// Overall normalized blend weight.
     double weight;
+    /// Direct constrained Model or first IK joint.
     int64_t target_id;
+    /// Owned dynamic weighted source array.
     fbx_constraint_source_t *sources;
+    /// Logical source count.
     int32_t source_count;
+    /// Allocated source capacity.
     int32_t source_capacity;
+    /// Source-basis per-axis translation masks.
     int affect_translation[3];
+    /// Source-basis per-axis rotation masks.
     int affect_rotation[3];
+    /// Source-basis per-axis scale masks.
     int affect_scale[3];
+    /// Constraint-wide translation offset.
     double translation_offset[3];
+    /// Constraint-wide Euler rotation offset.
     double rotation_offset[3];
+    /// Constraint-wide scale multiplier.
     double scale_offset[3];
+    /// FBX aim world-up mode from zero through four.
     int world_up_type;
+    /// Optional world-up Model identifier.
     int64_t world_up_id;
+    /// Authored world-up vector.
     double world_up_vector[3];
+    /// Authored local aim axis.
     double aim_vector[3];
+    /// Authored local up axis.
     double up_vector[3];
+    /// IK chain end-joint Model identifier.
     int64_t ik_end_id;
+    /// IK target/effector Model identifier.
     int64_t ik_effector_id;
+    /// Optional IK pole-object Model identifier.
     int64_t ik_pole_id;
+    /// Selector between explicit pole vector and pole object.
     int pole_vector_type;
+    /// Authored pole vector or point.
     double pole_vector[3];
+    /// IK twist angle in degrees.
     double twist;
+    /// Sticky flag preventing duplicate unreachable-chain warnings.
     int warned_unsolvable;
 } fbx_constraint_t;
 
+/// @brief Load-owned constraint array and dependency-safe evaluation order.
 typedef struct {
+    /// Owned parsed constraints in source order.
     fbx_constraint_t *entries;
+    /// Logical constraint count.
     int32_t count;
+    /// Allocated entry capacity.
     int32_t capacity;
+    /// Owned topological array of indices into `entries`.
     int32_t *order;
+    /// Borrowed context used for retained and scratch budget charges.
     fbx_load_context_t *context;
 } fbx_constraint_set_t;
 
+/// @brief Reusable all-model local/global pose used during constraint evaluation.
 struct fbx_constraint_pose {
+    /// Number of entries in every parallel array.
     int32_t count;
+    /// Nonzero when source Z-up values are converted to runtime Y-up.
     int z_up;
+    /// Numeric Model identifiers.
     int64_t *ids;
+    /// Parent indices within the pose, or `-1`.
     int32_t *parent_indices;
+    /// Borrowed source Model nodes.
     fbx_node_t **sources;
+    /// Current local FBX transform components.
     fbx_transform_components_t *components;
+    /// Packed row-major local matrices.
     double *local_matrices;
+    /// Packed row-major global/model-space matrices.
     double *global_matrices;
+    /// Sorted ID-to-pose-index lookup table.
     fbx_model_id_entry_t *id_table;
+    /// Flags for global matrices fixed directly by a constraint.
     uint8_t *fixed_globals;
+    /// Reusable traversal and dependency-mark flags.
     uint8_t *evaluation_flags;
 };
 
+/// @brief Free every array owned by a constraint pose and reset it.
+/// @param[in,out] pose Pose to clear; `NULL` is ignored.
 static void fbx_constraint_pose_free(fbx_constraint_pose_t *pose) {
     if (!pose)
         return;
@@ -104,6 +178,8 @@ static void fbx_constraint_pose_free(fbx_constraint_pose_t *pose) {
     memset(pose, 0, sizeof(*pose));
 }
 
+/// @brief Free a parsed constraint set, including all per-entry sources.
+/// @param[in,out] set Set to clear; `NULL` is ignored.
 static void fbx_constraint_set_free(fbx_constraint_set_t *set) {
     if (!set)
         return;
@@ -114,6 +190,9 @@ static void fbx_constraint_set_free(fbx_constraint_set_t *set) {
     memset(set, 0, sizeof(*set));
 }
 
+/// @brief Map exporter-specific constraint type text to an evaluator category.
+/// @param[in] text Case-insensitive FBX type string.
+/// @return A supported constraint kind, or `FBX_CONSTRAINT_UNKNOWN`.
 static fbx_constraint_kind_t fbx_constraint_kind_from_text(const char *text) {
     if (!text)
         return FBX_CONSTRAINT_UNKNOWN;
@@ -135,6 +214,10 @@ static fbx_constraint_kind_t fbx_constraint_kind_from_text(const char *text) {
     return FBX_CONSTRAINT_UNKNOWN;
 }
 
+/// @brief Borrow a constraint node's type text from either common encoding.
+/// @param[in] node Constraint node.
+/// @return The third object property when nonempty, otherwise the first child
+/// `Type` property, or a static empty string.
 static const char *fbx_constraint_type_text(fbx_node_t *node) {
     fbx_node_t *type;
     if (!node)
@@ -145,6 +228,14 @@ static const char *fbx_constraint_type_text(fbx_node_t *node) {
     return type && type->prop_count > 0 ? fbx_prop_str(type, 0) : "";
 }
 
+/// @brief Read a finite scalar constraint property with fallback.
+/// @param[in] node Constraint node searched in `Properties70` then direct children.
+/// @param[in] name Exact property name.
+/// @param[in] fallback Value used when the property is absent.
+/// @param[out] out Required destination value.
+/// @param[out] out_found Optional flag indicating an authored property.
+/// @return Nonzero for an absent or finite value; zero for invalid output or
+/// non-finite authored data.
 static int fbx_constraint_property_number(fbx_node_t *node,
                                           const char *name,
                                           double fallback,
@@ -179,6 +270,13 @@ static int fbx_constraint_property_number(fbx_node_t *node,
     return 1;
 }
 
+/// @brief Read a finite three-component constraint property with fallback.
+/// @param[in] node Constraint node searched in `Properties70` then direct children.
+/// @param[in] name Exact property name.
+/// @param[in] fallback Required three-component default.
+/// @param[out] out Destination components.
+/// @param[out] out_found Optional flag indicating an authored property.
+/// @return Nonzero for an absent or valid finite vector, otherwise zero.
 static int fbx_constraint_property_xyz(fbx_node_t *node,
                                        const char *name,
                                        const double fallback[3],
@@ -213,6 +311,12 @@ static int fbx_constraint_property_xyz(fbx_node_t *node,
     return 1;
 }
 
+/// @brief Read a numeric constraint property as a boolean.
+/// @param[in] node Constraint node.
+/// @param[in] name Exact property name.
+/// @param[in] fallback Boolean used when absent.
+/// @param[out] out Destination normalized boolean.
+/// @return Nonzero when the property is absent or finite; otherwise zero.
 static int fbx_constraint_property_bool(fbx_node_t *node,
                                         const char *name,
                                         int fallback,
@@ -225,6 +329,10 @@ static int fbx_constraint_property_bool(fbx_node_t *node,
     return 1;
 }
 
+/// @brief Test a nonempty prefix plus suffix using ASCII case folding.
+/// @param[in] name Full property name.
+/// @param[in] suffix Expected terminal text.
+/// @return Nonzero when `name` is longer than and ends with `suffix`.
 static int fbx_constraint_name_has_suffix(const char *name, const char *suffix) {
     size_t name_len;
     size_t suffix_len;
@@ -236,6 +344,11 @@ static int fbx_constraint_name_has_suffix(const char *name, const char *suffix) 
            fbx_ascii_equals_i(name + name_len - suffix_len, suffix);
 }
 
+/// @brief Match a dynamic property name against an exact model name and suffix.
+/// @param[in] property Candidate `P` property whose first field is the name.
+/// @param[in] model Model providing its exact length-carrying object name.
+/// @param[in] suffix Expected property suffix such as `.Weight`.
+/// @return Nonzero for an ASCII case-insensitive exact concatenation.
 static int fbx_constraint_property_matches_model(fbx_node_t *property,
                                                  fbx_node_t *model,
                                                  const char *suffix) {
@@ -265,6 +378,11 @@ static int fbx_constraint_property_matches_model(fbx_node_t *property,
     return fbx_ascii_equals_i(property_name + model_len, suffix);
 }
 
+/// @brief Find one model-qualified property in a constraint's `Properties70`.
+/// @param[in] constraint Constraint node to search.
+/// @param[in] model Source model whose name prefixes the property.
+/// @param[in] suffix Expected suffix.
+/// @return Borrowed matching `P` node, or `NULL`.
 static fbx_node_t *fbx_constraint_find_model_property(fbx_node_t *constraint,
                                                       fbx_node_t *model,
                                                       const char *suffix) {
@@ -280,6 +398,12 @@ static fbx_node_t *fbx_constraint_find_model_property(fbx_node_t *constraint,
     return NULL;
 }
 
+/// @brief Append a unique source model with identity offsets and unit weight.
+/// @param[in,out] constraint Constraint whose owned source array may grow.
+/// @param[in] model_id Nonzero source Model identifier.
+/// @param[in,out] context Aggregate allocation budget.
+/// @return Nonzero on insertion; zero for invalid input, a duplicate, overflow,
+/// budget exhaustion, or allocation failure.
 static int fbx_constraint_append_source(fbx_constraint_t *constraint,
                                         int64_t model_id,
                                         fbx_load_context_t *context) {
@@ -317,10 +441,23 @@ static int fbx_constraint_append_source(fbx_constraint_t *constraint,
     return 1;
 }
 
+/// @brief Compare two nonnull FBX connection-role strings case-insensitively.
+/// @param[in] role Imported connection role.
+/// @param[in] expected Supported role spelling.
+/// @return Nonzero on exact ASCII case-insensitive equality.
 static int fbx_constraint_role_equals(const char *role, const char *expected) {
     return role && expected && fbx_ascii_equals_i(role, expected);
 }
 
+/// @brief Bind one role-labeled model connection into a constraint.
+/// @param[in,out] constraint Constraint receiving a target, source, or special role.
+/// @param[in] objects FBX Objects node used to validate the model.
+/// @param[in] model_id Connected numeric Model identifier.
+/// @param[in] role Connection property label.
+/// @param[in,out] context Aggregate allocation budget for source growth.
+/// @return Nonzero when the role is ignored or bound consistently; zero for an
+/// invalid model, conflicting singleton role, duplicate source, or allocation
+/// failure.
 static int fbx_constraint_bind_connection(fbx_constraint_t *constraint,
                                           fbx_node_t *objects,
                                           int64_t model_id,
@@ -385,6 +522,14 @@ static int fbx_constraint_bind_connection(fbx_constraint_t *constraint,
     return 1;
 }
 
+/// @brief Read per-source weights and parent offsets from dynamic properties.
+/// @param[in,out] constraint Constraint with resolved source IDs.
+/// @param[in] objects FBX Objects node used to resolve source names.
+/// @return Nonzero when dynamic weight cardinality and every source property
+/// are valid; otherwise zero.
+/// @details Non-IK source weights are percentages divided by 100; IK weights
+/// retain their authored unit scale. Parent sources additionally read
+/// translation, Euler-rotation, and scale offsets, defaulting to identity.
 static int fbx_constraint_read_source_properties(fbx_constraint_t *constraint,
                                                  fbx_node_t *objects) {
     fbx_node_t *properties;
@@ -448,6 +593,13 @@ static int fbx_constraint_read_source_properties(fbx_constraint_t *constraint,
     return 1;
 }
 
+/// @brief Read and sanitize properties shared across constraint kinds.
+/// @param[in,out] constraint Parsed constraint whose source node is inspected.
+/// @return Nonzero when all present values are finite and enum ranges are
+/// supported; otherwise zero.
+/// @details Loads activity, lock, normalized overall weight, offsets, per-axis
+/// affect masks, aim/up vectors, world-up and pole modes, pole vector, and IK
+/// twist with exporter-compatible aliases and defaults.
 static int fbx_constraint_read_common_properties(fbx_constraint_t *constraint) {
     static const double zero[3] = {0.0, 0.0, 0.0};
     static const double one[3] = {1.0, 1.0, 1.0};
@@ -572,6 +724,13 @@ static int fbx_constraint_read_common_properties(fbx_constraint_t *constraint) {
     return 1;
 }
 
+/// @brief Resolve a model's direct parent only when it is another Model.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] model_id Child Model identifier.
+/// @param[out] out_parent_id Optional destination parent ID, receiving zero
+/// for a root, missing connection, or non-Model parent.
+/// @return One.
 static int fbx_constraint_model_parent_id(fbx_node_t *objects,
                                           const fbx_conn_table_t *ct,
                                           int64_t model_id,
@@ -587,6 +746,12 @@ static int fbx_constraint_model_parent_id(fbx_node_t *objects,
     return 1;
 }
 
+/// @brief Validate required roles and ancestry of a single-chain IK constraint.
+/// @param[in] constraint Parsed IK constraint.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @return Nonzero when target, end, and effector exist and the end joint
+/// reaches the target through Model parents without exceeding the graph guard.
 static int fbx_constraint_ik_chain_valid(const fbx_constraint_t *constraint,
                                          fbx_node_t *objects,
                                          const fbx_conn_table_t *ct) {
@@ -606,6 +771,13 @@ static int fbx_constraint_ik_chain_valid(const fbx_constraint_t *constraint,
     return 0;
 }
 
+/// @brief Determine whether a constraint directly writes a model's global pose.
+/// @param[in] constraint Parsed constraint.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] model_id Candidate Model identifier.
+/// @return Nonzero for an active ordinary constraint's target or any Model on
+/// an active IK end-to-first-joint chain.
 static int fbx_constraint_writes_model(const fbx_constraint_t *constraint,
                                        fbx_node_t *objects,
                                        const fbx_conn_table_t *ct,
@@ -627,6 +799,13 @@ static int fbx_constraint_writes_model(const fbx_constraint_t *constraint,
     return 0;
 }
 
+/// @brief Determine whether a producer can affect a model's composed global transform.
+/// @param[in] producer Candidate producing constraint.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] model_id Model whose ancestor chain is inspected.
+/// @return Nonzero when the producer writes the model or one of its Model
+/// ancestors.
 static int fbx_constraint_affects_model_global(const fbx_constraint_t *producer,
                                                fbx_node_t *objects,
                                                const fbx_conn_table_t *ct,
@@ -642,6 +821,13 @@ static int fbx_constraint_affects_model_global(const fbx_constraint_t *producer,
     return 0;
 }
 
+/// @brief Test whether one active constraint depends on another's output.
+/// @param[in] consumer Constraint whose inputs are inspected.
+/// @param[in] producer Distinct candidate producer.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @return Nonzero when the producer affects a source, world-up/IK role, or
+/// target parent global transform consumed by `consumer`.
 static int fbx_constraint_depends_on(const fbx_constraint_t *consumer,
                                      const fbx_constraint_t *producer,
                                      fbx_node_t *objects,
@@ -669,6 +855,12 @@ static int fbx_constraint_depends_on(const fbx_constraint_t *consumer,
            fbx_constraint_affects_model_global(producer, objects, ct, target_parent);
 }
 
+/// @brief Detect a constraint that consumes a global transform it writes itself.
+/// @param[in] constraint Active constraint to inspect.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @return Nonzero when any source or special role is affected by the same
+/// constraint's output.
 static int fbx_constraint_has_self_dependency(const fbx_constraint_t *constraint,
                                               fbx_node_t *objects,
                                               const fbx_conn_table_t *ct) {
@@ -690,6 +882,14 @@ static int fbx_constraint_has_self_dependency(const fbx_constraint_t *constraint
     return 0;
 }
 
+/// @brief Build a stable dependency-safe constraint evaluation order.
+/// @param[in,out] set Parsed set receiving an owned index array.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @return Nonzero when all entries can be topologically ordered, including an
+/// empty set; zero on allocation/budget failure or an active dependency cycle.
+/// @details Kahn-style placement scans entries in source order, so unrelated
+/// constraints retain deterministic imported ordering.
 static int fbx_constraint_build_order(fbx_constraint_set_t *set,
                                       fbx_node_t *objects,
                                       const fbx_conn_table_t *ct) {
@@ -750,6 +950,19 @@ static int fbx_constraint_build_order(fbx_constraint_set_t *set,
     return output_count == set->count;
 }
 
+/// @brief Parse, validate, and dependency-order all FBX Constraint objects.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in,out] context Aggregate allocation budget.
+/// @param[out] out_set Destination set initialized before parsing.
+/// @return Nonzero on success, including no constraints; zero after recording
+/// a corrupt-asset error and releasing staged state on invalid graph or
+/// allocation failure.
+/// @details Connections in either direction bind targets, sources, and special
+/// roles. Unknown types are retained with a warning but not evaluated. Active
+/// supported constraints must have their required roles, no target-as-source
+/// or self-dependency, a valid IK chain where applicable, and an acyclic
+/// inter-constraint dependency graph.
 static int fbx_parse_constraints(fbx_node_t *objects,
                                  const fbx_conn_table_t *ct,
                                  fbx_load_context_t *context,
@@ -848,28 +1061,47 @@ invalid:
     return 0;
 }
 
+/// @brief Resolve a numeric Model ID through a pose's sorted lookup table.
+/// @param[in] pose Constraint pose.
+/// @param[in] id Numeric Model identifier.
+/// @return Zero-based pose index, or `-1` when absent or unavailable.
 static int32_t fbx_constraint_pose_index(const fbx_constraint_pose_t *pose, int64_t id) {
     return pose && pose->id_table ? fbx_model_index_for_id(pose->id_table, pose->count, id) : -1;
 }
 
+/// @brief Borrow one pose entry's row-major local matrix.
+/// @param[in,out] pose Constraint pose.
+/// @param[in] index Zero-based pose index.
+/// @return Mutable 16-double matrix pointer, or `NULL` when out of range.
 static double *fbx_constraint_pose_local(fbx_constraint_pose_t *pose, int32_t index) {
     return pose && index >= 0 && index < pose->count
                ? &pose->local_matrices[(size_t)index * 16u]
                : NULL;
 }
 
+/// @brief Borrow one pose entry's row-major global matrix.
+/// @param[in,out] pose Constraint pose.
+/// @param[in] index Zero-based pose index.
+/// @return Mutable 16-double matrix pointer, or `NULL` when out of range.
 static double *fbx_constraint_pose_global(fbx_constraint_pose_t *pose, int32_t index) {
     return pose && index >= 0 && index < pose->count
                ? &pose->global_matrices[(size_t)index * 16u]
                : NULL;
 }
 
+/// @brief Borrow a pose entry's global matrix by numeric Model ID.
+/// @param[in] pose Constraint pose.
+/// @param[in] model_id Numeric Model identifier.
+/// @return Const 16-double matrix pointer, or `NULL` when absent.
 static const double *fbx_constraint_static_global_for_id(const fbx_constraint_pose_t *pose,
                                                          int64_t model_id) {
     int32_t index = fbx_constraint_pose_index(pose, model_id);
     return index >= 0 ? &pose->global_matrices[(size_t)index * 16u] : NULL;
 }
 
+/// @brief Compute a finite three-vector Euclidean length.
+/// @param[in] value Three-component vector.
+/// @return Positive finite length, or zero for null, zero, or non-finite input.
 static double fbx_constraint_vec3_length(const double value[3]) {
     double length_squared;
     if (!value)
@@ -878,6 +1110,9 @@ static double fbx_constraint_vec3_length(const double value[3]) {
     return isfinite(length_squared) && length_squared > 0.0 ? sqrt(length_squared) : 0.0;
 }
 
+/// @brief Normalize a finite nondegenerate three-vector in place.
+/// @param[in,out] value Three-component vector.
+/// @return Nonzero when the length exceeds `1e-15` and the result is finite.
 static int fbx_constraint_vec3_normalize(double value[3]) {
     double length = fbx_constraint_vec3_length(value);
     if (!(length > 1e-15) || !isfinite(length))
@@ -888,16 +1123,26 @@ static int fbx_constraint_vec3_normalize(double value[3]) {
     return isfinite(value[0]) && isfinite(value[1]) && isfinite(value[2]);
 }
 
+/// @brief Compute the dot product of two three-vectors.
+/// @param[in] a First vector.
+/// @param[in] b Second vector.
+/// @return Scalar dot product.
 static double fbx_constraint_vec3_dot(const double a[3], const double b[3]) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+/// @brief Compute the right-handed cross product of two three-vectors.
+/// @param[in] a First vector.
+/// @param[in] b Second vector.
+/// @param[out] out Destination vector.
 static void fbx_constraint_vec3_cross(const double a[3], const double b[3], double out[3]) {
     out[0] = a[1] * b[2] - a[2] * b[1];
     out[1] = a[2] * b[0] - a[0] * b[2];
     out[2] = a[0] * b[1] - a[1] * b[0];
 }
 
+/// @brief Normalize a quaternion or replace a degenerate value with identity.
+/// @param[in,out] quaternion Quaternion in `(x, y, z, w)` order.
 static void fbx_constraint_quaternion_normalize(double quaternion[4]) {
     double length_squared;
     double inverse;
@@ -915,10 +1160,18 @@ static void fbx_constraint_quaternion_normalize(double quaternion[4]) {
         quaternion[i] *= inverse;
 }
 
+/// @brief Compute the dot product of two quaternions.
+/// @param[in] a First quaternion.
+/// @param[in] b Second quaternion.
+/// @return Scalar dot product.
 static double fbx_constraint_quaternion_dot(const double a[4], const double b[4]) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
 }
 
+/// @brief Multiply and normalize two quaternions.
+/// @param[in] a Left quaternion.
+/// @param[in] b Right quaternion.
+/// @param[out] out Destination quaternion; aliasing either input is supported.
 static void fbx_constraint_quaternion_multiply(const double a[4],
                                                const double b[4],
                                                double out[4]) {
@@ -931,6 +1184,11 @@ static void fbx_constraint_quaternion_multiply(const double a[4],
     fbx_constraint_quaternion_normalize(out);
 }
 
+/// @brief Shortest-hemisphere normalized-linear interpolate two quaternions.
+/// @param[in] from Starting quaternion.
+/// @param[in] to Ending quaternion.
+/// @param[in] alpha Blend fraction clamped to `[0, 1]`.
+/// @param[out] out Destination normalized quaternion.
 static void fbx_constraint_quaternion_nlerp(const double from[4],
                                             const double to[4],
                                             double alpha,
@@ -942,12 +1200,20 @@ static void fbx_constraint_quaternion_nlerp(const double from[4],
     fbx_constraint_quaternion_normalize(out);
 }
 
+/// @brief Convert XYZ-order Euler degrees to a quaternion.
+/// @param[in] euler Three Euler angles in degrees.
+/// @param[out] out Destination normalized quaternion.
 static void fbx_constraint_quaternion_from_euler(const double euler[3], double out[4]) {
     double rotation[16];
     fbx_mat4_euler_degrees(euler, 0, rotation);
     fbx_decompose_matrix_trs(rotation, NULL, out, NULL);
 }
 
+/// @brief Convert a quaternion to XYZ-order Euler angles in degrees.
+/// @param[in] quaternion Source quaternion.
+/// @param[out] out Destination three-angle vector.
+/// @details The gimbal-lock branch fixes Z to zero and derives X from the
+/// remaining matrix terms.
 static void fbx_constraint_euler_xyz_from_quaternion(const double quaternion[4],
                                                      double out[3]) {
     static const double radians_to_degrees = 57.2957795130823208768;
@@ -967,6 +1233,11 @@ static void fbx_constraint_euler_xyz_from_quaternion(const double quaternion[4],
         out[i] *= radians_to_degrees;
 }
 
+/// @brief Compose a row-major affine matrix as translation times rotation times scale.
+/// @param[in] position Three-component translation.
+/// @param[in] quaternion Rotation quaternion.
+/// @param[in] scale Three-component scale.
+/// @param[out] out Destination 4-by-4 matrix.
 static void fbx_constraint_compose_trs(const double position[3],
                                        const double quaternion[4],
                                        const double scale[3],
@@ -981,6 +1252,10 @@ static void fbx_constraint_compose_trs(const double position[3],
     fbx_mat4_append_local(out, scaling);
 }
 
+/// @brief Transform a direction by the upper 3-by-3 portion of a matrix.
+/// @param[in] matrix Row-major 4-by-4 matrix.
+/// @param[in] value Source direction.
+/// @param[out] out Destination direction; translation is ignored.
 static void fbx_constraint_transform_vector(const double matrix[16],
                                             const double value[3],
                                             double out[3]) {
@@ -989,6 +1264,10 @@ static void fbx_constraint_transform_vector(const double matrix[16],
     out[2] = matrix[8] * value[0] + matrix[9] * value[1] + matrix[10] * value[2];
 }
 
+/// @brief Convert a source-space direction or position offset into runtime axes.
+/// @param[in] pose Pose whose `z_up` flag selects basis conversion.
+/// @param[in] value Source three-vector.
+/// @param[out] out Runtime vector, using `(x, z, -y)` for Z-up content.
 static void fbx_constraint_source_vector(const fbx_constraint_pose_t *pose,
                                          const double value[3],
                                          double out[3]) {
@@ -1001,6 +1280,10 @@ static void fbx_constraint_source_vector(const fbx_constraint_pose_t *pose,
     }
 }
 
+/// @brief Convert source scale components into runtime axis order.
+/// @param[in] pose Pose whose `z_up` flag selects basis conversion.
+/// @param[in] value Source scale.
+/// @param[out] out Runtime scale, using `(x, z, y)` for Z-up content.
 static void fbx_constraint_source_scale(const fbx_constraint_pose_t *pose,
                                         const double value[3],
                                         double out[3]) {
@@ -1013,6 +1296,10 @@ static void fbx_constraint_source_scale(const fbx_constraint_pose_t *pose,
     }
 }
 
+/// @brief Convert source XYZ Euler degrees into a runtime quaternion.
+/// @param[in] pose Pose whose `z_up` flag selects matrix basis conversion.
+/// @param[in] euler Source Euler angles.
+/// @param[out] out_quaternion Destination runtime quaternion.
 static void fbx_constraint_source_rotation(const fbx_constraint_pose_t *pose,
                                            const double euler[3],
                                            double out_quaternion[4]) {
@@ -1023,6 +1310,12 @@ static void fbx_constraint_source_rotation(const fbx_constraint_pose_t *pose,
     fbx_decompose_matrix_trs(matrix, NULL, out_quaternion, NULL);
 }
 
+/// @brief Construct the shortest rotation from one direction to another.
+/// @param[in] from_value Source direction.
+/// @param[in] to_value Target direction.
+/// @param[out] out Destination quaternion.
+/// @details Degenerate inputs produce identity; antiparallel directions use a
+/// deterministic perpendicular 180-degree axis.
 static void fbx_constraint_quaternion_from_to(const double from_value[3],
                                               const double to_value[3],
                                               double out[4]) {
@@ -1060,6 +1353,12 @@ static void fbx_constraint_quaternion_from_to(const double from_value[3],
     fbx_constraint_quaternion_normalize(out);
 }
 
+/// @brief Recompose every non-fixed global matrix in parent-before-child order.
+/// @param[in,out] pose Pose whose local matrices and transform components are inputs.
+/// @return Nonzero when every entry resolves, including an empty pose; zero
+/// for invalid storage or an unresolved/cyclic hierarchy.
+/// @details Entries marked in `fixed_globals` preserve the world matrix written
+/// directly by a prior constraint while still satisfying child dependencies.
 static int fbx_constraint_pose_recompute(fbx_constraint_pose_t *pose) {
     uint8_t *evaluated;
     int32_t evaluated_count = 0;
@@ -1101,6 +1400,13 @@ static int fbx_constraint_pose_recompute(fbx_constraint_pose_t *pose) {
     return evaluated_count == pose->count;
 }
 
+/// @brief Commit a world matrix and derive its parent-relative local matrix.
+/// @param[in,out] pose Pose to modify.
+/// @param[in] index Target pose index.
+/// @param[in] world Desired row-major global matrix.
+/// @return Nonzero when the target is valid and any parent matrix is invertible.
+/// @details Updates the local and global matrices, refreshes cached local
+/// translation and scale, and marks the global result fixed for recomposition.
 static int fbx_constraint_pose_write_world(fbx_constraint_pose_t *pose,
                                            int32_t index,
                                            const double world[16]) {
@@ -1133,6 +1439,20 @@ static int fbx_constraint_pose_write_world(fbx_constraint_pose_t *pose,
     return 1;
 }
 
+/// @brief Blend masked desired global TRS values into one pose entry.
+/// @param[in,out] pose Pose to modify and recompose.
+/// @param[in] target_index Target pose index.
+/// @param[in] desired_position Desired global translation.
+/// @param[in] desired_quaternion Desired global rotation.
+/// @param[in] desired_scale Desired global scale.
+/// @param[in] affect_translation Per-runtime-axis translation mask.
+/// @param[in] affect_rotation Per-runtime-axis rotation mask.
+/// @param[in] affect_scale Per-runtime-axis scale mask.
+/// @param[in] weight Blend fraction clamped to `[0, 1]`.
+/// @return Nonzero for a zero-weight no-op or successful write and hierarchy
+/// recomposition; otherwise zero.
+/// @details Fully enabled rotation uses quaternion NLERP. Partial rotation
+/// converts to XYZ Euler degrees and blends shortest per-axis angular deltas.
 static int fbx_constraint_pose_apply_trs(fbx_constraint_pose_t *pose,
                                          int32_t target_index,
                                          const double desired_position[3],
@@ -1189,6 +1509,16 @@ static int fbx_constraint_pose_apply_trs(fbx_constraint_pose_t *pose,
            fbx_constraint_pose_recompute(pose);
 }
 
+/// @brief Compute normalized weighted global TRS across a constraint's sources.
+/// @param[in] constraint Constraint supplying source IDs, weights, and offsets.
+/// @param[in,out] pose Pose providing current source globals.
+/// @param[in] parent_mode Nonzero to compose each source's parent offsets before
+/// averaging.
+/// @param[out] out_position Weighted global translation.
+/// @param[out] out_quaternion Hemisphere-aligned normalized quaternion average.
+/// @param[out] out_scale Weighted global scale.
+/// @return Nonzero when every source resolves and total positive finite weight
+/// exists; otherwise zero.
 static int fbx_constraint_weighted_sources(const fbx_constraint_t *constraint,
                                            fbx_constraint_pose_t *pose,
                                            int parent_mode,
@@ -1258,6 +1588,10 @@ static int fbx_constraint_weighted_sources(const fbx_constraint_t *constraint,
     return 1;
 }
 
+/// @brief Reorder an authored XYZ affect mask into runtime axes.
+/// @param[in] pose Pose whose `z_up` flag selects conversion.
+/// @param[in] source_mask Authored source-axis mask.
+/// @param[out] runtime_mask Runtime mask; Y and Z swap for Z-up content.
 static void fbx_constraint_runtime_mask(const fbx_constraint_pose_t *pose,
                                         const int source_mask[3],
                                         int runtime_mask[3]) {
@@ -1270,6 +1604,15 @@ static void fbx_constraint_runtime_mask(const fbx_constraint_pose_t *pose,
     }
 }
 
+/// @brief Apply position, rotation, scale, or parent constraint semantics.
+/// @param[in,out] constraint Constraint to evaluate.
+/// @param[in,out] pose Current all-model pose.
+/// @return Nonzero when the target and sources resolve and the blended masked
+/// pose is committed; otherwise zero.
+/// @details Position, rotation, and scale kinds preserve unrelated current
+/// components while applying their constraint-wide offset. Parent constraints
+/// use each source's full offset transform. Source-axis masks are converted to
+/// runtime axes before overall weight blending.
 static int fbx_constraint_apply_standard(fbx_constraint_t *constraint,
                                          fbx_constraint_pose_t *pose) {
     int32_t target = fbx_constraint_pose_index(pose, constraint->target_id);
@@ -1332,6 +1675,9 @@ static int fbx_constraint_apply_standard(fbx_constraint_t *constraint,
                                          constraint->weight);
 }
 
+/// @brief Choose a coordinate axis least parallel to a direction.
+/// @param[in] direction Direction whose smallest absolute component is used.
+/// @param[out] out Deterministic unit X, Y, or Z fallback.
 static void fbx_constraint_parallel_fallback(const double direction[3], double out[3]) {
     if (fabs(direction[0]) <= fabs(direction[1]) && fabs(direction[0]) <= fabs(direction[2])) {
         out[0] = 1.0;
@@ -1348,6 +1694,16 @@ static void fbx_constraint_parallel_fallback(const double direction[3], double o
     }
 }
 
+/// @brief Orient a target's local aim axis toward weighted source positions.
+/// @param[in,out] constraint Aim constraint to evaluate.
+/// @param[in,out] pose Current all-model pose.
+/// @return Nonzero when source, target, aim/up bases, optional world-up object,
+/// and blended pose are valid; otherwise zero.
+/// @details World-up modes support default world Y, direction to an up object,
+/// an up vector transformed by an object, an explicit world vector, or the
+/// target's current local-up direction. Parallel aim/up inputs use a
+/// deterministic perpendicular fallback. Rotation offset, axis masks, and
+/// overall constraint weight are applied to the resulting basis rotation.
 static int fbx_constraint_apply_aim(fbx_constraint_t *constraint,
                                     fbx_constraint_pose_t *pose) {
     int32_t target = fbx_constraint_pose_index(pose, constraint->target_id);
@@ -1479,6 +1835,12 @@ static int fbx_constraint_apply_aim(fbx_constraint_t *constraint,
                                          constraint->weight);
 }
 
+/// @brief Rotate a point around an arbitrary world-space axis using Rodrigues' formula.
+/// @param[in] point Point to rotate.
+/// @param[in] origin Point on the rotation axis.
+/// @param[in] axis_value Axis direction.
+/// @param[in] angle Rotation angle in radians.
+/// @param[out] out Rotated point; invalid axes or angles copy `point`.
 static void fbx_constraint_rotate_about_axis(const double point[3],
                                              const double origin[3],
                                              const double axis_value[3],
@@ -1501,6 +1863,12 @@ static void fbx_constraint_rotate_about_axis(const double point[3],
                          axis[component] * dot * (1.0 - cosine);
 }
 
+/// @brief Rotate intermediate IK joints toward a pole point.
+/// @param[in,out] positions Packed root-to-end world-space joint positions.
+/// @param[in] count Number of joint positions.
+/// @param[in] pole World-space pole point.
+/// @details Each interior joint is projected with the pole onto the plane
+/// normal to its neighboring-joint axis and rotated by their signed angle.
 static void fbx_constraint_ik_apply_pole(double *positions,
                                          int32_t count,
                                          const double pole[3]) {
@@ -1545,6 +1913,19 @@ static void fbx_constraint_ik_apply_pole(double *positions,
     }
 }
 
+/// @brief Solve and apply one bounded single-chain IK constraint.
+/// @param[in,out] constraint IK roles, pole, twist, weight, and warning state.
+/// @param[in,out] pose Current all-model pose.
+/// @param[in,out] context Aggregate budget charged for temporary chain arrays.
+/// @return Nonzero when the chain is valid, scratch allocation succeeds, and
+/// the solved globals can be committed; otherwise zero.
+/// @details Builds the first-joint-to-end chain and preserves segment lengths.
+/// Unreachable targets stretch the chain toward the effector; reachable
+/// targets use at most 32 FABRIK iterations, applying the pole each iteration.
+/// Optional twist rotates interior joints about the solved chain, and partial
+/// constraint weight blends original and solved segment directions. Rotations
+/// are updated from old-to-new directions before hierarchy recomposition. An
+/// unsolved or unreachable target emits at most one degradation warning.
 static int fbx_constraint_apply_ik(fbx_constraint_t *constraint,
                                    fbx_constraint_pose_t *pose,
                                    fbx_load_context_t *context) {
@@ -1783,6 +2164,12 @@ fail:
     return 0;
 }
 
+/// @brief Apply every active supported constraint in dependency order.
+/// @param[in,out] set Parsed constraint set.
+/// @param[in,out] pose Current all-model pose.
+/// @param[in,out] context Aggregate budget used by IK scratch allocation.
+/// @return Nonzero when every applicable standard, aim, or IK constraint
+/// succeeds; zero after recording a corrupt-pose error on evaluation failure.
 static int fbx_constraint_apply_set(fbx_constraint_set_t *set,
                                     fbx_constraint_pose_t *pose,
                                     fbx_load_context_t *context) {
@@ -1809,6 +2196,15 @@ static int fbx_constraint_apply_set(fbx_constraint_set_t *set,
     return 1;
 }
 
+/// @brief Allocate all parallel arrays for a reusable constraint pose.
+/// @param[out] pose Destination pose initialized to empty first.
+/// @param[in] count Nonnegative Model entry count.
+/// @param[in,out] context Aggregate allocation budget.
+/// @return Nonzero on success, including a zero-entry pose; zero on invalid
+/// input, overflow, budget exhaustion, or allocation failure.
+/// @details Allocates identifiers, parents, source nodes, components, local and
+/// global matrices, ID lookup entries, fixed-global flags, and reusable
+/// evaluation flags as one synchronized capacity.
 static int fbx_constraint_pose_allocate(fbx_constraint_pose_t *pose,
                                         int32_t count,
                                         fbx_load_context_t *context) {
@@ -1849,6 +2245,18 @@ static int fbx_constraint_pose_allocate(fbx_constraint_pose_t *pose,
     return 1;
 }
 
+/// @brief Build and constrain the static all-model pose for scene import.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] z_up Nonzero to convert source local matrices to runtime basis.
+/// @param[in,out] set Parsed constraint set to evaluate.
+/// @param[in,out] context Aggregate allocation and IK scratch budget.
+/// @param[out] out_pose Destination owned pose.
+/// @return Nonzero when every Model is indexed, its hierarchy composes, and all
+/// active constraints evaluate; otherwise zero with allocated pose state freed.
+/// @details Static local components and matrices are loaded for every Model,
+/// the numeric ID table is sorted, parent IDs are resolved within the pose,
+/// globals are composed, then constraints are applied in dependency order.
 static int fbx_constraint_build_static_pose(fbx_node_t *objects,
                                             const fbx_conn_table_t *ct,
                                             int z_up,

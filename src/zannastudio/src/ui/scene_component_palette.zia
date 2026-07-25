@@ -24,6 +24,7 @@
 module scene_component_palette;
 
 bind "scene_component_schema";
+bind "inspector_rows";
 
 bind GUI = Zanna.GUI;
 
@@ -154,8 +155,7 @@ class SceneComponentPalette {
         fieldList.SetAccessibleName(accessibleName + " fields");
         fieldList.SetPreferredSize(0.0, 96.0);
 
-        var actions = GUI.HBox.New();
-        actions.SetSpacing(4.0);
+        var actions = inspector_rows.NewWrapRow();
         group.AddChild(actions);
         applyButton = GUI.Button.New(actions, "Add Missing");
         applyButton.SetTooltip(
@@ -163,8 +163,7 @@ class SceneComponentPalette {
         editFieldButton = GUI.Button.New(actions, "Edit Field");
         editFieldButton.SetTooltip(
             "Copy the selected schema field into the raw property editor");
-        var schemaActions = GUI.HBox.New();
-        schemaActions.SetSpacing(4.0);
+        var schemaActions = inspector_rows.NewWrapRow();
         group.AddChild(schemaActions);
         schemaToggleButton =
             GUI.Button.New(schemaActions, "Edit Schema");
@@ -198,8 +197,7 @@ class SceneComponentPalette {
             "Project schema component fields");
         authoringFieldList.SetPreferredSize(0.0, 90.0);
 
-        var historyRow = GUI.HBox.New();
-        historyRow.SetSpacing(4.0);
+        var historyRow = inspector_rows.NewWrapRow();
         schemaEditorGroup.AddChild(historyRow);
         schemaUndoButton = GUI.Button.New(historyRow, "Undo Schema");
         schemaUndoButton.SetTooltip(
@@ -209,8 +207,7 @@ class SceneComponentPalette {
             "Reapply the next exact schema file state");
 
         GUI.Label.New(schemaEditorGroup, "Component definition");
-        var componentOrderRow = GUI.HBox.New();
-        componentOrderRow.SetSpacing(4.0);
+        var componentOrderRow = inspector_rows.NewWrapRow();
         schemaEditorGroup.AddChild(componentOrderRow);
         newComponentButton =
             GUI.Button.New(componentOrderRow, "New Component");
@@ -234,8 +231,7 @@ class SceneComponentPalette {
             GUI.TextInput.New(schemaEditorGroup);
         componentDescriptionInput.SetPlaceholder(
             "Component description (optional)");
-        var componentSaveRow = GUI.HBox.New();
-        componentSaveRow.SetSpacing(4.0);
+        var componentSaveRow = inspector_rows.NewWrapRow();
         schemaEditorGroup.AddChild(componentSaveRow);
         saveComponentButton =
             GUI.Button.New(componentSaveRow, "Save Component");
@@ -245,8 +241,7 @@ class SceneComponentPalette {
             "Remove this template; authored scene values are retained");
 
         GUI.Label.New(schemaEditorGroup, "Field definition");
-        var fieldOrderRow = GUI.HBox.New();
-        fieldOrderRow.SetSpacing(4.0);
+        var fieldOrderRow = inspector_rows.NewWrapRow();
         schemaEditorGroup.AddChild(fieldOrderRow);
         newFieldButton = GUI.Button.New(fieldOrderRow, "New Field");
         newFieldButton.SetTooltip(
@@ -257,8 +252,7 @@ class SceneComponentPalette {
         fieldKeyInput.SetPlaceholder("Stable field key");
         fieldLabelInput = GUI.TextInput.New(schemaEditorGroup);
         fieldLabelInput.SetPlaceholder("Field label");
-        var fieldValueRow = GUI.HBox.New();
-        fieldValueRow.SetSpacing(4.0);
+        var fieldValueRow = inspector_rows.NewWrapRow();
         schemaEditorGroup.AddChild(fieldValueRow);
         fieldTypeDropdown = GUI.Dropdown.New(fieldValueRow);
         fieldTypeDropdown.AddItem("String");
@@ -279,8 +273,7 @@ class SceneComponentPalette {
         fieldDescriptionInput = GUI.TextInput.New(schemaEditorGroup);
         fieldDescriptionInput.SetPlaceholder(
             "Field description (optional)");
-        var fieldSaveRow = GUI.HBox.New();
-        fieldSaveRow.SetSpacing(4.0);
+        var fieldSaveRow = inspector_rows.NewWrapRow();
         schemaEditorGroup.AddChild(fieldSaveRow);
         saveFieldButton = GUI.Button.New(fieldSaveRow, "Save Field");
         deleteFieldButton = GUI.Button.New(fieldSaveRow, "Delete Field");
@@ -290,8 +283,7 @@ class SceneComponentPalette {
         migrationLabel = GUI.Label.New(schemaEditorGroup, "");
         migrationLabel.SetWordWrap(true);
         migrationLabel.SetVisible(false);
-        var migrationRow = GUI.HBox.New();
-        migrationRow.SetSpacing(4.0);
+        var migrationRow = inspector_rows.NewWrapRow();
         schemaEditorGroup.AddChild(migrationRow);
         migrateButton = GUI.Button.New(migrationRow, "Scan Scenes");
         migrateButton.SetTooltip(

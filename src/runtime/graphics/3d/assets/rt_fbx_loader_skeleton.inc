@@ -3,6 +3,18 @@
 // File: src/runtime/graphics/3d/assets/rt_fbx_loader_skeleton.inc  (#included from rt_fbx_loader.c;
 // not a standalone translation unit) Purpose: FBX skeleton extraction
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_fbx_loader_skeleton.inc
+ * @brief Extracts FBX skeletal Model hierarchies and reconciles their bind poses.
+ *
+ * Skeleton Models are ordered parent-first, composed through the full FBX transform
+ * stack, and converted into runtime-local bind matrices. Authoritative Cluster
+ * `TransformLink` globals take precedence, followed by an evaluated constrained pose
+ * and finally the Model hierarchy. The resulting Model-ID bindings are retained only
+ * as load-local metadata for skinning and animation import.
+ */
+
 /*==========================================================================
  * Skeleton extraction
  *=========================================================================*/
@@ -51,19 +63,34 @@ static int fbx_find_cluster_transform_link_for_model(
     return 0;
 }
 
+/// @brief Load-local transform and hierarchy metadata for one skeletal FBX Model.
 typedef struct {
+    /// Numeric FBX Model identifier.
     int64_t id;
+    /// Borrowed source Model node.
     fbx_node_t *source;
+    /// Parsed full FBX transform-stack components.
     fbx_transform_components_t transform;
+    /// Composed Model-local bind matrix after coordinate conversion.
     double local_model_bind[16];
+    /// Authoritative global Cluster link bind matrix when available.
     double cluster_global_bind[16];
+    /// Non-zero when @ref cluster_global_bind contains a valid matrix.
     int has_cluster_global_bind;
+    /// Numeric parent Model identifier.
     int64_t parent_id;
+    /// Runtime skeleton index assigned after topological ordering.
     int32_t bone_index; /* assigned after topological sort */
 } fbx_skel_bone_info_t;
 
 /// @brief Order skeleton bones parent-first (roots, then children whose parent is already
-///        placed) into @p order; marks @p placed and returns the number of placed bones.
+///        placed).
+/// @param bones Unordered bone metadata array.
+/// @param bone_count Number of entries in @p bones.
+/// @param[out] order Receives source-array indices in parent-first order.
+/// @param[in,out] placed Scratch flags, marked for every emitted source index.
+/// @return Number of bones successfully placed. A value below @p bone_count indicates
+///         a cycle or parent chain that cannot be resolved within the collected set.
 static int32_t fbx_skeleton_topo_order(const fbx_skel_bone_info_t *bones,
                                        int32_t bone_count,
                                        int32_t *order,
@@ -108,6 +135,16 @@ static int32_t fbx_skeleton_topo_order(const fbx_skel_bone_info_t *bones,
 /// Cluster `TransformLink` global bind matrices when present. `z_up` triggers
 /// the same basis conversion as the geometry pass, but at matrix level so
 /// rotations, pivots, and bind poses stay coherent.
+/// @param root Parsed FBX document root.
+/// @param ct Validated object connection table.
+/// @param constraint_pose Optional evaluated static constraint pose used when no
+///                        Cluster link bind is available.
+/// @param z_up Non-zero to convert all bind matrices into runtime Y-up space.
+/// @param[out] out_bindings Optional destination for the newly allocated
+///                          Model-ID-to-bone-index binding array.
+/// @param[out] out_binding_count Optional destination for the binding count.
+/// @return Newly allocated runtime Skeleton3D on success, or NULL when no skeletal
+///         Models exist, hierarchy ordering fails, or allocation/bone publication fails.
 static void *fbx_extract_skeleton(fbx_node_t *root,
                                   const fbx_conn_table_t *ct,
                                   const fbx_constraint_pose_t *constraint_pose,

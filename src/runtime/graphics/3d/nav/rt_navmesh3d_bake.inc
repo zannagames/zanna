@@ -23,8 +23,23 @@
 // Links: rt_navmesh3d.c, rt_navmesh3d_build.inc, rt_navmesh3d_query.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_navmesh3d_bake.inc
+ * @brief Implements versioned import, bounded voxel baking, surface projection, and off-mesh
+ *        adjacency refresh for NavMesh3D.
+ *
+ * This private implementation fragment is included by rt_navmesh3d.c. It validates serialized
+ * counts before allocation, coarsens voxel grids to fixed dimension and memory budgets, publishes
+ * fully derived topology, and supplies the horizontal geometry primitives shared by path and
+ * nearest-point queries.
+ */
+
 /// @brief Parse a VNAVMSH2 navmesh body (after its magic has been consumed) into a fresh
 ///   NavMesh3D, or NULL on malformed or oversized data.
+/// @param f Open binary stream positioned immediately after the eight-byte version-two magic.
+/// @return New GC-managed NavMesh3D with rebuilt derived indexes, or null after releasing partial
+///         state on malformed input.
 static rt_navmesh3d *navmesh3d_import_v2_after_magic(FILE *f) {
     rt_navmesh3d *nm =
         (rt_navmesh3d *)rt_obj_new_i64(RT_G3D_NAVMESH3D_CLASS_ID, (int64_t)sizeof(rt_navmesh3d));
@@ -176,6 +191,9 @@ fail:
 /// @brief Reconstruct a navmesh from "VNAVMSH2" or legacy "VNAVMSH1" files.
 /// @details A missing/short/corrupt/trailing-data file returns NULL recoverably; allocation
 ///   failure traps. Imported meshes rebuild adjacency and point-location grids immediately.
+/// @param path Runtime string containing the UTF-8 source filename.
+/// @return New GC-managed path-queryable NavMesh3D, or null for an invalid, missing, or corrupt
+///         file.
 void *rt_navmesh3d_import(rt_string path) {
     if (!path || !rt_string_is_handle(path))
         return NULL;
@@ -203,6 +221,12 @@ void *rt_navmesh3d_import(rt_string path) {
 /// rasterized into a `cell_size` heightfield grid, eroded by the agent radius, and re-emitted as a
 /// shared-corner grid mesh. Unlike `Build`, the result is decoupled from the input triangle density
 /// and honors the agent radius, which is what `Scene3D`/`World3D` auto-bake expects.
+/// @param scene Borrowed Scene3D whose mesh nodes are collected in world space.
+/// @param agent_radius Requested non-negative clearance radius.
+/// @param agent_height Requested non-negative agent height.
+/// @param max_slope Maximum walkable slope in degrees.
+/// @param cell_size Requested voxel cell edge length.
+/// @return New GC-managed baked NavMesh3D, or null when geometry collection or voxel baking fails.
 void *rt_navmesh3d_bake(
     void *scene, double agent_radius, double agent_height, double max_slope, double cell_size) {
     void *source_mesh = navmesh3d_build_scene_source_mesh(scene);
@@ -241,6 +265,13 @@ void *rt_navmesh3d_bake(
 /// instead of a whole-mesh refilter. Tile (tx,tz) covers world XZ
 /// [meshMin + t*tile_size, meshMin + (t+1)*tile_size). A non-positive tile_size leaves the mesh
 /// untiled (whole-mesh refilter), matching `Bake`.
+/// @param scene Borrowed Scene3D whose mesh nodes are collected.
+/// @param tile_size Requested tile edge length, sanitized to the supported range.
+/// @param agent_radius Requested non-negative clearance radius.
+/// @param agent_height Requested non-negative agent height.
+/// @param max_slope Maximum walkable slope in degrees.
+/// @param cell_size Requested voxel cell edge length.
+/// @return New GC-managed NavMesh3D tagged for tile-local mutation, or null on bake failure.
 void *rt_navmesh3d_bake_tiled(void *scene,
                               double tile_size,
                               double agent_radius,
@@ -265,6 +296,12 @@ void *rt_navmesh3d_bake_tiled(void *scene,
 }
 
 /// @brief Point-in-triangle test on XZ plane (2D barycentric).
+/// @param px Query X coordinate.
+/// @param pz Query Z coordinate.
+/// @param v0 Borrowed first triangle vertex.
+/// @param v1 Borrowed second triangle vertex.
+/// @param v2 Borrowed third triangle vertex.
+/// @return 1 when the finite query lies inside or on the triangle within tolerance, otherwise 0.
 static int point_in_tri_xz(float px, float pz, const float *v0, const float *v1, const float *v2) {
     if (!isfinite(px) || !isfinite(pz) || !navmesh3d_float3_finite(v0) ||
         !navmesh3d_float3_finite(v1) || !navmesh3d_float3_finite(v2))
@@ -286,6 +323,13 @@ static int point_in_tri_xz(float px, float pz, const float *v0, const float *v1,
 /// @brief Interpolate the world-space Y coordinate at `(px, pz)` on a triangle defined by
 ///        @p v0 / @p v1 / @p v2. Used by navmesh height queries to project an XZ point onto
 ///        the walkable surface. Caller must already have confirmed `(px,pz)` lies inside.
+/// @param px Query X coordinate.
+/// @param pz Query Z coordinate.
+/// @param v0 Borrowed first triangle vertex.
+/// @param v1 Borrowed second triangle vertex.
+/// @param v2 Borrowed third triangle vertex.
+/// @return Finite interpolated height, or a sanitized centroid-height fallback for a degenerate
+///         projection.
 static float triangle_y_at_xz(
     float px, float pz, const float *v0, const float *v1, const float *v2) {
     if (!isfinite(px) || !isfinite(pz) || !navmesh3d_float3_finite(v0) ||
@@ -307,6 +351,18 @@ static float triangle_y_at_xz(
 ///   array, placing it at the average surface height of the up-to-four walkable cells touching the
 ///   corner. Sharing one vertex per corner is what makes adjacent walkable cells share edge
 ///   vertices, so `navmesh3d_build_adjacency` connects them. Returns the vertex index.
+/// @param nm Mutable navmesh receiving a newly materialized corner vertex when needed.
+/// @param corner_vid Mutable `(nx + 1) * (nz + 1)` corner-to-vertex lookup.
+/// @param cell_h Borrowed per-cell surface heights.
+/// @param cell_walk Borrowed per-cell walkability flags.
+/// @param nx Grid width in cells.
+/// @param nz Grid depth in cells.
+/// @param min_x World X coordinate of the grid origin.
+/// @param min_z World Z coordinate of the grid origin.
+/// @param cell_size Positive grid cell edge length.
+/// @param ccx X coordinate of the requested grid corner.
+/// @param ccz Z coordinate of the requested grid corner.
+/// @return Existing or newly appended navmesh vertex index for the corner.
 static int32_t navmesh3d_voxel_corner_vertex(rt_navmesh3d *nm,
                                              int32_t *corner_vid,
                                              const float *cell_h,
@@ -349,6 +405,11 @@ static int32_t navmesh3d_voxel_corner_vertex(rt_navmesh3d *nm,
 ///   navmesh source-triangle set, computing an up-facing face normal and centroid. Winding does
 ///   not matter to the downstream point-in-triangle / A* queries; the normal is forced to +Y so the
 ///   slope filter retains the surface.
+/// @param nm Mutable navmesh with preallocated vertex and source-triangle storage.
+/// @param a First vertex index.
+/// @param b Second vertex index.
+/// @param c Third vertex index.
+/// @param blocked Non-zero to mark the emitted source triangle unavailable to queries.
 static void navmesh3d_voxel_emit_tri(
     rt_navmesh3d *nm, int32_t a, int32_t b, int32_t c, int8_t blocked) {
     const float *p0 = nm->vertices[a].position;
@@ -393,22 +454,17 @@ static void navmesh3d_voxel_emit_tri(
     tri->traversal_cost = 1.0f;
 }
 
-/// @brief From-scratch voxel navmesh baker (Recast-style, software, zero dependencies).
-/// @details Replaces the slope-filter passthrough used by `Build()` for scene auto-bake. Steps:
-///   (1) compute the XZ bounds of the world-space source geometry; (2) lay an XZ grid of
-///   `cell_size`, coarsening the cell size if the grid would exceed a bounded budget; (3) rasterize
-///   every slope-walkable source triangle into the grid, keeping the highest walkable surface
-///   height per cell; (4) erode the walkable set by the agent radius (cells within `radius` of a
-///   non-walkable cell or the grid edge are dropped, so corridors narrower than the agent are
-///   removed); (5) emit a shared-corner grid mesh — one vertex per touched grid corner at the
-///   averaged surface height, two triangles per surviving cell — into `source_triangles`; (6) run
-///   the existing slope filter, which copies into `triangles`, builds edge adjacency, and refreshes
-///   off-mesh links. The result's triangle count tracks the grid resolution, not the input mesh
-///   density, and corridors honor the agent radius.
-/// @return a NavMesh3D handle, or NULL on degenerate input / no walkable surface / allocation
-///   failure.
 /// @brief Rasterize slope-walkable source triangles into the voxel grid, keeping the highest
 ///        walkable surface height per cell. Fills @p cell_h / @p cell_walk (caller-allocated).
+/// @param src Borrowed source mesh containing indexed world-space triangles.
+/// @param min_x World X coordinate of the voxel-grid origin.
+/// @param min_z World Z coordinate of the voxel-grid origin.
+/// @param cell_size Positive grid cell edge length.
+/// @param nx Grid width in cells.
+/// @param nz Grid depth in cells.
+/// @param walkable_cos Minimum absolute face-normal Y component accepted as walkable.
+/// @param cell_h Caller-owned per-cell height buffer.
+/// @param cell_walk Caller-owned per-cell walkability buffer.
 static void navmesh3d_voxel_rasterize(rt_mesh3d *src,
                                       double min_x,
                                       double min_z,
@@ -474,7 +530,13 @@ static void navmesh3d_voxel_rasterize(rt_mesh3d *src,
 }
 
 /// @brief Erode the walkable set by @p erode_r cells; grid edges count as boundaries so the
-///        navmesh insets by the agent radius. @return new walkable buffer (caller owns), or NULL.
+///        navmesh insets by the agent radius.
+/// @param cell_walk Borrowed `nx * nz` source walkability flags.
+/// @param nx Grid width in cells.
+/// @param nz Grid depth in cells.
+/// @param erode_r Non-negative square-neighborhood erosion radius in cells.
+/// @return Newly allocated eroded walkability buffer owned by the caller, or null on allocation
+///         failure.
 static uint8_t *navmesh3d_voxel_erode(const uint8_t *cell_walk,
                                       int32_t nx,
                                       int32_t nz,
@@ -511,6 +573,15 @@ static uint8_t *navmesh3d_voxel_erode(const uint8_t *cell_walk,
 }
 
 /// @brief Emit two triangles per grid cell into @p nm, sharing corner vertices via @p corner_vid.
+/// @param nm Mutable navmesh receiving vertices and source triangles.
+/// @param corner_vid Mutable shared-corner vertex lookup.
+/// @param cell_h Borrowed per-cell height array.
+/// @param cell_walk Borrowed per-cell walkability array.
+/// @param nx Grid width in cells.
+/// @param nz Grid depth in cells.
+/// @param min_x World X coordinate of the grid origin.
+/// @param min_z World Z coordinate of the grid origin.
+/// @param cell_size Positive grid cell edge length.
 static void navmesh3d_voxel_emit_grid_mesh(rt_navmesh3d *nm,
                                            int32_t *corner_vid,
                                            float *cell_h,
@@ -539,6 +610,9 @@ static void navmesh3d_voxel_emit_grid_mesh(rt_navmesh3d *nm,
 }
 
 /// @brief Number of voxel cells spanning @p span at @p cell_size (floor(span/cell)+1).
+/// @param span Finite non-negative world-space extent.
+/// @param cell_size Finite positive cell edge length.
+/// @param out_dim Receives the representable positive dimension.
 /// @return 1 with @p out_dim set, or 0 if the result is non-finite or exceeds INT32_MAX.
 static int navmesh3d_voxel_dim_for_span(double span, double cell_size, int64_t *out_dim) {
     if (!out_dim || !isfinite(span) || span < 0.0 || !isfinite(cell_size) || cell_size <= 0.0)
@@ -551,6 +625,11 @@ static int navmesh3d_voxel_dim_for_span(double span, double cell_size, int64_t *
 }
 
 /// @brief Compute the XZ bounding box of a source mesh (finite vertices only).
+/// @param src Borrowed source mesh.
+/// @param out_min_x Receives the minimum finite X coordinate.
+/// @param out_min_z Receives the minimum finite Z coordinate.
+/// @param out_max_x Receives the maximum finite X coordinate.
+/// @param out_max_z Receives the maximum finite Z coordinate.
 /// @return 0 when there are no finite vertices or the bounds are degenerate/non-finite.
 static int navmesh3d_voxel_xz_bounds(const rt_mesh3d *src,
                                      double *out_min_x,
@@ -588,6 +667,8 @@ static int navmesh3d_voxel_xz_bounds(const rt_mesh3d *src,
 /// @details A retained voxel cell owns two source triangles, two live triangles, amortized corner
 ///   vertex storage, height/walkability, and corner-index data. Deriving the count from the actual
 ///   C struct sizes prevents silent budget drift when nav-triangle metadata grows.
+/// @return Maximum retained voxel-cell count constrained by the configured memory target and
+///         absolute cell limits.
 static int64_t navmesh3d_voxel_cell_budget(void) {
     size_t bytes_per_cell = 4u * sizeof(nav_triangle_t) + sizeof(nav_vertex_t) + sizeof(float) +
                             sizeof(uint8_t) + sizeof(int32_t);
@@ -603,7 +684,12 @@ static int64_t navmesh3d_voxel_cell_budget(void) {
 
 /// @brief Derive bounded voxel grid dimensions for the given spans, coarsening @p cell_size
 ///        (in/out) until the grid fits the configured dimension and memory budgets.
-/// @return 0 on failure.
+/// @param span_x Finite non-negative X extent.
+/// @param span_z Finite non-negative Z extent.
+/// @param cell_size In/out positive cell size, increased as required to meet budgets.
+/// @param out_nx Receives the bounded X dimension.
+/// @param out_nz Receives the bounded Z dimension.
+/// @return 1 on success, otherwise 0 for invalid or unrepresentable input.
 static int navmesh3d_voxel_grid_dims(
     double span_x, double span_z, double *cell_size, int32_t *out_nx, int32_t *out_nz) {
     const int64_t max_dim = NAVMESH3D_VOXEL_MAX_DIM;
@@ -698,6 +784,11 @@ int8_t rt_navmesh3d_test_voxel_grid_dimensions(double span_x,
 /// @brief Bake a navmesh from arbitrary source geometry via voxelization: rasterize the
 ///   triangles into an XZ heightfield at @p cell_size, keep cells walkable for an agent of
 ///   @p agent_radius / @p agent_height within @p max_slope, and emit the walkable nav polygons.
+/// @param src Borrowed indexed source mesh in world space.
+/// @param agent_radius Requested non-negative clearance radius used for erosion.
+/// @param agent_height Requested non-negative agent height retained for vertical queries.
+/// @param max_slope Maximum walkable source-triangle slope in degrees.
+/// @param cell_size Requested voxel cell edge length, coarsened to fit fixed budgets.
 /// @return A new navmesh object, or NULL for empty/degenerate input.
 static void *navmesh3d_voxel_bake(
     rt_mesh3d *src, double agent_radius, double agent_height, double max_slope, double cell_size) {
@@ -861,6 +952,8 @@ static void *navmesh3d_voxel_bake(
 /// @brief Vertical snap tolerance for point-on-mesh tests: half the agent height,
 ///        floored at 0.25 so a zero/degenerate agent height still tolerates small
 ///        Y gaps between the query point and a triangle.
+/// @param nm Optional borrowed navigation mesh.
+/// @return Finite positive vertical tolerance in world units.
 static float navmesh3d_vertical_tolerance(const rt_navmesh3d *nm) {
     double h = nm ? nm->agent_height : 0.0;
     if (!isfinite(h) || h <= 0.0)
@@ -872,6 +965,13 @@ static float navmesh3d_vertical_tolerance(const rt_navmesh3d *nm) {
 /// @details Y is ignored (navmesh queries are horizontal). The parametric `t` is
 ///          clamped to `[0,1]` to stay on the segment; near-zero-length segments
 ///          collapse to endpoint `a`. Outputs the point and its squared XZ distance.
+/// @param px Query X coordinate.
+/// @param pz Query Z coordinate.
+/// @param a Borrowed first segment endpoint.
+/// @param b Borrowed second segment endpoint.
+/// @param out_x Receives the closest X coordinate.
+/// @param out_z Receives the closest Z coordinate.
+/// @param out_d2 Receives squared XZ distance, or @c FLT_MAX for unusable input.
 static void closest_point_on_segment_xz(
     float px, float pz, const float *a, const float *b, float *out_x, float *out_z, float *out_d2) {
     if (!isfinite(px) || !isfinite(pz) || !navmesh3d_float3_finite(a) ||
@@ -904,6 +1004,13 @@ static void closest_point_on_segment_xz(
 /// @brief Closest point to (`px`,`pz`) on triangle v0/v1/v2, projected onto XZ.
 /// @details Returns the query point unchanged when it lies inside the triangle;
 ///          otherwise returns the nearest of the three edge projections.
+/// @param px Query X coordinate.
+/// @param pz Query Z coordinate.
+/// @param v0 Borrowed first triangle vertex.
+/// @param v1 Borrowed second triangle vertex.
+/// @param v2 Borrowed third triangle vertex.
+/// @param out_x Receives the closest X coordinate.
+/// @param out_z Receives the closest Z coordinate.
 static void closest_point_on_tri_xz(float px,
                                     float pz,
                                     const float *v0,
@@ -938,8 +1045,15 @@ static void closest_point_on_tri_xz(float px,
     *out_z = best_z;
 }
 
-/// @brief Find triangle containing point (projected onto XZ), with optional vertical tolerance.
 /// @brief Test one candidate triangle for containment of (px,pz); update the best (min |dy|) match.
+/// @param nm Borrowed navmesh supplying live triangles and vertices.
+/// @param i Candidate triangle index.
+/// @param px Query X coordinate.
+/// @param py Query Y coordinate.
+/// @param pz Query Z coordinate.
+/// @param max_dy Maximum allowed vertical separation, or a negative value to ignore it.
+/// @param best_dy In/out smallest vertical separation observed.
+/// @param best In/out index of the best containing triangle.
 static void navmesh3d_find_tri_test(const rt_navmesh3d *nm,
                                     int32_t i,
                                     float px,
@@ -970,6 +1084,12 @@ static void navmesh3d_find_tri_test(const rt_navmesh3d *nm,
 /// @details Uses the spatial query grid when built — a point lies in its own cell's triangle list,
 ///          so scanning one cell is exact — else falls back to a linear scan. @p max_dy < 0 ignores
 ///          vertical distance. Returns the triangle index, or -1 if none.
+/// @param nm Borrowed navmesh supplying topology and the optional query grid.
+/// @param px Query X coordinate.
+/// @param py Query Y coordinate.
+/// @param pz Query Z coordinate.
+/// @param max_dy Maximum vertical separation, or a negative value to disable the limit.
+/// @return Best containing walkable triangle index, or -1.
 static int32_t find_tri_with_max_dy(
     const rt_navmesh3d *nm, float px, float py, float pz, float max_dy) {
     float best_dy = FLT_MAX;
@@ -999,6 +1119,11 @@ static int32_t find_tri_with_max_dy(
 }
 
 /// @brief Find triangle containing point (projected onto XZ), ignoring vertical separation.
+/// @param nm Borrowed navmesh.
+/// @param px Query X coordinate.
+/// @param py Query Y coordinate used only for deterministic stacked-surface selection.
+/// @param pz Query Z coordinate.
+/// @return Best containing walkable triangle index, or -1.
 static int32_t find_tri(const rt_navmesh3d *nm, float px, float py, float pz) {
     return find_tri_with_max_dy(nm, px, py, pz, -1.0f);
 }
@@ -1006,6 +1131,7 @@ static int32_t find_tri(const rt_navmesh3d *nm, float px, float py, float pz) {
 /// @brief Test hook: verify the spatial query grid returns the same triangle as a linear scan.
 /// @details Samples an N×N lattice over the navmesh bounds and checks each point's grid lookup
 ///          matches the brute-force result, guarding the grid acceleration against drift.
+/// @param obj Opaque NavMesh3D handle.
 /// @return 1 if every sample agrees (or there is no grid), 0 on any mismatch.
 int8_t rt_navmesh3d_check_query_grid_parity(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
@@ -1057,6 +1183,7 @@ int8_t rt_navmesh3d_check_query_grid_parity(void *obj) {
 }
 
 /// @brief Drop the cached per-triangle offmesh adjacency list.
+/// @param nm Mutable navmesh whose owned CSR arrays are freed and cleared.
 static void navmesh3d_clear_offmesh_adjacency(rt_navmesh3d *nm) {
     if (!nm)
         return;
@@ -1069,6 +1196,9 @@ static void navmesh3d_clear_offmesh_adjacency(rt_navmesh3d *nm) {
 
 /// @brief Pack an offmesh link index and direction bit for storage in the adjacency cache.
 /// @details Returns -1 when the link index cannot fit into the signed packed representation.
+/// @param link_index Non-negative authored link index.
+/// @param reverse Non-zero to encode traversal from the link's destination back to its source.
+/// @return Packed directed edge reference, or -1 when @p link_index is unrepresentable.
 static nav_offmesh_edge_ref_t navmesh3d_pack_offmesh_edge(int32_t link_index, int reverse) {
     if (link_index < 0 || link_index > INT32_MAX / 2)
         return -1;
@@ -1076,6 +1206,9 @@ static nav_offmesh_edge_ref_t navmesh3d_pack_offmesh_edge(int32_t link_index, in
 }
 
 /// @brief Decode a packed offmesh adjacency reference into link index and reverse flag.
+/// @param edge Packed directed edge reference.
+/// @param out_link_index Optional output receiving the authored link index.
+/// @param out_reverse Optional output receiving the direction bit.
 /// @return 1 on success, 0 for malformed packed refs.
 static int navmesh3d_unpack_offmesh_edge(nav_offmesh_edge_ref_t edge,
                                          int32_t *out_link_index,
@@ -1094,6 +1227,7 @@ static int navmesh3d_unpack_offmesh_edge(nav_offmesh_edge_ref_t edge,
 ///   authored offmesh link for every expanded node. The cache stores only directed links incident
 ///   on each triangle. Allocation failure clears the cache and leaves pathfinding to use the
 ///   correct full-scan fallback.
+/// @param nm Mutable navmesh whose derived CSR cache is replaced.
 /// @return 1 when the cache is available or not needed, 0 when allocation failed.
 static int navmesh3d_build_offmesh_adjacency(rt_navmesh3d *nm) {
     int32_t tri_count;
@@ -1173,6 +1307,7 @@ static int navmesh3d_build_offmesh_adjacency(rt_navmesh3d *nm) {
 }
 
 /// @brief Re-resolve authored off-mesh link endpoints against the current walkable triangle set.
+/// @param nm Mutable navmesh whose link endpoint indices and adjacency cache are refreshed.
 static void navmesh3d_refresh_offmesh_links(rt_navmesh3d *nm) {
     if (!nm)
         return;
@@ -1191,6 +1326,11 @@ static void navmesh3d_refresh_offmesh_links(rt_navmesh3d *nm) {
 }
 
 /// @brief Return the authored link connecting two triangles, if any. Sets @p reverse for to->from.
+/// @param nm Borrowed navmesh containing authored links and optional adjacency cache.
+/// @param from_tri Source triangle index.
+/// @param to_tri Destination triangle index.
+/// @param reverse Optional output set to one when a bidirectional link is traversed in reverse.
+/// @return Borrowed matching link descriptor, or null when no permitted link connects the pair.
 static const nav_offmesh_link_t *navmesh3d_find_offmesh_link(const rt_navmesh3d *nm,
                                                              int32_t from_tri,
                                                              int32_t to_tri,

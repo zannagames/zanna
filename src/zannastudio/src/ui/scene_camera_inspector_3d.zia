@@ -25,6 +25,7 @@
 module scene_camera_inspector_3d;
 
 bind "scene_camera_3d";
+bind "inspector_rows";
 
 bind GUI = Zanna.GUI;
 bind SceneNode = Zanna.Graphics3D.SceneNode;
@@ -83,8 +84,7 @@ class SceneCameraInspector3D {
         projectionDropdown.AddItem("Orthographic");
         projectionDropdown.SetSelected(0);
 
-        var fieldRow = GUI.HBox.New();
-        fieldRow.SetSpacing(4.0);
+        var fieldRow = inspector_rows.NewWrapRow();
         group.AddChild(fieldRow);
         fov = AddSpinner(
             fieldRow, "Fov °",
@@ -97,8 +97,7 @@ class SceneCameraInspector3D {
             scene_camera_3d.MAX_ORTHO_SIZE,
             0.5, 3, scene_camera_3d.DEFAULT_ORTHO_SIZE);
 
-        var planeRow = GUI.HBox.New();
-        planeRow.SetSpacing(4.0);
+        var planeRow = inspector_rows.NewWrapRow();
         group.AddChild(planeRow);
         nearPlane = AddSpinner(
             planeRow, "Near",
@@ -111,8 +110,7 @@ class SceneCameraInspector3D {
             scene_camera_3d.MAX_PLANE_DISTANCE,
             10.0, 2, scene_camera_3d.DEFAULT_FAR_PLANE);
 
-        var buttons = GUI.HBox.New();
-        buttons.SetSpacing(4.0);
+        var buttons = inspector_rows.NewWrapRow();
         group.AddChild(buttons);
         applyButton = GUI.Button.New(buttons, "Create Camera");
         applyButton.SetTooltip(
@@ -121,8 +119,7 @@ class SceneCameraInspector3D {
         removeButton.SetTooltip(
             "Remove the camera while keeping the node and its other components");
 
-        var viewRow = GUI.HBox.New();
-        viewRow.SetSpacing(4.0);
+        var viewRow = inspector_rows.NewWrapRow();
         group.AddChild(viewRow);
         lookThroughButton = GUI.Button.New(viewRow, "Look Through");
         lookThroughButton.SetTooltip(
@@ -237,7 +234,7 @@ class SceneCameraInspector3D {
         }
     }
 
-    hide func AddSpinner(parent: GUI.HBox,
+    hide func AddSpinner(parent: GUI.Flex,
                          label: String,
                          minimum: Number,
                          maximum: Number,

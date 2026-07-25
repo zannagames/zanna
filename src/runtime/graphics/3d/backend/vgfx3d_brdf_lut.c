@@ -20,6 +20,16 @@
 // Links: vgfx3d_brdf_lut.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file vgfx3d_brdf_lut.c
+ * @brief Builds and samples the deterministic split-sum environment BRDF lookup table.
+ *
+ * The table stores the Fresnel scale and bias pair used to reconstruct specular image-based
+ * lighting from a prefiltered environment map. A single thread computes the process-lifetime
+ * table from a fixed Hammersley sequence; concurrent callers wait for the immutable result and
+ * subsequently read it without locking.
+ */
 #include "vgfx3d_brdf_lut.h"
 
 #include "rt_platform.h"
@@ -27,13 +37,18 @@
 #include <math.h>
 #include <stddef.h>
 
+/// Number of deterministic GGX importance samples accumulated per lookup-table texel.
 #define BRDF_LUT_SAMPLES 1024u
 
+/// Process-lifetime table of interleaved Fresnel scale and bias pairs.
 static float g_brdf_lut[VGFX3D_BRDF_LUT_SIZE * VGFX3D_BRDF_LUT_SIZE * 2];
 /* 0 = uninitialized, 1 = one builder active, 2 = immutable/ready. */
 static int g_brdf_lut_state = 0;
 
 /// @brief Van der Corput radical inverse in base 2 (bit reversal).
+/// @param bits Hammersley sample index whose bits are reflected across the radix point.
+/// @return Deterministic value in `[0, 1)` obtained by scaling the reversed bit pattern by
+///         `1 / 2^32`.
 static float brdf_radical_inverse(uint32_t bits) {
     bits = (bits << 16u) | (bits >> 16u);
     bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
@@ -45,6 +60,10 @@ static float brdf_radical_inverse(uint32_t bits) {
 
 /// @brief Smith height-correlated visibility for the split-sum integration
 ///   (the k = a^2 / 2 form used by the reference implementation).
+/// @param ndotv Clamped cosine between the surface normal and view direction.
+/// @param ndotl Positive cosine between the surface normal and sampled light direction.
+/// @param roughness Perceptual surface roughness.
+/// @return Product of the view- and light-direction masking terms.
 static float brdf_g_smith_ibl(float ndotv, float ndotl, float roughness) {
     float a = roughness * roughness;
     float k = a / 2.0f;
@@ -54,6 +73,12 @@ static float brdf_g_smith_ibl(float ndotv, float ndotl, float roughness) {
 }
 
 /// @brief Integrate the (A, B) split-sum pair for one (NdotV, roughness) pair.
+/// @details Uses @c BRDF_LUT_SAMPLES GGX importance samples and double-precision accumulators to
+///          reduce platform-dependent summation error. The local surface normal is positive Z.
+/// @param ndotv Positive cosine between the surface normal and view direction.
+/// @param roughness Positive perceptual roughness used to construct the GGX distribution.
+/// @param out_a Receives the Fresnel-independent scale term.
+/// @param out_b Receives the grazing-angle Fresnel bias term.
 static void brdf_integrate(float ndotv, float roughness, float *out_a, float *out_b) {
     /* View vector in the local frame (N = +Z). */
     float vx = sqrtf(1.0f - ndotv * ndotv);
@@ -90,6 +115,10 @@ static void brdf_integrate(float ndotv, float roughness, float *out_a, float *ou
     *out_b = (float)(sum_b / (double)BRDF_LUT_SAMPLES);
 }
 
+/// @brief Build the process-wide BRDF lookup table exactly once.
+/// @details The winning caller performs the deterministic integration and publishes the immutable
+///          table with release ordering. Concurrent callers spin on an acquire load until
+///          publication completes; calls after initialization return immediately.
 void vgfx3d_brdf_lut_ensure(void) {
     if (rt_atomic_load_i32(&g_brdf_lut_state, __ATOMIC_ACQUIRE) == 2)
         return;
@@ -112,11 +141,22 @@ void vgfx3d_brdf_lut_ensure(void) {
     }
 }
 
+/// @brief Return the initialized interleaved BRDF lookup-table storage.
+/// @return Borrowed process-lifetime pointer to
+///         `VGFX3D_BRDF_LUT_SIZE * VGFX3D_BRDF_LUT_SIZE` `(A, B)` pairs.
 const float *vgfx3d_brdf_lut_data(void) {
     vgfx3d_brdf_lut_ensure();
     return g_brdf_lut;
 }
 
+/// @brief Bilinearly sample the split-sum BRDF table at a view cosine and roughness.
+/// @details Both coordinates are clamped to `[0, 1]`, with NaN and non-positive values mapping to
+///          the lower edge. Sampling is aligned to texel centers and clamps neighbor selection at
+///          the table boundary.
+/// @param ndotv Cosine between the surface normal and view direction.
+/// @param roughness Perceptual surface roughness.
+/// @param out_ab Caller-owned two-float output receiving the interpolated Fresnel scale and bias;
+///               must be non-null.
 void vgfx3d_brdf_lut_sample(float ndotv, float roughness, float *out_ab) {
     const float *lut;
     float fx, fy;

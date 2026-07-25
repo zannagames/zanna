@@ -127,6 +127,15 @@ static inline void vgfx_atomic_flag_clear(vgfx_atomic_flag_t *flag) {
 ///          When head == tail, the queue is empty.
 #define VGFX_INTERNAL_EVENT_QUEUE_SLOTS (VGFX_EVENT_QUEUE_SIZE + 1)
 
+/// @def VGFX_CLIP_LIMIT_MAX_DEPTH
+/// @brief Maximum nesting depth for clip-limit scopes.
+/// @details The retained compositor pushes at most one damage limit per frame
+///          and each nested internally-clipping container (scroll views,
+///          floating panels) adds one scope, so real trees stay far below
+///          this bound. Pushes beyond the bound fail gracefully (return 0)
+///          and callers fall back to plain clip rectangles.
+#define VGFX_CLIP_LIMIT_MAX_DEPTH 16
+
 //===----------------------------------------------------------------------===//
 // Internal Window Structure
 //===----------------------------------------------------------------------===//
@@ -323,31 +332,29 @@ struct vgfx_window {
     /// @details Only valid when clip_enabled is non-zero.
     int32_t clip_h;
 
-    /// @brief Whether a compositor-owned upper clip bound is active.
-    /// @details While set, ordinary set/clear operations cannot enlarge the effective clip beyond
-    ///          `clip_limit_*`. The scope is single-depth and allocation-free.
-    int32_t clip_limit_enabled;
+    /// @brief Nested clip-limit scopes (innermost = clip_limit_depth - 1).
+    /// @details Each frame stores the effective ceiling for its scope — already
+    ///          intersected with every outer scope — plus the exact clip state
+    ///          captured when the scope began so the matching pop restores it
+    ///          verbatim. While any scope is active, ordinary set/clear clip
+    ///          operations cannot enlarge the effective clip beyond the
+    ///          innermost ceiling. Fixed-depth and allocation-free.
+    struct vgfx_clip_limit_frame {
+        /// @brief Physical-pixel ceiling rectangle for this scope.
+        int32_t limit_x;
+        int32_t limit_y;
+        int32_t limit_w;
+        int32_t limit_h;
+        /// @brief Clip state captured when the scope began, restored by pop.
+        int32_t saved_enabled;
+        int32_t saved_x;
+        int32_t saved_y;
+        int32_t saved_w;
+        int32_t saved_h;
+    } clip_limit_stack[VGFX_CLIP_LIMIT_MAX_DEPTH];
 
-    /// @brief Physical-pixel X coordinate of the active clip limit.
-    int32_t clip_limit_x;
-
-    /// @brief Physical-pixel Y coordinate of the active clip limit.
-    int32_t clip_limit_y;
-
-    /// @brief Physical-pixel width of the active clip limit; zero denotes an empty limit.
-    int32_t clip_limit_w;
-
-    /// @brief Physical-pixel height of the active clip limit; zero denotes an empty limit.
-    int32_t clip_limit_h;
-
-    /// @brief Clip-enabled flag captured when the current limit scope began.
-    int32_t clip_limit_saved_enabled;
-
-    /// @brief Captured pre-scope clip rectangle, restored verbatim by the matching pop.
-    int32_t clip_limit_saved_x;
-    int32_t clip_limit_saved_y;
-    int32_t clip_limit_saved_w;
-    int32_t clip_limit_saved_h;
+    /// @brief Number of active clip-limit scopes; zero when unlimited.
+    int32_t clip_limit_depth;
 
     //===------------------------------------------------------------------===//
     // Timing

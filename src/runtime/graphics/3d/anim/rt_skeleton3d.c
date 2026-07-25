@@ -26,6 +26,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Assembles the graphics-enabled skeletal-animation runtime.
+/// @details The included private fragments implement matrix utilities,
+///          Skeleton3D hierarchy construction, Animation3D clips, AnimPlayer3D
+///          playback, CPU/GPU skinned drawing, and AnimBlend3D pose blending.
+///          A graphics-disabled build exports only a translation-unit guard.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_skeleton3d.h"
@@ -56,7 +63,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// Largest finite magnitude accepted when narrowing general authored lanes.
 #define SKELETON3D_FLOAT_ABS_MAX 3.40282346638528859812e38
+/// Safety clamp for animation times, durations, speeds, and transform lanes.
 #define SKELETON3D_ANIM_ABS_MAX 1.0e12f
 
 /// @brief Should we hand bone matrices to the GPU instead of skinning on the CPU?
@@ -65,6 +74,10 @@
 /// consumes bone palettes in the vertex shader) while the active palette fits
 /// the shader-visible upload limit. The software backend leaves the bit clear
 /// and takes the CPU-skin path.
+/// @param[in] backend Active rendering backend and capability table.
+/// @param[in] bone_count Number of matrices required by the draw.
+/// @return Nonzero only when GPU skinning is enabled and the positive bone
+///         count fits the shader-visible palette limit.
 static int vgfx3d_backend_prefers_gpu_skinning(const vgfx3d_backend_t *backend,
                                                int32_t bone_count) {
     return backend && backend->gpu_skinning && bone_count > 0 && bone_count <= VGFX3D_MAX_BONES;

@@ -9,13 +9,33 @@
 // Purpose: Image I/O: BMP load/save, GIF load, and format dispatch.
 // Key invariants:
 //   - Decode failures return NULL and report asset diagnostics.
+//   - Generic loading detects PNG, JPEG, BMP, and GIF from file signatures,
+//     not extensions.
+//   - BMP decoding accepts only uncompressed 24-bit BITMAPINFOHEADER data,
+//     bounds decoded pixels, and normalizes top-down or bottom-up BGR rows to
+//     opaque canonical RGBA.
+//   - BMP saving discards source alpha, writes a bottom-up 24-bit stream to a
+//     sibling temporary file, and replaces the destination only after a
+//     complete flush and close.
 //   - Save paths keep their historical integer success/failure contract.
 // Ownership/Lifetime:
 //   - Loaded Pixels objects are GC-managed and owned by the caller.
 //   - Temporary decode buffers are released before return.
-// Links: rt_pixels.h, rt_pixels_io_internal.h, rt_asset_error.h
+// Links: src/runtime/graphics/2d/rt_pixels.h (public API),
+//        src/runtime/graphics/2d/rt_pixels_io_internal.h (codec helpers),
+//        src/runtime/graphics/2d/rt_pixels_png.c (PNG codec),
+//        src/runtime/graphics/2d/rt_pixels_jpeg.c (JPEG codec),
+//        src/runtime/graphics/3d/assets/rt_asset_error.h (load diagnostics)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements BMP I/O, first-frame GIF loading, and image dispatch.
+///
+/// Loaders own one asset-error context apiece so delegated generic loads retain
+/// the decoder's precise diagnostic. File parsing uses explicit little-endian
+/// fields and checked offsets rather than host structure layout. Save commits
+/// are transactional at the destination-path level.
 
 #include "rt_pixels_io_internal.h"
 
@@ -32,6 +52,9 @@
 // BMP file format structures (packed)
 #pragma pack(push, 1)
 
+/// @brief In-memory values from the 14-byte BMP file header.
+/// @details Serialization and parsing are performed field by field, so the
+///          packed layout is descriptive rather than used for raw file I/O.
 typedef struct bmp_file_header {
     uint8_t magic[2];     // 'B', 'M'
     uint32_t file_size;   // Total file size
@@ -40,6 +63,9 @@ typedef struct bmp_file_header {
     uint32_t data_offset; // Offset to pixel data
 } bmp_file_header;
 
+/// @brief In-memory values from a 40-byte Windows `BITMAPINFOHEADER`.
+/// @details Only the uncompressed, single-plane, 24-bit subset is accepted by
+///          this translation unit.
 typedef struct bmp_info_header {
     uint32_t header_size;      // 40 for BITMAPINFOHEADER
     int32_t width;             // Image width
@@ -198,6 +224,8 @@ static int bmp_write_info_header(FILE *f, const bmp_info_header *hdr) {
 /// Source rows are 4-byte aligned; we strip the BGR→RGBA conversion
 /// in the inner loop and force alpha = 255 since 24bpp BMP has no
 /// alpha channel. Caps width/height at 32768 to bound memory.
+/// @param path Runtime string handle naming the UTF-8 input path; null or an
+///        invalid string traps and closes the load context as failed.
 /// @return GC-managed `rt_pixels_impl*` on success, NULL on any
 ///         failure (file open, magic mismatch, unsupported variant,
 ///         short read).
@@ -354,7 +382,14 @@ bmp_cleanup:
 ///
 /// Writes a standard bottom-up BMP (positive height). Refuses
 /// oversized images where the resulting file would overflow the
-/// 32-bit `bfSize` field. Pads each row to a 4-byte multiple.
+/// 32-bit `bfSize` field. Pads each row to a 4-byte multiple and discards the
+/// source alpha channel. Output is written to a temporary sibling and replaces
+/// the requested path only after all bytes are flushed and the stream closes;
+/// failed attempts unlink that temporary file.
+/// @param pixels Opaque source Pixels handle. Null returns zero; a nonnull
+///        invalid handle traps and returns zero.
+/// @param path Runtime string handle naming the UTF-8 destination. Null or an
+///        invalid string returns zero without creating a file.
 /// @return 1 on success, 0 on any failure (open, oversized, write).
 int64_t rt_pixels_save_bmp(void *pixels, void *path) {
     if (!pixels || !path)
@@ -479,6 +514,13 @@ bmp_save_cleanup:
 /// the first frame — animated GIFs collapse to their initial
 /// snapshot. Used for sprite-sheet and texture loading; for full
 /// animation use the dedicated GIF decoder elsewhere.
+/// @details Ownership of the first decoded frame's Pixels handle transfers to
+///          the caller. Every additional frame handle and the decoder-owned
+///          frame array are released before return. The loader distinguishes
+///          missing files from corrupt or empty decoder output in the active
+///          asset diagnostic.
+/// @param path Runtime string handle naming the UTF-8 input path; null or an
+///        invalid string traps.
 /// @return Pixels on success, NULL on file/format failure.
 void *rt_pixels_load_gif(void *path) {
     rt_asset_error_begin_load();
@@ -544,11 +586,17 @@ void *rt_pixels_load_gif(void *path) {
 // Auto-detect loader
 //=============================================================================
 
-/// @brief Generic image loader — autodetects format from the file extension.
-///
-/// Dispatches to `rt_pixels_load_bmp`, `_png`, `_jpeg`, or `_gif`
-/// based on the path's lowercase extension. Returns NULL for
-/// unrecognised extensions or on any underlying decode failure.
+/// @brief Load a supported image by inspecting its file signature.
+/// @details Opens the UTF-8 path once to probe up to eight bytes, then
+///          delegates PNG, JPEG, BMP, or GIF data to the corresponding
+///          format loader. Delegates own their asset-error contexts; wrapper
+///          failures create a context only for null or invalid paths, missing
+///          or unreadable files, and unrecognized magic. File extensions are
+///          ignored.
+/// @param path Runtime string handle naming the UTF-8 input path; null or an
+///        invalid string traps.
+/// @return A caller-owned GC-managed Pixels handle, or null with an asset
+///         diagnostic on probe or decode failure.
 void *rt_pixels_load(void *path) {
     /* Do NOT open a load context spanning the delegation below: each format loader
      * (rt_pixels_load_png/jpeg/bmp/gif) opens and closes its OWN begin/end load

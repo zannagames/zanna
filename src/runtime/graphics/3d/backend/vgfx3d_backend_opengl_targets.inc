@@ -17,10 +17,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file vgfx3d_backend_opengl_targets.inc
+ * @brief Implements OpenGL framebuffer targets, post-processing passes, and render-target
+ *        readback for the 3D runtime backend.
+ *
+ * This implementation fragment owns the size-dependent OpenGL objects used for scene
+ * rendering, presentation, bloom, temporal anti-aliasing, screen-space reflections,
+ * user render targets, and shadow maps. It also routes draw calls to the active framebuffer
+ * and preserves/restores OpenGL state around full-screen post-processing work.
+ */
+
 static int gl_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *rt);
 static void bind_texture_unit(GLint uniform_loc, int unit, GLenum target, GLuint texture);
 
 /// @brief Release the scene FBO and its color/motion/depth attachments.
+/// @param ctx Borrowed OpenGL context whose scene targets are released; null is a no-op.
 static void destroy_scene_targets(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -44,6 +56,7 @@ static void destroy_scene_targets(gl_context_t *ctx) {
 ///
 /// The readback target stages tonemapped post-FX output before
 /// `glReadPixels` copies to host memory for screenshot capture.
+/// @param ctx Borrowed OpenGL context whose readback target is released; null is a no-op.
 static void destroy_postfx_readback_target(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -65,6 +78,10 @@ static void destroy_postfx_readback_target(gl_context_t *ctx) {
 /// Depth uses the 32-bit float format so post-FX can reconstruct
 /// world position with high precision.
 /// Verifies framebuffer completeness before returning success.
+/// @param ctx Borrowed initialized OpenGL context that owns the resulting objects.
+/// @param w Positive scene width in pixels.
+/// @param h Positive scene height in pixels.
+/// @return 0 when a complete scene framebuffer of the requested size is ready, otherwise -1.
 static int ensure_scene_targets(gl_context_t *ctx, int32_t w, int32_t h) {
     GLint color_format;
     GLint depth_format;
@@ -152,7 +169,13 @@ static int ensure_scene_targets(gl_context_t *ctx, int32_t w, int32_t h) {
     return 0;
 }
 
-/// @brief Build a single-attachment LDR FBO for tonemapped post-FX readback.
+/// @brief Build a single-attachment FBO for tonemapped post-FX readback.
+/// @details Reuses an existing target at the requested size and otherwise recreates it using
+///          the active scene precision so intermediate HDR values remain representable.
+/// @param ctx Borrowed initialized OpenGL context that owns the resulting objects.
+/// @param w Positive readback width in pixels.
+/// @param h Positive readback height in pixels.
+/// @return 0 when a complete readback target is ready, otherwise -1 after partial cleanup.
 static int ensure_postfx_readback_target(gl_context_t *ctx, int32_t w, int32_t h) {
     GLint color_format;
     GLenum color_type;
@@ -198,6 +221,7 @@ static int ensure_postfx_readback_target(gl_context_t *ctx, int32_t w, int32_t h
 ///
 /// The scratch target forms the second side of the post-FX ping-pong pair. Keeping it separate
 /// from the scene FBO preserves the original scene color while multi-pass effects run.
+/// @param ctx Borrowed OpenGL context whose scratch target is released; null is a no-op.
 static void destroy_postfx_scratch_target(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -212,6 +236,9 @@ static void destroy_postfx_scratch_target(gl_context_t *ctx) {
 }
 
 /// @brief Build a single-attachment LDR FBO used as post-FX intermediate storage.
+/// @param ctx Borrowed initialized OpenGL context that owns the resulting objects.
+/// @param w Positive scratch-target width in pixels.
+/// @param h Positive scratch-target height in pixels.
 /// @return Zero on success, -1 when allocation or framebuffer completeness fails.
 static int ensure_postfx_scratch_target(gl_context_t *ctx, int32_t w, int32_t h) {
     GLint color_format;
@@ -315,6 +342,7 @@ static int ensure_present_target(gl_context_t *ctx, int32_t w, int32_t h) {
 }
 
 /// @brief Release the Plan 05 bloom mip-chain textures and FBOs.
+/// @param ctx Borrowed OpenGL context whose bloom targets are released; null is a no-op.
 static void destroy_bloom_targets(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -336,6 +364,9 @@ static void destroy_bloom_targets(gl_context_t *ctx) {
 /// @brief Build the Plan 05 half-res RGBA16F bloom mip chain for a scene of (w, h).
 /// @details Levels halve until the next level would drop below 8px on either axis
 ///          (at most 6 levels). Rebuilt only when the scene size changes.
+/// @param ctx Borrowed initialized OpenGL context that owns the mip-chain objects.
+/// @param w Positive full-resolution scene width used to derive the first half-resolution mip.
+/// @param h Positive full-resolution scene height used to derive the first half-resolution mip.
 /// @return Zero on success, -1 when allocation or completeness fails.
 static int ensure_bloom_targets(gl_context_t *ctx, int32_t w, int32_t h) {
     int32_t mw;
@@ -383,6 +414,7 @@ static int ensure_bloom_targets(gl_context_t *ctx, int32_t w, int32_t h) {
 }
 
 /// @brief Release the Plan 05 TAA ping-pong history textures and FBOs.
+/// @param ctx Borrowed OpenGL context whose temporal history is released; null is a no-op.
 static void destroy_taa_targets(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -401,6 +433,9 @@ static void destroy_taa_targets(gl_context_t *ctx) {
 }
 
 /// @brief Build the Plan 05 TAA ping-pong history pair (RGBA16F, scene-sized).
+/// @param ctx Borrowed initialized OpenGL context that owns the history objects.
+/// @param w Positive scene width in pixels.
+/// @param h Positive scene height in pixels.
 /// @return Zero on success, -1 when allocation or completeness fails.
 static int ensure_taa_targets(gl_context_t *ctx, int32_t w, int32_t h) {
     if (!ctx || w <= 0 || h <= 0 || !ctx->taa_program)
@@ -436,6 +471,16 @@ static int ensure_taa_targets(gl_context_t *ctx, int32_t w, int32_t h) {
 }
 
 /// @brief Draw one fullscreen bloom pass (down- or upsample) into a mip FBO.
+/// @param ctx Borrowed OpenGL context whose full-screen vertex state is already active.
+/// @param program Linked bloom shader program to execute.
+/// @param src_tex Texture containing the source mip.
+/// @param src_w Positive source-mip width used to compute inverse texel size.
+/// @param src_h Positive source-mip height used to compute inverse texel size.
+/// @param dst_fbo Destination framebuffer for the pass.
+/// @param dst_w Destination viewport width in pixels.
+/// @param dst_h Destination viewport height in pixels.
+/// @param uSrcInvSize Uniform location receiving the inverse source dimensions.
+/// @param uSrcTexLoc Sampler uniform location bound to texture unit zero.
 static void gl_bloom_pass_draw(gl_context_t *ctx,
                                GLuint program,
                                GLuint src_tex,
@@ -462,6 +507,10 @@ static void gl_bloom_pass_draw(gl_context_t *ctx,
 ///          further mip is a plain 13-tap downsample. The upsample walk tent-filters each
 ///          deeper mip and accumulates it into the one above via GL_ONE/GL_ONE blending,
 ///          leaving mip 0 with the summed octaves.
+/// @param ctx Borrowed initialized OpenGL context containing the scene and bloom resources.
+/// @param width Positive scene width in pixels.
+/// @param height Positive scene height in pixels.
+/// @param threshold Linear-color brightness threshold applied during the first downsample.
 /// @return Mip 0's texture name, or 0 when resources are unavailable.
 static GLuint gl_encode_bloom_chain(gl_context_t *ctx,
                                     int32_t width,
@@ -531,6 +580,11 @@ static GLuint gl_encode_bloom_chain(gl_context_t *ctx,
 /// @details Reprojects + neighborhood-clamps the persistent history against
 ///          @p source_tex; the written slot becomes both the pass output and the next
 ///          frame's history.
+/// @param ctx Borrowed initialized OpenGL context containing TAA resources and camera history.
+/// @param source_tex Current scene-color texture to resolve.
+/// @param width Positive source width and history-target width in pixels.
+/// @param height Positive source height and history-target height in pixels.
+/// @param snapshot Optional sanitized post-FX settings; null selects the default blend factor.
 /// @return The resolved texture name, or 0 when resources are unavailable.
 static GLuint gl_encode_taa_pass(gl_context_t *ctx,
                                  GLuint source_tex,
@@ -595,6 +649,7 @@ static GLuint gl_encode_taa_pass(gl_context_t *ctx,
 }
 
 /// @brief Release the Plan 10 SSR output target.
+/// @param ctx Borrowed OpenGL context whose SSR target is released; null is a no-op.
 static void destroy_ssr_target(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -609,6 +664,9 @@ static void destroy_ssr_target(gl_context_t *ctx) {
 }
 
 /// @brief Build the Plan 10 SSR output target (RGBA8, scene-sized).
+/// @param ctx Borrowed initialized OpenGL context that owns the SSR objects.
+/// @param w Positive scene width in pixels.
+/// @param h Positive scene height in pixels.
 /// @return Zero on success, -1 when allocation or completeness fails.
 static int ensure_ssr_target(gl_context_t *ctx, int32_t w, int32_t h) {
     if (!ctx || w <= 0 || h <= 0 || !ctx->ssr_program)
@@ -640,6 +698,13 @@ static int ensure_ssr_target(gl_context_t *ctx, int32_t w, int32_t h) {
 ///        pixels whose motion-target alpha carries an SSR mask, compositing reflected
 ///        scene color over @p source_tex into the SSR target. Returns the composited
 ///        texture, or 0 when prerequisites are missing (caller keeps the source).
+/// @param ctx Borrowed initialized OpenGL context containing SSR and scene resources.
+/// @param source_tex Current scene-color texture sampled and composited by the pass.
+/// @param width Positive source and destination width in pixels.
+/// @param height Positive source and destination height in pixels.
+/// @param snapshot Optional post-FX settings supplying SSR intensity, roughness, and step count.
+/// @return The composited SSR texture name, or 0 when prerequisites are unavailable or drawing
+///         reports an OpenGL error.
 static GLuint gl_encode_ssr_pass(gl_context_t *ctx,
                                  GLuint source_tex,
                                  int32_t width,
@@ -697,6 +762,8 @@ static GLuint gl_encode_ssr_pass(gl_context_t *ctx,
 /// If the user-visible RT target has dirty pixels, syncs them back to
 /// the RT's host buffer first via `gl_sync_render_target_color`.
 /// Then signals end-of-render to anything waiting (`clear_sync`).
+/// @param ctx Borrowed OpenGL context whose RTT objects and synchronization binding are released;
+///            null is a no-op.
 static void destroy_rtt_targets(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -732,6 +799,9 @@ static void destroy_rtt_targets(gl_context_t *ctx) {
 /// `rt` of the same size syncs the previous RT first. Uses a renderbuffer
 /// (not texture) for depth — RTT users don't need to read depth back
 /// from the shader, so renderbuffer is faster.
+/// @param ctx Borrowed initialized OpenGL context that owns the RTT objects.
+/// @param rt Borrowed runtime render target that receives the backend synchronization callback.
+/// @return 0 when the target is active and complete, otherwise -1 for invalid input or GL failure.
 static int ensure_rtt_targets(gl_context_t *ctx, vgfx3d_rendertarget_t *rt) {
     GLenum color_internal_format;
     GLenum depth_internal_format;
@@ -810,6 +880,8 @@ static int ensure_rtt_targets(gl_context_t *ctx, vgfx3d_rendertarget_t *rt) {
 }
 
 /// @brief Release the shadow-map FBO + depth texture.
+/// @param ctx Borrowed OpenGL context whose complete shadow-target array is released; null is a
+///            no-op.
 static void destroy_shadow_targets(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -833,6 +905,8 @@ static void destroy_shadow_targets(gl_context_t *ctx) {
 /// The shader receives a single `shadowCount` upper bound for the sampler array. Keeping that
 /// count to the completed prefix starting at slot 0 makes `0 <= shadowIndex < shadowCount`
 /// equivalent to "a complete GL shadow texture exists", matching the D3D11 backend contract.
+/// @param ctx Borrowed OpenGL context whose advertised shadow count is recomputed; null is a
+///            no-op.
 static void gl_recompute_shadow_count(gl_context_t *ctx) {
     int32_t count = 0;
     if (!ctx)
@@ -850,6 +924,9 @@ static void gl_recompute_shadow_count(gl_context_t *ctx) {
 ///
 /// This remains a direct resource guard even though `uShadowCount` is now contiguous, so a failed
 /// resize or allocation cannot leave a light sampling an incomplete shadow FBO.
+/// @param ctx Borrowed OpenGL context containing the shadow-slot resource state.
+/// @param shadow_index Material-requested shadow index to validate.
+/// @return A complete shadow slot in `[0, VGFX3D_MAX_SHADOW_LIGHTS)`, or -1 when invalid.
 static int32_t gl_sanitize_shadow_slot(gl_context_t *ctx, int32_t shadow_index) {
     int32_t slot;
     if (!ctx)
@@ -869,6 +946,11 @@ static int32_t gl_sanitize_shadow_slot(gl_context_t *ctx, int32_t shadow_index) 
 /// `glDrawBuffer(GL_NONE)` + `glReadBuffer(GL_NONE)` because there are
 /// no color attachments (depth-only). Linear filtering on the depth
 /// texture so the main pass can use hardware PCF when sampling.
+/// @param ctx Borrowed initialized OpenGL context that owns the shadow objects.
+/// @param slot Shadow-resource array slot to allocate or reuse.
+/// @param w Positive shadow-map width in pixels.
+/// @param h Positive shadow-map height in pixels.
+/// @return 0 when a complete depth-only framebuffer is ready, otherwise -1.
 static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int32_t h) {
     GLint depth_format;
     GLenum depth_type;
@@ -933,6 +1015,7 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
 /// Three-way dispatch: RTT → user RTT FBO; SCENE → offscreen MRT FBO
 /// with both color attachments enabled; else → swapchain (FBO 0).
 /// Sets the matching viewport dimensions.
+/// @param ctx Borrowed OpenGL context whose active-target state selects the binding.
 static void bind_main_framebuffer(gl_context_t *ctx) {
     if (ctx->rtt_active) {
         gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->rtt_fbo);
@@ -973,6 +1056,8 @@ static void bind_main_framebuffer(gl_context_t *ctx) {
 /// only enabled in the SCENE target with the right blend mode — we
 /// don't emit motion vectors for transparent passes since they'd
 /// just overwrite opaque results.
+/// @param ctx Borrowed OpenGL context whose framebuffer and draw state are configured.
+/// @param cmd Optional draw command supplying blend and depth-test behavior.
 static void gl_configure_draw_output(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd) {
     vgfx3d_opengl_blend_mode_t blend_mode;
     vgfx3d_opengl_motion_attachment_mode_t motion_mode;
@@ -1040,6 +1125,8 @@ static void gl_configure_draw_output(gl_context_t *ctx, const vgfx3d_draw_cmd_t 
 ///   reversed-Z (`GL_GREATER`), which inverts the window-z direction, so both offset terms are
 ///   sign-flipped there; the shadow pass keeps the standard convention and passes
 ///   `reversed_z == 0`.
+/// @param cmd Optional draw command containing constant and slope-scaled bias values.
+/// @param reversed_z Non-zero when the active pass uses reversed-Z depth semantics.
 static void gl_apply_depth_bias(const vgfx3d_draw_cmd_t *cmd, int reversed_z) {
     if (cmd && (fabsf(cmd->depth_bias) > 1e-8f || fabsf(cmd->slope_scaled_depth_bias) > 1e-8f)) {
         gl.Enable(GL_POLYGON_OFFSET_FILL);
@@ -1061,6 +1148,10 @@ static void gl_apply_depth_bias(const vgfx3d_draw_cmd_t *cmd, int reversed_z) {
 /// NULL snapshot zeros every toggle (post-FX disabled). The camera
 /// + inverse VP + previous VP go through unconditionally so motion-
 /// blur and SSAO can do their world-space reconstructions.
+/// @param ctx Borrowed OpenGL context containing the active program's uniform locations.
+/// @param snapshot Optional effect settings; null disables all configurable effects.
+/// @param source_width Source texture width used to compute inverse resolution.
+/// @param source_height Source texture height used to compute inverse resolution.
 static void gl_apply_postfx_uniforms(gl_context_t *ctx,
                                      const vgfx3d_postfx_snapshot_t *snapshot,
                                      int32_t source_width,
@@ -1176,6 +1267,16 @@ static void gl_apply_postfx_uniforms(gl_context_t *ctx,
 /// color/depth/motion as samplers, applies post-FX uniforms, draws
 /// 3 vertices (the standard "fullscreen triangle covers the viewport"
 /// trick — cheaper than a 6-vertex quad).
+/// @param ctx Borrowed initialized OpenGL context containing post-FX resources.
+/// @param source_color_tex Texture containing the color input for the pass.
+/// @param framebuffer Destination framebuffer, where zero selects the default framebuffer.
+/// @param draw_buffer Draw-buffer enum selected on @p framebuffer.
+/// @param source_width Positive source texture width in pixels.
+/// @param source_height Positive source texture height in pixels.
+/// @param target_width Positive destination viewport width in pixels.
+/// @param target_height Positive destination viewport height in pixels.
+/// @param snapshot Optional effect settings; null performs a plain post-FX shader copy.
+/// @return Non-zero when the full-screen draw completes without a drained GL error, otherwise 0.
 static int gl_draw_texture_to_target(gl_context_t *ctx,
                                      GLuint source_color_tex,
                                      GLuint framebuffer,
@@ -1235,6 +1336,10 @@ static int gl_draw_texture_to_target(gl_context_t *ctx,
 ///          motion vectors are no longer needed. The final color is copied back to attachment 0
 ///          so final-overlay replay, readback, and presentation all consume the normal scene
 ///          color target.
+/// @param ctx Borrowed initialized OpenGL context containing the writable scene FBO.
+/// @param width Positive scene width in pixels.
+/// @param height Positive scene height in pixels.
+/// @param chain Borrowed usable effect chain whose snapshots are applied in order.
 /// @return Non-zero when every enabled effect pass resolves and the final color is in scene
 ///         color attachment 0.
 static int gl_apply_postfx_chain_in_scene(gl_context_t *ctx,
@@ -1457,6 +1562,10 @@ static int gl_apply_postfx_chain(gl_context_t *ctx,
 
 /// @brief Multiply two size_t values with overflow checking; writes the product to @p out
 ///   and returns 1, or zeroes @p out and returns 0 on overflow or a NULL out pointer.
+/// @param a First unsigned factor.
+/// @param b Second unsigned factor.
+/// @param out Receives the product on success or zero on failure; may be null.
+/// @return 1 when multiplication succeeds without overflow, otherwise 0.
 static int gl_checked_mul_size(size_t a, size_t b, size_t *out) {
     if (out)
         *out = 0;
@@ -1476,6 +1585,10 @@ static int gl_checked_mul_size(size_t a, size_t b, size_t *out) {
 /// user-visible buffer. Marks `color_dirty = 0` so the next draw
 /// doesn't trigger a redundant readback. No-op if the receiver isn't
 /// the active RTT.
+/// @param ctx_ptr Opaque borrowed pointer to the owning @c gl_context_t.
+/// @param rt Borrowed runtime render target whose CPU color mirrors receive the readback.
+/// @return 1 after a successful readback and mirror update, otherwise 0 with dirty state
+///         preserved.
 static int gl_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     uint8_t *tmp;

@@ -331,6 +331,15 @@ camera controls, property editing, object creation/deletion/duplication,
 history, and import/export-oriented file workflows. A 2D object drag and a 3D
 transform drag each become one undo entry.
 
+Inspector and hierarchy panes lay out truthfully at narrow widths: labeled
+control rows wrap instead of forcing panes wider than their scroll viewport,
+single-line text inputs report a bounded natural width so "label + input +
+button" rows cannot inflate their lane, and scroll panes clip descendants that
+manage their own clip rectangles (lists, editors) so content past the pane
+fold can never paint over neighboring panels. Group-box and color-picker
+children arrange in the shared parent-relative coordinate space, which also
+keeps their hitboxes aligned with their pixels.
+
 The 2D editor is a three-pane workbench: a persistent left Objects pane
 (search, full-height hierarchy tree, parent chooser, creation/duplication/
 removal/ordering actions), the center canvas with the tile palette in a real

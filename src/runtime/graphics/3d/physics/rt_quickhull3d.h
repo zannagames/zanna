@@ -19,6 +19,13 @@
 // Links: rt_collider3d.c (NewConvexHullReduced), src/tests/unit/test_quickhull3d.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares exact 3D convex-hull construction and support-preserving cloud reduction.
+///
+/// Both APIs borrow packed xyz input coordinates. Hull construction transfers successful
+/// allocations to the caller, while reduction writes into caller-provided storage.
+
 #pragma once
 
 #include <stdint.h>
@@ -28,15 +35,17 @@ extern "C" {
 #endif
 
 /// @brief Compute the convex hull of a 3D point cloud (quickhull).
-/// @param points       Interleaved xyz doubles (point_count * 3 entries).
+/// @param points       Borrowed interleaved xyz doubles (`point_count * 3` finite entries).
 /// @param point_count  Number of input points (>= 4 for a volumetric hull).
-/// @param out_vertices Receives malloc'd interleaved xyz hull vertices.
-/// @param out_vertex_count Receives the hull vertex count.
-/// @param out_indices  Optional (may be NULL): receives malloc'd triangle
-///                     indices into out_vertices (3 per face, CCW outward).
-/// @param out_index_count Optional: receives the index count (3 * faces).
+/// @param[out] out_vertices Required destination receiving malloc'd interleaved xyz hull vertices.
+/// @param[out] out_vertex_count Required destination receiving the hull vertex count.
+/// @param[out] out_indices Optional (may be NULL): receives malloc'd triangle
+///                         indices into out_vertices (3 per face, CCW outward).
+/// @param[out] out_index_count Optional destination receiving the index count (3 * faces) when
+///        @p out_indices is requested.
 /// @return 1 on success; 0 on degenerate input (collinear/coplanar), invalid
 ///         arguments, or allocation failure (no outputs are leaked).
+/// @note The caller releases successful vertex and index allocations with `free()`.
 int rt_quickhull3d_build(const double *points,
                          int32_t point_count,
                          double **out_vertices,
@@ -48,8 +57,12 @@ int rt_quickhull3d_build(const double *points,
 /// @details Greedy farthest-point (k-center) selection seeded with the
 ///          extreme points on each axis — the classic support-set reduction
 ///          for GJK colliders. Output points are a subset of the input.
-/// @return Number of points written to out_points (interleaved xyz, caller
-///         must provide room for max_points * 3), or 0 on invalid arguments.
+/// @param points Borrowed interleaved xyz coordinates for @p point_count points.
+/// @param point_count Positive number of input points.
+/// @param max_points Positive upper bound on retained points.
+/// @param[out] out_points Caller-owned interleaved xyz buffer with room for at least
+///        `min(point_count, max_points) * 3` doubles.
+/// @return Number of points written, or 0 on invalid arguments or allocation failure.
 int32_t rt_quickhull3d_reduce(const double *points,
                               int32_t point_count,
                               int32_t max_points,

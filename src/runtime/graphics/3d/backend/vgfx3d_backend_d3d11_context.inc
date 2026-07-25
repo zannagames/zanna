@@ -17,25 +17,52 @@
 // Links: vgfx3d_backend_d3d11.c, vgfx3d_backend_d3d11_shaders.inc
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements D3D11 backend context creation, fixed state, and teardown.
+///
+/// The routines in this fragment compile every required shader, create the
+/// matching input layouts and fixed-function state, allocate common buffers and
+/// fallback resources, publish a context only after full initialization, and
+/// release partial or complete contexts in dependency-safe order.
+///
+/// @note Included by `vgfx3d_backend_d3d11.c`; not a standalone translation unit.
+
+/// @brief Temporary compiled HLSL bytecode retained only while a context is being built.
 typedef struct d3d11_shader_blobs_t {
+    /// Main vertex shader bytecode.
     ID3DBlob *vs;
+    /// Instanced vertex shader bytecode.
     ID3DBlob *vs_instanced;
+    /// Compact particle-instance vertex shader bytecode.
     ID3DBlob *vs_particles;
+    /// Main material pixel shader bytecode.
     ID3DBlob *ps;
+    /// Shadow-pass vertex shader bytecode.
     ID3DBlob *vs_shadow;
+    /// Shadow-pass alpha-mask pixel shader bytecode.
     ID3DBlob *ps_shadow;
+    /// Skybox vertex shader bytecode.
     ID3DBlob *vs_skybox;
+    /// Skybox pixel shader bytecode.
     ID3DBlob *ps_skybox;
+    /// Fullscreen post-processing vertex shader bytecode.
     ID3DBlob *vs_postfx;
+    /// Main post-processing pixel shader bytecode.
     ID3DBlob *ps_postfx;
+    /// Final overlay composite pixel shader bytecode.
     ID3DBlob *ps_overlay;
+    /// Bloom downsample pixel shader bytecode.
     ID3DBlob *ps_bloom_down;
+    /// Bloom upsample pixel shader bytecode.
     ID3DBlob *ps_bloom_up;
+    /// Temporal anti-aliasing resolve pixel shader bytecode.
     ID3DBlob *ps_taa;
+    /// Screen-space reflection pixel shader bytecode.
     ID3DBlob *ps_ssr;
 } d3d11_shader_blobs_t;
 
 /// @brief Release all temporary shader blobs used while creating a context.
+/// @param[in,out] blobs Blob bundle whose COM references are released and cleared.
 static void d3d11_release_shader_blobs(d3d11_shader_blobs_t *blobs) {
     SAFE_RELEASE(blobs->vs);
     SAFE_RELEASE(blobs->vs_instanced);
@@ -55,6 +82,9 @@ static void d3d11_release_shader_blobs(d3d11_shader_blobs_t *blobs) {
 }
 
 /// @brief Initialize matrix defaults and target/upload state on a new D3D11 context.
+/// @param[out] ctx Zero-initialized backend context receiving deterministic defaults.
+/// @param[in] width Initial drawable width.
+/// @param[in] height Initial drawable height.
 static void d3d11_init_context_defaults(d3d11_context_t *ctx, int32_t width, int32_t height) {
     ctx->width = width;
     ctx->height = height;
@@ -74,6 +104,10 @@ static void d3d11_init_context_defaults(d3d11_context_t *ctx, int32_t width, int
 }
 
 /// @brief Fill the swap-chain descriptor for the current window/backbuffer size.
+/// @param[out] swap_desc Descriptor initialized for one windowed RGBA8 backbuffer.
+/// @param[in] hwnd Native window receiving the swap chain.
+/// @param[in] width Backbuffer width in pixels.
+/// @param[in] height Backbuffer height in pixels.
 static void d3d11_fill_swap_chain_desc(DXGI_SWAP_CHAIN_DESC *swap_desc,
                                        HWND hwnd,
                                        int32_t width,
@@ -97,6 +131,8 @@ static void d3d11_fill_swap_chain_desc(DXGI_SWAP_CHAIN_DESC *swap_desc,
 /// @details DXGI otherwise installs an implicit Alt+Enter handler that can change swapchain mode
 ///   behind the backend's target-size and lifetime tracking. Failure is non-fatal because some
 ///   remoting/composition environments do not expose a parent factory.
+/// @param[in] ctx Backend context owning the swap chain.
+/// @param[in] hwnd Native window whose automatic fullscreen transition is disabled.
 static void d3d11_disable_implicit_fullscreen(d3d11_context_t *ctx, HWND hwnd) {
     /* Keep the interface id in the adapter instead of referencing IID_IDXGIFactory from
      * dxguid.lib. Zanna's native-link pipeline does not consume MSVC #pragma comment records. */
@@ -121,6 +157,10 @@ static void d3d11_disable_implicit_fullscreen(d3d11_context_t *ctx, HWND hwnd) {
 }
 
 /// @brief Create the swapchain render-target view and matching main depth target.
+/// @param[in,out] ctx Backend context receiving the initial targets.
+/// @param[in] width Target width in pixels.
+/// @param[in] height Target height in pixels.
+/// @return S_OK on success, otherwise the resource-creation HRESULT.
 static HRESULT d3d11_create_swapchain_targets(d3d11_context_t *ctx, int32_t width, int32_t height) {
     return d3d11_recreate_swapchain_main_targets(
         ctx, width, height, "Create initial swapchain targets");
@@ -130,6 +170,8 @@ static HRESULT d3d11_create_swapchain_targets(d3d11_context_t *ctx, int32_t widt
 /// @details Reversed-Z: scene passes clear depth to 0 and compare Greater. The shadow
 ///   pass keeps a dedicated standard Less state because light view-projections stay in
 ///   the standard convention (their maps are sampled with LessEqual comparisons).
+/// @param[in,out] ctx Backend context receiving the depth-stencil states.
+/// @return S_OK when every required state exists, otherwise the first creation HRESULT.
 static HRESULT d3d11_create_context_depth_states(d3d11_context_t *ctx) {
     D3D11_DEPTH_STENCIL_DESC depth_desc;
     HRESULT hr;
@@ -176,6 +218,8 @@ static HRESULT d3d11_create_context_depth_states(d3d11_context_t *ctx) {
 }
 
 /// @brief Create opaque, alpha, additive, and premultiplied-alpha blend states.
+/// @param[in,out] ctx Backend context receiving the blend states.
+/// @return S_OK when every required state exists, otherwise the first creation HRESULT.
 static HRESULT d3d11_create_context_blend_states(d3d11_context_t *ctx) {
     D3D11_BLEND_DESC blend_desc;
     HRESULT hr;
@@ -230,6 +274,8 @@ static HRESULT d3d11_create_context_blend_states(d3d11_context_t *ctx) {
 }
 
 /// @brief Create all solid/wireframe and cull/no-cull rasterizer-state combinations.
+/// @param[in,out] ctx Backend context receiving the rasterizer states.
+/// @return S_OK when every required state exists, otherwise the first creation HRESULT.
 static HRESULT d3d11_create_context_rasterizer_states(d3d11_context_t *ctx) {
     HRESULT hr =
         d3d11_create_rasterizer_state(ctx, D3D11_FILL_SOLID, D3D11_CULL_BACK, &ctx->rs_solid_cull);
@@ -257,6 +303,8 @@ static HRESULT d3d11_create_context_rasterizer_states(d3d11_context_t *ctx) {
 }
 
 /// @brief Create default linear wrap/clamp samplers and the shadow comparison sampler.
+/// @param[in,out] ctx Backend context receiving the sampler states.
+/// @return S_OK when every required sampler exists, otherwise the first creation HRESULT.
 static HRESULT d3d11_create_context_sampler_states(d3d11_context_t *ctx) {
     D3D11_SAMPLER_DESC sampler_desc;
     HRESULT hr;
@@ -298,6 +346,8 @@ static HRESULT d3d11_create_context_sampler_states(d3d11_context_t *ctx) {
 }
 
 /// @brief Compile every HLSL shader entry point needed by the context.
+/// @param[out] blobs Temporary blob bundle populated in dependency order.
+/// @return S_OK when every shader compiles, otherwise the first compiler HRESULT.
 static HRESULT d3d11_compile_context_shaders(d3d11_shader_blobs_t *blobs) {
     HRESULT hr;
     memset(blobs, 0, sizeof(*blobs));
@@ -352,6 +402,9 @@ static HRESULT d3d11_compile_context_shaders(d3d11_shader_blobs_t *blobs) {
 }
 
 /// @brief Create all shader objects from compiled HLSL blobs.
+/// @param[in,out] ctx Backend context receiving the shader COM objects.
+/// @param[in] blobs Complete compiled-bytecode bundle.
+/// @return S_OK when every shader object exists, otherwise the first creation HRESULT.
 static HRESULT d3d11_create_context_shader_objects(d3d11_context_t *ctx,
                                                    const d3d11_shader_blobs_t *blobs) {
     HRESULT hr = ID3D11Device_CreateVertexShader(ctx->device,
@@ -506,6 +559,7 @@ static HRESULT d3d11_create_context_shader_objects(d3d11_context_t *ctx,
 }
 
 /// @brief Fill the base per-vertex input layout for vgfx3d_vertex_t.
+/// @param[out] layout Eight descriptors matching the full-precision vertex structure.
 static void d3d11_fill_vertex_layout(D3D11_INPUT_ELEMENT_DESC layout[8]) {
     layout[0].SemanticName = "POSITION";
     layout[0].SemanticIndex = 0;
@@ -548,6 +602,7 @@ static void d3d11_fill_vertex_layout(D3D11_INPUT_ELEMENT_DESC layout[8]) {
 /// @details Same semantics and slots as d3d11_fill_vertex_layout; only formats and
 ///   offsets differ. Fixed-function input-assembler conversion decodes the packed
 ///   fields to the float shader inputs, so the same VS blobs validate both layouts.
+/// @param[out] layout Eight descriptors matching VGFX3D_COMPACT_VERTEX_STRIDE.
 static void d3d11_fill_vertex_layout_compact(D3D11_INPUT_ELEMENT_DESC layout[8]) {
     layout[0].SemanticName = "POSITION";
     layout[0].SemanticIndex = 0;
@@ -588,6 +643,8 @@ static void d3d11_fill_vertex_layout_compact(D3D11_INPUT_ELEMENT_DESC layout[8])
 }
 
 /// @brief Extend the base layout with model/normal/previous-model instance matrices.
+/// @param[out] instanced_layout Twenty per-vertex and per-instance descriptors.
+/// @param[in] layout Eight base vertex descriptors copied into the result.
 static void d3d11_fill_instanced_layout(D3D11_INPUT_ELEMENT_DESC instanced_layout[20],
                                         const D3D11_INPUT_ELEMENT_DESC layout[8]) {
     memcpy(instanced_layout, layout, sizeof(D3D11_INPUT_ELEMENT_DESC) * 8u);
@@ -629,6 +686,8 @@ static void d3d11_fill_instanced_layout(D3D11_INPUT_ELEMENT_DESC instanced_layou
 /// @details Slot 1 advances once per instance and maps directly onto
 ///   `vgfx3d_particle_instance_t`; unlike ordinary instancing it carries no model, normal, or
 ///   previous-model matrices.
+/// @param[out] particle_layout Twelve per-vertex and compact per-instance descriptors.
+/// @param[in] layout Eight full-precision base vertex descriptors.
 static void d3d11_fill_particle_layout(D3D11_INPUT_ELEMENT_DESC particle_layout[12],
                                        const D3D11_INPUT_ELEMENT_DESC layout[8]) {
     memcpy(particle_layout, layout, sizeof(D3D11_INPUT_ELEMENT_DESC) * 8u);
@@ -645,6 +704,9 @@ static void d3d11_fill_particle_layout(D3D11_INPUT_ELEMENT_DESC particle_layout[
 }
 
 /// @brief Create main, instanced, and skybox input layouts.
+/// @param[in,out] ctx Backend context receiving required and optional compact layouts.
+/// @param[in] blobs Compiled vertex shader bytecode used for signature validation.
+/// @return S_OK when every required layout exists, otherwise the first creation HRESULT.
 static HRESULT d3d11_create_context_input_layouts(d3d11_context_t *ctx,
                                                   const d3d11_shader_blobs_t *blobs) {
     D3D11_INPUT_ELEMENT_DESC layout[8];
@@ -751,6 +813,8 @@ static HRESULT d3d11_create_context_input_layouts(d3d11_context_t *ctx,
 }
 
 /// @brief Create constant buffers and the dynamic vertex/index/instance buffers.
+/// @param[in,out] ctx Backend context receiving the common buffers.
+/// @return S_OK when every required buffer exists, otherwise the first creation HRESULT.
 static HRESULT d3d11_create_context_buffers(d3d11_context_t *ctx) {
     HRESULT hr = d3d11_create_constant_buffer(ctx, sizeof(d3d_per_object_t), &ctx->cb_per_object);
     if (FAILED(hr)) {
@@ -856,6 +920,8 @@ static HRESULT d3d11_create_context_buffers(d3d11_context_t *ctx) {
 }
 
 /// @brief Create the immutable fullscreen-triangle skybox vertex buffer.
+/// @param[in,out] ctx Backend context receiving the immutable vertex buffer.
+/// @return S_OK on success, otherwise the D3D11 creation HRESULT.
 static HRESULT d3d11_create_context_skybox_buffer(d3d11_context_t *ctx) {
     static const float skybox_vertices[] = {
         -1.0f,
@@ -885,6 +951,7 @@ static HRESULT d3d11_create_context_skybox_buffer(d3d11_context_t *ctx) {
 }
 
 /// @brief Release every partial core interface produced by one device-creation attempt.
+/// @param[in,out] ctx Backend context whose immediate context, swap chain, and device are cleared.
 static void d3d11_release_device_attempt(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -894,6 +961,10 @@ static void d3d11_release_device_attempt(d3d11_context_t *ctx) {
 }
 
 /// @brief Attempt one feature-level-11 device/swapchain creation transaction.
+/// @param[in,out] ctx Backend context receiving the created core interfaces.
+/// @param[in] driver_type Hardware or fallback D3D11 driver type to try.
+/// @param[in] swap_desc Prepared windowed swap-chain descriptor.
+/// @return S_OK for a complete feature-level-11 context, otherwise the creation HRESULT.
 static HRESULT d3d11_try_create_device(d3d11_context_t *ctx,
                                        D3D_DRIVER_TYPE driver_type,
                                        DXGI_SWAP_CHAIN_DESC *swap_desc) {
@@ -933,6 +1004,10 @@ static HRESULT d3d11_try_create_device(d3d11_context_t *ctx,
 /// states, all four rasterizer-state combos, all cbuffers, and the
 /// skybox cube vertex buffer. Returns NULL on any device-create
 /// failure (the host falls back to the software backend in that case).
+/// @param[in] win Platform window whose native HWND and framebuffer are used.
+/// @param[in] width Requested initial width, overridden by a valid framebuffer extent.
+/// @param[in] height Requested initial height, overridden by a valid framebuffer extent.
+/// @return Fully initialized opaque D3D11 context, or NULL to request software fallback.
 static void *d3d11_create_ctx(vgfx_window_t win, int32_t width, int32_t height) {
     d3d11_context_t *ctx = NULL;
     HWND hwnd = (HWND)vgfx_get_native_view(win);
@@ -1027,6 +1102,7 @@ fail:
 /// then dynamic buffers, cbuffers, input layouts, shaders, sampler
 /// states, rasterizer states, depth-stencil states, blend states,
 /// finally swap chain + device. Frees the wrapper struct last.
+/// @param[in,out] ctx_ptr Opaque D3D11 context to destroy; NULL is accepted.
 static void d3d11_destroy_ctx(void *ctx_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     if (!ctx)

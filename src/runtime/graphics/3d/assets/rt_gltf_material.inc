@@ -4,18 +4,40 @@
 // standalone translation unit) Purpose: glTF image loading and PBR material/extension application
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_material.inc
+ * @brief Implements glTF image resolution and runtime PBR material construction.
+ * @details Included by `rt_gltf.c`, this fragment resolves image sources from data URIs,
+ *          bufferViews, external paths, and preload bundles; constructs texture/sampler lookup
+ *          tables; maps core metallic-roughness materials; converts legacy specular-glossiness;
+ *          and applies supported KHR material extensions. Missing required payloads are surfaced
+ *          through the asset diagnostic channel while all temporary encoded bytes remain locally
+ *          owned and are released by the calling phase.
+ */
+
 //===----------------------------------------------------------------------===//
 // Loader phase helpers (extracted from rt_gltf_load_impl)
 //===----------------------------------------------------------------------===//
 
+/// @brief Transient source and ownership state used while loading one glTF image.
 typedef struct {
+    /// Borrowed declared or inferred MIME type.
     const char *mime_type;
+    /// Optional owned encoded payload that must be freed after decoding.
     uint8_t *owned_data;
+    /// Borrowed active encoded payload, possibly aliasing @ref owned_data or a bufferView.
     const uint8_t *image_data;
+    /// Number of readable bytes at @ref image_data.
     size_t image_len;
+    /// MIME type parsed from an inline data URI.
     char parsed_mime[64];
 } gltf_image_load_state_t;
 
+/// @brief Mark every image source referenced by a texture as required for material import.
+/// @param textures_arr glTF JSON `textures` array.
+/// @param texture_count Number of texture entries to inspect.
+/// @param image_count Number of slots in @p image_required.
+/// @param image_required Mutable per-image requirement flags.
 static void gltf_mark_required_image_sources(void *textures_arr,
                                              int texture_count,
                                              int image_count,
@@ -30,6 +52,14 @@ static void gltf_mark_required_image_sources(void *textures_arr,
     }
 }
 
+/// @brief Allocate image handles and requirement flags for the document's image/texture tables.
+/// @param images_arr glTF JSON `images` array.
+/// @param textures_arr glTF JSON `textures` array.
+/// @param out_image_count Receives the validated image count.
+/// @param out_texture_count Receives the validated texture count.
+/// @param out_images Receives the zero-initialized image handle array.
+/// @param out_image_required Receives referenced-image flags, or NULL when unnecessary.
+/// @return Non-zero on success; zero after freeing all partial allocations.
 static int gltf_prepare_image_arrays(void *images_arr,
                                      void *textures_arr,
                                      int *out_image_count,
@@ -67,6 +97,14 @@ static int gltf_prepare_image_arrays(void *images_arr,
     return 1;
 }
 
+/// @brief Resolve encoded bytes or a decoded object for one inline image data URI.
+/// @param image_slot Destination runtime image slot.
+/// @param preload_bundle Optional bundle containing staged encoded or decoded data.
+/// @param image_index Source image index used in the preload key.
+/// @param uri Inline data URI.
+/// @param required_image Non-zero when a material references the image.
+/// @param state Mutable source state receiving owned bytes and inferred MIME type.
+/// @return Non-zero after resolution or warning emission.
 static int gltf_load_inline_image_data(void **image_slot,
                                        rt_gltf_preload_bundle *preload_bundle,
                                        int image_index,
@@ -107,6 +145,14 @@ static int gltf_load_inline_image_data(void **image_slot,
     return 1;
 }
 
+/// @brief Resolve and decode one external image URI relative to the glTF document.
+/// @param image_slot Destination runtime image slot.
+/// @param filepath Path of the root glTF document.
+/// @param load_assets Non-zero to consult the asset manager.
+/// @param preload_bundle Optional source of staged image dependencies.
+/// @param uri Relative image URI.
+/// @param required_image Non-zero when a material references the image.
+/// @return Non-zero after loading or reporting a recoverable missing-image warning.
 static int gltf_load_external_image_ref(void **image_slot,
                                         const char *filepath,
                                         int load_assets,
@@ -129,6 +175,17 @@ static int gltf_load_external_image_ref(void **image_slot,
     return 1;
 }
 
+/// @brief Resolve an embedded image payload from preload state or a glTF bufferView.
+/// @param image_slot Destination runtime image slot.
+/// @param root glTF JSON root used for bufferView resolution.
+/// @param preload_bundle Optional bundle containing staged encoded or decoded data.
+/// @param buffers Materialized glTF buffers.
+/// @param buf_count Number of entries in @p buffers.
+/// @param image_index Source image index used in the preload key.
+/// @param image_json Image JSON object containing the bufferView reference.
+/// @param required_image Non-zero when a material references the image.
+/// @param state Mutable source state receiving payload bytes.
+/// @return Non-zero after resolution or warning emission.
 static int gltf_load_buffer_view_image_data(void **image_slot,
                                             void *root,
                                             rt_gltf_preload_bundle *preload_bundle,
@@ -158,6 +215,15 @@ static int gltf_load_buffer_view_image_data(void **image_slot,
     return 1;
 }
 
+/// @brief Decode the encoded payload accumulated for one image into a runtime object.
+/// @details Dispatches KTX2 through the texture loader, known raster formats through `VGRA`
+///          staging, and other declared types through the asset decoder, preserving encoded source
+///          bytes when supported.
+/// @param image_slot Destination runtime image slot.
+/// @param state Resolved encoded payload and MIME information.
+/// @param required_image Non-zero when decode failure must be reported.
+/// @return Non-zero when processing may continue; zero only when a required staged conversion
+///         fails to produce an object.
 static int gltf_decode_loaded_image(void **image_slot,
                                     const gltf_image_load_state_t *state,
                                     int required_image) {
@@ -195,6 +261,18 @@ static int gltf_decode_loaded_image(void **image_slot,
     return 1;
 }
 
+/// @brief Load and decode one indexed glTF image from its URI or bufferView representation.
+/// @param root glTF JSON root.
+/// @param filepath Root document path used for relative image resolution.
+/// @param load_assets Non-zero to consult the asset manager.
+/// @param preload_bundle Optional staged dependency bundle.
+/// @param buffers Materialized glTF buffers.
+/// @param buf_count Number of entries in @p buffers.
+/// @param images Destination runtime image array.
+/// @param images_arr glTF JSON `images` array.
+/// @param image_required Optional per-image requirement flags.
+/// @param image_index Image index to process.
+/// @return Non-zero when source resolution and decoding complete without a hard failure.
 static int gltf_load_image_at_index(void *root,
                                     const char *filepath,
                                     int load_assets,
@@ -235,6 +313,12 @@ static int gltf_load_image_at_index(void *root,
     return ok;
 }
 
+/// @brief Allocate parallel image, support, and sampler tables for glTF textures.
+/// @param texture_count Number of texture entries.
+/// @param out_texture_images Receives the zero-initialized image-handle table.
+/// @param out_texture_supported Receives per-texture supported-format flags.
+/// @param out_texture_samplers Receives per-texture sampler descriptions.
+/// @return Non-zero on success or for an empty table; zero after cleaning partial allocations.
 static int gltf_alloc_texture_tables(int texture_count,
                                      void ***out_texture_images,
                                      uint8_t **out_texture_supported,
@@ -263,6 +347,9 @@ static int gltf_alloc_texture_tables(int texture_count,
     return 1;
 }
 
+/// @brief Determine whether an image JSON object declares a texture format the importer supports.
+/// @param image_json glTF image object to classify by MIME type, data URI, or filename.
+/// @return Non-zero for PNG, BMP, JPEG, GIF, or KTX2.
 static int gltf_image_json_supported_for_texture(void *image_json) {
     const char *image_uri = jstr(image_json, "uri");
     const char *image_mime = jstr(image_json, "mimeType");
@@ -275,6 +362,16 @@ static int gltf_image_json_supported_for_texture(void *image_json) {
     return gltf_preload_image_is_supported_format(image_type) || gltf_image_is_ktx2(image_type);
 }
 
+/// @brief Populate texture-to-image bindings, format flags, and sampler descriptions.
+/// @param root glTF JSON root containing sampler definitions.
+/// @param images_arr glTF JSON `images` array.
+/// @param image_count Number of entries in @p images.
+/// @param images Resolved runtime image handles.
+/// @param textures_arr glTF JSON `textures` array.
+/// @param texture_count Number of texture entries to populate.
+/// @param texture_images Destination image handles indexed by texture.
+/// @param texture_supported Destination supported-format flags.
+/// @param texture_samplers Destination sampler descriptions.
 static void gltf_populate_texture_tables(void *root,
                                          void *images_arr,
                                          int image_count,
@@ -310,6 +407,20 @@ static void gltf_populate_texture_tables(void *root,
 /// @note All seven out-params (images/image_count/image_required and the three
 ///       texture tables + texture_count) are heap state owned by the caller's
 ///       cleanup. load_failed_io is set when a required image fails to decode.
+/// @param root glTF JSON root.
+/// @param filepath Root document path for relative dependencies.
+/// @param load_assets Non-zero to consult the asset manager.
+/// @param preload_bundle Optional staged dependency bundle.
+/// @param buffers Materialized glTF buffers.
+/// @param buf_count Number of entries in @p buffers.
+/// @param out_images Receives the runtime image-handle array.
+/// @param out_image_count Receives the number of image slots.
+/// @param out_image_required Receives per-image material-reference flags.
+/// @param out_texture_images Receives image handles indexed by glTF texture.
+/// @param out_texture_supported Receives supported-format flags indexed by texture.
+/// @param out_texture_samplers Receives sampler descriptions indexed by texture.
+/// @param out_texture_count Receives the number of texture slots.
+/// @param load_failed_io In/out accumulated hard-failure flag.
 static void gltf_load_images_and_textures(void *root,
                                           const char *filepath,
                                           int load_assets,
@@ -383,8 +494,16 @@ finish:
     *load_failed_io = load_failed;
 }
 
+/// @brief Runtime callback that assigns a resolved texture object to one material channel.
+/// @param material Runtime material receiving the texture.
+/// @param texture Resolved image or texture object.
 typedef void (*gltf_material_texture_setter_fn)(void *material, void *texture);
 
+/// @brief Resolve one material texture-slot metadata record.
+/// @param material_infos Per-material metadata table.
+/// @param material_index Material index to address.
+/// @param slot Runtime texture-slot index.
+/// @return Mutable slot record, or NULL for an invalid table or index.
 static gltf_texture_info_t *gltf_material_slot_info(gltf_material_info_t *material_infos,
                                                     int32_t material_index,
                                                     int32_t slot) {
@@ -394,6 +513,17 @@ static gltf_texture_info_t *gltf_material_slot_info(gltf_material_info_t *materi
     return &material_infos[material_index].slots[slot];
 }
 
+/// @brief Resolve, bind, and apply sampling metadata for one material texture reference.
+/// @param texture_json glTF texture-info object containing the texture index and transforms.
+/// @param material Runtime material to update.
+/// @param slot Runtime texture-slot index, or a negative value for validation only.
+/// @param texture_images Resolved image handles indexed by glTF texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of entries in the parallel texture tables.
+/// @param slot_info Optional metadata record populated from @p texture_json.
+/// @param setter Optional runtime texture-assignment callback.
+/// @return Zero after successful binding, optional absence, or warning emission.
 static int gltf_material_bind_texture(void *texture_json,
                                       void *material,
                                       int32_t slot,
@@ -418,6 +548,9 @@ static int gltf_material_bind_texture(void *texture_json,
     return 0;
 }
 
+/// @brief Read and sanitize `baseColorFactor` with the glTF identity default.
+/// @param pbr glTF `pbrMetallicRoughness` object.
+/// @param rgba Destination four-component linear color and alpha.
 static void gltf_material_read_pbr_base_color(void *pbr, double rgba[4]) {
     void *bcf = jarr(pbr, "baseColorFactor");
     rgba[0] = 1.0;
@@ -433,6 +566,9 @@ static void gltf_material_read_pbr_base_color(void *pbr, double rgba[4]) {
     }
 }
 
+/// @brief Construct a runtime PBR material from core glTF metallic-roughness factors.
+/// @param pbr glTF `pbrMetallicRoughness` object.
+/// @return Newly retained material, or NULL when input or allocation is invalid.
 static void *gltf_material_create_pbr_from_json(void *pbr) {
     double rgba[4];
     double metallic;
@@ -461,6 +597,8 @@ static void *gltf_material_create_pbr_from_json(void *pbr) {
 ///          (dielectric F0 = 0.04). When a specularGlossinessTexture is present and
 ///          decodes to CPU pixels, gltf_material_synthesize_spec_gloss_mr_map upgrades
 ///          this factor-level conversion to a per-texel metallic-roughness map.
+/// @param spec_gloss `KHR_materials_pbrSpecularGlossiness` extension object.
+/// @return Newly retained metallic-roughness material, or NULL for absent input/allocation failure.
 static void *gltf_material_create_spec_gloss_from_json(void *spec_gloss) {
     double rgba[4] = {1.0, 1.0, 1.0, 1.0};
     double spec[3] = {1.0, 1.0, 1.0};
@@ -509,6 +647,15 @@ static void *gltf_material_create_spec_gloss_from_json(void *spec_gloss) {
 
 /// @brief Plan 09: bind the spec-gloss extension's textures (diffuse → base color,
 ///        specularGlossiness → specular slot).
+/// @param spec_gloss `KHR_materials_pbrSpecularGlossiness` extension object.
+/// @param material Runtime material receiving the texture assignments.
+/// @param material_index Index used to locate per-slot metadata.
+/// @param texture_images Resolved images indexed by glTF texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of entries in the parallel texture tables.
+/// @param material_infos Per-material texture metadata table.
+/// @return Accumulated hard-failure indicator from texture resolution.
 static int gltf_material_apply_spec_gloss_textures(void *spec_gloss,
                                                    void *material,
                                                    int32_t material_index,
@@ -546,6 +693,8 @@ static int gltf_material_apply_spec_gloss_textures(void *spec_gloss,
 }
 
 /// @brief Convert one 8-bit sRGB-encoded channel to linear [0,1] (IEC 61966-2-1).
+/// @param value sRGB channel value from zero through 255.
+/// @return Corresponding linear-light channel in [0, 1].
 static double gltf_srgb_u8_to_linear(uint8_t value) {
     double c = (double)value / 255.0;
     if (c <= 0.04045)
@@ -554,6 +703,8 @@ static double gltf_srgb_u8_to_linear(uint8_t value) {
 }
 
 /// @brief Clamp @p value to [0,1] and quantize to an 8-bit channel with rounding.
+/// @param value Candidate normalized channel.
+/// @return Quantized channel from zero through 255.
 static uint8_t gltf_unit_to_u8(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 0u;
@@ -572,6 +723,13 @@ static uint8_t gltf_unit_to_u8(double value) {
 ///          texture's sampler/texcoord state, and the scalar metallic/roughness reset to 1
 ///          so the baked texels are not scaled twice. Compressed (non-Pixels) sources keep
 ///          the factor-level approximation.
+/// @param spec_gloss `KHR_materials_pbrSpecularGlossiness` extension object.
+/// @param material Runtime material receiving the synthesized map.
+/// @param material_index Index used to copy per-slot texture metadata.
+/// @param texture_images Resolved texture image table.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of entries in the texture tables.
+/// @param material_infos Per-material texture metadata table.
 static void gltf_material_synthesize_spec_gloss_mr_map(void *spec_gloss,
                                                        void *material,
                                                        int32_t material_index,
@@ -645,6 +803,8 @@ static void gltf_material_synthesize_spec_gloss_mr_map(void *spec_gloss,
     gltf_release_local(mr);
 }
 
+/// @brief Construct the default glTF metallic-roughness material.
+/// @return Newly retained white material with metallic and roughness factors of one, or NULL.
 static void *gltf_material_create_default_pbr(void) {
     void *mat = rt_material3d_new_pbr(1.0, 1.0, 1.0);
     if (mat) {
@@ -654,6 +814,16 @@ static void *gltf_material_create_default_pbr(void) {
     return mat;
 }
 
+/// @brief Bind core base-color and metallic-roughness textures to a PBR material.
+/// @param pbr glTF `pbrMetallicRoughness` object.
+/// @param material Runtime material receiving textures.
+/// @param material_index Index used to locate per-slot metadata.
+/// @param texture_images Resolved images indexed by texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of entries in the texture tables.
+/// @param material_infos Per-material texture metadata table.
+/// @return Accumulated hard-failure indicator from texture resolution.
 static int gltf_material_apply_pbr_textures(void *pbr,
                                             void *material,
                                             int32_t material_index,
@@ -690,6 +860,9 @@ static int gltf_material_apply_pbr_textures(void *pbr,
     return load_failed;
 }
 
+/// @brief Apply a material's optional three-component emissive factor.
+/// @param mat_json glTF material object.
+/// @param material Runtime material to update.
 static void gltf_material_apply_emissive_factor(void *mat_json, void *material) {
     void *ef = jarr(mat_json, "emissiveFactor");
     if (ef && jarr_len(ef) >= 3) {
@@ -700,6 +873,16 @@ static void gltf_material_apply_emissive_factor(void *mat_json, void *material) 
     }
 }
 
+/// @brief Apply `KHR_materials_specular` factors and the preferred specular texture.
+/// @param specular Extension object, or NULL.
+/// @param material Runtime material to update.
+/// @param material_index Index used for per-slot metadata.
+/// @param texture_images Resolved images indexed by texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of texture entries.
+/// @param material_infos Per-material texture metadata table.
+/// @return Accumulated hard-failure indicator from texture resolution.
 static int gltf_material_apply_specular_extension(void *specular,
                                                   void *material,
                                                   int32_t material_index,
@@ -755,6 +938,14 @@ static int gltf_material_apply_specular_extension(void *specular,
                                       rt_material3d_set_specular_map);
 }
 
+/// @brief Validate an extension texture reference without assigning it to a runtime slot.
+/// @param texture_json Extension texture-info object.
+/// @param material Runtime material passed through the shared binding path.
+/// @param texture_images Resolved images indexed by texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of texture entries.
+/// @return Accumulated hard-failure indicator from texture resolution.
 static int gltf_material_validate_extension_texture(void *texture_json,
                                                     void *material,
                                                     void **texture_images,
@@ -772,6 +963,14 @@ static int gltf_material_validate_extension_texture(void *texture_json,
                                       NULL);
 }
 
+/// @brief Apply clearcoat factors and validate all clearcoat texture references.
+/// @param clearcoat `KHR_materials_clearcoat` object, or NULL.
+/// @param material Runtime material to update.
+/// @param texture_images Resolved images indexed by texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of texture entries.
+/// @return Accumulated hard-failure indicator from extension texture resolution.
 static int gltf_material_apply_clearcoat_extension(void *clearcoat,
                                                    void *material,
                                                    void **texture_images,
@@ -813,6 +1012,14 @@ static int gltf_material_apply_clearcoat_extension(void *clearcoat,
     return load_failed;
 }
 
+/// @brief Apply transmission strength and validate its optional texture reference.
+/// @param transmission `KHR_materials_transmission` object, or NULL.
+/// @param material Runtime material to update.
+/// @param texture_images Resolved images indexed by texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of texture entries.
+/// @return Accumulated hard-failure indicator from extension texture resolution.
 static int gltf_material_apply_transmission_extension(void *transmission,
                                                       void *material,
                                                       void **texture_images,
@@ -837,6 +1044,19 @@ static int gltf_material_apply_transmission_extension(void *transmission,
                                                     texture_count);
 }
 
+/// @brief Apply supported KHR material extension factors to one runtime material.
+/// @details Handles emissive strength, unlit shading, specular, clearcoat, transmission, IOR,
+///          volume attenuation, sheen, and anisotropy. Extension textures without dedicated
+///          runtime slots are still resolved and validated through the shared texture path.
+/// @param mat_json glTF material object containing the extension map.
+/// @param material Runtime material to update.
+/// @param material_index Index used for per-slot metadata.
+/// @param texture_images Resolved images indexed by texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of texture entries.
+/// @param material_infos Per-material texture metadata table.
+/// @return Accumulated hard-failure indicator from extension texture resolution.
 static int gltf_material_apply_extensions(void *mat_json,
                                           void *material,
                                           int32_t material_index,
@@ -950,6 +1170,16 @@ static int gltf_material_apply_extensions(void *mat_json,
     return load_failed;
 }
 
+/// @brief Bind core normal, occlusion, and emissive textures and their scalar controls.
+/// @param mat_json glTF material object.
+/// @param material Runtime material to update.
+/// @param material_index Index used for per-slot metadata.
+/// @param texture_images Resolved images indexed by texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of texture entries.
+/// @param material_infos Per-material texture metadata table.
+/// @return Accumulated hard-failure indicator from texture resolution.
 static int gltf_material_apply_standard_textures(void *mat_json,
                                                  void *material,
                                                  int32_t material_index,
@@ -1004,6 +1234,9 @@ static int gltf_material_apply_standard_textures(void *mat_json,
     return load_failed;
 }
 
+/// @brief Apply glTF alpha-mode, cutoff, and double-sided rasterization state.
+/// @param mat_json glTF material object.
+/// @param material Runtime material to update.
 static void gltf_material_apply_alpha_and_sided(void *mat_json, void *material) {
     const char *alpha_mode = jstr(mat_json, "alphaMode");
     if (alpha_mode && strcmp(alpha_mode, "MASK") == 0) {
@@ -1025,6 +1258,14 @@ static void gltf_material_apply_alpha_and_sided(void *mat_json, void *material) 
 /// @note out_material_infos returns the per-material texture-slot metadata table
 ///       (heap, owned by the caller's cleanup). load_failed_io is read on entry
 ///       and set when a referenced texture has a missing-but-required payload.
+/// @param asset Asset receiving the runtime material array.
+/// @param root glTF JSON root containing material definitions.
+/// @param texture_images Resolved images indexed by glTF texture.
+/// @param texture_supported Supported-format flags indexed by texture.
+/// @param texture_samplers Sampler descriptions indexed by texture.
+/// @param texture_count Number of entries in the texture tables.
+/// @param out_material_infos Receives the per-material texture-slot metadata table.
+/// @param load_failed_io In/out accumulated hard-failure flag.
 static void gltf_load_materials(rt_gltf_asset *asset,
                                 void *root,
                                 void **texture_images,

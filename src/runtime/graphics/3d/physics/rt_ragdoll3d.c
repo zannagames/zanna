@@ -27,6 +27,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements skeleton-derived capsule ragdolls, animation handoff, and pose blending.
+///
+/// Rigs are built lazily from skeleton bind globals, with capsule mass distributed by volume
+/// and limited six-degree-of-freedom joints connecting the nearest bodied ancestors. Activation
+/// seeds world-space velocities from animation palettes; active steps write physics poses back
+/// to animation, and deactivation can blend smoothly toward live animation.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_ragdoll3d.h"
@@ -62,12 +70,17 @@
 // Local double-precision math helpers (row-major matrices, xyzw quats)
 //=========================================================================
 
+/// @brief Initializes a row-major 4x4 matrix to identity.
+/// @param[out] m Writable 16-element matrix.
 static void rg_mat_identity(double *m) {
     memset(m, 0, 16 * sizeof(double));
     m[0] = m[5] = m[10] = m[15] = 1.0;
 }
 
 /// @brief Row-major multiply out = a * b (matches the skeleton module).
+/// @param a Borrowed 16-element left matrix.
+/// @param b Borrowed 16-element right matrix.
+/// @param[out] out Writable 16-element product; may alias either input.
 static void rg_mat_mul(const double *a, const double *b, double *out) {
     double tmp[16];
     for (int r = 0; r < 4; ++r)
@@ -77,6 +90,10 @@ static void rg_mat_mul(const double *a, const double *b, double *out) {
     memcpy(out, tmp, sizeof(tmp));
 }
 
+/// @brief Multiplies two xyzw quaternions.
+/// @param a Borrowed left quaternion.
+/// @param b Borrowed right quaternion.
+/// @param[out] out Product quaternion; must not alias an input.
 static void rg_quat_mul(const double a[4], const double b[4], double out[4]) {
     double x = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
     double y = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
@@ -88,6 +105,9 @@ static void rg_quat_mul(const double a[4], const double b[4], double out[4]) {
     out[3] = w;
 }
 
+/// @brief Computes the conjugate of an xyzw quaternion.
+/// @param q Borrowed input quaternion.
+/// @param[out] out Conjugated quaternion; may alias @p q.
 static void rg_quat_conj(const double q[4], double out[4]) {
     out[0] = -q[0];
     out[1] = -q[1];
@@ -95,6 +115,8 @@ static void rg_quat_conj(const double q[4], double out[4]) {
     out[3] = q[3];
 }
 
+/// @brief Normalizes an xyzw quaternion in place with an identity fallback.
+/// @param[in,out] q Quaternion to normalize; non-finite or negligible inputs become identity.
 static void rg_quat_normalize(double q[4]) {
     double len = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
     if (!isfinite(len) || len < 1e-12) {
@@ -108,6 +130,10 @@ static void rg_quat_normalize(double q[4]) {
     q[3] /= len;
 }
 
+/// @brief Rotates a three-dimensional vector by a unit xyzw quaternion.
+/// @param q Borrowed rotation quaternion.
+/// @param v Borrowed input vector.
+/// @param[out] out Rotated vector; must not alias @p v.
 static void rg_quat_rotate(const double q[4], const double v[3], double out[3]) {
     double cx = q[1] * v[2] - q[2] * v[1];
     double cy = q[2] * v[0] - q[0] * v[2];
@@ -121,6 +147,8 @@ static void rg_quat_rotate(const double q[4], const double v[3], double out[3]) 
 }
 
 /// @brief Quaternion rotating unit +Y onto unit @p dir.
+/// @param dir Borrowed normalized target direction.
+/// @param[out] out Destination xyzw quaternion, with stable identity and 180-degree special cases.
 static void rg_quat_align_y(const double dir[3], double out[4]) {
     double d = dir[1]; /* dot(+Y, dir) */
     if (d > 1.0 - 1e-9) {
@@ -155,6 +183,8 @@ static void rg_quat_align_y(const double dir[3], double out[4]) {
 }
 
 /// @brief Extract the rotation quaternion from a row-major matrix (unit-scale-ish).
+/// @param m Borrowed 16-element affine matrix whose upper-left 3x3 supplies rotation.
+/// @param[out] out Normalized xyzw rotation quaternion.
 static void rg_quat_from_mat(const double *m, double out[4]) {
     double trace = m[0] + m[5] + m[10];
     if (trace > 0.0) {
@@ -186,6 +216,9 @@ static void rg_quat_from_mat(const double *m, double out[4]) {
 }
 
 /// @brief Compose a row-major matrix from rotation quat + translation.
+/// @param q Borrowed normalized xyzw rotation quaternion.
+/// @param p Borrowed three-element translation.
+/// @param[out] m Writable 16-element affine matrix with unit scale.
 static void rg_mat_from_quat_pos(const double q[4], const double p[3], double *m) {
     double x = q[0], y = q[1], z = q[2], w = q[3];
     m[0] = 1.0 - 2.0 * (y * y + z * z);
@@ -207,6 +240,9 @@ static void rg_mat_from_quat_pos(const double q[4], const double p[3], double *m
 }
 
 /// @brief Axis-angle rotation vector taking quaternion a to b (radians).
+/// @param a Borrowed starting xyzw quaternion.
+/// @param b Borrowed target xyzw quaternion.
+/// @param[out] out Three-element shortest-arc rotation vector in radians.
 static void rg_quat_delta_rotvec(const double a[4], const double b[4], double out[3]) {
     double inv_a[4];
     double delta[4];
@@ -274,6 +310,9 @@ typedef struct rt_ragdoll3d {
 } rt_ragdoll3d;
 
 /// @brief Validate @p obj as a Ragdoll3D handle, trapping @p method on mismatch.
+/// @param obj Borrowed runtime object to validate.
+/// @param method Static diagnostic text used when validation fails.
+/// @return Borrowed ragdoll payload, or null after raising the supplied trap.
 static rt_ragdoll3d *ragdoll3d_checked(void *obj, const char *method) {
     rt_ragdoll3d *ragdoll = (rt_ragdoll3d *)rt_g3d_checked_or_null(obj, RT_G3D_RAGDOLL3D_CLASS_ID);
     if (!ragdoll)
@@ -281,6 +320,8 @@ static rt_ragdoll3d *ragdoll3d_checked(void *obj, const char *method) {
     return ragdoll;
 }
 
+/// @brief Releases one retained runtime object and clears its storage slot.
+/// @param[in,out] slot Address of an owned object pointer; null or empty slots are no-ops.
 static void ragdoll3d_release_obj(void **slot) {
     if (slot && *slot) {
         if (rt_obj_release_check0(*slot))
@@ -290,6 +331,7 @@ static void ragdoll3d_release_obj(void **slot) {
 }
 
 /// @brief Drop the built rig (bodies/joints released; config kept).
+/// @param[in,out] ragdoll Borrowed ragdoll whose built arrays and retained rig objects are cleared.
 static void ragdoll3d_release_rig(rt_ragdoll3d *ragdoll) {
     if (!ragdoll)
         return;
@@ -310,6 +352,7 @@ static void ragdoll3d_release_rig(rt_ragdoll3d *ragdoll) {
 }
 
 /// @brief GC finalizer: tear down the rig and release retained references.
+/// @param obj Owned `rt_ragdoll3d` payload being finalized; null is a no-op.
 static void ragdoll3d_finalize(void *obj) {
     rt_ragdoll3d *ragdoll = (rt_ragdoll3d *)obj;
     if (!ragdoll)
@@ -328,6 +371,12 @@ static void ragdoll3d_finalize(void *obj) {
 //=========================================================================
 
 /// @brief Build slots, bodies (posed at bind, not world-registered), and joints.
+/// @details Selects the root and sufficiently long bones, caps the rig at 64 bodies, distributes
+///          configured mass by capsule volume, and captures fixed body-to-bone frames. The build
+///          is transactional: partial bodies, joints, and mappings are released on failure.
+/// @param[in,out] ragdoll Borrowed rig description whose lazy body/joint representation is built.
+/// @return `1` when an existing or newly completed rig is available; `0` for an empty skeleton or
+///         allocation/object-construction failure.
 static int ragdoll3d_ensure_built(rt_ragdoll3d *ragdoll) {
     if (!ragdoll || !ragdoll->skeleton)
         return 0;
@@ -592,6 +641,8 @@ fail:
 
 /// @brief `Ragdoll3D.FromSkeleton(skeleton)` — rig description with defaults;
 ///   bodies build lazily on first BodyCount/Activate. See header.
+/// @param skeleton Borrowed `Skeleton3D` retained for the ragdoll's lifetime.
+/// @return Owned `Ragdoll3D` handle, or null after trapping on invalid input or allocation failure.
 void *rt_ragdoll3d_from_skeleton(void *skeleton) {
     if (!rt_g3d_has_class(skeleton, RT_G3D_SKELETON3D_CLASS_ID)) {
         rt_trap("Ragdoll3D.FromSkeleton: skeleton must be Skeleton3D");
@@ -614,11 +665,18 @@ void *rt_ragdoll3d_from_skeleton(void *skeleton) {
     return ragdoll;
 }
 
+/// @brief Returns the configured aggregate ragdoll mass.
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @return Positive total mass in kilograms, or zero for an invalid handle.
 double rt_ragdoll3d_get_total_mass(void *obj) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.get_TotalMass: invalid ragdoll");
     return ragdoll ? ragdoll->total_mass : 0.0;
 }
 
+/// @brief Configures aggregate mass and invalidates any inactive lazy rig.
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @param mass Positive finite total mass in kilograms; invalid values are ignored.
+/// @note Reconfiguration while active traps and leaves the existing rig unchanged.
 void rt_ragdoll3d_set_total_mass(void *obj, double mass) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.set_TotalMass: invalid ragdoll");
     if (!ragdoll || !isfinite(mass) || mass <= 0.0)
@@ -631,11 +689,18 @@ void rt_ragdoll3d_set_total_mass(void *obj, double mass) {
     ragdoll3d_release_rig(ragdoll);
 }
 
+/// @brief Returns the capsule-radius-to-bone-length scale.
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @return Positive configured radius scale, or zero for an invalid handle.
 double rt_ragdoll3d_get_radius_scale(void *obj) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.get_RadiusScale: invalid ragdoll");
     return ragdoll ? ragdoll->radius_scale : 0.0;
 }
 
+/// @brief Configures capsule radius scale and invalidates any inactive lazy rig.
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @param scale Positive finite scale no greater than 2; invalid values are ignored.
+/// @note Reconfiguration while active traps and leaves the existing rig unchanged.
 void rt_ragdoll3d_set_radius_scale(void *obj, double scale) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.set_RadiusScale: invalid ragdoll");
     if (!ragdoll || !isfinite(scale) || scale <= 0.0 || scale > 2.0)
@@ -648,11 +713,18 @@ void rt_ragdoll3d_set_radius_scale(void *obj, double scale) {
     ragdoll3d_release_rig(ragdoll);
 }
 
+/// @brief Returns the minimum segment length eligible for a non-root rig body.
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @return Positive minimum length in model units, or zero for an invalid handle.
 double rt_ragdoll3d_get_min_bone_length(void *obj) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.get_MinBoneLength: invalid ragdoll");
     return ragdoll ? ragdoll->min_bone_length : 0.0;
 }
 
+/// @brief Configures the body-selection length threshold and invalidates the inactive rig.
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @param length Positive finite minimum bone length in model units; invalid values are ignored.
+/// @note Reconfiguration while active traps and leaves the existing rig unchanged.
 void rt_ragdoll3d_set_min_bone_length(void *obj, double length) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.set_MinBoneLength: invalid ragdoll");
     if (!ragdoll || !isfinite(length) || length <= 0.0)
@@ -665,6 +737,9 @@ void rt_ragdoll3d_set_min_bone_length(void *obj, double length) {
     ragdoll3d_release_rig(ragdoll);
 }
 
+/// @brief Returns the number of lazily constructed capsule bodies.
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @return Built slot count, or zero for an invalid handle or failed rig build.
 int64_t rt_ragdoll3d_get_body_count(void *obj) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.get_BodyCount: invalid ragdoll");
     if (!ragdoll)
@@ -673,12 +748,19 @@ int64_t rt_ragdoll3d_get_body_count(void *obj) {
     return ragdoll->slot_count;
 }
 
+/// @brief Reports whether the rig is currently registered in a physics world.
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @return `1` while active; otherwise `0`.
 int8_t rt_ragdoll3d_get_active(void *obj) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.get_Active: invalid ragdoll");
     return ragdoll ? ragdoll->active : 0;
 }
 
 /// @brief Override the joint limits of one bone (before Activate).
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @param bone_name Borrowed skeleton bone name; unknown or unbodied names trap.
+/// @param swing_deg Swing limit in degrees, clamped to `[0, 180]`; non-finite values use default.
+/// @param twist_deg Twist limit in degrees, clamped to `[0, 180]`; non-finite values use default.
 void rt_ragdoll3d_set_joint_limits(void *obj,
                                    rt_string bone_name,
                                    double swing_deg,
@@ -714,6 +796,10 @@ void rt_ragdoll3d_set_joint_limits(void *obj,
 }
 
 /// @brief Read the node's world pose (position + rotation quaternion).
+/// @param node Borrowed `SceneNode3D`; null produces identity outputs and failure.
+/// @param[out] out_pos Three-element world-position destination initialized to zero.
+/// @param[out] out_quat Four-element xyzw world-rotation destination initialized to identity.
+/// @return `1` when world position was read; `0` when @p node is null or position lookup fails.
 static int ragdoll3d_node_pose(void *node, double out_pos[3], double out_quat[4]) {
     out_pos[0] = out_pos[1] = out_pos[2] = 0.0;
     out_quat[0] = out_quat[1] = out_quat[2] = 0.0;
@@ -729,6 +815,9 @@ static int ragdoll3d_node_pose(void *node, double out_pos[3], double out_quat[4]
 
 /// @brief Reconstruct a bone's model-space global from a skin palette entry:
 ///   global = skin × bindGlobal (the palette stores global × inverse-bind).
+/// @param skin_entry Borrowed 16-element row-major skin matrix.
+/// @param bind_global Borrowed 16-element row-major bone bind-global matrix.
+/// @param[out] out16 Writable 16-element reconstructed global matrix.
 static void ragdoll3d_global_from_skin(const float *skin_entry,
                                        const double *bind_global,
                                        double out16[16]) {
@@ -745,6 +834,11 @@ static void ragdoll3d_global_from_skin(const float *skin_entry,
 ///   in, so "current" and "previous" poses come from the same representation
 ///   (an identity palette means the bind pose — velocity seeding stays sane
 ///   for empty/static clips).
+/// @param controller Borrowed animation controller providing the current final palette.
+/// @param slot Borrowed rig slot identifying the bone and its bind-global matrix.
+/// @param[out] out_pos Three-element model-space bone translation.
+/// @param[out] out_quat Four-element normalized xyzw model-space bone rotation.
+/// @return `1` when the palette contains the requested bone; otherwise `0`.
 static int ragdoll3d_animated_bone_pose_slot(void *controller,
                                              const rt_ragdoll3d_slot *slot,
                                              double out_pos[3],
@@ -763,6 +857,13 @@ static int ragdoll3d_animated_bone_pose_slot(void *controller,
 }
 
 /// @brief `Ragdoll3D.Activate(world, controller, node)` — anim → ragdoll handoff.
+/// @details Builds the rig if necessary, transforms each animated bone and finite-difference
+///          velocity into world space, registers bodies and joints, then retains the world,
+///          animation controller, and scene node until deactivation/blend completion.
+/// @param obj Borrowed inactive `Ragdoll3D` runtime object.
+/// @param world Borrowed `World3D` that receives all rig bodies and joints.
+/// @param controller Borrowed `AnimController3D` supplying current and previous palettes.
+/// @param node Borrowed `SceneNode3D` defining the model-to-world root transform.
 void rt_ragdoll3d_activate(void *obj, void *world, void *controller, void *node) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.Activate: invalid ragdoll");
     if (!ragdoll)
@@ -885,6 +986,12 @@ void rt_ragdoll3d_activate(void *obj, void *world, void *controller, void *node)
 
 /// @brief `Ragdoll3D.Deactivate(blendSeconds)` — remove the rig from the world
 ///   and blend the palette back to live animation.
+/// @details Captures the last physics override when a positive finite blend is requested, removes
+///          joints before bodies, and releases the world immediately. Controller and node
+///          references remain retained only until an active blend finishes.
+/// @param obj Borrowed active `Ragdoll3D` runtime object.
+/// @param blend_seconds Positive finite animation blend duration in seconds, or a non-positive
+///        value for immediate release.
 void rt_ragdoll3d_deactivate(void *obj, double blend_seconds) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.Deactivate: invalid ragdoll");
     if (!ragdoll || !ragdoll->active)
@@ -933,6 +1040,9 @@ void rt_ragdoll3d_deactivate(void *obj, double blend_seconds) {
 /// @brief Enable powered (PD-driven) ragdoll bones. @p bone_mask bit N selects
 ///   skeleton bone N (bones 0..63; higher bones wrap via the 64-bit mask). Bones
 ///   without a rig body are ignored. @p stiffness is the PD drive gain (0 disables).
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @param bone_mask Stable skeleton-index mask selecting powered bones.
+/// @param stiffness Finite non-negative drive gain, clamped to 100; invalid values disable drive.
 void rt_ragdoll3d_set_powered(void *obj, int64_t bone_mask, double stiffness) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.SetPowered: invalid ragdoll");
     if (!ragdoll)
@@ -943,6 +1053,10 @@ void rt_ragdoll3d_set_powered(void *obj, int64_t bone_mask, double stiffness) {
 }
 
 /// @brief Borrowed rig body for a bone name (NULL when unmapped).
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @param bone_name Borrowed skeleton bone name.
+/// @return Borrowed `Body3D` for the named bodied bone, or null for build failure, an unknown name,
+///         or a skeleton bone excluded from the rig.
 void *rt_ragdoll3d_get_body(void *obj, rt_string bone_name) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.GetBody: invalid ragdoll");
     if (!ragdoll || !ragdoll3d_ensure_built(ragdoll))
@@ -954,6 +1068,11 @@ void *rt_ragdoll3d_get_body(void *obj, rt_string bone_name) {
 }
 
 /// @brief Active-mode sync: powered drive, palette write-back, node root-follow.
+/// @details Converts each body pose through its fixed frame into model-space bone globals, applies
+///          optional angular PD impulses toward animation, rebases override translations while the
+///          scene node follows the root, and publishes the masked pose override.
+/// @param[in,out] ragdoll Borrowed active rig with retained controller and node.
+/// @param dt Positive step duration in seconds used to scale powered-drive impulses.
 static void ragdoll3d_step_active(rt_ragdoll3d *ragdoll, double dt) {
     double node_pos[3];
     double node_quat[4];
@@ -1065,6 +1184,11 @@ static void ragdoll3d_step_active(rt_ragdoll3d *ragdoll, double dt) {
 }
 
 /// @brief Blend-out sync: lerp captured ragdoll globals toward live animation.
+/// @details Translation uses linear interpolation and rotation uses normalized shortest-path
+///          interpolation. When the timer expires, the captured palette and retained controller
+///          and node are released.
+/// @param[in,out] ragdoll Borrowed inactive rig with optional blend state.
+/// @param dt Positive elapsed time in seconds subtracted from the remaining blend.
 static void ragdoll3d_step_blend(rt_ragdoll3d *ragdoll, double dt) {
     if (!ragdoll->blend_from || !ragdoll->controller || ragdoll->blend_duration <= 0.0) {
         ragdoll->blend_remaining = 0.0;
@@ -1122,6 +1246,9 @@ static void ragdoll3d_step_blend(rt_ragdoll3d *ragdoll, double dt) {
 }
 
 /// @brief `Ragdoll3D.Step(dt)` — see header for ordering requirements.
+/// @param obj Borrowed `Ragdoll3D` runtime object.
+/// @param dt Elapsed time in seconds; invalid or non-positive values use the 1/60-second handoff
+///        interval. Active rigs synchronize physics, while inactive blending rigs advance blend.
 void rt_ragdoll3d_step(void *obj, double dt) {
     rt_ragdoll3d *ragdoll = ragdoll3d_checked(obj, "Ragdoll3D.Step: invalid ragdoll");
     if (!ragdoll)

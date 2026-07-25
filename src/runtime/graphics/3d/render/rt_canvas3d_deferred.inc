@@ -20,6 +20,12 @@
 //        docs/adr/0168-windowless-canvas3d-rendering.md
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements Canvas3D deferred command capture, sorting, material flattening, and helpers.
+/// @details This implementation fragment is included by `rt_canvas3d.c`. Its queued commands may
+/// only borrow payloads whose lifetime has been transferred to Canvas3D frame storage or retained
+/// through the transient-object manager.
+
 /*==========================================================================
  * Deferred draw command (for transparency sorting)
  *=========================================================================*/
@@ -77,6 +83,9 @@ typedef struct {
 ///   independent of later material mutation. AUTO preserves the existing behavior: opaque and
 ///   alpha-masked draws cast, while alpha-blended/additive draws are skipped. NONE disables
 ///   casting, and CAST opts transparent draws into shadow rendering without changing the main pass.
+/// @param dd Borrowed deferred draw snapshot.
+/// @return Non-zero when the draw belongs in shadow submission; zero for overlays, disabled modes,
+/// automatic transparent draws, or invalid input.
 static int canvas3d_deferred_casts_shadow(const deferred_draw_t *dd) {
     if (!dd || dd->pass_kind != DEFERRED_PASS_MAIN)
         return 0;
@@ -109,6 +118,11 @@ typedef struct {
 /// transparency-sort path to buffer commands until end-of-frame.
 /// Returns 0 on allocation failure; draw callers trap rather than bypassing
 /// the queue because immediate submission breaks transparency ordering.
+/// @param[in,out] buf Address of the realloc-compatible command-buffer pointer.
+/// @param[in,out] capacity Address of the current element capacity, updated on success.
+/// @param needed Positive minimum element capacity.
+/// @return Non-zero when capacity is available; zero for invalid input, overflow, or allocation
+/// failure. Existing storage remains owned by the caller on failure.
 static int ensure_deferred_capacity(void **buf, int32_t *capacity, int32_t needed) {
     if (!buf || !capacity || needed <= 0)
         return 0;
@@ -138,6 +152,7 @@ static int ensure_deferred_capacity(void **buf, int32_t *capacity, int32_t neede
 /// @details Deferred draws store pointers to exact-sized light slices rather than embedding
 ///          `VGFX3D_MAX_LIGHTS` entries in every command. Resetting only the used count preserves
 ///          the allocation across frames and keeps queued draw commands compact.
+/// @param c Canvas whose per-frame light arena and flatten cache are reset; NULL is ignored.
 static void canvas3d_reset_frame_light_snapshots(rt_canvas3d *c) {
     if (!c)
         return;
@@ -157,6 +172,11 @@ static void canvas3d_reset_frame_light_snapshots(rt_canvas3d *c) {
 /// @details The runtime keeps the direct `dd->lights` pointer for hot backend submission and
 ///          unit-test visibility. When `realloc` moves the arena, this helper patches every queued
 ///          draw whose pointer referenced the previous allocation.
+/// @param draws Borrowed deferred-draw array whose stored pointers may require rebasing.
+/// @param count Number of valid draw entries.
+/// @param old_base Previous arena base.
+/// @param new_base Replacement arena base after relocation.
+/// @param old_capacity Number of addressable elements in the previous arena.
 static void canvas3d_remap_light_snapshot_pointers(deferred_draw_t *draws,
                                                    int32_t count,
                                                    vgfx3d_light_params_t *old_base,
@@ -251,6 +271,9 @@ static vgfx3d_light_params_t *canvas3d_store_frame_light_snapshot(
 ///   light changes, and by any Light3D property mutation (global generation counter).
 ///   Shadow patching in End() mutates the shared slice in place, which is safe because
 ///   canvas3d_apply_shadow_light_params is idempotent per slice.
+/// @param c Canvas owning the flattened-light cache and snapshot arena.
+/// @param[out] dd Deferred draw that receives borrowed slice, count, offset, revision, and cluster
+/// table fields.
 /// @return 1 on success, 0 when the snapshot arena allocation failed (caller traps).
 static int canvas3d_assign_frame_lights(rt_canvas3d *c, deferred_draw_t *dd) {
     uint64_t light_revision;
@@ -300,6 +323,9 @@ static int canvas3d_backend_uses_software_raster(const rt_canvas3d *c);
 /// @details NaN sort keys violate `qsort`'s strict weak ordering and make fallback selection
 ///   unstable. Non-finite transparent keys are pushed behind valid back-to-front draws; non-finite
 ///   opaque keys are pushed behind valid front-to-back occluders.
+/// @param sort_key Candidate view-depth key.
+/// @param requires_blend Non-zero for back-to-front transparent ordering.
+/// @return Finite key, using an ordering-appropriate extreme for non-finite input.
 static float canvas3d_sanitize_sort_key(float sort_key, int requires_blend) {
     if (isfinite(sort_key))
         return sort_key;
@@ -309,6 +335,7 @@ static float canvas3d_sanitize_sort_key(float sort_key, int requires_blend) {
 /// @brief Reset per-frame submission-cost counters and fixed-size AABB cache.
 /// @details Called by public Begin/Begin2D entry points. Internal overlay replay intentionally
 ///          does not reset these fields so a frame can include its post-scene overlay submissions.
+/// @param c Canvas whose counters and world-bounds cache are cleared; NULL is ignored.
 static void canvas3d_reset_frame_submission_stats(rt_canvas3d *c) {
     if (!c)
         return;
@@ -323,6 +350,8 @@ static void canvas3d_reset_frame_submission_stats(rt_canvas3d *c) {
 }
 
 /// @brief Hash the original double-precision model matrix used as a world-bounds cache key.
+/// @param matrix Borrowed row-major 4-by-4 matrix.
+/// @return Stable non-zero process-local hash of the exact double bit patterns, or zero for NULL.
 static uint64_t canvas3d_hash_matrix_f64(const double *matrix) {
     uint64_t key = UINT64_C(1469598103934665603);
 
@@ -341,6 +370,9 @@ static uint64_t canvas3d_hash_matrix_f64(const double *matrix) {
 }
 
 /// @brief Build a source mesh+matrix key for the world-AABB cache.
+/// @param[out] out Cache-key structure, always zero-initialized before input validation.
+/// @param mesh_key Non-NULL source mesh identity pointer.
+/// @param matrix Borrowed row-major double model matrix copied into the key.
 static void canvas3d_make_deferred_world_bounds_cache_key(canvas3d_world_bounds_cache_key_t *out,
                                                           const void *mesh_key,
                                                           const double *matrix) {
@@ -355,6 +387,10 @@ static void canvas3d_make_deferred_world_bounds_cache_key(canvas3d_world_bounds_
     memcpy(out->matrix_key, matrix, sizeof(out->matrix_key));
 }
 
+/// @brief Mix one 64-bit value into a process-local deferred-sort grouping key.
+/// @param key Existing accumulator.
+/// @param value Scalar or normalized pointer bits to mix.
+/// @return Updated avalanche-mixed accumulator.
 static uint64_t canvas3d_mix_sort_u64(uint64_t key, uint64_t value) {
     value ^= value >> 33;
     value *= UINT64_C(0xff51afd7ed558ccd);
@@ -365,6 +401,10 @@ static uint64_t canvas3d_mix_sort_u64(uint64_t key, uint64_t value) {
     return key;
 }
 
+/// @brief Mix a process-local pointer identity into a deferred-sort grouping key.
+/// @param key Existing accumulator.
+/// @param ptr Borrowed pointer whose numeric identity is used only within this process.
+/// @return Updated accumulator.
 static uint64_t canvas3d_mix_sort_ptr(uint64_t key, const void *ptr) {
     return canvas3d_mix_sort_u64(key, (uint64_t)(uintptr_t)ptr);
 }
@@ -373,6 +413,12 @@ static uint64_t canvas3d_mix_sort_ptr(uint64_t key, const void *ptr) {
 /// @details This deliberately excludes depth and enqueue order; those are applied as later stable
 ///          sort keys. The key is a grouping hint, not serialized data, so process-local pointer
 ///          identity is sufficient.
+/// @param kind Mesh or instanced deferred-draw kind.
+/// @param pass_kind Main or screen-overlay pass kind.
+/// @param wireframe Captured wireframe state.
+/// @param backface_cull Captured culling state.
+/// @param cmd Borrowed backend-visible draw command.
+/// @return Non-zero process-local grouping key covering pipeline, geometry, textures, and samplers.
 static uint64_t canvas3d_backend_state_key_core(deferred_draw_kind_t kind,
                                                 deferred_pass_t pass_kind,
                                                 int8_t wireframe,
@@ -430,6 +476,8 @@ static uint64_t canvas3d_backend_state_key_core(deferred_draw_kind_t kind,
 }
 
 /// @brief Backend-state grouping key for a queued deferred draw.
+/// @param dd Borrowed deferred draw.
+/// @return Non-zero process-local backend-state key; invalid input returns the fixed seed.
 static uint64_t canvas3d_deferred_backend_state_key(const deferred_draw_t *dd) {
     if (!dd)
         return UINT64_C(0xD1B54A32D192ED03);
@@ -438,6 +486,12 @@ static uint64_t canvas3d_deferred_backend_state_key(const deferred_draw_t *dd) {
 }
 
 /// @brief Account for one backend draw submission and material-state transition.
+/// @param c Canvas whose frame counters are updated.
+/// @param cmd Borrowed submitted command.
+/// @param wireframe Effective wireframe state.
+/// @param backface_cull Effective backface-cull state.
+/// @param kind Submitted deferred-draw kind.
+/// @param pass_kind Submitted pass kind.
 static void canvas3d_note_backend_submission(rt_canvas3d *c,
                                              const vgfx3d_draw_cmd_t *cmd,
                                              int8_t wireframe,
@@ -464,6 +518,11 @@ static void canvas3d_note_backend_submission(rt_canvas3d *c,
 /// Two-pair geometric growth — vertices and indices have separate
 /// caps because the ratio depends on the glyph layout. Starting
 /// capacities: 256 vertices, 384 indices.
+/// @param c Canvas owning both realloc-compatible scratch arrays.
+/// @param vertex_count Non-negative required vertex capacity.
+/// @param index_count Non-negative required index capacity.
+/// @return Non-zero when both capacities are available; zero for invalid input, overflow, or
+/// allocation failure. Any successfully grown first array remains owned by the canvas.
 static int ensure_text_capacity(rt_canvas3d *c, int32_t vertex_count, int32_t index_count) {
     if (!c || vertex_count < 0 || index_count < 0)
         return 0;
@@ -510,6 +569,10 @@ static int ensure_text_capacity(rt_canvas3d *c, int32_t vertex_count, int32_t in
 ///
 /// Used to sort transparent draws so they composite correctly (back
 /// objects drawn first so front objects blend over them).
+/// @param a Borrowed pointer to the first `deferred_draw_t`.
+/// @param b Borrowed pointer to the second `deferred_draw_t`.
+/// @return Negative, zero, or positive according to sanitized descending depth, stable identity,
+/// and enqueue-order comparison.
 static CANVAS3D_UNUSED_PRIVATE int cmp_back_to_front(const void *a, const void *b) {
     const deferred_draw_t *da = (const deferred_draw_t *)a;
     const deferred_draw_t *db = (const deferred_draw_t *)b;
@@ -534,6 +597,10 @@ static CANVAS3D_UNUSED_PRIVATE int cmp_back_to_front(const void *a, const void *
 ///
 /// Used for opaque draws — front-to-back order maximizes early-Z
 /// rejection, dropping pixel-shader work for occluded fragments.
+/// @param a Borrowed pointer to the first `deferred_draw_t`.
+/// @param b Borrowed pointer to the second `deferred_draw_t`.
+/// @return Negative, zero, or positive according to sanitized ascending depth, stable identity,
+/// and enqueue-order comparison.
 static CANVAS3D_UNUSED_PRIVATE int cmp_front_to_back(const void *a, const void *b) {
     const deferred_draw_t *da = (const deferred_draw_t *)a;
     const deferred_draw_t *db = (const deferred_draw_t *)b;
@@ -559,6 +626,14 @@ static CANVAS3D_UNUSED_PRIVATE int cmp_front_to_back(const void *a, const void *
 ///          moving or marking the source draw array. Ties fall back to original draw
 ///          index, which gives a deterministic stable order even when many objects
 ///          share the same depth key.
+/// @param key Candidate draw's depth key.
+/// @param stable_sort_id Candidate persistent identity tie-breaker.
+/// @param enqueue_index Candidate original queue position.
+/// @param previous_key Previously emitted depth key.
+/// @param previous_stable_sort_id Previously emitted identity.
+/// @param previous_enqueue_index Previously emitted queue position, or a negative sentinel initially.
+/// @param descending Non-zero for back-to-front ordering; zero for front-to-back.
+/// @return Non-zero when the candidate is strictly after the previous tuple.
 static int canvas3d_sort_tuple_after(float key,
                                      uintptr_t stable_sort_id,
                                      int32_t enqueue_index,
@@ -579,6 +654,10 @@ static int canvas3d_sort_tuple_after(float key,
 /// @brief Compare two deferred sort tuples using the same ordering as the qsort paths.
 /// @details This keeps the no-allocation fallback deterministic under memory pressure by honoring
 ///          stable draw identity before falling back to enqueue order.
+/// @param a Borrowed first deferred draw.
+/// @param b Borrowed second deferred draw.
+/// @param descending Non-zero for back-to-front depth comparison.
+/// @return Non-zero when @p a sorts before @p b.
 static int canvas3d_sort_tuple_less(const deferred_draw_t *a,
                                     const deferred_draw_t *b,
                                     int descending) {
@@ -597,17 +676,29 @@ static int canvas3d_sort_tuple_less(const deferred_draw_t *a,
 
 typedef uint64_t (*canvas3d_sort_key_fn)(const deferred_draw_t *draw, void *ctx);
 
+/// @brief Extract a queued draw's stable identity for radix sorting.
+/// @param draw Borrowed deferred draw.
+/// @param ctx Unused key-function context.
+/// @return Stable sort identity widened to 64 bits, or zero for invalid input.
 static uint64_t canvas3d_sort_key_stable_id(const deferred_draw_t *draw, void *ctx) {
     (void)ctx;
     return draw ? (uint64_t)draw->stable_sort_id : 0;
 }
 
+/// @brief Extract a queued draw's backend-state grouping key for radix sorting.
+/// @param draw Borrowed deferred draw.
+/// @param ctx Unused key-function context.
+/// @return Process-local backend-state key.
 static uint64_t canvas3d_sort_key_backend_state(const deferred_draw_t *draw, void *ctx) {
     (void)ctx;
     return canvas3d_deferred_backend_state_key(draw);
 }
 
 /// @brief Grow the cached radix-key scratch arrays that ride along with sort_cmds.
+/// @param c Canvas owning both key arrays.
+/// @param needed Positive required element capacity.
+/// @return Non-zero when both arrays have sufficient capacity; zero on invalid input, overflow, or
+/// allocation failure.
 static int canvas3d_ensure_sort_key_capacity(rt_canvas3d *c, int32_t needed) {
     uint64_t *grown;
     if (!c || needed <= 0)
@@ -628,6 +719,15 @@ static int canvas3d_ensure_sort_key_capacity(rt_canvas3d *c, int32_t needed) {
     return 1;
 }
 
+/// @brief Stable-sort deferred draws by a cached unsigned 64-bit key using byte-wise radix passes.
+/// @details The key function is evaluated exactly once per item. Scratch arrays are canvas-owned and
+/// retained across frames; allocation failure leaves the caller to use a fallback ordering path.
+/// @param c Canvas owning command and key scratch storage.
+/// @param[in,out] items Deferred-draw array sorted in place.
+/// @param count Number of valid entries.
+/// @param key_fn Non-NULL key extractor.
+/// @param ctx Opaque context forwarded to @p key_fn.
+/// @return Non-zero on success or trivial input; zero only when scratch growth fails.
 static int canvas3d_stable_radix_sort_u64(
     rt_canvas3d *c, deferred_draw_t *items, int32_t count, canvas3d_sort_key_fn key_fn, void *ctx) {
     deferred_draw_t *scratch;
@@ -672,6 +772,11 @@ static int canvas3d_stable_radix_sort_u64(
     return 1;
 }
 
+/// @brief Quantize a finite depth key into the fixed deferred-sort bucket range.
+/// @param key Candidate depth key; non-finite input maps to @p min_key.
+/// @param min_key Minimum finite depth in the current draw set.
+/// @param max_key Maximum finite depth in the current draw set.
+/// @return Clamped zero-based bucket index.
 static int canvas3d_depth_bucket_for_key(float key, float min_key, float max_key) {
     double t;
     int bucket;
@@ -693,6 +798,12 @@ static int canvas3d_depth_bucket_for_key(float key, float min_key, float max_key
     return bucket;
 }
 
+/// @brief Compare exact depth tuples inside one quantized bucket.
+/// @param a Borrowed candidate draw.
+/// @param b Borrowed reference draw.
+/// @param descending Non-zero for back-to-front order.
+/// @param requires_blend Selects transparent versus opaque non-finite-key sanitization.
+/// @return Non-zero when @p a belongs before @p b.
 static int canvas3d_depth_tuple_before(const deferred_draw_t *a,
                                        const deferred_draw_t *b,
                                        int descending,
@@ -722,6 +833,11 @@ static int canvas3d_depth_tuple_before(const deferred_draw_t *a,
     return a->enqueue_index < b->enqueue_index;
 }
 
+/// @brief Stably insertion-sort one small depth bucket by exact depth and identity tuple.
+/// @param[in,out] items Bucket entries to reorder in place.
+/// @param count Number of entries.
+/// @param descending Non-zero for back-to-front order.
+/// @param requires_blend Selects transparent versus opaque key sanitization.
 static void canvas3d_insertion_sort_depth_exact(deferred_draw_t *items,
                                                 int32_t count,
                                                 int descending,
@@ -740,6 +856,14 @@ static void canvas3d_insertion_sort_depth_exact(deferred_draw_t *items,
     }
 }
 
+/// @brief Stable-sort deferred draws by quantized depth, then exact-sort collisions per bucket.
+/// @details Callers first radix-sort by stable identity so equal-depth input remains deterministic.
+/// @param c Canvas owning scratch command storage and frame sort counters.
+/// @param[in,out] items Deferred draws sorted in place.
+/// @param count Number of entries.
+/// @param descending Non-zero for back-to-front bucket traversal.
+/// @param requires_blend Selects transparent versus opaque key sanitization.
+/// @return Non-zero on success or trivial/equal-key input; zero when scratch allocation fails.
 static int canvas3d_stable_bucket_sort_depth(
     rt_canvas3d *c, deferred_draw_t *items, int32_t count, int descending, int requires_blend) {
     deferred_draw_t *scratch;
@@ -795,6 +919,11 @@ static int canvas3d_stable_bucket_sort_depth(
     return 1;
 }
 
+/// @brief Deterministically sort transparent draws by identity then exact back-to-front depth.
+/// @param c Canvas owning sort scratch storage.
+/// @param[in,out] items Transparent deferred draws.
+/// @param count Number of entries.
+/// @return Non-zero on success; zero on scratch allocation failure.
 static int canvas3d_sort_transparent_draws(rt_canvas3d *c, deferred_draw_t *items, int32_t count) {
     if (count <= 1)
         return 1;
@@ -803,6 +932,11 @@ static int canvas3d_sort_transparent_draws(rt_canvas3d *c, deferred_draw_t *item
     return canvas3d_stable_bucket_sort_depth(c, items, count, 1, 1);
 }
 
+/// @brief Deterministically sort opaque draws by identity then exact front-to-back depth.
+/// @param c Canvas owning sort scratch storage.
+/// @param[in,out] items Opaque deferred draws.
+/// @param count Number of entries.
+/// @return Non-zero on success; zero on scratch allocation failure.
 static int canvas3d_sort_opaque_draws_depth_first(rt_canvas3d *c,
                                                   deferred_draw_t *items,
                                                   int32_t count) {
@@ -813,6 +947,9 @@ static int canvas3d_sort_opaque_draws_depth_first(rt_canvas3d *c,
     return canvas3d_stable_bucket_sort_depth(c, items, count, 0, 0);
 }
 
+/// @brief Report whether backend-state transition telemetry should treat the canvas as software.
+/// @param c Canvas whose selected backend pointer/name is inspected.
+/// @return Non-zero for invalid, canonical software, or software-named backends.
 static int canvas3d_backend_uses_software_raster(const rt_canvas3d *c) {
     const char *name;
 
@@ -829,6 +966,13 @@ static int canvas3d_backend_uses_software_raster(const rt_canvas3d *c) {
 ///          an O(n²) selection pass over the existing deferred draw list, preserving the
 ///          same front/back depth ordering contract as the qsort path while avoiding
 ///          mutation of the mixed-pass queue.
+/// @param cmds Borrowed mixed-pass deferred queue.
+/// @param draw_count Number of valid queue entries.
+/// @param requires_blend Required transparency class for the selection.
+/// @param descending Non-zero for back-to-front traversal.
+/// @param previous_key Previously emitted key.
+/// @param previous_stable_sort_id Previously emitted stable identity.
+/// @param previous_enqueue_index Previously emitted queue index, or a negative initial sentinel.
 /// @return The source index of the next draw, or -1 when no later draw exists.
 static CANVAS3D_UNUSED_PRIVATE int32_t
 canvas3d_pick_next_sorted_main_draw(const deferred_draw_t *cmds,
@@ -864,10 +1008,6 @@ canvas3d_pick_next_sorted_main_draw(const deferred_draw_t *cmds,
  * Helpers
  *=========================================================================*/
 
-/// @brief Convert a 16-element double-precision matrix to single precision.
-///
-/// Zia stores matrices as `Mat4` with double components; the GPU
-/// uniform path takes float — straightforward narrowing conversion.
 /// @brief Whether a draw command needs alpha blending (transparency).
 ///
 /// Two cases trigger blending:
@@ -875,6 +1015,8 @@ canvas3d_pick_next_sorted_main_draw(const deferred_draw_t *cmds,
 ///   2. Scalar alpha < 1.0 or diffuse alpha < 1.0 after material normalization.
 /// Used to route the command into the deferred transparency-sorted
 /// pass instead of the immediate opaque pass.
+/// @param cmd Borrowed normalized backend draw command.
+/// @return 1 when transparent/additive blending is required; otherwise 0.
 static int8_t canvas3d_cmd_requires_blend(const vgfx3d_draw_cmd_t *cmd) {
     if (!cmd)
         return 0;
@@ -885,6 +1027,8 @@ static int8_t canvas3d_cmd_requires_blend(const vgfx3d_draw_cmd_t *cmd) {
 /// @details Skinning, morph targets, and instanced motion snapshots can all move triangles away
 ///   from the static Mesh3D AABB. These draws remain renderable, but the coarse CPU occlusion grid
 ///   must avoid treating their bounds as exact solid occluders.
+/// @param cmd Borrowed draw command.
+/// @return Non-zero when skinning or morphing can move submitted vertices.
 static int canvas3d_cmd_has_runtime_deformation(const vgfx3d_draw_cmd_t *cmd) {
     return cmd && ((cmd->bone_palette && cmd->bone_count > 0) ||
                    (cmd->morph_deltas && cmd->morph_weights && cmd->morph_shape_count > 0));
@@ -895,6 +1039,9 @@ static int canvas3d_cmd_has_runtime_deformation(const vgfx3d_draw_cmd_t *cmd) {
 ///   occlusion. Alpha masks, double-sided foliage, splatted surfaces, and biased overlays also
 ///   have screen-space coverage that is not represented by their coarse AABB. Such draws can still
 ///   be depth-tested normally by the backend; they simply do not become CPU occluders.
+/// @param[in,out] dd Deferred draw whose conservative/test/write flags are finalized.
+/// @param conservative_bounds Non-zero when the stored AABB is deliberately over-inclusive.
+/// @param force_disable_occlusion Non-zero to disable both testing and occluder writes unconditionally.
 static void canvas3d_finalize_deferred_visibility_flags(deferred_draw_t *dd,
                                                         int conservative_bounds,
                                                         int force_disable_occlusion) {
@@ -923,6 +1070,9 @@ static void canvas3d_finalize_deferred_visibility_flags(deferred_draw_t *dd,
 /// AND of canvas-level backface cull AND material isn't `double_sided`.
 /// Materials marked double-sided (e.g., leaves, fabric) override the
 /// canvas setting to disable culling per-draw.
+/// @param c Borrowed canvas providing the global culling switch.
+/// @param mat Optional borrowed material providing the two-sided override.
+/// @return 1 only when canvas culling is on and the material is not double-sided.
 static int8_t canvas3d_material_backface_cull(const rt_canvas3d *c, const rt_material3d *mat) {
     if (!c)
         return 0;
@@ -933,6 +1083,8 @@ static int8_t canvas3d_material_backface_cull(const rt_canvas3d *c, const rt_mat
 /// @details A partially-authored tangent stream is not safe for normal maps: accepting a
 ///   single non-zero tangent would leave the rest of the mesh with a broken basis. In
 ///   that case draw submission generates tangents on a queued geometry snapshot.
+/// @param mesh Borrowed mesh whose entire tangent stream is inspected.
+/// @return 1 when every vertex has a finite non-zero tangent and finite handedness; otherwise 0.
 static int canvas3d_mesh_has_complete_tangents(const rt_mesh3d *mesh) {
     if (!mesh || !mesh->vertices)
         return 0;
@@ -951,6 +1103,9 @@ static int canvas3d_mesh_has_complete_tangents(const rt_mesh3d *mesh) {
 /// @details Draw submission must not mutate the caller's mesh. If authored tangents
 ///   are already present, mark the source mesh cache state. If tangents must be
 ///   generated, callers snapshot the geometry and generate them on that copy.
+/// @param mesh Borrowed mutable mesh whose tangent-cache metadata may be validated.
+/// @param mat Borrowed material whose normal-map slots determine whether tangents are needed.
+/// @return 1 when the queued snapshot must generate tangents; otherwise 0.
 static int canvas3d_prepare_normal_map_tangent_state(rt_mesh3d *mesh, const rt_material3d *mat) {
     if (!mesh || !mat ||
         (!rt_material3d_resolve_texture_pixels(mat->normal_map) &&
@@ -967,6 +1122,10 @@ static int canvas3d_prepare_normal_map_tangent_state(rt_mesh3d *mesh, const rt_m
 }
 
 /// @brief Generate tangents for a snapshot copy without touching the source mesh.
+/// @param source Borrowed source mesh providing counts, revision, and bounds metadata.
+/// @param[in,out] vertices Mutable snapshotted vertex array receiving tangents.
+/// @param indices Mutable snapshotted triangle-index array used by tangent generation.
+/// @return 1 when the transient facade produced a complete tangent stream; otherwise 0.
 static int canvas3d_generate_snapshot_tangents(const rt_mesh3d *source,
                                                vgfx3d_vertex_t *vertices,
                                                uint32_t *indices) {
@@ -996,6 +1155,8 @@ static int canvas3d_generate_snapshot_tangents(const rt_mesh3d *source,
 /// @details Backend validation still rescans unmarked commands. This helper only marks commands
 ///   backed by already-validated Mesh3D geometry, letting repeated static draws avoid a per-pass
 ///   O(index_count) range scan while preserving the old safety contract for transient callers.
+/// @param[in,out] cmd Draw command whose validated count may be stamped.
+/// @param mesh Borrowed source mesh providing cached validation state.
 static void canvas3d_mark_cmd_validated_indices(vgfx3d_draw_cmd_t *cmd, rt_mesh3d *mesh) {
     uint32_t validated;
     if (!cmd || !mesh)
@@ -1009,6 +1170,7 @@ static void canvas3d_mark_cmd_validated_indices(vgfx3d_draw_cmd_t *cmd, rt_mesh3
 /// @details Generated tangents are produced on a queued geometry snapshot so caller meshes are not
 ///   mutated. If snapshot allocation or tangent generation fails, rendering the base material is
 ///   more stable than dropping the whole draw or sampling a normal map with zero/partial tangents.
+/// @param[in,out] cmd Draw command whose normal-map references and scale are cleared.
 static void canvas3d_disable_cmd_normal_map(vgfx3d_draw_cmd_t *cmd) {
     if (!cmd)
         return;
@@ -1018,6 +1180,8 @@ static void canvas3d_disable_cmd_normal_map(vgfx3d_draw_cmd_t *cmd) {
 }
 
 /// @brief Coerce a texture-wrap value to a known mode, defaulting unknown values to REPEAT.
+/// @param value Candidate `RT_MATERIAL3D_TEXTURE_WRAP_*` value.
+/// @return Backend-safe wrap mode.
 static int32_t canvas3d_sanitize_material_wrap(int32_t value) {
     if (value == RT_MATERIAL3D_TEXTURE_WRAP_CLAMP_TO_EDGE ||
         value == RT_MATERIAL3D_TEXTURE_WRAP_MIRRORED_REPEAT)
@@ -1026,6 +1190,8 @@ static int32_t canvas3d_sanitize_material_wrap(int32_t value) {
 }
 
 /// @brief Coerce a texture-filter value to NEAREST or LINEAR (default LINEAR).
+/// @param value Candidate `RT_MATERIAL3D_TEXTURE_FILTER_*` value.
+/// @return Nearest when explicitly requested; otherwise linear.
 static int32_t canvas3d_sanitize_material_filter(int32_t value) {
     return value == RT_MATERIAL3D_TEXTURE_FILTER_NEAREST ? RT_MATERIAL3D_TEXTURE_FILTER_NEAREST
                                                          : RT_MATERIAL3D_TEXTURE_FILTER_LINEAR;
@@ -1043,6 +1209,8 @@ static int32_t canvas3d_sanitize_material_mip_filter(int32_t value) {
 }
 
 /// @brief Clamp requested texture anisotropy to the cross-backend public [1,16] range.
+/// @param value Requested anisotropy ratio.
+/// @return Clamped integer ratio from 1 through 16.
 static int32_t canvas3d_sanitize_material_anisotropy(int32_t value) {
     if (value < 1)
         return 1;
@@ -1053,6 +1221,11 @@ static int32_t canvas3d_sanitize_material_anisotropy(int32_t value) {
 
 /// @brief Clamp a double into [lo, hi] and narrow to float; returns `fallback` on
 ///   non-finite input or an inverted (lo > hi) range.
+/// @param value Double-precision material scalar.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @param fallback Float returned for non-finite input or invalid bounds.
+/// @return Safely narrowed clamped value, or @p fallback.
 static float canvas3d_clamp_material_f64(double value, double lo, double hi, float fallback) {
     if (!isfinite(value) || lo > hi)
         return fallback;
@@ -1065,6 +1238,9 @@ static float canvas3d_clamp_material_f64(double value, double lo, double hi, flo
 
 /// @brief Sanitize one UV-transform component into float range; scale lanes (0, 3)
 ///   default to 1.0 and offset lanes (1, 2) to 0.0 on non-finite input.
+/// @param value Double-precision UV transform component.
+/// @param component Zero-based component index in the six-lane affine transform.
+/// @return Finite float component clamped to the material UV range.
 static float canvas3d_material_uv_value(double value, int32_t component) {
     float fallback = (component == 0 || component == 3) ? 1.0f : 0.0f;
     return canvas3d_clamp_material_f64(
@@ -1073,6 +1249,8 @@ static float canvas3d_material_uv_value(double value, int32_t component) {
 
 /// @brief Clamp a terrain splat-layer UV scale to (0, CANVAS3D_MATERIAL_UV_ABS_MAX],
 ///   defaulting non-positive or non-finite values to 1.0.
+/// @param value Requested splat-layer scale.
+/// @return Finite positive backend-safe scale.
 static float canvas3d_sanitize_splat_layer_scale(float value) {
     if (!isfinite(value) || value <= 0.0f)
         return 1.0f;
@@ -1085,6 +1263,8 @@ static float canvas3d_sanitize_splat_layer_scale(float value) {
 /// @details Invalid handles and empty buffers are opaque. A valid image is scanned at most once
 ///   per content generation by the Pixels-owned cache, yielding opaque, binary cutout, or
 ///   fractional blend routing without a second per-draw texel pass.
+/// @param pixels_ref Candidate live Pixels object.
+/// @return Cached opaque, binary, or fractional alpha classification.
 static rt_pixels_alpha_classification canvas3d_pixels_alpha_classification(void *pixels_ref) {
     rt_pixels_impl *pixels = rt_pixels_checked_impl_or_null(pixels_ref);
 
@@ -1096,6 +1276,8 @@ static rt_pixels_alpha_classification canvas3d_pixels_alpha_classification(void 
 ///   Exact asset metadata can prove an otherwise native-only asset opaque; known-alpha and unknown
 ///   native-only assets conservatively use binary cutout because metadata does not encode whether
 ///   their alpha is fractional. This preserves foliage depth behavior without rescanning texels.
+/// @param texture_ref Candidate Pixels or TextureAsset3D source.
+/// @return Conservative alpha classification used for deferred routing.
 static rt_pixels_alpha_classification canvas3d_texture_source_alpha_classification(
     void *texture_ref) {
     void *pixels;
@@ -1122,6 +1304,9 @@ static rt_pixels_alpha_classification canvas3d_texture_source_alpha_classificati
 /// @details Backends use these draw-time values while uploading native compressed textures, so a
 ///          later TextureAsset3D residency change in the same frame cannot change what this queued
 ///          draw submits.
+/// @param[in,out] cmd Draw command receiving cache-key and resident-mip fields.
+/// @param slot Zero-based material texture slot.
+/// @param asset Candidate TextureAsset3D; invalid values leave the slot zeroed.
 static void canvas3d_capture_texture_asset_snapshot(vgfx3d_draw_cmd_t *cmd,
                                                     int32_t slot,
                                                     void *asset) {
@@ -1143,6 +1328,8 @@ static void canvas3d_capture_texture_asset_snapshot(vgfx3d_draw_cmd_t *cmd,
 /// materials are double-typed (matches Zia's number type). This helper
 /// performs the narrowing conversion plus the material→command name
 /// remapping (e.g., `mat->shininess` → `cmd->shininess`).
+/// @param mat Borrowed material to snapshot and sanitize.
+/// @param[out] cmd Draw command receiving every backend-visible material field.
 static void canvas3d_fill_material_cmd(const rt_material3d *mat, vgfx3d_draw_cmd_t *cmd) {
     rt_pixels_alpha_classification alpha_classification;
     if (!mat || !cmd)
@@ -1272,6 +1459,8 @@ static void canvas3d_fill_material_cmd(const rt_material3d *mat, vgfx3d_draw_cmd
 ///   semantics untouched; unlit and Blinn-Phong draws never participate. The
 ///   flag tells backends to light the ambient term from SH irradiance plus the
 ///   skybox's prefiltered specular chain instead of the flat ambient color.
+/// @param c Canvas providing IBL enablement and complete skybox resources.
+/// @param[in,out] cmd PBR draw command whose environment fields may be filled.
 static void canvas3d_apply_ibl_env(rt_canvas3d *c, vgfx3d_draw_cmd_t *cmd) {
     if (!c || !cmd)
         return;
@@ -1301,6 +1490,8 @@ static void canvas3d_apply_ibl_env(rt_canvas3d *c, vgfx3d_draw_cmd_t *cmd) {
 // rt_canvas3d_internal.h).
 
 /// @brief Return luminance-weighted intensity for shadow-caster ranking.
+/// @param l Borrowed flattened light parameters.
+/// @return Non-negative score for a shadow-requesting light, or -1 for invalid/non-casting input.
 static float canvas3d_shadow_light_luminance_score(const vgfx3d_light_params_t *l) {
     float luminance;
 
@@ -1311,6 +1502,8 @@ static float canvas3d_shadow_light_luminance_score(const vgfx3d_light_params_t *
 }
 
 /// @brief Score a directional light by luminance-weighted intensity.
+/// @param l Borrowed flattened light parameters.
+/// @return Non-negative directional score, or -1 for another type or invalid input.
 static float canvas3d_shadow_directional_light_param_score(const vgfx3d_light_params_t *l) {
     if (!l || l->type != 0)
         return -1.0f;
@@ -1318,6 +1511,9 @@ static float canvas3d_shadow_directional_light_param_score(const vgfx3d_light_pa
 }
 
 /// @brief Score a spot light by intensity, luminance, and proximity to the render-space camera.
+/// @param l Borrowed flattened spot-light parameters.
+/// @param camera_pos Optional borrowed three-component render-space camera position.
+/// @return Positive proximity-weighted score, or -1 for ineligible input.
 static float canvas3d_shadow_spot_light_param_score(const vgfx3d_light_params_t *l,
                                                     const float *camera_pos) {
     float base_score;
@@ -1343,6 +1539,9 @@ static float canvas3d_shadow_spot_light_param_score(const vgfx3d_light_params_t 
 }
 
 /// @brief Score a shadow-requesting point/area light by luminance and camera proximity.
+/// @param l Borrowed flattened point, rectangle-area, or sphere-area light parameters.
+/// @param camera_pos Optional borrowed three-component render-space camera position.
+/// @return Positive proximity-weighted score, or -1 for ineligible input.
 static float canvas3d_shadow_point_light_param_score(const vgfx3d_light_params_t *l,
                                                      const float *camera_pos) {
     float base_score;
@@ -1373,6 +1572,9 @@ static float canvas3d_shadow_point_light_param_score(const vgfx3d_light_params_t
 ///          keeps shadow-light slot selection stable across frames: if the same light's
 ///          direction or color wobbles by a few ULPs from floating-point noise, the
 ///          comparison still says "same light" and the slot assignment doesn't flicker.
+/// @param a First scalar.
+/// @param b Second scalar.
+/// @return Non-zero when the values differ by no more than the relative epsilon.
 static int canvas3d_light_param_close(float a, float b) {
     float scale = fmaxf(1.0f, fmaxf(fabsf(a), fabsf(b)));
     return fabsf(a - b) <= 1e-5f * scale;
@@ -1383,6 +1585,9 @@ static int canvas3d_light_param_close(float a, float b) {
 /// @details Compares the fields that define the shadow projection and lighting contribution.
 ///          Directional lights use direction/color/intensity; spot lights also include position,
 ///          attenuation, cone, or emitter dimensions. Volume lights never match.
+/// @param a Borrowed first flattened light.
+/// @param b Borrowed second flattened light.
+/// @return Non-zero when both represent the same eligible shadow request.
 static int canvas3d_shadow_light_params_match(const vgfx3d_light_params_t *a,
                                               const vgfx3d_light_params_t *b) {
     if (!a || !b || a->type != b->type)
@@ -1420,6 +1625,10 @@ static int canvas3d_shadow_light_params_match(const vgfx3d_light_params_t *a,
 }
 
 /// @brief Record a distinct shadow-requesting light for drop telemetry.
+/// @param[in,out] requests Fixed-capacity array of distinct request snapshots.
+/// @param[in,out] request_count Current array population, incremented on insertion.
+/// @param light Borrowed candidate light.
+/// @param score Eligibility score; non-positive candidates are ignored.
 static void canvas3d_note_shadow_request(vgfx3d_light_params_t *requests,
                                          int32_t *request_count,
                                          const vgfx3d_light_params_t *light,
@@ -1434,6 +1643,16 @@ static void canvas3d_note_shadow_request(vgfx3d_light_params_t *requests,
         requests[(*request_count)++] = *light;
 }
 
+/// @brief Insert one distinct shadow-light candidate into a descending-score phase.
+/// @details Candidates before @p phase_start are preserved, allowing directional lights to claim
+/// slots before local lights. Full arrays replace only a lower-scoring tail entry.
+/// @param[in,out] out_lights Ranked output array.
+/// @param[in,out] best_scores Score array parallel to @p out_lights.
+/// @param phase_start First slot the candidate may occupy.
+/// @param max_shadow_lights Output capacity.
+/// @param[in,out] count Number of populated slots.
+/// @param light Borrowed candidate copied on insertion.
+/// @param score Positive ranking score.
 static void canvas3d_insert_shadow_light_candidate(vgfx3d_light_params_t *out_lights,
                                                    float *best_scores,
                                                    int32_t phase_start,
@@ -1494,10 +1713,14 @@ static void canvas3d_insert_shadow_light_candidate(vgfx3d_light_params_t *out_li
 ///          `shadow_index` on unused slots is set to -1 so downstream code can skip
 ///          them, and the output array is zero-initialized so stale residue from a
 ///          prior frame can't leak into the shader constants.
-/// @param cmds Deferred draw queue.
-/// @param draw_count Number of valid commands in `cmds`.
-/// @param out_lights Output buffer sized `max_shadow_lights`.
+/// @param c Borrowed canvas providing the render-space camera position.
+/// @param cmds Borrowed deferred draw queue.
+/// @param shadow_indices Optional borrowed list selecting queue entries already accepted as casters.
+/// @param draw_count Number of commands or selected indices to inspect.
+/// @param[out] out_lights Output buffer sized for @p max_shadow_lights.
 /// @param max_shadow_lights Caller cap; clamped to `VGFX3D_MAX_SHADOW_LIGHTS`.
+/// @param[out] out_request_count Optional destination for the distinct eligible request count,
+/// including requests that did not fit the slot budget.
 /// @return Number of shadow-light slots populated.
 static int32_t canvas3d_select_shadow_lights_from_draws(const rt_canvas3d *c,
                                                         const deferred_draw_t *cmds,
@@ -1575,6 +1798,10 @@ static int32_t canvas3d_select_shadow_lights_from_draws(const rt_canvas3d *c,
 /// @details Shadow casters are selected from queued draw light snapshots, not
 ///   the canvas's live light slots. That lets transient Scene3D node lights keep
 ///   shadow support inside user-managed Begin/End frames.
+/// @param[in,out] lights Draw-owned flattened light slice whose shadow metadata is replaced.
+/// @param light_count Number of entries in @p lights.
+/// @param shadow_lights Borrowed selected-shadow array.
+/// @param shadow_count Number of selected slots to match.
 static void canvas3d_apply_shadow_light_params(vgfx3d_light_params_t *lights,
                                                int32_t light_count,
                                                const vgfx3d_light_params_t *shadow_lights,
@@ -1623,6 +1850,9 @@ static void canvas3d_apply_shadow_light_params(vgfx3d_light_params_t *lights,
 // transient-resource release) live in rt_canvas3d_tempmgr.c.
 
 /// @brief Discard recorded final-overlay commands and owned geometry buffers.
+/// @details Frees frame-owned allocations, releases retained objects, resets recording state, and
+/// trims unusually large reusable arrays back to empty storage.
+/// @param c Canvas owning the final-overlay command and resource lists; NULL is ignored.
 void canvas3d_clear_final_overlay(rt_canvas3d *c) {
     if (!c)
         return;
@@ -1659,6 +1889,7 @@ void canvas3d_clear_final_overlay(rt_canvas3d *c) {
 /// @details `FinalizeFrame` may be used for capture or manual compositing. If the caller then
 /// begins
 ///   another frame without presenting, post-FX and final-overlay state must not leak forward.
+/// @param c Canvas whose overlay resources, post-FX chain, and finalization latches are reset.
 static void canvas3d_reset_finalized_frame_state(rt_canvas3d *c) {
     if (!c)
         return;
@@ -1671,6 +1902,9 @@ static void canvas3d_reset_finalized_frame_state(rt_canvas3d *c) {
 }
 
 /// @brief Transform a local point by a row-major 4x4 model matrix.
+/// @param model_matrix Borrowed row-major float model matrix.
+/// @param local_point Borrowed three-component local-space point.
+/// @param[out] out_world Writable three-component world-space result.
 static void canvas3d_transform_point(const float *model_matrix,
                                      const float local_point[3],
                                      float out_world[3]) {
@@ -1685,6 +1919,9 @@ static void canvas3d_transform_point(const float *model_matrix,
 }
 
 /// @brief Project a world-space point onto the camera's forward axis.
+/// @param c Borrowed canvas providing cached camera position and normalized forward direction.
+/// @param world_point Borrowed three-component world-space point.
+/// @return Signed view depth in world units, or zero for invalid input.
 static float canvas3d_depth_along_view(const rt_canvas3d *c, const float world_point[3]) {
     float dx;
     float dy;
@@ -1700,6 +1937,15 @@ static float canvas3d_depth_along_view(const rt_canvas3d *c, const float world_p
 }
 
 /// @brief Compute the min/max view depth covered by a transformed local AABB.
+/// @details Without valid local bounds, the transformed local origin supplies both depths. Output
+/// destinations are initialized to zero before validation.
+/// @param c Borrowed canvas providing cached view position/direction.
+/// @param model_matrix Borrowed row-major model matrix.
+/// @param local_bounds_min Optional borrowed three-component minimum corner.
+/// @param local_bounds_max Optional borrowed three-component maximum corner.
+/// @param has_local_bounds Non-zero to transform all eight AABB corners.
+/// @param[out] out_near_depth Optional destination for minimum signed view depth.
+/// @param[out] out_far_depth Optional destination for maximum signed view depth.
 static void canvas3d_compute_depth_range(const rt_canvas3d *c,
                                          const float *model_matrix,
                                          const float *local_bounds_min,
@@ -1765,6 +2011,13 @@ static void canvas3d_compute_depth_range(const rt_canvas3d *c,
 ///          pass exists. Authors should split large transparent meshes or avoid
 ///          intersecting them; an order-independent-transparency path is the
 ///          eventual fix if content outgrows per-object sorting.
+/// @param c Borrowed canvas providing cached view state.
+/// @param model_matrix Borrowed row-major model matrix.
+/// @param local_bounds_min Optional local AABB minimum.
+/// @param local_bounds_max Optional local AABB maximum.
+/// @param has_local_bounds Non-zero when both AABB corners are authoritative.
+/// @param transparent Non-zero to select farthest depth; zero selects nearest depth.
+/// @return Signed depth key used by deferred ordering.
 static float canvas3d_compute_sort_key(const rt_canvas3d *c,
                                        const float *model_matrix,
                                        const float *local_bounds_min,
@@ -1789,6 +2042,13 @@ static float canvas3d_compute_sort_key(const rt_canvas3d *c,
 ///          uses the center of the aggregate world-space bounds instead of the
 ///          old minimum-per-instance depth, which biased large batches toward
 ///          whichever instance happened to be closest to the camera.
+/// @param c Borrowed canvas providing cached view state.
+/// @param instance_matrices Borrowed contiguous array of row-major float matrices.
+/// @param instance_count Positive number of instances.
+/// @param local_bounds_min Borrowed local AABB minimum.
+/// @param local_bounds_max Borrowed local AABB maximum.
+/// @return Signed view depth of the aggregate world-bounds center, or zero when no valid bounds can
+/// be formed.
 static float canvas3d_compute_instanced_batch_sort_key(const rt_canvas3d *c,
                                                        const float *instance_matrices,
                                                        int32_t instance_count,
@@ -1840,6 +2100,8 @@ static float canvas3d_compute_instanced_batch_sort_key(const rt_canvas3d *c,
 ///          basis. Falls back to the conventional `(0, 0, −1)` if either
 ///          the input is null or the view is degenerate (zero forward),
 ///          which keeps downstream culling math safe.
+/// @param view Optional borrowed row-major double view matrix.
+/// @param[out] out_forward Writable three-float normalized direction; NULL is ignored.
 static void canvas3d_extract_view_forward(const double *view, float *out_forward) {
     double fx = 0.0;
     double fy = 0.0;
@@ -1865,11 +2127,6 @@ static void canvas3d_extract_view_forward(const double *view, float *out_forward
     }
 }
 
-/// @brief Build a 2D-overlay camera (orthographic projection in pixels).
-///
-/// Used by `BeginOverlayFrame` so the 2D HUD layer can draw with
-/// pixel coordinates (top-left origin, Y-down). The +2 padding on
-/// each axis avoids edge-clipping at half-pixel coordinates.
 /// @brief Negate a projection's z row when the backend renders reversed-Z.
 /// @details A reversed GL-convention projection is exactly the standard one with the z
 ///   row negated: near maps to NDC +1 and far to -1, which the backends' existing
@@ -1877,6 +2134,8 @@ static void canvas3d_extract_view_forward(const double *view, float *out_forward
 ///   precision lands at the far field where standard-Z starves it. Every consumer of
 ///   the resulting VP (frustum extraction, unprojection via the inverse, the occlusion
 ///   projections) is self-consistent, so only the backend's clears/compares differ.
+/// @param c Borrowed canvas whose backend depth convention is inspected.
+/// @param[in,out] projection Row-major projection matrix adjusted in place when reversed-Z is active.
 static void canvas3d_apply_backend_depth_convention(const rt_canvas3d *c, float *projection) {
     if (!c || !projection || !c->backend || !c->backend->reversed_z)
         return;
@@ -1884,6 +2143,12 @@ static void canvas3d_apply_backend_depth_convention(const rt_canvas3d *c, float 
         projection[i] = -projection[i];
 }
 
+/// @brief Build a pixel-space orthographic camera for 2D overlay submission.
+/// @details The projection uses a top-left origin with Y down and adds two pixels of extent to avoid
+/// half-pixel edge clipping. Fog is disabled while shadow filtering settings remain consistent with
+/// replayed 3D overlay draws.
+/// @param c Borrowed canvas providing output dimensions, backend depth convention, and shadow state.
+/// @param[out] params Camera parameters initialized and populated in place.
 static void canvas3d_build_ortho_camera(const rt_canvas3d *c, vgfx3d_camera_params_t *params) {
     float w;
     float h;
@@ -1927,6 +2192,9 @@ static void canvas3d_build_ortho_camera(const rt_canvas3d *c, vgfx3d_camera_para
 /// preserves the existing color buffer (so the 3D scene stays
 /// visible), and bypasses depth testing. Returns 0 if the canvas is
 /// already in a frame or has no backend window.
+/// @param c Canvas whose backend frame and cached camera state are initialized.
+/// @param preserve_existing_color Non-zero to load the prior color attachment.
+/// @return 1 when an overlay frame began; zero for invalid state or unavailable output/backend.
 int canvas3d_begin_overlay_frame(rt_canvas3d *c, int8_t preserve_existing_color) {
     vgfx3d_camera_params_t params;
 
@@ -1976,6 +2244,9 @@ int canvas3d_begin_overlay_frame(rt_canvas3d *c, int8_t preserve_existing_color)
 /// in an overlay frame → last 3D frame's VP (so overlays project
 /// using the camera that drew the scene); otherwise → 2D ortho VP.
 /// Used by 3D-aware overlay drawables (e.g., world-space tooltips).
+/// @param c Borrowed canvas.
+/// @return Borrowed pointer to an active/current or last-scene 16-float VP matrix, or NULL when none
+/// is available. The pointer remains owned by the canvas.
 const float *canvas3d_active_scene_vp(const rt_canvas3d *c) {
     if (!c)
         return NULL;
@@ -1992,6 +2263,13 @@ const float *canvas3d_active_scene_vp(const rt_canvas3d *c) {
 ///
 /// Thin wrapper that exists mostly so call sites read a single noun
 /// ("submit a mesh") instead of a 7-arg backend method call.
+/// @param c Canvas with an active backend frame.
+/// @param cmd Borrowed backend draw command.
+/// @param lights Borrowed flattened light slice.
+/// @param light_count Number of entries in @p lights.
+/// @param ambient Borrowed three-component ambient color.
+/// @param wireframe Effective wireframe flag.
+/// @param backface_cull Effective backface-cull flag.
 static void canvas3d_submit_mesh(rt_canvas3d *c,
                                  const vgfx3d_draw_cmd_t *cmd,
                                  const vgfx3d_light_params_t *lights,
@@ -2012,6 +2290,8 @@ static void canvas3d_submit_mesh(rt_canvas3d *c,
 ///   represent fractional coverage, so transparent cast mode uses the material alpha cutoff just
 ///   like alpha-masked foliage. This preserves the feature while avoiding backend divergence where
 ///   some paths cast a full opaque silhouette and others skipped the draw.
+/// @param c Optional borrowed canvas providing the global shadow slope bias.
+/// @param[in,out] cmd Per-pass command copy adjusted for depth-only shadow submission.
 static void canvas3d_prepare_shadow_draw_cmd(const rt_canvas3d *c, vgfx3d_draw_cmd_t *cmd) {
     if (!cmd)
         return;
@@ -2032,6 +2312,9 @@ static void canvas3d_prepare_shadow_draw_cmd(const rt_canvas3d *c, vgfx3d_draw_c
 /// individual `model_matrix`/`prev_model_matrix` pairs, with
 /// `has_prev_instance_matrices` translated into per-mesh
 /// `has_prev_model_matrix` flags.
+/// @param c Canvas with an active backend pass.
+/// @param dd Borrowed instanced deferred draw and matrix arrays.
+/// @param shadow_only Non-zero to call the backend shadow hook instead of normal submission.
 static void canvas3d_submit_instanced_as_meshes(rt_canvas3d *c,
                                                 const deferred_draw_t *dd,
                                                 int shadow_only) {
@@ -2073,6 +2356,19 @@ static void canvas3d_submit_instanced_as_meshes(rt_canvas3d *c,
 ///
 /// Captures every parameter the backend needs so the snapshot survives even if
 /// caller-side state (lights, ambient) changes between enqueue and flush.
+/// @param c Canvas providing ambient state and optional flattened-light snapshots.
+/// @param[out] dd Deferred draw initialized from a zero template.
+/// @param cmd Borrowed fully populated backend draw command.
+/// @param kind Mesh or instanced draw kind.
+/// @param pass_kind Main or screen-overlay pass kind.
+/// @param instance_matrices Optional borrowed frame-stable instance matrix array.
+/// @param instance_count Number of matrices in @p instance_matrices.
+/// @param include_lights Non-zero to attach the cached flattened-light slice and cluster table.
+/// @param wireframe Captured wireframe state.
+/// @param backface_cull Captured backface-cull state.
+/// @param sort_key Raw depth key to sanitize.
+/// @param local_bounds_min Optional borrowed local AABB minimum.
+/// @param local_bounds_max Optional borrowed local AABB maximum.
 static void canvas3d_fill_deferred_draw(rt_canvas3d *c,
                                         deferred_draw_t *dd,
                                         const vgfx3d_draw_cmd_t *cmd,

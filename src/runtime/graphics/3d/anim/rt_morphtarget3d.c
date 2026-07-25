@@ -27,6 +27,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements morph-shape storage, persistence views, and draw-time deformation.
+/// @details MorphTarget3D owns shape-major position deltas plus optional normal
+///          and tangent channels, current and temporal weights, and lazily
+///          packed GPU payloads. Drawing selects a supported GPU path when all
+///          active data fit backend limits and otherwise builds a tracked
+///          frame-lifetime CPU vertex buffer.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_morphtarget3d.h"
@@ -49,36 +57,63 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// Largest finite-magnitude delta accepted when narrowing to float.
 #define MORPHTARGET3D_FLOAT_ABS_MAX 3.40282346638528859812e38
 
+/// @brief One named shape and its owned per-vertex delta channels.
 typedef struct {
+    /// Canonical UTF-8 byte name truncated to 63 bytes plus NUL.
     char name[64];
+    /// Required `vertex_count * 3` position lanes.
     float *pos_deltas; /* 3 * vertex_count floats (dx, dy, dz per vertex) */
+    /// Optional `vertex_count * 3` normal lanes.
     float *nrm_deltas; /* 3 * vertex_count floats (or NULL) */
+    /// Optional `vertex_count * 3` tangent XYZ lanes; tangent W is unchanged.
     float *tan_deltas; /* 3 * vertex_count floats (or NULL); tangent.w is preserved */
 } vgfx3d_morph_shape_t;
 
+/// @brief Private GC-managed MorphTarget3D representation.
 typedef struct {
+    /// Runtime object header / virtual table slot.
     void *vptr;
+    /// Geometrically grown array of initialized shapes.
     vgfx3d_morph_shape_t *shapes;
+    /// Current sanitized weights, index-aligned with @ref shapes.
     float *weights;
+    /// Previous-frame weights exposed to motion-vector backends.
     float *prev_weights;
+    /// Current-frame snapshot promoted on the next frame serial.
     float *motion_weight_snapshot;
+    /// Lazy shape-major packed position payload.
     float *packed_pos_deltas;
+    /// Lazy shape-major packed normal payload, or `NULL`.
     float *packed_nrm_deltas;
+    /// Nonzero cache generation bumped by delta-channel mutation.
     uint64_t payload_generation;
+    /// Payload generation represented by the maximum-delta cache.
     uint64_t max_delta_generation;
+    /// Cached largest authored position-delta vector length.
     double max_position_delta_cache;
+    /// Logical initialized shape count.
     int32_t shape_count;
+    /// Allocated slots in each index-aligned array.
     int32_t shape_capacity;
+    /// Fixed vertex count for every shape channel.
     int32_t vertex_count;
+    /// Canvas frame serial at which motion history last advanced.
     int64_t last_motion_frame;
+    /// Cached candidate index for name lookup, always verified before use.
     int32_t name_lookup_memo; /* index of the last name-lookup hit (verified before use) */
+    /// Nonzero once @ref prev_weights contains a prior-frame snapshot.
     int8_t has_prev_weights;
+    /// Nonzero when packed position/normal arrays must be rebuilt.
     int8_t packed_dirty;
 } rt_morphtarget3d;
 
 /// @brief Validate @p obj is a heap-allocated Mat4 and return its typed pointer (NULL on mismatch).
+/// @param[in] obj Opaque borrowed runtime object handle.
+/// @return Borrowed Mat4 payload pointer, or `NULL` when the pointer, heap
+///         payload, or class identifier is invalid.
 static mat4_impl *morphtarget_mat4_checked(void *obj) {
     if (!obj || !rt_heap_is_payload(obj) || rt_obj_class_id(obj) != RT_MAT4_CLASS_ID)
         return NULL;
@@ -91,6 +126,8 @@ static mat4_impl *morphtarget_mat4_checked(void *obj) {
 ///   buffer) know to re-upload on the next draw. The generation counter
 ///   wraps from UINT64_MAX back to 1 rather than 0 so "0" remains a reliable
 ///   "never seen" sentinel in caches that compare against the last-known value.
+/// @param[in,out] mt Morph target whose packed payload and generation to
+///                   invalidate.
 static void morphtarget_touch_payload(rt_morphtarget3d *mt) {
     if (!mt)
         return;
@@ -103,12 +140,17 @@ static void morphtarget_touch_payload(rt_morphtarget3d *mt) {
 
 /// @brief Validate @p obj as a MorphTarget3D handle and return its typed pointer (NULL on
 /// mismatch).
+/// @param[in] obj Opaque borrowed runtime object handle.
+/// @return Borrowed typed morph-target pointer, or `NULL` on class/liveness
+///         mismatch.
 static rt_morphtarget3d *morphtarget_checked(void *obj) {
     return (rt_morphtarget3d *)rt_g3d_checked_or_null(obj, RT_G3D_MORPHTARGET3D_CLASS_ID);
 }
 
 /// @brief Number of morph shapes safe to use: clamped to capacity and truncated at the first
 ///   shape lacking position deltas; 0 when any backing array is absent.
+/// @param[in] mt Morph target and parallel arrays to inspect.
+/// @return Safe readable shape-prefix length, or zero.
 static int32_t morphtarget_safe_shape_count(const rt_morphtarget3d *mt) {
     int32_t limit;
     int32_t count = 0;
@@ -122,6 +164,7 @@ static int32_t morphtarget_safe_shape_count(const rt_morphtarget3d *mt) {
 }
 
 /// @brief Clamp the morph-target's shape_count to its safe value (defensive).
+/// @param[in,out] mt Morph target whose parallel-array metadata to repair.
 static void morphtarget_repair_shape_table(rt_morphtarget3d *mt) {
     if (!mt)
         return;
@@ -138,6 +181,11 @@ static void morphtarget_repair_shape_table(rt_morphtarget3d *mt) {
 /// @brief Compute the total float count for `shape_count × vertex_count × 3` delta storage.
 /// @details Returns 0 on any overflow in the multiply chain, 1 on success with @p out_count
 ///          populated. Used to size the packed GPU delta buffer safely.
+/// @param[in] shape_count Nonnegative number of shapes.
+/// @param[in] vertex_count Positive vertices per shape.
+/// @param[out] out_count Destination for the total number of float lanes.
+/// @return `1` when multiplication is valid; `0` for invalid input or
+///         `size_t` overflow.
 static int morphtarget_delta_float_count(int32_t shape_count,
                                          int32_t vertex_count,
                                          size_t *out_count) {
@@ -156,6 +204,9 @@ static int morphtarget_delta_float_count(int32_t shape_count,
 
 /// @brief Byte size of a single shape's vertex-delta array (`vertex_count × 3 × sizeof(float)`),
 ///        with overflow check.
+/// @param[in] vertex_count Positive vertices in the shape.
+/// @param[out] out_bytes Destination for the byte size.
+/// @return `1` on success; `0` for invalid input or size overflow.
 static int morphtarget_vertex_delta_bytes(int32_t vertex_count, size_t *out_bytes) {
     size_t float_count;
     if (!morphtarget_delta_float_count(1, vertex_count, &float_count))
@@ -167,6 +218,8 @@ static int morphtarget_vertex_delta_bytes(int32_t vertex_count, size_t *out_byte
 }
 
 /// @brief Coerce a delta sample to float; non-finite inputs collapse to 0.
+/// @param[in] value Double-precision channel lane to sanitize.
+/// @return Finite float value, or zero when non-finite/outside float range.
 static float morphtarget_sanitize_delta(double value) {
     return (isfinite(value) && value >= -MORPHTARGET3D_FLOAT_ABS_MAX &&
             value <= MORPHTARGET3D_FLOAT_ABS_MAX)
@@ -175,6 +228,8 @@ static float morphtarget_sanitize_delta(double value) {
 }
 
 /// @brief Clamp a morph weight to the runtime-supported [-1, 1] range.
+/// @param[in] weight Requested signed blend contribution.
+/// @return Finite float in `[-1,1]`; non-finite input becomes zero.
 static float morphtarget_sanitize_weight(double weight) {
     if (!isfinite(weight))
         return 0.0f;
@@ -186,6 +241,8 @@ static float morphtarget_sanitize_weight(double weight) {
 }
 
 /// @brief Euclidean length of a 3-float morph delta (as a double); 0 when any lane is non-finite.
+/// @param[in] delta Borrowed three-float delta vector.
+/// @return Finite Euclidean length, or zero.
 static double morphtarget_delta_length_or_zero(const float *delta) {
     double x;
     double y;
@@ -201,6 +258,9 @@ static double morphtarget_delta_length_or_zero(const float *delta) {
 }
 
 /// @brief Normalize a 3-float direction, or restore the base direction when it degenerates.
+/// @param[in,out] direction Writable three-float vector; `NULL` is ignored.
+/// @param[in] fallback Optional borrowed three-float replacement copied without
+///                     normalization when @p direction is degenerate.
 static void morphtarget_normalize3_or_copy(float *direction, const float *fallback) {
     double x;
     double y;
@@ -223,6 +283,8 @@ static void morphtarget_normalize3_or_copy(float *direction, const float *fallba
 }
 
 /// @brief Sanitize all weight history arrays before they are exposed to draw backends.
+/// @param[in,out] mt Morph target whose valid current, previous, and snapshot
+///                   weights to clamp in place.
 static void morphtarget_sanitize_weights(rt_morphtarget3d *mt) {
     if (!mt)
         return;
@@ -245,6 +307,7 @@ static void morphtarget_sanitize_weights(rt_morphtarget3d *mt) {
 ///   previously-built packed arrays. Normal deltas are optional and only
 ///   allocated when at least one shape supplies them, saving memory for
 ///   position-only morphs (blink, phoneme shapes, etc.).
+/// @param[in,out] mt Morph target whose packed arrays to rebuild transactionally.
 /// @return 1 on success (or no-op when `packed_dirty == 0`), 0 on OOM — the
 ///   caller should skip the draw rather than render with stale deltas.
 static int morphtarget_rebuild_packed_payload(rt_morphtarget3d *mt) {
@@ -298,6 +361,8 @@ static int morphtarget_rebuild_packed_payload(rt_morphtarget3d *mt) {
 }
 
 /// @brief Number of shape slots the finalizer can walk even if parallel arrays are corrupt.
+/// @param[in] mt Morph target whose primary shape allocation to inspect.
+/// @return Safe number of shape records whose owned channels may be freed.
 static int32_t morphtarget_finalize_shape_count(const rt_morphtarget3d *mt) {
     int32_t count;
     if (!mt || !mt->shapes || mt->shape_capacity <= 0)
@@ -315,6 +380,8 @@ static int32_t morphtarget_finalize_shape_count(const rt_morphtarget3d *mt) {
 ///   `shapes[]` has more entries than `weights[]`. Capacity doubles from an
 ///   initial 4 slots until `min_capacity` fits, with an INT32_MAX/2 guard
 ///   against integer overflow.
+/// @param[in,out] mt Morph target whose aligned arrays to replace.
+/// @param[in] min_capacity Minimum required number of shape slots.
 /// @return 1 if capacity >= min_capacity (possibly no-op), 0 on OOM.
 static int morphtarget_reserve_shapes(rt_morphtarget3d *mt, int32_t min_capacity) {
     int32_t new_capacity;
@@ -389,6 +456,8 @@ static int morphtarget_reserve_shapes(rt_morphtarget3d *mt, int32_t min_capacity
 ///   the Metal draw path clamps to its constant, so reporting a larger limit
 ///   here would lose shapes past the clamp. Unknown backends (software renderer,
 ///   disabled builds) return 0 so the caller falls back to CPU deformation.
+/// @param[in] backend_name Borrowed canonical backend name.
+/// @return Supported GPU shape count, or zero for unknown/CPU-only backends.
 static int32_t vgfx3d_backend_morph_shape_limit(const char *backend_name) {
     if (!backend_name)
         return 0;
@@ -407,6 +476,8 @@ static int32_t vgfx3d_backend_morph_shape_limit(const char *backend_name) {
 ///   evaluation would silently drop the overflow shapes. Checked per draw,
 ///   not once at mesh load, so a morph that starts small can stay on the
 ///   GPU path even if other morph assets on the same canvas need CPU blending.
+/// @param[in] backend_name Borrowed backend name.
+/// @param[in] shape_count Number of morph shapes required by this draw.
 /// @return Non-zero when GPU morph is viable.
 static int vgfx3d_backend_prefers_gpu_morph(const char *backend_name, int32_t shape_count) {
     int32_t limit = vgfx3d_backend_morph_shape_limit(backend_name);
@@ -424,6 +495,7 @@ static int vgfx3d_backend_prefers_gpu_morph(const char *backend_name, int32_t sh
 ///   only for debuggability — nothing here has cross-allocation dependencies,
 ///   so OOM during any intermediate alloc elsewhere in the file is safe
 ///   because finalize is idempotent against null slots.
+/// @param[in,out] obj MorphTarget3D storage being finalized; `NULL` is ignored.
 static void rt_morphtarget3d_finalize(void *obj) {
     rt_morphtarget3d *mt = (rt_morphtarget3d *)obj;
     if (!mt)
@@ -652,6 +724,12 @@ fail:
  *=========================================================================*/
 
 /// @brief Copy a runtime string into the fixed blend-shape name storage.
+/// @details A null string becomes an empty canonical name; valid strings are
+///          truncated to 63 bytes and NUL-terminated.
+/// @param[in] name Borrowed runtime string handle, or `NULL`.
+/// @param[out] out Writable 64-byte destination.
+/// @return `1` when a canonical name was produced; `0` for an invalid string
+///         handle or output.
 static int morphtarget_copy_canonical_name(rt_string name, char out[64]) {
     const char *cstr;
     size_t len;
@@ -674,6 +752,14 @@ static int morphtarget_copy_canonical_name(rt_string name, char out[64]) {
 }
 
 /// @brief Register a named blend shape and allocate its per-vertex delta arrays.
+/// @details Names are copied into 64-byte storage and need not be unique.
+///          Position deltas are zero-initialized immediately; optional normal
+///          and tangent arrays remain lazy. Allocation failure traps where
+///          applicable and leaves the logical shape count unchanged.
+/// @param[in,out] obj MorphTarget3D to extend.
+/// @param[in] name Borrowed runtime name, or `NULL` for an empty name.
+/// @return Newly appended zero-based shape index, or `-1` for an invalid
+///         handle/name, count overflow, size failure, or allocation failure.
 int64_t rt_morphtarget3d_add_shape(void *obj, rt_string name) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     char canonical_name[64];
@@ -710,6 +796,12 @@ int64_t rt_morphtarget3d_add_shape(void *obj, rt_string name) {
 /// @brief Set the position delta for a single vertex of a single shape.
 /// Out-of-range shape or vertex indices are silent no-ops; touches the payload
 /// generation so GPU caches re-upload on the next draw.
+/// @param[in,out] obj MorphTarget3D to modify.
+/// @param[in] shape Zero-based shape index.
+/// @param[in] vertex Zero-based vertex index.
+/// @param[in] dx Position-X delta; invalid/out-of-float values become zero.
+/// @param[in] dy Position-Y delta; invalid/out-of-float values become zero.
+/// @param[in] dz Position-Z delta; invalid/out-of-float values become zero.
 void rt_morphtarget3d_set_delta(
     void *obj, int64_t shape, int64_t vertex, double dx, double dy, double dz) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
@@ -732,6 +824,12 @@ void rt_morphtarget3d_set_delta(
 /// @brief Set the normal delta for a single vertex of a single shape.
 /// Lazy-allocates the per-shape normal delta array on first use to keep
 /// position-only blendshapes memory-efficient. Triggers post-morph re-normalization.
+/// @param[in,out] obj MorphTarget3D to modify.
+/// @param[in] shape Zero-based shape index.
+/// @param[in] vertex Zero-based vertex index.
+/// @param[in] dx Normal-X delta; invalid/out-of-float values become zero.
+/// @param[in] dy Normal-Y delta; invalid/out-of-float values become zero.
+/// @param[in] dz Normal-Z delta; invalid/out-of-float values become zero.
 void rt_morphtarget3d_set_normal_delta(
     void *obj, int64_t shape, int64_t vertex, double dx, double dy, double dz) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
@@ -764,6 +862,12 @@ void rt_morphtarget3d_set_normal_delta(
 /// @brief Set the tangent delta for a single vertex of a single shape.
 /// Lazy-allocates tangent deltas on first use. Tangent handedness (w) is not
 /// morphed; CPU fallback preserves the base tangent sign and renormalizes xyz.
+/// @param[in,out] obj MorphTarget3D to modify.
+/// @param[in] shape Zero-based shape index.
+/// @param[in] vertex Zero-based vertex index.
+/// @param[in] dx Tangent-X delta; invalid/out-of-float values become zero.
+/// @param[in] dy Tangent-Y delta; invalid/out-of-float values become zero.
+/// @param[in] dz Tangent-Z delta; invalid/out-of-float values become zero.
 void rt_morphtarget3d_set_tangent_delta(
     void *obj, int64_t shape, int64_t vertex, double dx, double dy, double dz) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
@@ -802,6 +906,10 @@ void rt_morphtarget3d_set_tangent_delta(
 /// vertices past the target mesh and produced z-fighting / self-intersection
 /// in extreme cases. Negative weights are kept (they invert the morph delta)
 /// but bounded so the combined deformation stays well-defined.
+/// @param[in,out] obj MorphTarget3D to configure.
+/// @param[in] shape Zero-based shape index.
+/// @param[in] weight Requested signed contribution; non-finite input becomes
+///                   zero.
 void rt_morphtarget3d_set_weight(void *obj, int64_t shape, double weight) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     if (!mt)
@@ -812,6 +920,10 @@ void rt_morphtarget3d_set_weight(void *obj, int64_t shape, double weight) {
 }
 
 /// @brief Get the current blend weight for a shape by index.
+/// @details Sanitizes the stored lane in place before returning it.
+/// @param[in,out] obj MorphTarget3D to inspect.
+/// @param[in] shape Zero-based shape index.
+/// @return Finite weight in `[-1,1]`, or zero for invalid input.
 double rt_morphtarget3d_get_weight(void *obj, int64_t shape) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     if (!mt)
@@ -828,6 +940,10 @@ double rt_morphtarget3d_get_weight(void *obj, int64_t shape) {
 /// @details Facial rigs drive the same few shapes by name every frame, so the last hit is
 ///          memoized; the memo is re-verified by name before use, so shape-list mutations
 ///          can never make it resolve to the wrong shape.
+/// @param[in,out] obj MorphTarget3D to configure.
+/// @param[in] name Borrowed nonempty runtime name, canonicalized to 63 bytes.
+/// @param[in] weight Requested signed contribution, sanitized as for indexed
+///                   assignment.
 void rt_morphtarget3d_set_weight_by_name(void *obj, rt_string name, double weight) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     if (!mt || !name)
@@ -851,12 +967,21 @@ void rt_morphtarget3d_set_weight_by_name(void *obj, rt_string name, double weigh
 }
 
 /// @brief Get the number of registered blend shapes.
+/// @param[in] obj MorphTarget3D to inspect.
+/// @return Sanitized readable shape count, or zero for an invalid handle.
 int64_t rt_morphtarget3d_get_shape_count(void *obj) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     return mt ? morphtarget_safe_shape_count(mt) : 0;
 }
 
 /// @brief Expose one validated shape through the narrow persistence-only borrowed view.
+/// @details Clears @p out_view before validation. All returned pointers remain
+///          owned by the morph target.
+/// @param[in] obj MorphTarget3D to inspect.
+/// @param[in] shape_index Zero-based shape index.
+/// @param[out] out_view Writable view record.
+/// @return `1` when a positive-vertex shape with position deltas was exposed;
+///         otherwise `0`.
 int8_t rt_morphtarget3d_get_shape_view_internal(void *obj,
                                                 int64_t shape_index,
                                                 rt_morphtarget3d_shape_view_internal *out_view) {
@@ -879,6 +1004,14 @@ int8_t rt_morphtarget3d_get_shape_view_internal(void *obj,
 }
 
 /// @brief Validate and copy a complete persistence shape into a morph container.
+/// @details Requires an exact positive vertex-count match, a name of at most
+///          63 bytes, finite weight, and finite required position plus optional
+///          normal/tangent lanes. Copies all supplied bytes before publishing
+///          the new shape.
+/// @param[in,out] obj Destination MorphTarget3D.
+/// @param[in] view Borrowed complete source-shape view.
+/// @return `1` after atomic publication; `0` for validation, capacity, size,
+///         or allocation failure.
 int8_t rt_morphtarget3d_append_shape_internal(void *obj,
                                               const rt_morphtarget3d_shape_view_internal *view) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
@@ -944,6 +1077,9 @@ fail:
 /// @brief Borrow the contiguous packed position-delta payload for GPU upload.
 /// Layout: shape-major, [shape][vertex][xyz]. Rebuilds on demand if dirty.
 /// Returns NULL if the morph target is empty or rebuild fails (OOM).
+/// @param[in,out] obj MorphTarget3D whose lazy payload may be rebuilt.
+/// @return Borrowed shape-major array of `shape_count * vertex_count * 3`
+///         floats, or `NULL`.
 const float *rt_morphtarget3d_get_packed_deltas(void *obj) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     if (!mt)
@@ -954,6 +1090,10 @@ const float *rt_morphtarget3d_get_packed_deltas(void *obj) {
 }
 
 /// @brief Largest authored position delta length across all shapes.
+/// @details The unweighted maximum is cached against payload generation and
+///          recomputed after any delta mutation.
+/// @param[in,out] obj MorphTarget3D to inspect.
+/// @return Largest finite Euclidean position-delta length, or zero.
 double rt_morphtarget3d_get_max_position_delta(void *obj) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     double max_len = 0.0;
@@ -980,6 +1120,9 @@ double rt_morphtarget3d_get_max_position_delta(void *obj) {
 
 /// @brief Borrow the packed normal-delta payload for GPU upload, or NULL when no
 /// shape has normal deltas. Same layout as `_get_packed_deltas`.
+/// @param[in,out] obj MorphTarget3D whose lazy payload may be rebuilt.
+/// @return Borrowed shape-major normal array, or `NULL` when absent, invalid,
+///         empty, or rebuilding fails.
 const float *rt_morphtarget3d_get_packed_normal_deltas(void *obj) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     if (!mt)
@@ -992,6 +1135,8 @@ const float *rt_morphtarget3d_get_packed_normal_deltas(void *obj) {
 /// @brief Return 1 if any shape in the morph target has packed tangent deltas, 0 otherwise.
 /// @details Used by the renderer to decide whether to upload and apply tangent-space
 ///          morph deltas, which incur an additional GPU pass.
+/// @param[in] obj MorphTarget3D to inspect.
+/// @return `1` when any safe shape owns tangent deltas; otherwise `0`.
 int64_t rt_morphtarget3d_has_tangent_deltas(void *obj) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     if (!mt)
@@ -1005,6 +1150,9 @@ int64_t rt_morphtarget3d_has_tangent_deltas(void *obj) {
 
 /// @brief Monotonic counter that bumps whenever any delta changes.
 /// GPU caches compare against the previous value to detect when re-upload is required.
+/// @details Wrap skips zero so valid objects always expose a nonzero generation.
+/// @param[in,out] obj MorphTarget3D to inspect.
+/// @return Nonzero payload generation, or zero for an invalid handle.
 uint64_t rt_morphtarget3d_get_payload_generation(void *obj) {
     rt_morphtarget3d *mt = morphtarget_checked(obj);
     if (!mt)
@@ -1021,6 +1169,10 @@ uint64_t rt_morphtarget3d_get_payload_generation(void *obj) {
 ///   motion-vector shaders can see the delta) and then snapshots the
 ///   current weights for next frame. `has_prev_weights` stays 0 on the
 ///   first-ever frame so motion shaders don't blend against zero noise.
+/// @param[in,out] mt Morph target whose current and history arrays to sanitize
+///                   and rotate.
+/// @param[in] frame_serial Canvas frame identifier; repeat values do not
+///                         advance history again.
 /// @return The previous-frame weights for motion-vector use, or NULL when
 ///   no history exists yet.
 static const float *morphtarget_prepare_prev_weights(rt_morphtarget3d *mt, int64_t frame_serial) {
@@ -1046,11 +1198,14 @@ static const float *morphtarget_prepare_prev_weights(rt_morphtarget3d *mt, int64
  *=========================================================================*/
 
 /// @brief Drop one retained object ref and clear the slot.
+/// @param[in,out] slot Address of a retained runtime-object slot.
 static void mesh3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Release a retained MorphTarget3D slot only if it still points at MorphTarget3D.
+/// @details A wrong-class non-null value is cleared as an unowned corrupt slot.
+/// @param[in,out] slot Address of the mesh's retained morph-target slot.
 static void mesh3d_release_morph_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -1064,6 +1219,12 @@ static void mesh3d_release_morph_slot(void **slot) {
 /// @brief Bind a MorphTarget3D to a Mesh3D so subsequent draws apply blendshapes.
 /// Vertex counts must match exactly; mismatches are silently rejected. Pass NULL
 /// in @p morph_targets to detach.
+/// @details A successful replacement retains the new container, releases the
+///          old one, and marks mesh geometry changed. Rebinding the same object
+///          is a no-op.
+/// @param[in,out] mesh Mesh3D whose optional morph reference to update.
+/// @param[in] morph_targets Borrowed equal-vertex-count MorphTarget3D, or
+///                          `NULL` to detach.
 void rt_mesh3d_set_morph_targets(void *mesh, void *morph_targets) {
     rt_mesh3d *m = (rt_mesh3d *)rt_g3d_checked_or_null(mesh, RT_G3D_MESH3D_CLASS_ID);
     if (!m)
@@ -1094,6 +1255,9 @@ void rt_mesh3d_set_morph_targets(void *mesh, void *morph_targets) {
  *=========================================================================*/
 
 /// @brief True when any shape has a meaningful finite weight and position-delta payload.
+/// @param[in] mt Morph target to inspect.
+/// @return Nonzero when a safe shape has position storage and
+///         `abs(weight) >= 1e-6`; otherwise zero.
 static int morphtarget_has_active_position_deltas(const rt_morphtarget3d *mt) {
     int32_t shape_count = morphtarget_safe_shape_count(mt);
     if (!mt || shape_count <= 0 || !mt->weights)
@@ -1109,6 +1273,10 @@ static int morphtarget_has_active_position_deltas(const rt_morphtarget3d *mt) {
 /// @brief Accumulate weighted morph-target position/normal/tangent deltas into @p morphed,
 ///        re-normalize affected directions, and replace any non-finite position with the base.
 /// @details Pure CPU blend extracted from morphtarget_draw_mesh_matrix; weights are pre-sanitized.
+/// @param[in] mt Morph target providing aligned shape channels and weights.
+/// @param[in] m Base mesh providing vertices and vertex count.
+/// @param[in] shape_count Safe number of shapes to accumulate.
+/// @param[in,out] morphed Writable base-initialized vertex array.
 static void morphtarget_accumulate_morphed_vertices(rt_morphtarget3d *mt,
                                                     const rt_mesh3d *m,
                                                     int32_t shape_count,
@@ -1185,6 +1353,20 @@ static void morphtarget_accumulate_morphed_vertices(rt_morphtarget3d *mt,
 ///   and tracks the buffer for end-of-frame cleanup. Small weights
 ///   (|w| < 1e-6) are skipped to avoid unnecessary fp math when a shape
 ///   is effectively dormant.
+/// @param[in,out] canvas Canvas3D or supported stack canvas receiving the
+///                       deferred draw.
+/// @param[in] mesh Mesh3D handle or internal stack mesh.
+/// @param[in] model_matrix Borrowed row-major 4-by-4 double transform.
+/// @param[in] material Borrowed material handle required by draw submission.
+/// @param[in] motion_key Optional borrowed stable identity for temporal motion.
+/// @param[in] morph_targets Borrowed MorphTarget3D matching mesh vertex count.
+/// @param[in] local_bounds_min Optional borrowed three-float local minimum.
+/// @param[in] local_bounds_max Optional borrowed three-float local maximum.
+/// @param[in] conservative_bounds Requested conservative-bounds flag used by
+///                                the no-active-morph fast path.
+/// @param[in] disable_occlusion Requested occlusion flag used by the
+///                              no-active-morph fast path; active morph paths
+///                              force conservative bounds and disable occlusion.
 static void morphtarget_draw_mesh_matrix(void *canvas,
                                          void *mesh,
                                          const double *model_matrix,
@@ -1339,6 +1521,12 @@ static void morphtarget_draw_mesh_matrix(void *canvas,
 /// On GPU-capable backends (Metal/OpenGL/D3D11), uploads packed deltas + weights
 /// and blends in the vertex shader. On other backends, applies CPU morph then
 /// submits via the standard draw pipeline.
+/// @param[in,out] canvas Canvas3D receiving the deferred draw.
+/// @param[in] mesh Mesh3D whose vertex count must match the morph target.
+/// @param[in] model_matrix Borrowed row-major 4-by-4 double transform.
+/// @param[in] material Borrowed material handle.
+/// @param[in] motion_key Optional borrowed temporal identity key.
+/// @param[in] morph_targets Borrowed MorphTarget3D.
 void rt_canvas3d_draw_mesh_matrix_morphed(void *canvas,
                                           void *mesh,
                                           const double *model_matrix,
@@ -1353,6 +1541,18 @@ void rt_canvas3d_draw_mesh_matrix_morphed(void *canvas,
 /// @details Used by Scene3D when animation has already expanded local bounds. The public morphed
 ///          draw wrapper remains conservative by default; this internal variant prevents the
 ///          attached-morph fast path from discarding Scene3D's safer culling metadata.
+/// @param[in,out] canvas Canvas3D receiving the deferred draw.
+/// @param[in] mesh Mesh3D whose vertex count must match the morph target.
+/// @param[in] model_matrix Borrowed row-major 4-by-4 double transform.
+/// @param[in] material Borrowed material handle.
+/// @param[in] motion_key Optional borrowed temporal identity key.
+/// @param[in] morph_targets Borrowed MorphTarget3D.
+/// @param[in] local_bounds_min Optional borrowed three-float local minimum.
+/// @param[in] local_bounds_max Optional borrowed three-float local maximum.
+/// @param[in] conservative_bounds Caller-computed conservative-bounds flag for
+///                                the no-active-morph path.
+/// @param[in] disable_occlusion Caller-computed occlusion-disable flag for the
+///                              no-active-morph path.
 void rt_canvas3d_draw_mesh_matrix_morphed_bounds(void *canvas,
                                                  void *mesh,
                                                  const double *model_matrix,
@@ -1377,6 +1577,12 @@ void rt_canvas3d_draw_mesh_matrix_morphed_bounds(void *canvas,
 
 /// @brief Draw a morphed mesh using a Mat4 transform handle (convenience wrapper).
 /// The transform doubles as the motion-vector key for temporal effects (TAA, motion blur).
+/// @param[in,out] canvas Canvas3D receiving the deferred draw.
+/// @param[in] mesh Mesh3D whose vertex count must match the morph target.
+/// @param[in] transform Borrowed live Mat4 used for both model transform and
+///                      temporal identity.
+/// @param[in] material Borrowed material handle.
+/// @param[in] morph_targets Borrowed MorphTarget3D.
 void rt_canvas3d_draw_mesh_morphed(
     void *canvas, void *mesh, void *transform, void *material, void *morph_targets) {
     mat4_impl *transform_mat = morphtarget_mat4_checked(transform);

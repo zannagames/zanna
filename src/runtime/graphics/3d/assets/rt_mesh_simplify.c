@@ -29,6 +29,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_mesh_simplify.c
+ * @brief Implements deterministic, attribute-preserving QEM mesh simplification and LOD creation.
+ * @details Uses exact-record welding, subset endpoint placement, boundary and material penalties,
+ *          manifold link-condition checks, face-orientation validation, and deterministic heap
+ *          ordering. The implementation preserves supported vertex side streams and produces a
+ *          new mesh without mutating the source.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_mesh_simplify.h"
@@ -47,7 +56,12 @@
 
 #include "rt_object.h"
 #include "rt_trap.h"
+/// @brief Decrement a runtime object's reference count and report whether finalization is due.
+/// @param obj Runtime object handle.
+/// @return Non-zero when @p obj reached a zero reference count.
 extern int rt_obj_release_check0(void *obj);
+/// @brief Finalize and free a runtime object whose reference count reached zero.
+/// @param obj Runtime object handle ready for destruction.
 extern void rt_obj_free(void *obj);
 
 /*==========================================================================
@@ -56,12 +70,19 @@ extern void rt_obj_free(void *obj);
 
 /// @brief Symmetric 4x4 quadric stored as its 10 unique coefficients.
 typedef struct {
+    /// Coefficients `Q00`, `Q01`, `Q02`, and `Q03`.
     double a2, ab, ac, ad;
+    /// Coefficients `Q11`, `Q12`, and `Q13`.
     double b2, bc, bd;
+    /// Coefficients `Q22` and `Q23`.
     double c2, cd;
+    /// Coefficient `Q33`.
     double d2;
 } simp_quadric_t;
 
+/// @brief Accumulate another symmetric error quadric in place.
+/// @param[in,out] q Destination quadric.
+/// @param[in] o Quadric whose coefficients are added to @p q.
 static void quadric_add(simp_quadric_t *q, const simp_quadric_t *o) {
     q->a2 += o->a2;
     q->ab += o->ab;
@@ -76,6 +97,12 @@ static void quadric_add(simp_quadric_t *q, const simp_quadric_t *o) {
 }
 
 /// @brief Build a plane quadric (a,b,c,d normalized plane) scaled by @p weight.
+/// @param[out] q Destination symmetric quadric.
+/// @param a Plane normal X coefficient.
+/// @param b Plane normal Y coefficient.
+/// @param c Plane normal Z coefficient.
+/// @param d Plane offset coefficient.
+/// @param weight Scalar error weight applied to every outer-product coefficient.
 static void quadric_from_plane(
     simp_quadric_t *q, double a, double b, double c, double d, double weight) {
     q->a2 = a * a * weight;
@@ -90,7 +117,10 @@ static void quadric_from_plane(
     q->d2 = d * d * weight;
 }
 
-/// @brief Evaluate `v^T Q v` at one authoritative double-precision position.
+/// @brief Evaluate the homogeneous quadratic form at one double-precision position.
+/// @param[in] q Symmetric error quadric.
+/// @param[in] p Three-component Cartesian position.
+/// @return Homogeneous quadric error at `(p.x, p.y, p.z, 1)`.
 static double quadric_eval(const simp_quadric_t *q, const double p[3]) {
     double x = p[0];
     double y = p[1];
@@ -104,45 +134,78 @@ static double quadric_eval(const simp_quadric_t *q, const double p[3]) {
  * Working set
  *=========================================================================*/
 
+/// @brief One directed collapse candidate stored in the deterministic minimum heap.
 typedef struct {
+    /// Quadric cost of collapsing @ref b onto @ref a.
     double cost;
+    /// Surviving endpoint candidate.
     uint32_t a; /* surviving endpoint candidate */
+    /// Endpoint removed by the candidate collapse.
     uint32_t b; /* removed endpoint */
+    /// Version of @ref a when this candidate was queued.
     uint32_t stamp_a;
+    /// Version of @ref b when this candidate was queued.
     uint32_t stamp_b;
 } simp_heap_entry_t;
 
+/// @brief Mutable working storage for one simplification operation.
 typedef struct {
+    /// Borrowed source mesh supplying authoritative side streams.
     const rt_mesh3d *source_mesh;
+    /// Welded fixed-record vertices.
     vgfx3d_vertex_t *verts;    /* welded working vertices */
+    /// Representative source vertex for each welded endpoint.
     uint32_t *source_vertices; /* surviving source vertex for every welded endpoint */
+    /// Accumulated error quadric for each working vertex.
     simp_quadric_t *quadrics;
+    /// Vertex versions used to invalidate stale heap entries.
     uint32_t *stamps; /* bumped on every collapse touching the vertex */
+    /// Per-working-vertex liveness flags.
     int8_t *alive;
+    /// Number of welded working vertices.
     uint32_t vert_count;
 
+    /// Flat working triangle array; retired faces use `UINT32_MAX`.
     uint32_t *tris;              /* 3 welded indices per face; alive when tris[i*3] != UINT32_MAX */
+    /// Material classification for each source face.
     int32_t *tri_material_slots; /* source material slot per face, -1 when unclassified */
+    /// Total number of source faces represented by @ref tris.
     uint32_t tri_count;
+    /// Current number of non-retired faces.
     uint32_t live_tris;
+    /// Whether validated source submesh ranges must be preserved.
     int8_t has_submesh_ranges;
 
     /* CSR adjacency: faces incident to each vertex (rebuilt lazily per collapse
      * via linked lists to keep collapses O(valence)). */
+    /// Head corner-link index for each vertex.
     int32_t *vert_face_head; /* head index into face_links, -1 = none */
+    /// Next-link table for every face corner.
     int32_t *face_links;     /* per (face,corner): next link */
 
+    /// Generation-stamped vertex one-ring scratch table.
     uint32_t *vertex_marks; /* generation-stamped one-ring scratch */
+    /// Next available vertex-mark generation.
     uint32_t vertex_mark_generation;
+    /// Generation-stamped face traversal scratch table.
     uint32_t *face_marks; /* generation-stamped fan traversal scratch */
+    /// Next available face-mark generation.
     uint32_t face_mark_generation;
+    /// Breadth-first face queue with @ref tri_count entries.
     uint32_t *face_queue; /* tri_count-entry fan traversal queue */
 
+    /// Owned deterministic minimum-heap entries.
     simp_heap_entry_t *heap;
+    /// Number of live entries in @ref heap.
     uint32_t heap_count;
+    /// Allocated entry capacity of @ref heap.
     uint32_t heap_capacity;
 } simp_ctx_t;
 
+/// @brief Exchange two entries in a simplification heap.
+/// @param[in,out] h Heap entry array.
+/// @param i First entry index.
+/// @param j Second entry index.
 static void simp_heap_swap(simp_heap_entry_t *h, uint32_t i, uint32_t j) {
     simp_heap_entry_t t = h[i];
     h[i] = h[j];
@@ -150,6 +213,9 @@ static void simp_heap_swap(simp_heap_entry_t *h, uint32_t i, uint32_t j) {
 }
 
 /// @brief Deterministic ordering: cost, then (min,max) index pair.
+/// @param[in] x First collapse candidate.
+/// @param[in] y Second collapse candidate.
+/// @return Non-zero when @p x sorts before @p y.
 static int simp_heap_less(const simp_heap_entry_t *x, const simp_heap_entry_t *y) {
     if (x->cost != y->cost)
         return x->cost < y->cost;
@@ -158,6 +224,10 @@ static int simp_heap_less(const simp_heap_entry_t *x, const simp_heap_entry_t *y
     return x->b < y->b;
 }
 
+/// @brief Insert a directed collapse candidate into the minimum heap.
+/// @param[in,out] cx Simplification context owning the heap.
+/// @param e Candidate entry copied into heap storage.
+/// @return Non-zero on success; zero when heap growth allocation fails.
 static int simp_heap_push(simp_ctx_t *cx, simp_heap_entry_t e) {
     if (cx->heap_count >= cx->heap_capacity) {
         uint32_t cap = cx->heap_capacity ? cx->heap_capacity * 2u : 256u;
@@ -180,6 +250,10 @@ static int simp_heap_push(simp_ctx_t *cx, simp_heap_entry_t e) {
     return 1;
 }
 
+/// @brief Remove the least-cost deterministic collapse candidate from the heap.
+/// @param[in,out] cx Simplification context owning the heap.
+/// @param[out] out Receives the removed minimum entry.
+/// @return Non-zero when an entry was removed; zero when the heap is empty.
 static int simp_heap_pop(simp_ctx_t *cx, simp_heap_entry_t *out) {
     if (cx->heap_count == 0)
         return 0;
@@ -343,6 +417,10 @@ static void simp_vertex_position(const simp_ctx_t *cx, uint32_t vertex, double o
 }
 
 /// @brief Recompute a face's normal from authoritative positions; returns 0 for degenerate faces.
+/// @param[in] cx Active simplification context.
+/// @param f Source face index.
+/// @param[out] n Receives the normalized face normal on success.
+/// @return Non-zero for a finite, nondegenerate face; zero otherwise.
 static int simp_face_normal(const simp_ctx_t *cx, uint32_t f, double n[3]) {
     double p0[3];
     double p1[3];
@@ -364,6 +442,9 @@ static int simp_face_normal(const simp_ctx_t *cx, uint32_t f, double n[3]) {
     return 1;
 }
 
+/// @brief Insert each corner of one live face into the vertex-incidence lists.
+/// @param[in,out] cx Simplification context owning the adjacency tables.
+/// @param f Source face index whose three working vertices are linked.
 static void simp_link_face(simp_ctx_t *cx, uint32_t f) {
     for (int c = 0; c < 3; c++) {
         uint32_t v = cx->tris[f * 3 + c];
@@ -373,6 +454,10 @@ static void simp_link_face(simp_ctx_t *cx, uint32_t f) {
 }
 
 /// @brief Cost of collapsing b onto a (subset placement at a's position).
+/// @param[in] cx Active simplification context.
+/// @param a Surviving endpoint candidate.
+/// @param b Removed endpoint candidate.
+/// @return Combined endpoint quadric evaluated at @p a, clamped to zero when negative.
 static double simp_collapse_cost(const simp_ctx_t *cx, uint32_t a, uint32_t b) {
     simp_quadric_t q = cx->quadrics[a];
     double position[3];
@@ -382,6 +467,12 @@ static double simp_collapse_cost(const simp_ctx_t *cx, uint32_t a, uint32_t b) {
     return c < 0.0 ? 0.0 : c;
 }
 
+/// @brief Queue one directed edge-collapse candidate with current endpoint stamps.
+/// @param[in,out] cx Simplification context owning the candidate heap.
+/// @param a Surviving endpoint candidate.
+/// @param b Removed endpoint candidate.
+/// @note A self-edge is ignored, and heap allocation failure is intentionally deferred
+///       as candidate exhaustion rather than reported separately.
 static void simp_push_edge(simp_ctx_t *cx, uint32_t a, uint32_t b) {
     simp_heap_entry_t e;
     if (a == b)
@@ -396,8 +487,11 @@ static void simp_push_edge(simp_ctx_t *cx, uint32_t a, uint32_t b) {
 
 /** @brief Local incidence summary for one undirected working edge. */
 typedef struct {
+    /// Number of live faces incident to the edge; may exceed two for rejection.
     uint32_t face_count;
+    /// Opposite vertex from each of the first two incident faces.
     uint32_t opposite[2];
+    /// Material slot from each of the first two incident faces.
     int32_t material_slots[2];
 } simp_edge_info_t;
 
@@ -1382,8 +1476,15 @@ fail:
 }
 
 /// @brief One-call LOD-chain generator feeding the existing AddLOD/SetAutoLOD
-///   machinery: level k holds ~ratio^k of the source triangles; distance
+///   machinery: each successive level retains another @p ratio fraction of the
+///   source triangles; distance
 ///   thresholds derive from the mesh's bounding radius.
+/// @details Clamps @p levels to one through four and substitutes 0.4 for an invalid
+///          ratio. Simplification stops on failure, each successful LOD is retained by
+///          the node, and automatic LOD selection is enabled afterward.
+/// @param node_obj SceneNode3D receiver whose current mesh is the LOD source.
+/// @param levels Requested number of generated LOD levels.
+/// @param ratio Fraction of the preceding triangle budget retained at each level.
 void rt_scene_node3d_generate_lods(void *node_obj, int64_t levels, double ratio) {
     rt_scene_node3d *node =
         (rt_scene_node3d *)rt_g3d_checked_or_null(node_obj, RT_G3D_SCENENODE3D_CLASS_ID);

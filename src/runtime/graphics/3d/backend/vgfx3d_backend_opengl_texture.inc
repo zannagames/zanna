@@ -17,6 +17,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file vgfx3d_backend_opengl_texture.inc
+ * @brief Implements OpenGL texture, cubemap, and morph-resource caching and streaming uploads.
+ *
+ * This implementation fragment manages context-owned cache entries, direct-mapped lookup hints,
+ * frame-budgeted RGBA and block-compressed uploads, cubemap IBL mip overlays, and least-recently
+ * used eviction. Upload failures are memoized by source generation so callers receive a stable
+ * fallback without retrying irrecoverable work every frame.
+ */
+
 typedef enum {
     GL_UPLOAD_FAILED = -1,
     GL_UPLOAD_PENDING = 0,
@@ -24,6 +34,10 @@ typedef enum {
 } gl_upload_status_t;
 
 /// @brief Retire an unrecoverable texture upload while preserving any older fallback texture.
+/// @param entry Cache entry whose active upload and generation state are retired; null is a no-op.
+/// @param generation Source generation that failed and must not be retried unchanged.
+/// @param mip_start First resident native mip associated with the failed request.
+/// @param mip_count Number of resident native mips associated with the failed request.
 static void gl_fail_texture_upload(gl_texture_cache_entry_t *entry,
                                    uint64_t generation,
                                    int64_t mip_start,
@@ -49,6 +63,8 @@ static void gl_fail_texture_upload(gl_texture_cache_entry_t *entry,
 }
 
 /// @brief Retire an unrecoverable cubemap upload and memoize its source generation.
+/// @param entry Cache entry whose texture and upload cursors are reset; null is a no-op.
+/// @param generation Cubemap source generation that failed and must not be retried unchanged.
 static void gl_fail_cubemap_upload(gl_cubemap_cache_entry_t *entry, uint64_t generation) {
     if (!entry)
         return;
@@ -67,6 +83,10 @@ static void gl_fail_cubemap_upload(gl_cubemap_cache_entry_t *entry, uint64_t gen
     entry->pending_ibl_bytes = 0;
 }
 /// @brief Compare two `uint64_t` values for ascending `qsort()` ordering.
+/// @param lhs Pointer to the first unsigned 64-bit value.
+/// @param rhs Pointer to the second unsigned 64-bit value.
+/// @return A negative, zero, or positive value when @p lhs sorts before, equal to, or after
+///         @p rhs.
 static int gl_u64_compare_ascending(const void *lhs, const void *rhs) {
     const uint64_t a = *(const uint64_t *)lhs;
     const uint64_t b = *(const uint64_t *)rhs;
@@ -77,6 +97,10 @@ static int gl_u64_compare_ascending(const void *lhs, const void *rhs) {
 /// @details Cache pruning can run several times in one frame. A context-owned buffer avoids a
 ///          malloc/qsort/free cycle for every texture, cubemap, and morph cache while retaining
 ///          the allocation-free oldest-entry fallback when growth fails.
+/// @param ctx Borrowed OpenGL context that owns the reusable scratch allocation.
+/// @param needed Positive number of age values the caller needs to store.
+/// @return Context-owned storage for at least @p needed values, or null on invalid input,
+///         overflow, or allocation failure.
 static uint64_t *gl_cache_age_scratch(gl_context_t *ctx, int32_t needed) {
     int32_t new_capacity;
     uint64_t *grown;
@@ -104,6 +128,7 @@ static uint64_t *gl_cache_age_scratch(gl_context_t *ctx, int32_t needed) {
 }
 
 /// @brief Release one texture-cache slot's owned texture objects and zero the entry.
+/// @param entry Cache entry to release and reset; null is a no-op.
 static void texture_cache_release_entry(gl_texture_cache_entry_t *entry) {
     if (!entry)
         return;
@@ -115,6 +140,8 @@ static void texture_cache_release_entry(gl_texture_cache_entry_t *entry) {
 }
 
 /// @brief Hash an object identity into the direct-mapped texture-cache hint table.
+/// @param key Object-identity pointer to hash.
+/// @return An index in `[0, GL_TEXTURE_CACHE_HINT_CAPACITY)`.
 static uint32_t gl_texture_cache_hint_slot(const void *key) {
     uintptr_t value = (uintptr_t)key;
     value ^= value >> 7u;
@@ -123,6 +150,9 @@ static uint32_t gl_texture_cache_hint_slot(const void *key) {
 }
 
 /// @brief Remember the current array index for a Pixels or TextureAsset3D identity.
+/// @param ctx Borrowed OpenGL context containing the cache and hint table.
+/// @param key Non-null Pixels or TextureAsset3D identity.
+/// @param index Valid current index in the texture-cache array.
 static void gl_texture_cache_remember(gl_context_t *ctx, const void *key, int32_t index) {
     if (!ctx || !key || index < 0 || index >= ctx->texture_cache_count)
         return;
@@ -130,6 +160,9 @@ static void gl_texture_cache_remember(gl_context_t *ctx, const void *key, int32_
 }
 
 /// @brief Return a validated hinted Pixels entry index, or -1 on collision/staleness.
+/// @param ctx Borrowed OpenGL context containing the cache and hint table.
+/// @param pixels Pixels object identity to look up.
+/// @return The matching cache index, or -1 when no valid hint exists.
 static int32_t gl_texture_cache_hint_pixels(const gl_context_t *ctx, const void *pixels) {
     int32_t index;
     if (!ctx || !pixels)
@@ -142,6 +175,9 @@ static int32_t gl_texture_cache_hint_pixels(const gl_context_t *ctx, const void 
 }
 
 /// @brief Return a validated hinted native-asset entry index, or -1 on collision/staleness.
+/// @param ctx Borrowed OpenGL context containing the cache and hint table.
+/// @param asset TextureAsset3D identity to look up.
+/// @return The matching cache index, or -1 when no valid hint exists.
 static int32_t gl_texture_cache_hint_asset(const gl_context_t *ctx, const void *asset) {
     int32_t index;
     if (!ctx || !asset)
@@ -154,6 +190,7 @@ static int32_t gl_texture_cache_hint_asset(const gl_context_t *ctx, const void *
 }
 
 /// @brief Rebuild hints after an in-place LRU compaction moved cache entries.
+/// @param ctx Borrowed OpenGL context whose entire texture hint table is reconstructed.
 static void gl_texture_cache_rebuild_hints(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -167,6 +204,7 @@ static void gl_texture_cache_rebuild_hints(gl_context_t *ctx) {
 }
 
 /// @brief Release one cubemap-cache slot's owned texture object and zero the entry.
+/// @param entry Cache entry to release and reset; null is a no-op.
 static void cubemap_cache_release_entry(gl_cubemap_cache_entry_t *entry) {
     if (!entry)
         return;
@@ -175,6 +213,8 @@ static void cubemap_cache_release_entry(gl_cubemap_cache_entry_t *entry) {
     memset(entry, 0, sizeof(*entry));
 }
 
+/// @brief Delete every cached 2D texture and clear all direct-mapped lookup hints.
+/// @param ctx Borrowed OpenGL context whose texture entries are released; null is a no-op.
 static void texture_cache_clear(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -188,6 +228,8 @@ static void texture_cache_clear(gl_context_t *ctx) {
 }
 
 /// @brief Delete every cached cubemap and reset the count.
+/// @param ctx Borrowed OpenGL context whose cubemap entries are released; null or an absent cache
+///            is a no-op.
 static void cubemap_cache_clear(gl_context_t *ctx) {
     if (!ctx || !ctx->cubemap_cache)
         return;
@@ -201,6 +243,8 @@ static void cubemap_cache_clear(gl_context_t *ctx) {
 ///
 /// Each entry holds two `(buffer, TBO)` pairs — one for position
 /// deltas and one for normal deltas. Both are released.
+/// @param ctx Borrowed OpenGL context whose morph entries are released; null or an absent cache
+///            is a no-op.
 static void morph_cache_clear(gl_context_t *ctx) {
     if (!ctx || !ctx->morph_cache)
         return;
@@ -218,6 +262,8 @@ static void morph_cache_clear(gl_context_t *ctx) {
 }
 
 /// @brief Release one morph-cache slot's GL objects and zero the entry.
+/// @param entry Cache entry whose position and normal buffer/texture pairs are released; null is
+///              a no-op.
 static void morph_cache_release_entry(gl_morph_cache_entry_t *entry) {
     if (!entry)
         return;
@@ -238,6 +284,7 @@ static void morph_cache_release_entry(gl_morph_cache_entry_t *entry) {
 /// older than 240 frames ago. In-place compaction (write index < read
 /// index when entries are dropped). Keeps frequently-used textures
 /// regardless of the count cap.
+/// @param ctx Borrowed OpenGL context whose texture cache is compacted to its residency limit.
 static void texture_cache_prune(gl_context_t *ctx) {
     int32_t write_index = 0;
 
@@ -314,6 +361,7 @@ static void texture_cache_prune(gl_context_t *ctx) {
 }
 
 /// @brief LRU prune for the cubemap cache (limit 64, age 240 frames).
+/// @param ctx Borrowed OpenGL context whose cubemap cache is compacted to its residency limit.
 static void cubemap_cache_prune(gl_context_t *ctx) {
     int32_t write_index = 0;
 
@@ -389,6 +437,7 @@ static void cubemap_cache_prune(gl_context_t *ctx) {
 }
 
 /// @brief LRU prune for the morph-target cache (limit 64, age 240 frames).
+/// @param ctx Borrowed OpenGL context whose morph cache is compacted to its residency limit.
 static void morph_cache_prune(gl_context_t *ctx) {
     int32_t write_index = 0;
 
@@ -466,6 +515,8 @@ static void morph_cache_prune(gl_context_t *ctx) {
 ///
 /// Called during context destruction. Order matters: clear-then-free
 /// each cache so we delete the GL objects before freeing the host array.
+/// @param ctx Borrowed OpenGL context whose cache objects, backing arrays, and age scratch are
+///            destroyed; null is a no-op.
 static void texture_cache_destroy(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -487,6 +538,8 @@ static void texture_cache_destroy(gl_context_t *ctx) {
 }
 
 /// @brief Add @p bytes to the context's running per-frame texture-upload total (saturating).
+/// @param ctx Borrowed OpenGL context whose upload counter is updated; null is a no-op.
+/// @param bytes Number of newly uploaded bytes to add with saturation at @c UINT64_MAX.
 static void gl_record_texture_upload_bytes(gl_context_t *ctx, uint64_t bytes) {
     if (!ctx || bytes == 0)
         return;
@@ -503,6 +556,8 @@ static void gl_record_texture_upload_bytes(gl_context_t *ctx, uint64_t bytes) {
 ///          paths accept BC/ASTC/ETC2 uploads without producing valid sampled texels, and
 ///          BackendSupports must mean the full draw path works. Anisotropic filtering is a sampler
 ///          state and can be advertised directly from the extension/limit query.
+/// @param ctx_ptr Opaque borrowed pointer to the queried @c gl_context_t.
+/// @return Bitwise OR of supported @c RT_CANVAS3D_BACKEND_CAP_* flags, or zero for a null context.
 static int64_t gl_get_native_texture_caps(void *ctx_ptr) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     int64_t caps = 0;
@@ -516,6 +571,8 @@ static int64_t gl_get_native_texture_caps(void *ctx_ptr) {
 /// @brief Map a native compressed mip's format/block size to the matching GL internal format enum.
 /// @details BC7→BPTC, ETC2→ETC2_EAC, ASTC→the specific ASTC block-size enum. Returns 0 if
 /// unsupported.
+/// @param mip Borrowed native mip descriptor containing format and compression-block metadata.
+/// @return The matching OpenGL compressed internal-format enum, or zero when unsupported.
 static GLenum gl_native_texture_internal_format(const vgfx3d_native_texture_mip_t *mip) {
     if (!mip)
         return 0;
@@ -565,6 +622,8 @@ static GLenum gl_native_texture_internal_format(const vgfx3d_native_texture_mip_
 }
 
 /// @brief Bytes per block-row of a native compressed mip (block columns times block bytes).
+/// @param mip Borrowed native mip descriptor whose compressed row size is calculated.
+/// @return Compressed bytes per block row, or zero for invalid metadata or arithmetic overflow.
 static uint64_t gl_native_texture_row_bytes(const vgfx3d_native_texture_mip_t *mip) {
     uint64_t cols;
     if (!mip || mip->width <= 0 || mip->block_width <= 0 || mip->block_bytes <= 0)
@@ -577,6 +636,8 @@ static uint64_t gl_native_texture_row_bytes(const vgfx3d_native_texture_mip_t *m
 }
 
 /// @brief Bytes still to upload for a cached texture entry (native or RGBA streaming path).
+/// @param entry Borrowed texture-cache entry whose unfinished upload is measured.
+/// @return Remaining upload bytes, or zero for a null entry or completed upload.
 static uint64_t gl_texture_pending_bytes(const gl_texture_cache_entry_t *entry) {
     if (!entry)
         return 0;
@@ -592,6 +653,8 @@ static uint64_t gl_texture_pending_bytes(const gl_texture_cache_entry_t *entry) 
 }
 
 /// @brief Bytes still to upload for a cached cubemap entry across its remaining faces/rows.
+/// @param entry Borrowed cubemap-cache entry whose base faces and pending IBL tail are measured.
+/// @return Remaining upload bytes, saturated at @c UINT64_MAX.
 static uint64_t gl_cubemap_pending_bytes(const gl_cubemap_cache_entry_t *entry) {
     uint64_t base_bytes;
     if (!entry)
@@ -605,6 +668,8 @@ static uint64_t gl_cubemap_pending_bytes(const gl_cubemap_cache_entry_t *entry) 
 
 /// @brief Total bytes still pending across all in-progress texture uploads on the context
 /// (saturating).
+/// @param ctx_ptr Opaque borrowed pointer to the queried @c gl_context_t.
+/// @return Sum of pending 2D and cubemap upload bytes, saturated at @c UINT64_MAX.
 static uint64_t gl_get_texture_upload_pending_bytes(void *ctx_ptr) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     uint64_t total = 0;
@@ -627,6 +692,9 @@ static uint64_t gl_get_texture_upload_pending_bytes(void *ctx_ptr) {
 }
 
 /// @brief Set the per-frame byte budget that paces streaming texture uploads on this context.
+/// @param ctx_ptr Opaque borrowed pointer to the updated @c gl_context_t; null is a no-op.
+/// @param bytes Maximum bytes streaming uploads may record during the frame, where
+///              @c UINT64_MAX means unlimited.
 static void gl_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (ctx)
@@ -636,7 +704,10 @@ static void gl_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
 /// @brief Upload more of an in-progress native compressed texture, bounded by the upload budget.
 /// @details Uploads one or more block-row bands through glCompressedTexSubImage2D. Whole-mip image
 ///          storage is defined with a NULL glCompressedTexImage2D payload when a mip begins.
-/// @return 1 if the upload finished this call, 0 if more remains (or on a precondition failure).
+/// @param ctx Borrowed OpenGL context providing the frame budget and upload accounting.
+/// @param entry Mutable cache entry containing the native snapshot and upload cursors.
+/// @return @c GL_UPLOAD_COMPLETE when all mips finish, @c GL_UPLOAD_PENDING when budget-paused,
+///         or @c GL_UPLOAD_FAILED for invalid metadata or an OpenGL failure.
 static gl_upload_status_t gl_continue_native_texture_upload(gl_context_t *ctx,
                                                             gl_texture_cache_entry_t *entry) {
     if (!ctx || !entry || !entry->texture_asset || !entry->upload_in_progress || !entry->tex ||
@@ -766,6 +837,15 @@ static gl_upload_status_t gl_continue_native_texture_upload(gl_context_t *ctx,
 /// cursor.
 /// @details Allocates the texture object and mip metadata, then kicks the first budgeted upload
 /// chunk.
+/// @param ctx Borrowed OpenGL context providing capabilities, limits, and upload accounting.
+/// @param entry Mutable cache entry to initialize for this upload.
+/// @param asset Borrowed TextureAsset3D source exposing the native mip snapshot.
+/// @param cache_key Non-zero source generation used to validate cache residency.
+/// @param mip_start First resident source mip represented as destination level zero.
+/// @param mip_count Number of consecutive native mips to upload.
+/// @return @c GL_UPLOAD_COMPLETE when the upload finishes immediately,
+///         @c GL_UPLOAD_PENDING when initialized but budget-paused, or
+///         @c GL_UPLOAD_FAILED when validation, allocation, or upload fails.
 static gl_upload_status_t gl_start_native_texture_upload(gl_context_t *ctx,
                                                          gl_texture_cache_entry_t *entry,
                                                          void *asset,
@@ -822,7 +902,12 @@ static gl_upload_status_t gl_start_native_texture_upload(gl_context_t *ctx,
 }
 
 /// @brief Upload more rows of an in-progress RGBA texture, bounded by the upload budget.
-/// @return 1 if the upload finished this call, 0 if more rows remain.
+/// @param ctx Borrowed OpenGL context providing the frame budget and upload accounting.
+/// @param entry Mutable cache entry containing the destination texture and next-row cursor.
+/// @param pixels_ptr Borrowed Pixels source whose current generation is being uploaded.
+/// @return @c GL_UPLOAD_COMPLETE when all rows and mip generation finish,
+///         @c GL_UPLOAD_PENDING when rows remain, or @c GL_UPLOAD_FAILED on invalid data or GL
+///         failure.
 static gl_upload_status_t gl_continue_texture_upload(gl_context_t *ctx,
                                                      gl_texture_cache_entry_t *entry,
                                                      const void *pixels_ptr) {
@@ -895,6 +980,13 @@ static gl_upload_status_t gl_continue_texture_upload(gl_context_t *ctx,
 }
 
 /// @brief Begin uploading an RGBA Pixels texture: allocate the GL texture and seed the row cursor.
+/// @param ctx Borrowed OpenGL context providing limits, budget, and upload accounting.
+/// @param entry Mutable cache entry to initialize for this upload.
+/// @param pixels_ptr Borrowed Pixels source to stream into an RGBA8 texture.
+/// @param cache_key Source generation used to validate the completed cache entry.
+/// @return @c GL_UPLOAD_COMPLETE when the upload finishes immediately,
+///         @c GL_UPLOAD_PENDING when initialized with rows remaining, or
+///         @c GL_UPLOAD_FAILED when validation, allocation, or upload fails.
 static gl_upload_status_t gl_start_texture_upload(gl_context_t *ctx,
                                                   gl_texture_cache_entry_t *entry,
                                                   const void *pixels_ptr,
@@ -958,6 +1050,12 @@ static gl_upload_status_t gl_start_texture_upload(gl_context_t *ctx,
 ///      round-trip).
 ///   3. Miss → create a new texture, append to cache.
 /// Returns 0 on failure (caller falls back to no texture).
+/// @param ctx Borrowed OpenGL context containing the texture cache and upload budget.
+/// @param index Valid candidate cache index for @p pixels_ptr.
+/// @param pixels_ptr Borrowed Pixels identity to resolve.
+/// @param cache_key Current Pixels generation.
+/// @return A complete texture, preserved fallback, or white fallback texture name; zero only for
+///         an invalid cache lookup.
 static GLuint gl_resolve_cached_pixels_texture(gl_context_t *ctx,
                                                int32_t index,
                                                const void *pixels_ptr,
@@ -997,6 +1095,13 @@ static GLuint gl_resolve_cached_pixels_texture(gl_context_t *ctx,
     return entry->tex;
 }
 
+/// @brief Resolve or create a budget-streamed RGBA texture for a Pixels object.
+/// @details Uses the direct-mapped identity hint before scanning the cache, grows the cache on a
+///          miss, and returns the shared white fallback while a new upload is pending or failed.
+/// @param ctx Borrowed OpenGL context containing the texture cache and upload budget.
+/// @param pixels_ptr Borrowed Pixels object identity and upload source.
+/// @return A resident texture or fallback texture name, or zero for invalid input or cache-growth
+///         failure.
 static GLuint gl_get_cached_texture(gl_context_t *ctx, const void *pixels_ptr) {
     uint64_t cache_key;
     int32_t hinted;
@@ -1049,6 +1154,14 @@ static GLuint gl_get_cached_texture(gl_context_t *ctx, const void *pixels_ptr) {
 }
 
 /// @brief Resolve a native TextureAsset3D from a known cache slot.
+/// @param ctx Borrowed OpenGL context containing the texture cache and upload budget.
+/// @param index Valid candidate cache index for @p asset.
+/// @param asset Borrowed TextureAsset3D identity and native-data source.
+/// @param cache_key Current native source generation.
+/// @param mip_start First resident native mip expected in the cache entry.
+/// @param mip_count Number of resident native mips expected in the cache entry.
+/// @return A complete texture, preserved fallback, or white fallback texture name; zero only for
+///         an invalid cache lookup.
 static GLuint gl_resolve_cached_native_texture(gl_context_t *ctx,
                                                int32_t index,
                                                void *asset,
@@ -1095,6 +1208,11 @@ static GLuint gl_resolve_cached_native_texture(gl_context_t *ctx,
 
 /// @brief Get the GL texture for a native TextureAsset3D, creating/streaming it on a cache miss.
 /// @details Keyed by the asset's native cache key so residency changes invalidate the cache entry.
+/// @param ctx Borrowed OpenGL context containing the texture cache and native capabilities.
+/// @param asset Borrowed TextureAsset3D identity and native-data source.
+/// @param cache_key Native source generation, or zero to query it from @p asset.
+/// @param mip_start First resident native mip, or a negative value to query it from @p asset.
+/// @param mip_count Resident native mip count, or a non-positive value to query it from @p asset.
 /// @return The GL texture name, or 0 if it cannot be created.
 static GLuint gl_get_cached_native_texture(
     gl_context_t *ctx, void *asset, uint64_t cache_key, int64_t mip_start, int64_t mip_count) {
@@ -1157,6 +1275,12 @@ static GLuint gl_get_cached_native_texture(
 }
 
 /// @brief Resolve a material's texture to a GL texture, preferring native blocks then RGBA Pixels.
+/// @param ctx Borrowed OpenGL context containing texture caches and backend capabilities.
+/// @param asset Optional borrowed TextureAsset3D providing native compressed mips.
+/// @param pixels Optional borrowed RGBA Pixels fallback source.
+/// @param asset_cache_key Native source generation, or zero to query it from @p asset.
+/// @param mip_start First resident native mip, or a negative value to query it from @p asset.
+/// @param mip_count Resident native mip count, or a non-positive value to query it from @p asset.
 /// @return The GL texture name to bind, or 0 if neither source is uploadable.
 static GLuint gl_get_material_texture(gl_context_t *ctx,
                                       void *asset,
@@ -1176,6 +1300,8 @@ static GLuint gl_get_material_texture(gl_context_t *ctx,
 ///   GL's `TEXTURE_MAX_LOD` / `textureLod` uniforms take floats, and the returned value
 ///   feeds prefiltered-environment sampling where fractional LODs select a blend between
 ///   two adjacent mips for glossy reflection blur.
+/// @param cubemap Borrowed cubemap whose base face extent determines the mip pyramid.
+/// @return Maximum mip level as a float, or 0 when the cubemap is invalid or has a 1×1 face.
 static float gl_cubemap_max_lod(const rt_cubemap3d *cubemap) {
     int32_t size;
     float lod = 0.0f;
@@ -1190,6 +1316,12 @@ static float gl_cubemap_max_lod(const rt_cubemap3d *cubemap) {
 }
 
 /// @brief Validate and measure a cubemap's complete prefiltered IBL tail without decoding it.
+/// @param cubemap Borrowed cubemap containing the candidate prefiltered IBL mip chain.
+/// @param face_size Positive base cubemap face extent used to validate tail placement.
+/// @param out_level_base Receives the first destination mip level; must be non-null.
+/// @param out_bytes Receives total decoded RGBA upload bytes; must be non-null.
+/// @return 1 when every face and mip has the expected layout and byte count, otherwise 0 with
+///         outputs reset.
 static int gl_measure_ibl_upload(const rt_cubemap3d *cubemap,
                                  int32_t face_size,
                                  int32_t *out_level_base,
@@ -1238,6 +1370,9 @@ static int gl_measure_ibl_upload(const rt_cubemap3d *cubemap,
 ///   uploads honor the frame budget, while one oversize chain may run at the start of a nonzero-
 ///   budget frame so it cannot starve forever. Invalid identities are memoized until content
 ///   changes.
+/// @param ctx Borrowed OpenGL context providing budget and upload accounting.
+/// @param entry Mutable complete cubemap-cache entry receiving the IBL tail.
+/// @param cubemap Borrowed cubemap containing the prefiltered IBL source data.
 static void gl_apply_ibl_mips(gl_context_t *ctx,
                               gl_cubemap_cache_entry_t *entry,
                               const rt_cubemap3d *cubemap) {
@@ -1328,7 +1463,12 @@ cleanup:
 }
 
 /// @brief Upload more of an in-progress cubemap (face by face, row band by row band) within budget.
-/// @return 1 if all six faces finished this call, 0 if more remains.
+/// @param ctx Borrowed OpenGL context providing the frame budget and upload accounting.
+/// @param entry Mutable cubemap-cache entry containing destination and face/row cursors.
+/// @param cubemap Borrowed cubemap whose base faces are being decoded and uploaded.
+/// @return @c GL_UPLOAD_COMPLETE after all faces, mip generation, and eligible IBL work;
+///         @c GL_UPLOAD_PENDING when rows remain; or @c GL_UPLOAD_FAILED on invalid data or GL
+///         failure.
 static gl_upload_status_t gl_continue_cubemap_upload(gl_context_t *ctx,
                                                      gl_cubemap_cache_entry_t *entry,
                                                      const rt_cubemap3d *cubemap) {
@@ -1414,6 +1554,13 @@ static gl_upload_status_t gl_continue_cubemap_upload(gl_context_t *ctx,
 }
 
 /// @brief Begin uploading a cubemap: create the GL cubemap texture and seed the face/row cursor.
+/// @param ctx Borrowed OpenGL context providing limits, budget, and upload accounting.
+/// @param entry Mutable cubemap-cache entry to initialize.
+/// @param cubemap Borrowed cubemap source containing six base faces.
+/// @param generation Source generation used to validate the completed cache entry.
+/// @return @c GL_UPLOAD_COMPLETE when all faces finish immediately,
+///         @c GL_UPLOAD_PENDING when initialized with work remaining, or
+///         @c GL_UPLOAD_FAILED when validation, allocation, or upload fails.
 static gl_upload_status_t gl_start_cubemap_upload(gl_context_t *ctx,
                                                   gl_cubemap_cache_entry_t *entry,
                                                   const rt_cubemap3d *cubemap,
@@ -1465,6 +1612,10 @@ static gl_upload_status_t gl_start_cubemap_upload(gl_context_t *ctx,
 }
 
 /// @brief Cubemap-cache lookup with budgeted face-row upload.
+/// @param ctx Borrowed OpenGL context containing the cubemap cache and upload budget.
+/// @param cubemap Borrowed cubemap identity and upload source.
+/// @return A complete cubemap or shared white fallback texture name, or zero for invalid input or
+///         cache-growth failure.
 static GLuint gl_get_cached_cubemap(gl_context_t *ctx, const rt_cubemap3d *cubemap) {
     uint64_t generation;
     gl_upload_status_t status;

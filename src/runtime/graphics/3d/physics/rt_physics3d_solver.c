@@ -27,6 +27,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic Physics3D contact detection and island-based solving.
+///
+/// The solver assembles sweep-and-prune contact manifolds, partitions active bodies into
+/// disjoint islands, warm-starts accumulated impulses, performs velocity and positional
+/// iterations, and updates published impulses and sleep state. Large independent island
+/// sets may run on a lazily owned worker pool without sharing writable body state.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_collider3d.h"
@@ -52,10 +60,28 @@
  * world (created lazily, released by the world finalizer).
  *======================================================================*/
 
+/// @brief Creates a runtime thread pool with a requested worker count.
+/// @param size Positive number of worker threads to create.
+/// @return Owned pool handle, or null when creation fails.
 extern void *rt_threadpool_new(int64_t size);
+
+/// @brief Enqueues a native callback and opaque argument on a runtime thread pool.
+/// @param pool Borrowed thread-pool handle.
+/// @param callback Function invoked once with @p arg by a worker.
+/// @param arg Opaque borrowed callback argument that must remain valid until the pool is drained.
+/// @return Nonzero when the task was accepted; zero when submission fails.
 extern int8_t rt_threadpool_submit_fn(void *pool, void (*callback)(void *), void *arg);
+
+/// @brief Waits until all tasks submitted to a runtime thread pool have completed.
+/// @param pool Borrowed thread-pool handle.
 extern void rt_threadpool_wait(void *pool);
+
+/// @brief Stops a runtime thread pool and releases its owned resources.
+/// @param pool Owned thread-pool handle to shut down.
 extern void rt_threadpool_shutdown(void *pool);
+
+/// @brief Returns the runtime's platform-adjusted default parallel worker count.
+/// @return Recommended positive worker count.
 extern int64_t rt_parallel_default_workers(void);
 
 #define PH3D_SOLVER_MAX_WORKERS 8
@@ -74,6 +100,9 @@ typedef struct {
 static void world3d_solve_velocity_contact(rt_contact3d *c);
 static void world3d_solve_position_contact(rt_contact3d *c, double beta);
 
+/// @brief Executes one contiguous solver-island task on the current thread.
+/// @param arg Borrowed pointer to a `ph3d_island_task_t` describing the world, island range,
+///        solver pass, and positional beta. Invalid task state is a no-op.
 static void ph3d_island_task_run(void *arg) {
     ph3d_island_task_t *task = (ph3d_island_task_t *)arg;
     if (!task || !task->w || !task->batch)
@@ -91,7 +120,10 @@ static void ph3d_island_task_run(void *arg) {
     }
 }
 
-/// @brief Lazily create (once) the world's solver worker pool; NULL when unavailable.
+/// @brief Lazily creates the world's bounded solver worker pool.
+/// @param w Borrowed world that owns the pool and its permanent failure flag.
+/// @return Borrowed pool handle, or null when @p w is invalid, fewer than two workers are
+///         available, or pool creation previously or currently failed.
 static void *world3d_solver_pool(rt_world3d *w) {
     int64_t workers;
     if (!w)
@@ -115,6 +147,10 @@ static void *world3d_solver_pool(rt_world3d *w) {
 /// @details Chunks islands contiguously across workers (deterministic assignment;
 ///   result identical to serial since islands share no state). Any failed
 ///   submission runs its chunk inline so every island is solved exactly once.
+/// @param w Borrowed world containing contact manifolds and owning the optional worker pool.
+/// @param batch Borrowed island layout whose offsets and contact indices select the work.
+/// @param solve_position Nonzero for positional correction; zero for velocity impulses.
+/// @param beta Baumgarte positional correction factor, ignored by the velocity pass.
 static void world3d_solve_islands_dispatch(rt_world3d *w,
                                            const ph3d_solver_island_batch *batch,
                                            int solve_position,
@@ -180,6 +216,9 @@ static void world3d_solve_islands_dispatch(rt_world3d *w,
 /// @brief Build two orthonormal tangents spanning the plane perpendicular to
 ///   unit normal @p n (deterministic basis so warm-started friction impulses
 ///   stay aligned frame to frame while the normal is stable).
+/// @param n Borrowed three-element contact normal, expected to be normalized.
+/// @param[out] t1 Three-element destination for the first normalized tangent.
+/// @param[out] t2 Three-element destination for the second normalized tangent.
 static void ph3d_contact_tangents(const double *n, double *t1, double *t2) {
     if (fabs(n[0]) >= 0.57735) {
         vec3_set(t1, n[1], -n[0], 0.0);
@@ -201,6 +240,12 @@ static void ph3d_contact_tangents(const double *n, double *t1, double *t2) {
 
 /// @brief Effective mass (1 / scalar inverse-mass) for a unit constraint @p axis
 ///   at the given per-body contact arms, including the angular term.
+/// @param a Borrowed first contact body.
+/// @param r_a Borrowed three-element arm from @p a's center of mass to contact.
+/// @param b Borrowed second contact body.
+/// @param r_b Borrowed three-element arm from @p b's center of mass to contact.
+/// @param axis Borrowed normalized constraint axis.
+/// @return Reciprocal scalar impulse denominator, or zero for an immovable or degenerate pair.
 static double ph3d_contact_effective_mass(const rt_body3d *a,
                                           const double *r_a,
                                           const rt_body3d *b,
@@ -212,6 +257,12 @@ static double ph3d_contact_effective_mass(const rt_body3d *a,
 }
 
 /// @brief Relative velocity at a contact arm pair projected onto @p axis.
+/// @param a Borrowed first body.
+/// @param r_a Borrowed contact arm for @p a.
+/// @param b Borrowed second body.
+/// @param r_b Borrowed contact arm for @p b.
+/// @param axis Borrowed projection axis.
+/// @return `dot(velocity_b - velocity_a, axis)` at the two contact points.
 static double ph3d_contact_relative_velocity(const rt_body3d *a,
                                              const double *r_a,
                                              const rt_body3d *b,
@@ -228,6 +279,12 @@ static double ph3d_contact_relative_velocity(const rt_body3d *a,
 
 /// @brief Apply impulse @p magnitude along @p dir at the contact arms (b gets +,
 ///   a gets -, matching the a→b normal convention).
+/// @param[in,out] a Borrowed first body receiving the negative impulse.
+/// @param r_a Borrowed contact arm for @p a.
+/// @param[in,out] b Borrowed second body receiving the positive impulse.
+/// @param r_b Borrowed contact arm for @p b.
+/// @param dir Borrowed normalized impulse direction.
+/// @param magnitude Signed scalar impulse. Zero is a no-op.
 static void ph3d_apply_contact_axis_impulse(rt_body3d *a,
                                             const double *r_a,
                                             rt_body3d *b,
@@ -247,6 +304,8 @@ static void ph3d_apply_contact_axis_impulse(rt_body3d *a,
 }
 
 /// @brief A body actively participates in the solve when it is dynamic and awake.
+/// @param b Borrowed body to classify.
+/// @return `1` when @p b is non-null, dynamic, and awake; otherwise `0`.
 static int ph3d_body_is_active(const rt_body3d *b) {
     return b && b->motion_mode == PH3D_MODE_DYNAMIC && !b->is_sleeping;
 }
@@ -265,6 +324,9 @@ static int ph3d_body_is_active(const rt_body3d *b) {
 ///   it would re-solve (and let drift) bodies that should stay asleep, and it
 ///   changes solver trajectories (VM-vs-native determinism). The contact-driven
 ///   propagation here is the accepted behavior.
+/// @param[in,out] a Borrowed first contact body, which may be woken.
+/// @param[in,out] b Borrowed second contact body, which may be woken.
+/// @return `1` when at least one body is active and the pair should be solved; otherwise `0`.
 static int ph3d_contact_should_solve(rt_body3d *a, rt_body3d *b) {
     int active_a = ph3d_body_is_active(a);
     int active_b = ph3d_body_is_active(b);
@@ -281,6 +343,7 @@ static int ph3d_contact_should_solve(rt_body3d *a, rt_body3d *b) {
 /// @details The batch arrays are carved out of the world's
 ///   PH3D_SCRATCH_SOLVER_BATCH slot (persistent, reused every substep), so
 ///   there is nothing to free here — only the view is cleared.
+/// @param[out] batch Batch view to clear; may be null.
 void ph3d_solver_island_batch_free(ph3d_solver_island_batch *batch) {
     if (!batch)
         return;
@@ -289,6 +352,10 @@ void ph3d_solver_island_batch_free(ph3d_solver_island_batch *batch) {
 
 /// @brief Push a non-negative @p value onto a growable int32 stack (initial capacity 128,
 ///   doubling thereafter), with overflow checks.
+/// @param[in,out] items Address of the caller-owned allocation, updated after successful growth.
+/// @param[in,out] count Number of initialized values, incremented on success.
+/// @param[in,out] capacity Writable element capacity of @p items.
+/// @param value Non-negative value to append.
 /// @return 1 on success, 0 on invalid args, a negative value, or allocation failure.
 int ph3d_i32_stack_push(int32_t **items, int32_t *count, int32_t *capacity, int32_t value) {
     int32_t new_capacity;
@@ -320,6 +387,8 @@ int ph3d_i32_stack_push(int32_t **items, int32_t *count, int32_t *capacity, int3
 /// @details One zeroed block per substep replaces what used to be 8 malloc/calloc + 8 free
 ///   pairs per substep. The slot grows geometrically and lives until world teardown, so the
 ///   solver's hottest path performs no allocator round-trips once warmed.
+/// @param w Borrowed world supplying body/contact counts and persistent step scratch.
+/// @param[out] batch Batch whose typed array views are assigned into the acquired block.
 /// @return 1 when the scratch is available, 0 on bad world state or allocation failure.
 static int ph3d_solver_island_batch_alloc(rt_world3d *w, ph3d_solver_island_batch *batch) {
     size_t body_slots;
@@ -355,6 +424,8 @@ static int ph3d_solver_island_batch_alloc(rt_world3d *w, ph3d_solver_island_batc
 }
 
 /// @brief Return the world's index for @p body, using cached owner metadata first.
+/// @param w Borrowed world whose body array is searched.
+/// @param body Borrowed body whose stable index is requested.
 /// @return Index of @p body in @p w, or -1 if absent or either argument is NULL.
 static int32_t world3d_body_index_of(const rt_world3d *w, const rt_body3d *body) {
     if (!w || !body)
@@ -372,6 +443,9 @@ static int32_t world3d_body_index_of(const rt_world3d *w, const rt_body3d *body)
 /// @brief Union-find FIND with path compression: return the island root of @p index.
 /// @details Walks parent links to the root, then re-points every node on the path directly at
 ///          the root so subsequent queries are near-constant time.
+/// @param[in,out] parent Union-find parent array, updated by path compression.
+/// @param index Valid starting body index.
+/// @return Root index representing the connected component containing @p index.
 static int32_t ph3d_island_find(int32_t *parent, int32_t index) {
     int32_t root = index;
     while (parent[root] != root)
@@ -387,6 +461,9 @@ static int32_t ph3d_island_find(int32_t *parent, int32_t index) {
 /// @brief Union-find UNION: merge the islands containing bodies @p a and @p b.
 /// @details Roots are joined under the numerically smaller index, giving a deterministic island
 ///          layout independent of contact ordering. No-op when either index is negative.
+/// @param[in,out] parent Union-find parent array.
+/// @param a First body index, or a negative value for no body.
+/// @param b Second body index, or a negative value for no body.
 static void ph3d_island_union(int32_t *parent, int32_t a, int32_t b) {
     int32_t root_a;
     int32_t root_b;
@@ -407,6 +484,10 @@ static void ph3d_island_union(int32_t *parent, int32_t a, int32_t b) {
 /// @brief Resolve the world-array indices of a contact's two bodies for solving.
 /// @details Writes -1 to both outputs first, then skips trigger contacts and pairs where neither
 ///          body is active (both asleep/static) so the island builder only links solvable pairs.
+/// @param w Borrowed world whose body indices are resolved.
+/// @param contact Borrowed contact to classify.
+/// @param[out] index_a Optional destination initialized to `-1`, then set to body A's world index.
+/// @param[out] index_b Optional destination initialized to `-1`, then set to body B's world index.
 /// @return 1 if the contact should be solved (indices written); 0 if it should be skipped.
 static int ph3d_contact_solver_body_indices(const rt_world3d *w,
                                             const rt_contact3d *contact,
@@ -434,6 +515,8 @@ static int ph3d_contact_solver_body_indices(const rt_world3d *w,
 ///          order. Solving islands independently decouples unrelated groups and is the prerequisite
 ///          for parallelizing the velocity/position solve. The batch must be released with
 ///          ph3d_solver_island_batch_free.
+/// @param w Borrowed world whose current contacts and active bodies are partitioned.
+/// @param[out] batch Caller-owned batch view, cleared first and then backed by world scratch.
 /// @return 1 on success (including the empty-world no-op); 0 after trapping on allocation failure.
 int world3d_build_solver_island_batch(rt_world3d *w, ph3d_solver_island_batch *batch) {
     if (!batch)
@@ -537,6 +620,10 @@ int world3d_build_solver_island_batch(rt_world3d *w, ph3d_solver_island_batch *b
 /// @brief Match this frame's contacts to the previous frame, seed accumulated
 ///   impulses (warm starting), capture per-point restitution bias, and re-apply
 ///   the seeded impulse so the velocity solver starts near the converged answer.
+/// @param w Borrowed world providing prior contacts and restitution configuration.
+/// @param[in,out] c Current contact manifold whose accumulators and body velocities are updated.
+/// @param prev_table Optional borrowed previous-contact hash table for constant-time pair lookup.
+/// @param prev_capacity Number of slots in @p prev_table; ignored when the table is null.
 static void world3d_warm_start_contact(rt_world3d *w,
                                        rt_contact3d *c,
                                        const contact_pair_hash_entry *prev_table,
@@ -628,6 +715,7 @@ static void world3d_warm_start_contact(rt_world3d *w,
 ///          accumulated normal impulse to be non-negative and steering toward the stored
 ///          restitution bias. Impulse deltas (new minus accumulated) are applied immediately so
 ///          later points in the same iteration see updated velocities.
+/// @param[in,out] c Contact manifold whose accumulated impulses and body velocities are updated.
 static void world3d_solve_velocity_contact(rt_contact3d *c) {
     rt_body3d *a;
     rt_body3d *b;
@@ -751,6 +839,8 @@ void world3d_solve_toi_contact(rt_world3d *w, rt_contact3d *contact) {
 #define PH3D_MAX_ANGULAR_CORRECTION 0.05
 
 /// @brief Nudge a body's orientation by the small rotation vector @p dtheta.
+/// @param[in,out] body Borrowed body whose quaternion is integrated and renormalized.
+/// @param dtheta Borrowed finite three-element axis-angle increment in radians.
 static void ph3d_apply_position_rotation(rt_body3d *body, const double *dtheta) {
     if (!body || !ph3d_vec3_all_finite(dtheta))
         return;
@@ -771,6 +861,8 @@ static void ph3d_apply_position_rotation(rt_body3d *body, const double *dtheta) 
 ///   stored separation is advanced by the normal-displacement THAT point
 ///   experienced (linear + lever-arm terms) so extra position iterations
 ///   converge instead of compounding.
+/// @param[in,out] c Contact manifold whose dynamic-body poses and point separations are corrected.
+/// @param beta Clamped Baumgarte correction fraction applied to penetration beyond the slop.
 static void world3d_solve_position_contact(rt_contact3d *c, double beta) {
     rt_body3d *a;
     rt_body3d *b;
@@ -899,6 +991,8 @@ static void world3d_solve_position_contact(rt_contact3d *c, double beta) {
 }
 
 /// @brief Warm-start every solvable contact, walking the batch island by island.
+/// @param w Borrowed world containing current and previous contact manifolds.
+/// @param batch Borrowed island layout selecting current contacts in deterministic order.
 void world3d_warm_start_solver_islands(rt_world3d *w, const ph3d_solver_island_batch *batch) {
     contact_pair_hash_entry *prev_table;
     int32_t prev_capacity = 0;
@@ -924,6 +1018,8 @@ void world3d_warm_start_solver_islands(rt_world3d *w, const ph3d_solver_island_b
 
 /// @brief Run one velocity-solve pass over every solvable contact, island by island
 ///   (parallel across islands when the scene is large enough to profit).
+/// @param batch Borrowed island layout selecting mutually independent contact groups.
+/// @param w Borrowed world whose contact impulses and body velocities are updated.
 void world3d_solve_velocity_solver_islands(const ph3d_solver_island_batch *batch, rt_world3d *w) {
     if (!batch || !w)
         return;
@@ -932,6 +1028,8 @@ void world3d_solve_velocity_solver_islands(const ph3d_solver_island_batch *batch
 
 /// @brief Run one position-correction pass over every solvable contact, island by
 ///   island (parallel across islands when profitable).
+/// @param batch Borrowed island layout selecting mutually independent contact groups.
+/// @param w Borrowed world whose dynamic-body poses and query-cache dirty flag are updated.
 void world3d_solve_position_solver_islands(const ph3d_solver_island_batch *batch, rt_world3d *w) {
     double beta;
     if (!batch || !w)
@@ -947,6 +1045,7 @@ void world3d_solve_position_solver_islands(const ph3d_solver_island_batch *batch
 
 /// @brief Publish the per-contact scalar normal impulse (summed over manifold
 ///   points) for collision-event payloads and wake bodies that took a load.
+/// @param[in,out] w Borrowed world whose current contacts and impacted bodies are finalized.
 void world3d_finalize_contacts(rt_world3d *w) {
     if (!w)
         return;
@@ -976,6 +1075,8 @@ void world3d_finalize_contacts(rt_world3d *w) {
 ///   under gravity — momentarily fast mid-integration, ~0 once supported —
 ///   actually settles. Wake propagation across contacts keeps a body awake while
 ///   any neighbour it touches is still moving.
+/// @param[in,out] w Borrowed world whose eligible dynamic bodies are evaluated.
+/// @param sub_dt Elapsed solver substep duration in seconds added to low-motion sleep timers.
 void world3d_update_sleep(rt_world3d *w, double sub_dt) {
     if (!w)
         return;
@@ -1009,7 +1110,8 @@ void world3d_update_sleep(rt_world3d *w, double sub_dt) {
 ///   than the body's heap pointer keeps sweep-and-prune order deterministic. Pointer
 ///   values vary with allocation order / ASLR and would otherwise desynchronise the
 ///   order-sensitive warm-started sequential-impulse solve between runs and backends.
-/// @param a,b     Entries to compare.
+/// @param a Borrowed first entry.
+/// @param b Borrowed second entry.
 /// @param primary Axis (0/1/2) used as the primary sort key.
 /// @return -1, 0, or +1 for sort-order comparisons.
 int ph3d_broadphase_compare_entries_axis(const ph3d_broadphase_entry *a,
@@ -1044,6 +1146,9 @@ int ph3d_broadphase_compare_entries_axis(const ph3d_broadphase_entry *a,
 /// @details After sorting, the inner collision loop can break early as soon as
 ///   entry[j].min[0] > entry[i].max[0], reducing the O(n²) pair count in practice.
 ///   Non-static for tests and internal code that still wants a C comparator adapter.
+/// @param lhs Borrowed pointer to the first `ph3d_broadphase_entry`.
+/// @param rhs Borrowed pointer to the second `ph3d_broadphase_entry`.
+/// @return Negative, zero, or positive according to deterministic minimum-X ordering.
 int ph3d_broadphase_compare_min_x(const void *lhs, const void *rhs) {
     return ph3d_broadphase_compare_entries_axis(
         (const ph3d_broadphase_entry *)lhs, (const ph3d_broadphase_entry *)rhs, 0);
@@ -1052,6 +1157,9 @@ int ph3d_broadphase_compare_min_x(const void *lhs, const void *rhs) {
 /// @brief Sort a small or nearly sorted broadphase entry array with insertion sort.
 /// @details Motion between physics steps is usually coherent, so insertion sort is faster than a
 ///   general-purpose indirect-comparator sort when the previous order is mostly preserved.
+/// @param[in,out] entries Array to sort in place.
+/// @param count Number of initialized entries.
+/// @param axis Primary sort axis, with the remaining axes and owner index used as tie-breakers.
 static void ph3d_broadphase_insertion_sort(ph3d_broadphase_entry *entries,
                                            int32_t count,
                                            int axis) {
@@ -1071,6 +1179,11 @@ static void ph3d_broadphase_insertion_sort(ph3d_broadphase_entry *entries,
 /// @brief Count adjacent inversions up to @p limit to decide whether insertion sort is cheap.
 /// @details The scan short-circuits once the data is clearly unordered; it is a small O(n) probe
 ///   that avoids running insertion sort on fully scrambled broadphase arrays.
+/// @param entries Borrowed entry array to sample.
+/// @param count Number of initialized entries.
+/// @param axis Primary comparison axis.
+/// @param limit Positive count at which the probe stops.
+/// @return The number of inversions observed, capped at @p limit; zero for invalid or trivial input.
 static int32_t ph3d_broadphase_adjacent_inversions(const ph3d_broadphase_entry *entries,
                                                    int32_t count,
                                                    int axis,
@@ -1089,6 +1202,12 @@ static int32_t ph3d_broadphase_adjacent_inversions(const ph3d_broadphase_entry *
 /// @brief Merge two sorted broadphase runs from @p src into @p dst.
 /// @details Used by the bottom-up stable merge sort fallback. Stable ordering preserves the
 ///   owner-index tie break and keeps solver warm-start behavior deterministic.
+/// @param src Borrowed source array containing both sorted half-open runs.
+/// @param[out] dst Destination array receiving their stable merge.
+/// @param left Inclusive beginning of the first run.
+/// @param mid Exclusive end of the first run and inclusive beginning of the second.
+/// @param right Exclusive end of the second run.
+/// @param axis Primary comparison axis.
 static void ph3d_broadphase_merge_run(const ph3d_broadphase_entry *src,
                                       ph3d_broadphase_entry *dst,
                                       int32_t left,
@@ -1114,6 +1233,10 @@ static void ph3d_broadphase_merge_run(const ph3d_broadphase_entry *src,
 /// @details Uses insertion sort for small/nearly-sorted arrays and a bottom-up stable merge sort
 ///   for larger unordered arrays. @p scratch must hold @p count entries for the merge path; if it
 ///   is unavailable the function falls back to insertion sort to preserve correctness.
+/// @param[in,out] entries Array of entries to sort in place.
+/// @param scratch Optional caller-owned array with capacity for @p count entries.
+/// @param count Number of initialized entries.
+/// @param axis Primary sort axis, expected to be 0, 1, or 2.
 void ph3d_broadphase_sort_entries(ph3d_broadphase_entry *entries,
                                   ph3d_broadphase_entry *scratch,
                                   int32_t count,
@@ -1153,6 +1276,11 @@ void ph3d_broadphase_sort_entries(ph3d_broadphase_entry *entries,
 /// @brief Return 1 if two 3D AABBs overlap, 0 if separated on any axis.
 /// @details Separating-axis test on all three axes simultaneously.  Used in the
 ///   broad phase after the X-axis early-out to confirm overlap on Y and Z.
+/// @param a_min Borrowed three-element minimum corner of the first AABB.
+/// @param a_max Borrowed three-element maximum corner of the first AABB.
+/// @param b_min Borrowed three-element minimum corner of the second AABB.
+/// @param b_max Borrowed three-element maximum corner of the second AABB.
+/// @return `1` when the inclusive bounds overlap or touch on all axes; otherwise `0`.
 static int ph3d_bounds_overlap(const double *a_min,
                                const double *a_max,
                                const double *b_min,
@@ -1300,7 +1428,10 @@ static int world3d_process_collision_pair(rt_world3d *w, rt_body3d *a, rt_body3d
 
 /// @brief Cheap broad-phase rejection test for a body pair before narrow-phase: rejects
 ///   self-pairs, static-vs-static pairs, and pairs failing the bidirectional layer/mask
-///   filter. Returns 1 only if the pair could plausibly collide.
+///   filter.
+/// @param a Borrowed first candidate body.
+/// @param b Borrowed second candidate body.
+/// @return `1` only when the pair could plausibly collide; otherwise `0`.
 static int world3d_pair_can_collide_cheap(const rt_body3d *a, const rt_body3d *b) {
     if (!a || !b || a == b)
         return 0;
@@ -1316,6 +1447,8 @@ static int world3d_pair_can_collide_cheap(const rt_body3d *a, const rt_body3d *b
 /// @brief Count bodies that actually contribute a broadphase AABB this step.
 /// @details Capacity reservations use this count instead of the raw body array size so worlds with
 ///   many placeholder bodies do not over-reserve broadphase scratch.
+/// @param w Borrowed world whose collision-capable bodies are counted.
+/// @return The number of bodies with collision geometry, or zero for a null world.
 static int32_t world3d_count_broadphase_bodies(const rt_world3d *w) {
     int32_t count = 0;
     if (!w)
@@ -1330,6 +1463,9 @@ static int32_t world3d_count_broadphase_bodies(const rt_world3d *w) {
 /// @brief Fill @p entries with current body AABBs for every collision-capable body in @p w.
 /// @details The caller guarantees enough capacity. Separating this from allocation lets the step
 ///   path use persistent world scratch or a bounded stack fallback without duplicating AABB logic.
+/// @param w Borrowed world supplying collision-capable bodies.
+/// @param[out] entries Caller-owned array with capacity for every contributing body.
+/// @return The number of initialized entries, or zero for invalid arguments or an empty world.
 static int32_t world3d_fill_broadphase_entries(rt_world3d *w, ph3d_broadphase_entry *entries) {
     int32_t entry_count = 0;
     if (!w || !entries)

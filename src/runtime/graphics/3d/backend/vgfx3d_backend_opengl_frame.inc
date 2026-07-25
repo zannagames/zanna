@@ -17,10 +17,21 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements OpenGL frame setup, submission, presentation, readback, and shadow hooks.
+/// @details This implementation fragment drives the backend vtable's per-frame operations,
+///          including target routing, temporal history, asynchronous depth probes, post-processing
+///          composition, render-target synchronization, and regular or instanced mesh submission.
+
 /// @brief Backend `clear` op: store the clear color for use during `BeginFrame`.
 ///
 /// We don't actually issue `glClear` here; that happens in
 /// `BeginFrame` so we know the current target/load-state.
+/// @param ctx_ptr Borrowed OpenGL backend context receiving the sanitized clear color.
+/// @param win Window handle retained for backend-interface compatibility; unused here.
+/// @param r Requested red component.
+/// @param g Requested green component.
+/// @param b Requested blue component.
 static void gl_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, float b) {
     (void)win;
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
@@ -32,6 +43,9 @@ static void gl_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, float b
 }
 
 /// @brief Radical-inverse Halton sequence sample for TAA sub-pixel jitter (Plan 05).
+/// @param index Positive sequence index.
+/// @param base Radical-inverse base, normally two or three for TAA jitter.
+/// @return The corresponding sample in `[0, 1)`.
 static float gl_halton(uint32_t index, uint32_t base) {
     float f = 1.0f;
     float r = 0.0f;
@@ -44,6 +58,9 @@ static float gl_halton(uint32_t index, uint32_t base) {
 }
 
 /// @brief True when the exported postfx chain contains an effect of @p type_value.
+/// @param chain Borrowed post-processing chain to inspect.
+/// @param type_value Effect-type identifier to locate.
+/// @return Nonzero when a usable chain contains the requested effect.
 static int gl_chain_has_effect(const vgfx3d_postfx_chain_t *chain, int32_t type_value) {
     if (!vgfx3d_postfx_chain_is_usable(chain))
         return 0;
@@ -67,6 +84,8 @@ static int gl_chain_has_effect(const vgfx3d_postfx_chain_t *chain, int32_t type_
 ///   8. Choose active target kind, ensure offscreen targets exist.
 ///   9. Clear color/depth based on `load_existing_*` flags.
 ///  10. Reset blend / depth / cull / poly-mode state for clean draws.
+/// @param ctx_ptr Borrowed OpenGL backend context to prepare for drawing.
+/// @param cam Borrowed camera and pass snapshot; values are sanitized before use.
 static void gl_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     vgfx3d_opengl_frame_history_t history;
@@ -354,6 +373,8 @@ static void gl_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
 }
 
 /// @brief Backend `draw_skybox` op — type-cast wrapper over `gl_draw_skybox_impl`.
+/// @param ctx_ptr Borrowed OpenGL backend context with an active frame.
+/// @param cubemap_ptr Borrowed runtime cubemap to resolve and draw.
 static void gl_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
     gl_draw_skybox_impl((gl_context_t *)ctx_ptr, (const rt_cubemap3d *)cubemap_ptr);
 }
@@ -366,6 +387,14 @@ static void gl_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
 /// texture binding → draw config (blend / depth) → `glDrawElements`.
 /// Mark the RTT color dirty if rendering to RTT (so the next sync
 /// readback knows to copy).
+/// @param ctx_ptr Borrowed OpenGL backend context with an active draw target.
+/// @param win Window handle retained for backend-interface compatibility; unused here.
+/// @param cmd Borrowed mesh, material, animation, and per-draw state.
+/// @param lights Borrowed light array; may be NULL when @p light_count is zero.
+/// @param light_count Number of entries available through @p lights.
+/// @param ambient Borrowed three-component ambient color; NULL is sanitized to black.
+/// @param wireframe Nonzero to draw triangle edges instead of filled triangles.
+/// @param backface_cull Nonzero to cull back-facing triangles.
 static void gl_submit_draw(void *ctx_ptr,
                            vgfx_window_t win,
                            const vgfx3d_draw_cmd_t *cmd,
@@ -483,14 +512,10 @@ static void gl_submit_draw(void *ctx_ptr,
     GL_CHECK();
 }
 
-/// @brief Backend `end_frame` op — mark RTT color as dirty for next sync.
-///
-/// Doesn't immediately read pixels back to the host RT buffer — that
-/// happens lazily in `gl_sync_render_target_color` when the user
-/// queries pixels. Keeps the GL pipeline async for RTT-heavy workloads.
 /// @brief Issue this frame's queued scene-depth probe reads into the probe PBO.
 /// @details Reads the scene FBO's depth attachment at each probe pixel; results are
 ///   harvested at the next frame's begin so the readback never syncs the pipeline.
+/// @param ctx Borrowed OpenGL context containing queued probe coordinates and source depth.
 static void gl_issue_depth_probes(gl_context_t *ctx) {
     gl_framebuffer_state_t saved_state;
     GLuint source_framebuffer;
@@ -588,6 +613,10 @@ static void gl_issue_depth_probes(gl_context_t *ctx) {
     ctx->depth_probe_request_count = 0;
 }
 
+/// @brief Backend `end_frame` op: issue probes and mark RTT color dirty for lazy synchronization.
+/// @details The function never reads render-target pixels immediately; the runtime invokes the
+///          target's synchronization callback only when CPU color data is requested.
+/// @param ctx_ptr Borrowed OpenGL backend context whose active frame is finalized.
 static void gl_end_frame(void *ctx_ptr) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (!ctx)
@@ -604,6 +633,8 @@ static void gl_end_frame(void *ctx_ptr) {
 }
 
 /// @brief Backend hook: toggle native GLX/EGL swap-interval vsync.
+/// @param ctx_ptr Borrowed OpenGL backend context containing the native presentation binding.
+/// @param enabled Nonzero to request synchronization with the display refresh.
 static void gl_set_vsync(void *ctx_ptr, int8_t enabled) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (!ctx)
@@ -617,6 +648,10 @@ static void gl_set_vsync(void *ctx_ptr, int8_t enabled) {
 }
 
 /// @brief Backend hook: register one NDC scene-depth probe for this frame.
+/// @param ctx_ptr Borrowed OpenGL backend context receiving the request.
+/// @param ndc_x Horizontal normalized-device coordinate, clamped to `[-1, 1]`.
+/// @param ndc_y Vertical normalized-device coordinate, clamped to `[-1, 1]`.
+/// @return The nonnegative request slot, or -1 when the request cannot be queued.
 static int32_t gl_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     int32_t slot;
@@ -634,6 +669,9 @@ static int32_t gl_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) {
 }
 
 /// @brief Backend hook: read a probe result captured on the previous frame.
+/// @param ctx_ptr Borrowed OpenGL backend context containing harvested probe results.
+/// @param slot Nonnegative slot previously returned by gl_queue_depth_probe().
+/// @return The canonical scene depth, or -1 when no value is available for @p slot.
 static float gl_read_depth_probe(void *ctx_ptr, int32_t slot) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (!ctx || slot < 0 || slot >= ctx->depth_probe_result_count)
@@ -642,6 +680,8 @@ static float gl_read_depth_probe(void *ctx_ptr, int32_t slot) {
 }
 
 /// @brief Read the total bytes uploaded to GL textures so far this frame (diagnostics counter).
+/// @param ctx_ptr Borrowed OpenGL backend context; may be NULL.
+/// @return The frame's accumulated upload bytes, or zero for a NULL context.
 static uint64_t gl_get_texture_upload_bytes(void *ctx_ptr) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     return ctx ? ctx->texture_upload_bytes : 0;
@@ -653,6 +693,9 @@ static uint64_t gl_get_texture_upload_bytes(void *ctx_ptr) {
 /// readback targets so they get rebuilt at the new size on the next
 /// `BeginFrame`. RTT targets aren't touched (they're sized by the
 /// user-provided RT object, not the window).
+/// @param ctx_ptr Borrowed OpenGL backend context whose window resources become stale.
+/// @param w New logical output width in pixels.
+/// @param h New logical output height in pixels.
 static void gl_resize(void *ctx_ptr, int32_t w, int32_t h) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (!ctx || w <= 0 || h <= 0)
@@ -707,6 +750,12 @@ static uint8_t *gl_ensure_readback_scratch(gl_context_t *ctx, size_t bytes) {
 ///     hasn't been presented yet.
 ///   - Direct readback: pulls from the context's active default framebuffer buffer.
 /// Always flips Y because GL has bottom-left origin; ours is top-left.
+/// @param ctx_ptr Borrowed OpenGL backend context providing the current final image.
+/// @param[out] dst_rgba Caller-owned RGBA8 destination buffer.
+/// @param w Requested destination width in pixels.
+/// @param h Requested destination height in pixels.
+/// @param stride Destination row pitch in bytes.
+/// @return 1 after successful readback and vertical flip, otherwise 0.
 static int gl_readback_rgba(
     void *ctx_ptr, uint8_t *dst_rgba, int32_t w, int32_t h, int32_t stride) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
@@ -826,6 +875,8 @@ static int gl_readback_rgba(
 ///          window drawable does not accept RGB writes. Rendering and post-FX remain on OpenGL;
 ///          the resolved final FBO is copied to the existing RGBA ZannaGFX framebuffer and
 ///          presented through the platform XImage path.
+/// @param ctx Borrowed OpenGL context providing the final FBO and ZannaGFX window.
+/// @return 1 when the image is copied and presented, otherwise 0.
 static int gl_present_offscreen_vgfx(gl_context_t *ctx) {
     vgfx_framebuffer_t fb;
     GLuint framebuffer;
@@ -896,6 +947,8 @@ static int gl_present_offscreen_vgfx(gl_context_t *ctx) {
 /// Skips the composite when scene was never rendered offscreen (no
 /// postfx). After present, clears the per-frame state flags so the
 /// next frame starts clean.
+/// @param ctx Borrowed OpenGL context whose window frame is presented.
+/// @param chain Borrowed post-processing chain to composite, or NULL for a plain resolve.
 static void gl_present_impl(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chain) {
     int use_postfx;
 
@@ -943,6 +996,7 @@ static void gl_present_impl(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chai
 }
 
 /// @brief Backend `present` (no postfx) — direct SwapBuffers via `gl_present_impl`.
+/// @param ctx_ptr Borrowed OpenGL backend context to present.
 static void gl_present(void *ctx_ptr) {
     gl_present_impl((gl_context_t *)ctx_ptr, NULL);
 }
@@ -952,6 +1006,8 @@ static void gl_present(void *ctx_ptr) {
 ///          final-overlay replay after post-processing. The implementation delegates to the
 ///          shared presenter so a disabled or empty chain still resolves the offscreen scene to
 ///          the swapchain before presentation.
+/// @param ctx_ptr Borrowed OpenGL backend context to composite and present.
+/// @param postfx Borrowed post-processing chain, or an empty chain for a plain resolve.
 static void gl_present_postfx(void *ctx_ptr, const vgfx3d_postfx_chain_t *postfx) {
     gl_present_impl((gl_context_t *)ctx_ptr, postfx);
 }
@@ -961,6 +1017,8 @@ static void gl_present_postfx(void *ctx_ptr, const vgfx3d_postfx_chain_t *postfx
 ///          finalized screenshot without presenting the drawable. It writes the pending scene
 ///          target into the backbuffer and marks it composited; a later `present` call performs
 ///          the actual buffer swap.
+/// @param ctx_ptr Borrowed OpenGL backend context containing the pending scene.
+/// @param postfx Borrowed post-processing chain, or an empty chain for a plain resolve.
 static void gl_apply_postfx(void *ctx_ptr, const vgfx3d_postfx_chain_t *postfx) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     int use_postfx;
@@ -985,6 +1043,8 @@ static void gl_apply_postfx(void *ctx_ptr, const vgfx3d_postfx_chain_t *postfx) 
 ///          sample the rendered color/depth/motion buffers. Disabling post-FX clears latched
 ///          chain state and any pending scene-composite flags so the next frame returns to direct
 ///          swapchain rendering.
+/// @param ctx_ptr Borrowed OpenGL backend context whose scene route is updated.
+/// @param enabled Nonzero to enable the GPU post-processing route.
 static void gl_set_gpu_postfx_enabled(void *ctx_ptr, int8_t enabled) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     int8_t next_enabled = enabled ? 1 : 0;
@@ -1082,6 +1142,8 @@ static int8_t gl_set_render_scale(void *ctx_ptr, float scale) {
 ///          backbuffer so overlay replay is not overwritten by a second scene composite. Copy
 ///          failure resets the cached chain instead of leaving partial effect state visible to
 ///          later frames.
+/// @param ctx_ptr Borrowed OpenGL backend context that owns the resulting chain copy.
+/// @param postfx Borrowed chain to copy, or NULL to clear the installed snapshot.
 static void gl_set_gpu_postfx_snapshot(void *ctx_ptr, const vgfx3d_postfx_chain_t *postfx) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (!ctx)
@@ -1110,6 +1172,8 @@ static void gl_set_gpu_postfx_snapshot(void *ctx_ptr, const vgfx3d_postfx_chain_
 /// NULL `rt` tears down RTT and reverts to the swapchain. Non-NULL
 /// allocates / re-binds RTT targets sized for `rt`. Clears any
 /// in-flight scene postfx state since RTT bypasses that path.
+/// @param ctx_ptr Borrowed OpenGL backend context whose target routing is changed.
+/// @param rt Borrowed render target to activate, or NULL to restore window rendering.
 static void gl_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (!ctx)
@@ -1135,6 +1199,7 @@ static void gl_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
 ///   the very pass writing it, so the depth planes are blitted into a dedicated
 ///   snapshot texture that blend draws (soft particles) read via
 ///   `uOpaqueDepthTex`. The currently bound framebuffer is restored afterwards.
+/// @param ctx_ptr Borrowed OpenGL backend context whose active depth attachment is resolved.
 static void gl_resolve_opaque_targets(void *ctx_ptr) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     GLint prev_fbo = 0;
@@ -1180,6 +1245,7 @@ static void gl_resolve_opaque_targets(void *ctx_ptr) {
 }
 
 /// @brief Abort an active shadow pass and restore color writes plus the main framebuffer.
+/// @param ctx Borrowed OpenGL context whose shadow state is left.
 static void gl_leave_shadow_pass(gl_context_t *ctx) {
     if (!ctx || ctx->shadow_pass_slot < 0)
         return;
@@ -1197,6 +1263,12 @@ static void gl_leave_shadow_pass(gl_context_t *ctx) {
 /// Allocates the shadow FBO if needed, captures the light-space VP,
 /// binds the depth-only FBO + viewport, clears depth, switches to
 /// the shadow vertex shader (no PS).
+/// @param ctx_ptr Borrowed OpenGL backend context that owns shadow resources.
+/// @param slot Shadow-light slot to initialize.
+/// @param depth_buf Ignored CPU buffer retained for backend-interface compatibility.
+/// @param w Requested shadow-map width in pixels.
+/// @param h Requested shadow-map height in pixels.
+/// @param light_vp Borrowed row-major light view-projection matrix.
 static void gl_shadow_begin(
     void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
     (void)depth_buf;
@@ -1241,6 +1313,8 @@ static void gl_shadow_begin(
 ///
 /// Slim version of `submit_draw`: model + light-VP + skinning + morph
 /// only. No materials, no lights, no fog.
+/// @param ctx_ptr Borrowed OpenGL backend context with an active shadow pass.
+/// @param cmd Borrowed draw command supplying geometry, transform, alpha, and deformation state.
 static void gl_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     float safe_model[16];
@@ -1343,6 +1417,9 @@ static void gl_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
 /// turns shadow sampling on. Stores the bias the shader uses for
 /// depth comparison. Re-binds the main FBO and main program for
 /// subsequent draws.
+/// @param ctx_ptr Borrowed OpenGL backend context whose shadow pass is finalized.
+/// @param slot Shadow-light slot expected to own the active pass.
+/// @param bias Depth-comparison bias stored for subsequent lighting draws.
 static void gl_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (!ctx)
@@ -1365,6 +1442,13 @@ static void gl_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
 /// Per-slot shadow FBOs/textures persist across frames (recreated only on
 /// resolution change), so an unchanged slot only needs its VP re-registered and
 /// its complete flag restored — no clear, no rasterization.
+/// @param ctx_ptr Borrowed OpenGL backend context containing persistent shadow textures.
+/// @param slot Shadow slot to rearm.
+/// @param depth_buf Ignored CPU buffer retained for backend-interface compatibility.
+/// @param w Expected shadow texture width in pixels.
+/// @param h Expected shadow texture height in pixels.
+/// @param light_vp Borrowed replacement row-major light view-projection matrix.
+/// @return 1 when the persistent slot is reusable, otherwise 0.
 static int8_t gl_shadow_reuse(
     void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
@@ -1387,6 +1471,16 @@ static int8_t gl_shadow_reuse(
 /// configured via `configure_instance_attributes`. After the draw,
 /// resets the instance attributes to identity so subsequent non-
 /// instanced draws don't accidentally see leftover instance data.
+/// @param ctx_ptr Borrowed OpenGL backend context with an active draw target.
+/// @param win Window handle retained for backend-interface compatibility; unused here.
+/// @param cmd Borrowed mesh, material, particle, animation, and per-draw state.
+/// @param instance_matrices Borrowed array of row-major model matrices, or NULL for particles.
+/// @param instance_count Number of instances or compact particle records.
+/// @param lights Borrowed light array; may be NULL when @p light_count is zero.
+/// @param light_count Number of entries available through @p lights.
+/// @param ambient Borrowed three-component ambient color; NULL is sanitized to black.
+/// @param wireframe Nonzero to draw triangle edges instead of filled triangles.
+/// @param backface_cull Nonzero to cull back-facing triangles.
 static void gl_submit_draw_instanced(void *ctx_ptr,
                                      vgfx_window_t win,
                                      const vgfx3d_draw_cmd_t *cmd,

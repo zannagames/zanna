@@ -21,32 +21,61 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_fbx_loader_connections.inc
+ * @brief Implements retained FBX edges and indexed endpoint adjacency.
+ *
+ * Parsed object-object and object-property connections are stored in source
+ * order with exact property labels. Separate power-of-two open-addressed maps
+ * locate the head and tail of child-ID and parent-ID chains, allowing later
+ * extraction passes to traverse only relevant edges. Entry growth, labels,
+ * and both indexes are charged to the current FBX load budget.
+ */
+/// @brief One retained FBX connection and its two adjacency links.
 typedef struct {
+    /// Numeric child object identifier.
     int64_t child_id;
+    /// Numeric parent object identifier.
     int64_t parent_id;
+    /// Owned optional object-property label.
     char *prop;
+    /// Exact property-label byte count.
     uint32_t prop_len;
+    /// Next source-ordered entry with the same child ID.
     int32_t next_by_child;
+    /// Next source-ordered entry with the same parent ID.
     int32_t next_by_parent;
 } fbx_conn_t;
 
 /// @brief One open-addressed endpoint-to-connection-chain slot.
 typedef struct {
+    /// Numeric child or parent endpoint key.
     int64_t id;
+    /// First source-ordered connection index.
     int32_t head;
+    /// Last source-ordered connection index.
     int32_t tail;
+    /// Nonzero when this hash slot contains a key.
     int8_t occupied;
 } fbx_conn_endpoint_slot_t;
 
 /// @brief Load-local connection array plus child/parent adjacency indexes.
 typedef struct {
+    /// Owned connection array in source order.
     fbx_conn_t *entries;
+    /// Logical connection count.
     int32_t count;
+    /// Allocated entry capacity.
     int32_t capacity;
+    /// Owned child-ID endpoint hash table.
     fbx_conn_endpoint_slot_t *child_slots;
+    /// Power-of-two child hash capacity.
     size_t child_slot_capacity;
+    /// Owned parent-ID endpoint hash table.
     fbx_conn_endpoint_slot_t *parent_slots;
+    /// Power-of-two parent hash capacity.
     size_t parent_slot_capacity;
+    /// Borrowed load context used for charging and probe telemetry.
     fbx_load_context_t *context;
 } fbx_conn_table_t;
 

@@ -3,12 +3,24 @@
 // File: src/runtime/graphics/3d/anim/rt_skeleton3d_player.inc  (#included from rt_skeleton3d.c; not a standalone translation unit)
 // Purpose: AnimPlayer3D single-clip playback implementation
 //===----------------------------------------------------------------------===//
+/**
+ * @file rt_skeleton3d_player.inc
+ * @brief Implements single-clip playback, crossfading, and palette generation.
+ *
+ * This implementation fragment manages retained skeleton and clip references,
+ * playback clocks and looping policy, bind-pose fallbacks, per-bone TRS
+ * crossfades, model-space matrices, skinning palettes, and previous-frame
+ * snapshots used by temporal rendering. It is included by
+ * `rt_skeleton3d.c` and is not a standalone translation unit.
+ */
 /*==========================================================================
  * AnimPlayer3D implementation
  *=========================================================================*/
 
-/// @brief GC finalizer for AnimPlayer3D — release the bound skeleton/animation refs and the bone
-/// palette buffer.
+/// @brief Release all references and pose buffers owned by an animation player.
+/// @param[in,out] obj Player payload being finalized.
+/// @details Releases the skeleton, active clip, and outgoing crossfade clip,
+/// then frees the current, previous, snapshot, local, and global matrix arrays.
 static void rt_anim_player3d_finalize(void *obj) {
     rt_anim_player3d *p = (rt_anim_player3d *)obj;
     animation3d_release_class_ref((void **)&p->skeleton, RT_G3D_SKELETON3D_CLASS_ID);
@@ -26,10 +38,20 @@ static void rt_anim_player3d_finalize(void *obj) {
     p->globals_buf = NULL;
 }
 
+/// @brief Re-evaluate a player's current animated pose and skinning palette.
+/// @param[in,out] p Player to evaluate.
 static void compute_bone_palette(rt_anim_player3d *p);
+/// @brief Reset a player's matrix buffers to the skeleton bind pose.
+/// @param[in,out] p Player to reset.
 static void compute_player_bind_pose(rt_anim_player3d *p);
+/// @brief Resolve the active clip's effective looping policy.
+/// @param[in,out] p Player whose current clip and override are inspected.
+/// @return One when looping is enabled, otherwise zero.
 static int8_t anim_player_current_looping(rt_anim_player3d *p);
 
+/// @brief Normalize a requested bone count into a pose-buffer capacity.
+/// @param[in] bone_count Requested number of bone-matrix slots.
+/// @return At least one slot and at most `VGFX3D_MAX_SKELETON_BONES`.
 static int32_t skeleton3d_pose_capacity_for_count(int32_t bone_count) {
     if (bone_count <= 0)
         return 1;
@@ -38,6 +60,14 @@ static int32_t skeleton3d_pose_capacity_for_count(int32_t bone_count) {
     return bone_count;
 }
 
+/// @brief Grow one 16-float-per-bone pose buffer and clear its new suffix.
+/// @param[in,out] buffer Address of the owned buffer pointer.
+/// @param[in] old_capacity Number of existing bone slots.
+/// @param[in] new_capacity Required number of bone slots.
+/// @return Nonzero when no growth is needed or reallocation succeeds;
+/// otherwise zero.
+/// @details Existing floats are preserved. A null slot address is treated as
+/// requiring no work, matching callers that grow synchronized optional buffers.
 static int skeleton3d_grow_pose_buffer(float **buffer, int32_t old_capacity, int32_t new_capacity) {
     if (!buffer || new_capacity <= old_capacity)
         return 1;
@@ -53,6 +83,10 @@ static int skeleton3d_grow_pose_buffer(float **buffer, int32_t old_capacity, int
     return 1;
 }
 
+/// @brief Ensure every player pose buffer can hold a requested skeleton.
+/// @param[in,out] p Player whose synchronized buffers may be enlarged.
+/// @param[in] bone_count Required number of bone matrices.
+/// @return Nonzero when all buffers have sufficient capacity; otherwise zero.
 static int anim_player3d_ensure_pose_capacity(rt_anim_player3d *p, int32_t bone_count) {
     if (!p)
         return 0;
@@ -73,8 +107,15 @@ static int anim_player3d_ensure_pose_capacity(rt_anim_player3d *p, int32_t bone_
 /// @brief Create an animation player bound to a target skeleton.
 ///
 /// The player holds the current playback time, the active and
-/// fading-out clip, and a per-bone palette buffer (3-frame ring
-/// for motion-blur previous-pose lookup).
+/// fading-out clip, and a trio of per-bone current, previous, and
+/// snapshot palette buffers for temporal previous-pose lookup.
+///
+/// @param[in] skeleton Runtime `Skeleton3D` to retain and evaluate.
+/// @return A new retained player initialized at the bind pose, or `NULL` for
+/// an invalid skeleton or allocation failure.
+/// @details Construction freezes skeleton topology and allocates synchronized
+/// current, previous, snapshot, local, and global buffers. Playback begins
+/// stopped with no active clip and unit speed.
 void *rt_anim_player3d_new(void *skeleton) {
     rt_skeleton3d *skel =
         (rt_skeleton3d *)rt_g3d_checked_or_null(skeleton, RT_G3D_SKELETON3D_CLASS_ID);
@@ -138,6 +179,11 @@ void *rt_anim_player3d_new(void *skeleton) {
 
 /// @brief Snap-cut to a new animation clip, resetting playback time to 0.
 /// For smooth transitions, prefer `rt_anim_player3d_crossfade`.
+/// @param[in,out] obj Player to modify.
+/// @param[in] animation New `Animation3D`, or `NULL` to clear the current clip.
+/// @details The player retains the new clip, releases any outgoing crossfade
+/// clip, resets temporal motion history, and immediately recomputes the pose.
+/// Passing `NULL` stops playback and produces the bind pose.
 void rt_anim_player3d_play(void *obj, void *animation) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     rt_animation3d *anim = animation ? animation3d_checked(animation) : NULL;
@@ -159,6 +205,14 @@ void rt_anim_player3d_play(void *obj, void *animation) {
 ///
 /// Both clips run in parallel during the fade; per-bone TRS is
 /// linearly blended (lerp + slerp) by the elapsed-fade ratio.
+///
+/// @param[in,out] obj Player to transition.
+/// @param[in] animation Valid target `Animation3D` retained by the player.
+/// @param[in] duration Fade duration in seconds.
+/// @details A nonpositive or non-finite duration becomes an immediate play.
+/// The outgoing clip keeps its captured time, speed, and looping policy while
+/// the target begins at time zero. Missing channels on either clip sample the
+/// corresponding skeleton bind transform.
 void rt_anim_player3d_crossfade(void *obj, void *animation, double duration) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     rt_animation3d *anim = animation3d_checked(animation);
@@ -185,6 +239,10 @@ void rt_anim_player3d_crossfade(void *obj, void *animation, double duration) {
 }
 
 /// @brief Stop playback and return the output pose to the skeleton bind pose.
+/// @param[in,out] obj Player to stop.
+/// @details The current clip remains retained and its current time remains
+/// available, but the outgoing fade is discarded, motion history is reset,
+/// and the visible palette is immediately restored to the bind pose.
 void rt_anim_player3d_stop(void *obj) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     if (!p)
@@ -200,6 +258,11 @@ void rt_anim_player3d_stop(void *obj) {
 }
 
 /// @brief Build global matrices and skinning palette from local bone transforms.
+/// @param[in] skel Skeleton supplying hierarchy and inverse-bind matrices.
+/// @param[in] locals Array of one row-major local matrix per readable bone.
+/// @param[out] globals Scratch/output array receiving model-space matrices.
+/// @param[out] palette Output array receiving `global * inverse_bind` skinning
+/// matrices.
 static void compute_palette_from_locals(const rt_skeleton3d *skel,
                                         const float *locals,
                                         float *globals,
@@ -213,7 +276,10 @@ static void compute_palette_from_locals(const rt_skeleton3d *skel,
         mat4f_mul_local(&globals[i * 16], skel->bones[i].inverse_bind, &palette[i * 16]);
 }
 
-/// @brief Force a player to the skeleton bind pose in both world and skinning buffers.
+/// @brief Force a player to the skeleton bind pose in local, global, and skinning buffers.
+/// @param[in,out] p Player whose buffers are reset.
+/// @details The local bind matrices are copied from the skeleton, then hierarchy
+/// composition and inverse-bind multiplication regenerate the other buffers.
 static void compute_player_bind_pose(rt_anim_player3d *p) {
     rt_skeleton3d *skel = p ? animation3d_skeleton_slot((void **)&p->skeleton) : NULL;
     int32_t bone_count = skeleton3d_safe_bone_count(skel);
@@ -229,6 +295,12 @@ static void compute_player_bind_pose(rt_anim_player3d *p) {
 }
 
 /// @brief Compute the bone palette from the current animation state.
+/// @param[in,out] p Player whose pose, model-space matrices, and palette are
+/// recomputed.
+/// @details Evaluation begins from the bind pose and replaces local transforms
+/// for readable channels of the current clip. During a crossfade, every bone
+/// samples both clips with bind-pose fallback, translations and scales are
+/// linearly interpolated, and rotations use shortest-path SLERP.
 static void compute_bone_palette(rt_anim_player3d *p) {
     rt_skeleton3d *skel = p ? animation3d_skeleton_slot((void **)&p->skeleton) : NULL;
     rt_animation3d *current = p ? animation3d_clip_slot((void **)&p->current) : NULL;
@@ -324,6 +396,9 @@ static void compute_bone_palette(rt_anim_player3d *p) {
 }
 
 /// @brief True if the player's currently active clip is set to loop.
+/// @param[in,out] p Player whose effective policy is requested.
+/// @return The explicit loop override when enabled, otherwise the current
+/// clip's loop flag; zero when there is no valid current clip.
 static int8_t anim_player_current_looping(rt_anim_player3d *p) {
     rt_animation3d *current = p ? animation3d_clip_slot((void **)&p->current) : NULL;
     if (!current)
@@ -336,8 +411,15 @@ static int8_t anim_player_current_looping(rt_anim_player3d *p) {
 /// @brief Advance playback by `delta_time` seconds and refresh the bone palette.
 ///
 /// Handles wrap-around for looping clips, fade-in / fade-out for
-/// active cross-fades, and copies the new bone palette into the
-/// motion-blur ring buffer for the next-frame previous-pose lookup.
+/// active cross-fades, then rebuilds the current local, global, and
+/// skinning matrix buffers.
+///
+/// @param[in,out] obj Player to advance.
+/// @param[in] delta_time Nonnegative finite elapsed time in seconds.
+/// @details The current clock is scaled by playback speed. Looping playback
+/// wraps in either direction; non-looping playback clamps at an endpoint and
+/// stops. Crossfade elapsed time advances independently of playback speed,
+/// while the outgoing clip advances at its captured speed.
 void rt_anim_player3d_update(void *obj, double delta_time) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     rt_animation3d *current;
@@ -404,6 +486,9 @@ void rt_anim_player3d_update(void *obj, double delta_time) {
 }
 
 /// @brief Time-scale factor applied per `update` call (1.0 = real time, 0.5 = slow-mo, etc.).
+/// @param[in,out] obj Player to modify.
+/// @param[in] speed Playback multiplier. Non-finite input becomes `1.0`, and
+/// finite input is saturated to the float range; negative values are allowed.
 void rt_anim_player3d_set_speed(void *obj, double speed) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     if (p) {
@@ -414,18 +499,26 @@ void rt_anim_player3d_set_speed(void *obj, double speed) {
 }
 
 /// @brief Current speed multiplier (1.0 if `obj` is NULL).
+/// @param[in] obj Player to query.
+/// @return The finite stored speed, or `1.0` for an invalid player or corrupt
+/// non-finite value.
 double rt_anim_player3d_get_speed(void *obj) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     return (p && isfinite(p->speed)) ? p->speed : 1.0;
 }
 
 /// @brief True if the player is currently advancing time on `update` calls.
+/// @param[in] obj Player to query.
+/// @return One when playback is active, otherwise zero.
 int8_t rt_anim_player3d_is_playing(void *obj) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     return p && p->playing ? 1 : 0;
 }
 
 /// @brief Current playback time within the active clip (seconds).
+/// @param[in] obj Player to query.
+/// @return The finite stored target-clip time in seconds, or zero for invalid
+/// or non-finite state.
 double rt_anim_player3d_get_time(void *obj) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     return (p && isfinite(p->current_time)) ? p->current_time : 0.0;
@@ -433,6 +526,11 @@ double rt_anim_player3d_get_time(void *obj) {
 
 /// @brief Seek to an absolute time in the current clip.
 /// Resets the motion-blur previous-pose snapshot so blur doesn't span the discontinuity.
+/// @param[in,out] obj Player to seek.
+/// @param[in] time Requested target-clip time in seconds.
+/// @details Looping clips wrap the requested time. Non-looping clips clamp to
+/// their duration, and a missing clip accepts any nonnegative float-range time.
+/// Seeking does not change the playing flag or discard an active crossfade.
 void rt_anim_player3d_set_time(void *obj, double time) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     if (p) {
@@ -464,6 +562,12 @@ void rt_anim_player3d_set_time(void *obj, double time) {
 /// snapshot to `prev_bone_palette` and snapshots the current pose
 /// into `motion_palette_snapshot` for the *next* frame to consume.
 /// Returns the previous palette (or NULL if no prior frame yet).
+///
+/// @param[in,out] p Player whose temporal palettes are rotated.
+/// @param[in] frame_serial Canvas frame identifier; repeated draws with the
+/// same identifier do not rotate the buffers again.
+/// @return The borrowed previous-frame palette after at least two distinct
+/// frame snapshots, otherwise `NULL`.
 static const float *anim_player_prepare_prev_palette(rt_anim_player3d *p, int64_t frame_serial) {
     rt_skeleton3d *skel;
     if (!p || !p->bone_palette)
@@ -490,7 +594,13 @@ static const float *anim_player_prepare_prev_palette(rt_anim_player3d *p, int64_
     return p->has_prev_motion_palette ? p->prev_bone_palette : NULL;
 }
 
-/// @brief Read the current world matrix for one bone as a Mat4 (NULL on out-of-range).
+/// @brief Copy one bone's current model-space matrix into a new runtime Mat4.
+/// @param[in,out] obj Player containing the evaluated pose.
+/// @param[in] bone_index Zero-based skeleton bone index.
+/// @return A newly allocated matrix object, or `NULL` for an invalid player,
+/// skeleton, index, or global-pose buffer.
+/// @details The returned matrix is relative to the skeleton origin; applying
+/// the rendered model transform is the caller's responsibility.
 void *rt_anim_player3d_get_bone_matrix(void *obj, int64_t bone_index) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     rt_skeleton3d *skel;

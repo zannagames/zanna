@@ -17,6 +17,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Provides the embedded Metal Shading Language program used by the 3D Metal backend.
+/// @details The source string defines scene, shadow, compact-geometry, particle, lighting,
+///          clustered-forward, material, and motion-vector shader stages. Its layouts must stay
+///          byte-compatible with the CPU-side Metal uniform and vertex structures.
+
+/// @brief Process-lifetime Metal Shading Language source compiled during backend initialization.
+/// @details The immutable string is borrowed when creating the Metal shader library; compiled
+///          functions and pipelines derived from it are retained by `VGFXMetalContext`.
 static NSString *metal_shader_source = @
     "#include <metal_stdlib>\n"
                                         "using namespace metal;\n"

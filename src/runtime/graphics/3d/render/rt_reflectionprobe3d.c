@@ -20,6 +20,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements local ReflectionProbe3D volumes and explicit cubemap capture.
+/// @details A probe normalizes its proxy bounds, tracks capture configuration and dirtiness, and
+///   retains the most recent six-face HDR cubemap assembled from scripted scene renders.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_reflectionprobe3d.h"
@@ -59,6 +64,10 @@ typedef struct rt_reflectionprobe3d {
     void *cubemap; /* retained CubeMap3D from the last capture */
 } rt_reflectionprobe3d;
 
+/// @brief Read a runtime Vec3 into a native three-element array.
+/// @param v Candidate Vec3 runtime object.
+/// @param[out] out Destination array populated on successful validation.
+/// @return 1 when @p v is a Vec3, or 0 without modifying the caller-visible contract otherwise.
 static int probe_read_vec3(void *v, double out[3]) {
     if (!v || rt_obj_class_id(v) != RT_VEC3_CLASS_ID)
         return 0;
@@ -68,6 +77,8 @@ static int probe_read_vec3(void *v, double out[3]) {
     return 1;
 }
 
+/// @brief Release the cubemap retained by a finalized reflection probe.
+/// @param obj ReflectionProbe3D object being finalized; ignored when `NULL`.
 static void reflectionprobe3d_finalize(void *obj) {
     rt_reflectionprobe3d *probe = (rt_reflectionprobe3d *)obj;
     if (probe && probe->cubemap && rt_obj_release_check0(probe->cubemap))
@@ -76,6 +87,12 @@ static void reflectionprobe3d_finalize(void *obj) {
         probe->cubemap = NULL;
 }
 
+/// @brief Create a reflection probe with normalized axis-aligned influence bounds.
+/// @param position Vec3 capture origin.
+/// @param box_min Vec3 containing one corner of the proxy box.
+/// @param box_max Vec3 containing the opposite corner; per-axis ordering is normalized.
+/// @return A new GC-managed probe initialized dirty at 64-pixel face resolution, or `NULL` after
+///   trapping on invalid vectors or allocation failure.
 void *rt_reflectionprobe3d_new(void *position, void *box_min, void *box_max) {
     double pos[3], bmin[3], bmax[3];
     if (!probe_read_vec3(position, pos) || !probe_read_vec3(box_min, bmin) ||
@@ -102,6 +119,10 @@ void *rt_reflectionprobe3d_new(void *position, void *box_min, void *box_max) {
     return probe;
 }
 
+/// @brief Validate a ReflectionProbe3D handle and trap with an API-specific message on failure.
+/// @param obj Candidate runtime object.
+/// @param method Trap message identifying the calling API.
+/// @return The typed probe pointer, or `NULL` after reporting invalid input.
 static rt_reflectionprobe3d *reflectionprobe3d_checked(void *obj, const char *method) {
     rt_reflectionprobe3d *probe =
         (rt_reflectionprobe3d *)rt_g3d_checked_or_null(obj, RT_G3D_REFLECTIONPROBE3D_CLASS_ID);
@@ -110,6 +131,9 @@ static rt_reflectionprobe3d *reflectionprobe3d_checked(void *obj, const char *me
     return probe;
 }
 
+/// @brief Return a copy of the probe's capture origin.
+/// @param obj ReflectionProbe3D instance.
+/// @return A new Vec3 containing the capture position, or `NULL` for an invalid probe.
 void *rt_reflectionprobe3d_get_position(void *obj) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.get_Position: invalid probe");
@@ -118,6 +142,10 @@ void *rt_reflectionprobe3d_get_position(void *obj) {
     return rt_vec3_new(probe->position[0], probe->position[1], probe->position[2]);
 }
 
+/// @brief Set the factor used to expand the proxy box around its center.
+/// @param obj ReflectionProbe3D instance.
+/// @param scale Finite scale in the supported range from one through eight; smaller or
+///   non-finite values are ignored and larger values are clamped.
 void rt_reflectionprobe3d_set_influence_scale(void *obj, double scale) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.set_InfluenceScale: invalid probe");
@@ -125,12 +153,18 @@ void rt_reflectionprobe3d_set_influence_scale(void *obj, double scale) {
         probe->influence_scale = scale > 8.0 ? 8.0 : scale;
 }
 
+/// @brief Return the current proxy-box influence scale.
+/// @param obj ReflectionProbe3D instance.
+/// @return The scale factor, or zero for an invalid probe.
 double rt_reflectionprobe3d_get_influence_scale(void *obj) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.get_InfluenceScale: invalid probe");
     return probe ? probe->influence_scale : 0.0;
 }
 
+/// @brief Set the square cubemap face resolution.
+/// @param obj ReflectionProbe3D instance.
+/// @param resolution Requested width and height, clamped from 16 through 512 pixels.
 void rt_reflectionprobe3d_set_resolution(void *obj, int64_t resolution) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.set_Resolution: invalid probe");
@@ -143,12 +177,18 @@ void rt_reflectionprobe3d_set_resolution(void *obj, int64_t resolution) {
     probe->resolution = resolution;
 }
 
+/// @brief Return the configured cubemap face resolution.
+/// @param obj ReflectionProbe3D instance.
+/// @return The resolution in pixels, or zero for an invalid probe.
 int64_t rt_reflectionprobe3d_get_resolution(void *obj) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.get_Resolution: invalid probe");
     return probe ? probe->resolution : 0;
 }
 
+/// @brief Mark whether the probe needs an explicit recapture.
+/// @param obj ReflectionProbe3D instance.
+/// @param dirty Non-zero to mark the capture stale, or zero to mark it current.
 void rt_reflectionprobe3d_set_capture_dirty(void *obj, int8_t dirty) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.set_CaptureDirty: invalid probe");
@@ -156,6 +196,9 @@ void rt_reflectionprobe3d_set_capture_dirty(void *obj, int8_t dirty) {
         probe->capture_dirty = dirty ? 1 : 0;
 }
 
+/// @brief Return whether the probe is awaiting recapture.
+/// @param obj ReflectionProbe3D instance.
+/// @return 1 when dirty, or 0 when current or invalid.
 int8_t rt_reflectionprobe3d_get_capture_dirty(void *obj) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.get_CaptureDirty: invalid probe");
@@ -163,6 +206,9 @@ int8_t rt_reflectionprobe3d_get_capture_dirty(void *obj) {
 }
 
 /// @brief True when @p position lies inside the influence-scaled proxy box.
+/// @param obj ReflectionProbe3D instance.
+/// @param position Vec3 point tested against the expanded bounds.
+/// @return 1 when the point is inside every inclusive axis interval, or 0 otherwise.
 int8_t rt_reflectionprobe3d_contains(void *obj, void *position) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.Contains: invalid probe");
@@ -179,6 +225,9 @@ int8_t rt_reflectionprobe3d_contains(void *obj, void *position) {
 }
 
 /// @brief Retained captured cubemap (NULL before the first capture).
+/// @param obj ReflectionProbe3D instance.
+/// @return The captured CubeMap3D with a new retained reference for the caller, or `NULL` when no
+///   capture exists.
 void *rt_reflectionprobe3d_get_cubemap(void *obj) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.get_Cubemap: invalid probe");
@@ -192,7 +241,11 @@ void *rt_reflectionprobe3d_get_cubemap(void *obj) {
 /// @details Face order and orientations follow the CubeMap3D.New contract
 ///   (+X, -X, +Y, -Y, +Z, -Z). Explicit/scripted only — a capture re-renders the
 ///   scene six times. Clears CaptureDirty on success.
-/// @return 1 on success.
+/// @param obj ReflectionProbe3D receiving the captured cubemap.
+/// @param canvas Canvas3D used for six off-screen HDR renders.
+/// @param scene Scene3D rendered from each cubemap orientation.
+/// @return 1 after replacing the retained cubemap and clearing the dirty flag, or 0 when setup,
+///   rendering, readback, or cubemap construction fails.
 int8_t rt_reflectionprobe3d_capture(void *obj, void *canvas, void *scene) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.Capture: invalid probe");

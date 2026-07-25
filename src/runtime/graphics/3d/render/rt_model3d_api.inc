@@ -16,6 +16,13 @@
 // Links: rt_model3d.c, rt_model3d.h, rt_model3d_core.inc, rt_model3d_loaders.inc
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements Model3D public loading, access, persistence, LOD, and instantiation APIs.
+/// @details This include fragment is compiled as part of `rt_model3d.c`. Owned load results are
+///          separated from borrowed catalog accessors, and Result wrappers transfer loader-local
+///          references into recoverable success/error values.
+
 /// @brief Convert a SceneAsset load return value into a Result.
 /// @details Successful values are retained by `Result.Ok` and then released from the local
 ///          loader reference. Failures use the thread-local asset diagnostic message captured by
@@ -45,6 +52,8 @@ static void *model3d_load_value_to_result(void *value, const char *fallback) {
 }
 
 /// @brief Load a model from the filesystem (no asset-manager resolution). See header.
+/// @param path Filesystem path with a supported extension.
+/// @return New Model3D handle, or NULL after recording load diagnostics.
 void *rt_model3d_load(rt_string path) {
     rt_asset_error_begin_load();
     void *model = rt_model3d_load_impl(path, 0, NULL, 0, NULL, NULL, 0, NULL, 0);
@@ -70,6 +79,9 @@ void *rt_model3d_load_result(rt_string path) {
 ///          files still load from disk under the ADR 0187 guards). Traps on null arguments
 ///          like the sibling loaders; wrong extensions and malformed text are recoverable
 ///          failures reported through the shared asset-diagnostic channel.
+/// @param path Logical VSCN path used for extension and dependency-base resolution.
+/// @param text Complete VSCN source text.
+/// @return New Model3D handle, or NULL after recording a recoverable diagnostic.
 static void *model3d_load_text_value(rt_string path, rt_string text) {
     rt_asset_error_begin_load();
     if (!path || !rt_string_cstr(path)) {
@@ -95,12 +107,18 @@ static void *model3d_load_text_value(rt_string path, rt_string text) {
 }
 
 /// @brief Result companion for VSCN text loading: `Ok(SceneAsset)` or `Err(message)`.
+/// @param path Logical VSCN path used for extension and dependency-base resolution.
+/// @param text Complete VSCN source text.
+/// @return Owned Result containing a Model3D or diagnostic string.
 void *rt_model3d_load_text_result(rt_string path, rt_string text) {
     return model3d_load_value_to_result(model3d_load_text_value(path, text),
                                         "SceneAsset.LoadTextResult failed");
 }
 
 /// @brief Save the complete Model3D inventory through the model-aware VSCN v5 serializer.
+/// @param obj Model3D whose scenes and retained resource catalogs are serialized.
+/// @param path Destination filesystem path.
+/// @return One after successful atomic publication; otherwise zero.
 int64_t rt_model3d_save(void *obj, rt_string path) {
     rt_model3d *model = model3d_checked(obj);
     rt_vscn_asset_save_view view = {0};
@@ -161,6 +179,9 @@ int64_t rt_model3d_save(void *obj, rt_string path) {
 ///   when its material has no normal map at load time — for assets whose materials gain
 ///   normal maps after import. FBX ignores the option. Options scope thread-locally
 ///   around the load, so the default entry points are unchanged.
+/// @param path Filesystem model path.
+/// @param force_tangents Nonzero to force eligible glTF tangent generation.
+/// @return New Model3D handle, or NULL on failure.
 void *rt_model3d_load_with_options(rt_string path, int8_t force_tangents) {
     rt_gltf_load_options opts = rt_gltf_load_options_default();
     rt_gltf_load_options saved;
@@ -182,6 +203,9 @@ void *rt_model3d_load_with_options(rt_string path, int8_t force_tangents) {
 ///          "compactStreams" (every imported mesh opts into the compact 48-byte
 ///          GPU static-cache vertex encoding). Unknown flags are ignored so
 ///          future options stay backward-compatible.
+/// @param path Filesystem model path.
+/// @param options Nullable comma/space-separated option string.
+/// @return New Model3D handle, or NULL on failure.
 void *rt_model3d_load_with_options_ex(rt_string path, rt_string options) {
     rt_gltf_load_options opts = rt_gltf_load_options_default();
     rt_gltf_load_options saved;
@@ -210,12 +234,17 @@ void *rt_model3d_load_with_options_ex(rt_string path, rt_string options) {
 }
 
 /// @brief Options-aware Result variant of `SceneAsset.Load` (Plan 09).
+/// @param path Filesystem model path.
+/// @param force_tangents Nonzero to force eligible glTF tangent generation.
+/// @return Owned Result containing a Model3D or diagnostic string.
 void *rt_model3d_load_result_with_options(rt_string path, int8_t force_tangents) {
     return model3d_load_value_to_result(rt_model3d_load_with_options(path, force_tangents),
                                         "SceneAsset.LoadWithOptions failed");
 }
 
 /// @brief Load a model through the asset manager (mounted/embedded + dev fallback). See header.
+/// @param path Logical asset path or URI.
+/// @return New Model3D handle, or NULL after recording load diagnostics.
 void *rt_model3d_load_asset(rt_string path) {
     rt_asset_error_begin_load();
     void *model = rt_model3d_load_impl(path, 1, NULL, 0, NULL, NULL, 0, NULL, 0);
@@ -239,6 +268,11 @@ void *rt_model3d_load_asset_result(rt_string path) {
 /// @brief Internal async path: build a glTF/GLB Model3D from worker-staged root bytes.
 /// @details Takes ownership of @p preloaded_data. Non-glTF paths free it and use the normal
 ///   loader so conservative async callers do not leak when falling back to main-thread loading.
+/// @param path Logical source path used for format and dependency resolution.
+/// @param preloaded_data Owned root-file bytes, consumed on every path.
+/// @param preloaded_size Byte count of @p preloaded_data.
+/// @param load_assets Nonzero to resolve dependencies through the asset manager.
+/// @return New Model3D handle, or NULL on failure.
 void *rt_model3d_load_preloaded_gltf(rt_string path,
                                      uint8_t *preloaded_data,
                                      size_t preloaded_size,
@@ -255,6 +289,11 @@ void *rt_model3d_load_preloaded_gltf(rt_string path,
 /// @brief Internal async path: build an FBX Model3D from worker-staged root bytes.
 /// @details Takes ownership of @p preloaded_data. Non-FBX paths free it and use the normal
 ///   loader so conservative async callers do not leak when falling back to main-thread loading.
+/// @param path Logical source path used for format context and diagnostics.
+/// @param preloaded_data Owned root-file bytes, consumed on every path.
+/// @param preloaded_size Byte count of @p preloaded_data.
+/// @param load_assets Nonzero to use asset-manager loading behavior.
+/// @return New Model3D handle, or NULL on failure.
 void *rt_model3d_load_preloaded_fbx(rt_string path,
                                     uint8_t *preloaded_data,
                                     size_t preloaded_size,
@@ -273,6 +312,9 @@ void *rt_model3d_load_preloaded_fbx(rt_string path,
 ///          resulting asset's meshes/materials/scenes as a Model3D. Falls back to a normal load
 ///          when
 ///          @p bundle is NULL.
+/// @param path Logical glTF/GLB source path.
+/// @param bundle Owned staged root/dependency bundle, consumed by this call.
+/// @param load_assets Nonzero to retain asset-manager dependency behavior.
 /// @return New Model3D handle, or NULL on failure.
 void *rt_model3d_load_preloaded_gltf_bundle(rt_string path,
                                             struct rt_gltf_preload_bundle *bundle,
@@ -286,6 +328,8 @@ void *rt_model3d_load_preloaded_gltf_bundle(rt_string path,
 }
 
 /// @brief Number of meshes loaded into this model.
+/// @param obj Model3D receiver.
+/// @return Safe enumerable mesh count, or zero for invalid input.
 int64_t rt_model3d_get_mesh_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     return model ? model_clamped_array_count(model->meshes, model->mesh_count, model->mesh_capacity)
@@ -293,6 +337,8 @@ int64_t rt_model3d_get_mesh_count(void *obj) {
 }
 
 /// @brief Number of materials loaded into this model.
+/// @param obj Model3D receiver.
+/// @return Safe enumerable material count, or zero for invalid input.
 int64_t rt_model3d_get_material_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     return model ? model_clamped_array_count(
@@ -301,6 +347,8 @@ int64_t rt_model3d_get_material_count(void *obj) {
 }
 
 /// @brief Number of skeletons (bone hierarchies) loaded into this model.
+/// @param obj Model3D receiver.
+/// @return Safe enumerable skeleton count, or zero for invalid input.
 int64_t rt_model3d_get_skeleton_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     return model ? model_clamped_array_count(
@@ -309,6 +357,8 @@ int64_t rt_model3d_get_skeleton_count(void *obj) {
 }
 
 /// @brief Number of animation clips loaded into this model.
+/// @param obj Model3D receiver.
+/// @return Safe skeletal-animation count, or zero for invalid input.
 int64_t rt_model3d_get_animation_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     return model ? model_clamped_array_count(
@@ -317,6 +367,8 @@ int64_t rt_model3d_get_animation_count(void *obj) {
 }
 
 /// @brief Number of node/object/morph/camera animation clips loaded into this model.
+/// @param obj Model3D receiver.
+/// @return Safe node-animation count, or zero for invalid input.
 int64_t rt_model3d_get_node_animation_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     return model ? model_clamped_array_count(model->node_animations,
@@ -326,6 +378,8 @@ int64_t rt_model3d_get_node_animation_count(void *obj) {
 }
 
 /// @brief Number of model mesh slots carrying a valid attached MorphTarget3D.
+/// @param obj Model3D receiver.
+/// @return Count of valid mesh-attached morph-target containers.
 int64_t rt_model3d_get_morph_target_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     int32_t mesh_count =
@@ -342,6 +396,8 @@ int64_t rt_model3d_get_morph_target_count(void *obj) {
 }
 
 /// @brief Total safe morph-shape count across every enumerable mesh.
+/// @param obj Model3D receiver.
+/// @return Total shape count saturated at `INT64_MAX`, or zero for invalid input.
 int64_t rt_model3d_get_morph_shape_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     int32_t mesh_count =
@@ -361,6 +417,8 @@ int64_t rt_model3d_get_morph_shape_count(void *obj) {
 }
 
 /// @brief Number of scene nodes in the template subtree (excludes the synthetic root).
+/// @param obj Model3D receiver.
+/// @return Template node count excluding the synthetic root, or zero.
 int64_t rt_model3d_get_node_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     if (!model || !model->template_root)
@@ -374,6 +432,8 @@ int64_t rt_model3d_get_node_count(void *obj) {
 /// @brief Number of immutable scenes addressable by this Model3D.
 /// @details glTF imports order scenes with the active/default scene at index 0 and any secondary
 ///   scene roots after it. Other importers expose one default scene.
+/// @param obj Model3D receiver.
+/// @return Addressable immutable-scene count, or zero for invalid input.
 int64_t rt_model3d_get_scene_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     return model_scene_count(model);
@@ -382,6 +442,9 @@ int64_t rt_model3d_get_scene_count(void *obj) {
 /// @brief Number of cameras imported for @p scene_index.
 /// @details glTF cameras are retained per immutable scene. Invalid scene indices and importers
 ///   without authored cameras return zero.
+/// @param obj Model3D receiver.
+/// @param scene_index Zero-based immutable-scene index.
+/// @return Safe scene camera count, or zero for invalid input.
 int64_t rt_model3d_get_camera_count(void *obj, int64_t scene_index) {
     rt_model3d *model = model3d_checked(obj);
     int32_t scene_count = model_scene_count(model);
@@ -394,6 +457,9 @@ int64_t rt_model3d_get_camera_count(void *obj, int64_t scene_index) {
 
 /// @brief Borrow the i-th Mesh3D (NULL on out-of-range). Caller must NOT release; the model owns
 /// it.
+/// @param obj Model3D receiver.
+/// @param index Zero-based mesh index.
+/// @return Borrowed valid Mesh3D, or NULL.
 void *rt_model3d_get_mesh(void *obj, int64_t index) {
     rt_model3d *model = model3d_checked(obj);
     int32_t mesh_count =
@@ -405,6 +471,9 @@ void *rt_model3d_get_mesh(void *obj, int64_t index) {
 }
 
 /// @brief Borrow the i-th Material3D (NULL on out-of-range).
+/// @param obj Model3D receiver.
+/// @param index Zero-based material index.
+/// @return Borrowed valid Material3D, or NULL.
 void *rt_model3d_get_material(void *obj, int64_t index) {
     rt_model3d *model = model3d_checked(obj);
     int32_t material_count = model ? model_clamped_array_count(model->materials,
@@ -417,6 +486,9 @@ void *rt_model3d_get_material(void *obj, int64_t index) {
 }
 
 /// @brief Borrow the i-th Skeleton3D (NULL on out-of-range).
+/// @param obj Model3D receiver.
+/// @param index Zero-based skeleton index.
+/// @return Borrowed valid Skeleton3D, or NULL.
 void *rt_model3d_get_skeleton(void *obj, int64_t index) {
     rt_model3d *model = model3d_checked(obj);
     int32_t skeleton_count = model ? model_clamped_array_count(model->skeletons,
@@ -429,6 +501,9 @@ void *rt_model3d_get_skeleton(void *obj, int64_t index) {
 }
 
 /// @brief Borrow the i-th Animation3D clip (NULL on out-of-range).
+/// @param obj Model3D receiver.
+/// @param index Zero-based skeletal-animation index.
+/// @return Borrowed valid Animation3D, or NULL.
 void *rt_model3d_get_animation(void *obj, int64_t index) {
     rt_model3d *model = model3d_checked(obj);
     int32_t animation_count = model ? model_clamped_array_count(model->animations,
@@ -441,6 +516,9 @@ void *rt_model3d_get_animation(void *obj, int64_t index) {
 }
 
 /// @brief Borrow the i-th NodeAnimation3D clip (NULL on out-of-range).
+/// @param obj Model3D receiver.
+/// @param index Zero-based node-animation index.
+/// @return Borrowed valid NodeAnimation3D, or NULL.
 void *rt_model3d_get_node_animation(void *obj, int64_t index) {
     rt_model3d *model = model3d_checked(obj);
     int32_t animation_count = model ? model_clamped_array_count(model->node_animations,
@@ -453,6 +531,9 @@ void *rt_model3d_get_node_animation(void *obj, int64_t index) {
 }
 
 /// @brief Borrow the MorphTarget3D attached to mesh @p mesh_index.
+/// @param obj Model3D receiver.
+/// @param mesh_index Zero-based enumerable mesh index.
+/// @return Borrowed valid MorphTarget3D, or NULL.
 void *rt_model3d_get_morph_target(void *obj, int64_t mesh_index) {
     rt_mesh3d *mesh = (rt_mesh3d *)rt_model3d_get_mesh(obj, mesh_index);
     return mesh ? rt_g3d_checked_or_null(mesh->morph_targets_ref, RT_G3D_MORPHTARGET3D_CLASS_ID)
@@ -460,11 +541,18 @@ void *rt_model3d_get_morph_target(void *obj, int64_t mesh_index) {
 }
 
 /// @brief Borrow the i-th NodeAnimation3D name, or an empty string on out-of-range.
+/// @param obj Model3D receiver.
+/// @param index Zero-based node-animation index.
+/// @return Borrowed clip name, or an empty runtime string.
 rt_string rt_model3d_get_node_animation_name(void *obj, int64_t index) {
     return rt_node_animation3d_get_name(rt_model3d_get_node_animation(obj, index));
 }
 
 /// @brief Borrow an imported Camera3D from @p scene_index (NULL on out-of-range).
+/// @param obj Model3D receiver.
+/// @param scene_index Zero-based immutable-scene index.
+/// @param index Zero-based camera index within the scene.
+/// @return Borrowed valid Camera3D, or NULL.
 void *rt_model3d_get_camera(void *obj, int64_t scene_index, int64_t index) {
     rt_model3d *model = model3d_checked(obj);
     model3d_scene_entry *scene;
@@ -482,6 +570,9 @@ void *rt_model3d_get_camera(void *obj, int64_t scene_index, int64_t index) {
 
 /// @brief Return the immutable scene name for @p index.
 /// @details Invalid model handles or indices return the empty string.
+/// @param obj Model3D receiver.
+/// @param index Zero-based immutable-scene index.
+/// @return Borrowed scene name, or an empty runtime string.
 rt_string rt_model3d_get_scene_name(void *obj, int64_t index) {
     rt_model3d *model = model3d_checked(obj);
     int32_t scene_count = model_scene_count(model);
@@ -491,6 +582,8 @@ rt_string rt_model3d_get_scene_name(void *obj, int64_t index) {
 }
 
 /// @brief Number of KHR_materials_variants names imported with the asset (0 when absent).
+/// @param obj Model3D receiver.
+/// @return Imported variant-name count, or zero.
 int64_t rt_model3d_get_variant_count(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     if (!model || !model->variant_names || model->variant_count <= 0)
@@ -499,6 +592,9 @@ int64_t rt_model3d_get_variant_count(void *obj) {
 }
 
 /// @brief Return the material-variant name at @p index (empty string when invalid).
+/// @param obj Model3D receiver.
+/// @param index Zero-based variant index.
+/// @return Borrowed variant name, or an empty runtime string.
 rt_string rt_model3d_get_variant_name(void *obj, int64_t index) {
     rt_model3d *model = model3d_checked(obj);
     if (!model || !model->variant_names || index < 0 || index >= model->variant_count ||
@@ -512,6 +608,9 @@ rt_string rt_model3d_get_variant_name(void *obj, int64_t index) {
 ///          SceneGraph, in which case its root node is used. Nodes without a variant table
 ///          keep their current material; unmapped table slots were resolved to the
 ///          primitive's default material at import, so switching variants is reversible.
+/// @param obj Model3D containing the imported variant table.
+/// @param target SceneNode3D subtree root or Scene3D to update.
+/// @param variant_index Zero-based imported variant index.
 /// @return Number of nodes whose material was set (0 for invalid handles or indices).
 int64_t rt_model3d_apply_variant(void *obj, void *target, int64_t variant_index) {
     rt_model3d *model = model3d_checked(obj);
@@ -598,8 +697,15 @@ typedef struct {
 
 /// @brief Build (or fetch) the shared LOD chain for @p mesh_obj inside @p entries.
 /// @details Mirrors rt_scene_node3d_generate_lods' decimation schedule: level k holds
-///          ~ratio^k of the source triangles and distance thresholds derive from the
+///          a repeatedly ratio-scaled share of the source triangles and distance thresholds
+///          derive from the
 ///          mesh bounding radius. Meshes under 8 triangles produce an empty chain.
+/// @param entries Address of the shared-chain cache array.
+/// @param entry_count Address of the initialized cache-entry count.
+/// @param entry_capacity Address of the cache-array capacity.
+/// @param mesh_obj Mesh3D whose chain is fetched or generated.
+/// @param levels Sanitized number of LOD meshes to attempt.
+/// @param ratio Per-level target triangle ratio.
 /// @return The cache entry for @p mesh_obj, or NULL on allocation failure.
 static model_lod_chain_entry *model_lod_chain_find_or_build(model_lod_chain_entry **entries,
                                                             int32_t *entry_count,
@@ -664,9 +770,13 @@ static model_lod_chain_entry *model_lod_chain_find_or_build(model_lod_chain_entr
 /// @brief Generate shared LOD chains for every mesh node in the asset's templates.
 /// @details Walks the template hierarchy and every immutable scene root, decimating each
 ///          unique mesh once (QEM subset placement, skin/UV-seam safe) into 1..4 levels of
-///          ~@p ratio^k triangles, then attaches the chain and enables auto screen-error
+///          repeatedly @p ratio-scaled triangles, then attaches the chain and enables auto
+///          screen-error
 ///          selection. Nodes that already carry LOD chains are left untouched, so the call
 ///          is idempotent. Instantiate()/InstantiateScene() clones inherit the chains.
+/// @param obj Model3D whose template and immutable scene roots are traversed.
+/// @param levels Requested chain length, clamped from one through four.
+/// @param ratio Per-level triangle ratio; invalid values use 0.4.
 /// @return Number of nodes that received a LOD chain.
 int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
     rt_model3d *model = model3d_checked(obj);
@@ -763,6 +873,11 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
 }
 
 /// @brief Load a temporary Model3D and return one retained clip from it.
+/// @param path Filesystem or asset-manager model path.
+/// @param index Zero-based animation index.
+/// @param asset_path Nonzero to load through the asset manager.
+/// @param node_animation Nonzero to select NodeAnimation3D instead of skeletal Animation3D.
+/// @return Retained standalone clip, or NULL on load failure or invalid index.
 static void *model3d_load_clip_from_model(rt_string path,
                                           int64_t index,
                                           int asset_path,
@@ -780,6 +895,9 @@ static void *model3d_load_clip_from_model(rt_string path,
 }
 
 /// @brief Load a model file and return a retained skeletal Animation3D clip by index.
+/// @param path Filesystem model path.
+/// @param index Zero-based skeletal-animation index.
+/// @return Retained standalone Animation3D, or NULL.
 void *rt_model3d_load_animation(rt_string path, int64_t index) {
     return model3d_load_clip_from_model(path, index, 0, 0);
 }
@@ -794,6 +912,9 @@ void *rt_model3d_load_animation_result(rt_string path, int64_t index) {
 }
 
 /// @brief Load a packed model asset and return a retained skeletal Animation3D clip by index.
+/// @param path Logical asset path or URI.
+/// @param index Zero-based skeletal-animation index.
+/// @return Retained standalone Animation3D, or NULL.
 void *rt_model3d_load_animation_asset(rt_string path, int64_t index) {
     return model3d_load_clip_from_model(path, index, 1, 0);
 }
@@ -808,6 +929,9 @@ void *rt_model3d_load_animation_asset_result(rt_string path, int64_t index) {
 }
 
 /// @brief Load a model file and return a retained NodeAnimation3D clip by index.
+/// @param path Filesystem model path.
+/// @param index Zero-based node-animation index.
+/// @return Retained standalone NodeAnimation3D, or NULL.
 void *rt_model3d_load_node_animation(rt_string path, int64_t index) {
     return model3d_load_clip_from_model(path, index, 0, 1);
 }
@@ -822,6 +946,9 @@ void *rt_model3d_load_node_animation_result(rt_string path, int64_t index) {
 }
 
 /// @brief Load a packed model asset and return a retained NodeAnimation3D clip by index.
+/// @param path Logical asset path or URI.
+/// @param index Zero-based node-animation index.
+/// @return Retained standalone NodeAnimation3D, or NULL.
 void *rt_model3d_load_node_animation_asset(rt_string path, int64_t index) {
     return model3d_load_clip_from_model(path, index, 1, 1);
 }
@@ -836,6 +963,10 @@ void *rt_model3d_load_node_animation_asset_result(rt_string path, int64_t index)
 }
 
 /// @brief Locate a node in the template subtree by exact name match. NULL if not found.
+/// @details The returned node belongs to the immutable template and must not be mutated or released.
+/// @param obj Model3D receiver.
+/// @param name Exact node name to match.
+/// @return Borrowed template SceneNode3D, or NULL.
 void *rt_model3d_find_node(void *obj, rt_string name) {
     rt_model3d *model = model3d_checked(obj);
     if (!model || !model->template_root)
@@ -859,6 +990,8 @@ void *rt_model3d_find_node_option(void *obj, rt_string name) {
 /// Each instantiation creates a fresh deep-copy of the node hierarchy, suitable for adding to
 /// a live scene without disturbing the template. Static meshes/materials are shared; meshes
 /// with attached morph targets are cloned so their blend-shape weights are instance-local.
+/// @param obj Model3D receiver.
+/// @return New independently mutable synthetic-root SceneNode3D subtree, or NULL on failure.
 void *rt_model3d_instantiate(void *obj) {
     rt_model3d *model = model3d_checked(obj);
     rt_scene_node3d *root;
@@ -872,11 +1005,16 @@ void *rt_model3d_instantiate(void *obj) {
 
 /// @brief Build a fresh Scene3D from the template's children, cloning each one. Use when the
 /// caller wants the model exposed as a top-level scene rather than a node subtree.
+/// @param obj Model3D receiver.
+/// @return New default Scene3D instance, or NULL on failure.
 void *rt_model3d_instantiate_scene(void *obj) {
     return rt_model3d_instantiate_scene_at(obj, 0);
 }
 
 /// @brief Build a fresh Scene3D for immutable scene @p index.
+/// @param obj Model3D receiver.
+/// @param index Zero-based immutable-scene index.
+/// @return New independently mutable Scene3D, or NULL for invalid input or cloning failure.
 void *rt_model3d_instantiate_scene_at(void *obj, int64_t index) {
     rt_model3d *model = model3d_checked(obj);
     rt_scene3d *scene;

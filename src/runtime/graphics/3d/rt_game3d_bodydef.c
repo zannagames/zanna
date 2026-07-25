@@ -17,6 +17,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the Game3D BodyDef value builder and physics-body factory.
+/// @details BodyDef normalizes shape dimensions, material properties, simulation modes, and
+///   collision filtering without retaining external objects. The factory materializes a concrete
+///   Physics3D body only after the complete definition has been configured.
+
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_audio.h"
@@ -72,6 +78,7 @@
 
 /// @brief Reset a BodyDef to library defaults: a 0.5-half-extent dynamic box, mass 1,
 ///   friction 0.5, restitution 0.3, on the DYNAMIC layer, colliding with everything.
+/// @param def BodyDef storage to initialize; NULL is ignored.
 static void game3d_body_def_defaults(rt_game3d_body_def *def) {
     if (!def)
         return;
@@ -91,6 +98,8 @@ static void game3d_body_def_defaults(rt_game3d_body_def *def) {
 }
 
 /// @brief Allocate a BodyDef handle seeded with defaults; traps `method` on OOM.
+/// @param method Trap message used when allocation fails.
+/// @return A new default BodyDef, or NULL on allocation failure.
 static void *game3d_body_def_alloc(const char *method) {
     rt_game3d_body_def *def =
         (rt_game3d_body_def *)rt_obj_new_i64(RT_G3D_GAME3D_BODYDEF_CLASS_ID, (int64_t)sizeof(*def));
@@ -104,6 +113,8 @@ static void *game3d_body_def_alloc(const char *method) {
 
 /// @brief Return `sync_mode` if it is a known RT_GAME3D_SYNC_* value, else default to
 ///   NODE_FROM_BODY.
+/// @param sync_mode Candidate body/node synchronization mode.
+/// @return The validated mode, or RT_GAME3D_SYNC_NODE_FROM_BODY as the fallback.
 static int64_t game3d_valid_sync_or_default(int64_t sync_mode) {
     switch (sync_mode) {
         case RT_GAME3D_SYNC_NODE_FROM_BODY:
@@ -118,6 +129,9 @@ static int64_t game3d_valid_sync_or_default(int64_t sync_mode) {
 
 /// @brief Return `value` if finite and strictly positive, else `fallback`. For
 ///   collider extents/radii/heights that must stay positive.
+/// @param value Candidate positive dimension.
+/// @param fallback Value used when @p value is non-finite or non-positive.
+/// @return The selected dimension, clamped to RT_GAME3D_BODYDEF_DIM_MAX.
 static double game3d_bodydef_extent_or(double value, double fallback) {
     value = game3d_finite_or(value, fallback);
     if (value <= 0.0)
@@ -128,6 +142,11 @@ static double game3d_bodydef_extent_or(double value, double fallback) {
 }
 
 /// @brief Build a dynamic box BodyDef; a (near-)zero mass yields a static body. See header.
+/// @param half_x Positive half-extent along X.
+/// @param half_y Positive half-extent along Y.
+/// @param half_z Positive half-extent along Z.
+/// @param mass Non-negative mass in kilograms.
+/// @return A new box BodyDef, or NULL when allocation fails.
 void *rt_game3d_body_def_box(double half_x, double half_y, double half_z, double mass) {
     rt_game3d_body_def *def =
         (rt_game3d_body_def *)game3d_body_def_alloc("Game3D.BodyDef.Box: allocation failed");
@@ -143,6 +162,9 @@ void *rt_game3d_body_def_box(double half_x, double half_y, double half_z, double
 }
 
 /// @brief Build a dynamic sphere BodyDef; a (near-)zero mass yields a static body. See header.
+/// @param radius Positive sphere radius.
+/// @param mass Non-negative mass in kilograms.
+/// @return A new sphere BodyDef, or NULL when allocation fails.
 void *rt_game3d_body_def_sphere(double radius, double mass) {
     rt_game3d_body_def *def =
         (rt_game3d_body_def *)game3d_body_def_alloc("Game3D.BodyDef.Sphere: allocation failed");
@@ -157,6 +179,10 @@ void *rt_game3d_body_def_sphere(double radius, double mass) {
 
 /// @brief Build a dynamic capsule BodyDef (height clamped to ≥ 2·radius); zero mass
 ///   yields a static body. See header.
+/// @param radius Positive capsule radius.
+/// @param height Positive full capsule height.
+/// @param mass Non-negative mass in kilograms.
+/// @return A new capsule BodyDef, or NULL when allocation fails.
 void *rt_game3d_body_def_capsule(double radius, double height, double mass) {
     rt_game3d_body_def *def =
         (rt_game3d_body_def *)game3d_body_def_alloc("Game3D.BodyDef.Capsule: allocation failed");
@@ -173,6 +199,10 @@ void *rt_game3d_body_def_capsule(double radius, double height, double mass) {
 }
 
 /// @brief Build a static box on the WORLD layer (mass 0); see header.
+/// @param half_x Positive half-extent along X.
+/// @param half_y Positive half-extent along Y.
+/// @param half_z Positive half-extent along Z.
+/// @return A new static world-layer box BodyDef, or NULL when allocation fails.
 void *rt_game3d_body_def_static_box(double half_x, double half_y, double half_z) {
     rt_game3d_body_def *def =
         (rt_game3d_body_def *)rt_game3d_body_def_box(half_x, half_y, half_z, 0.0);
@@ -185,6 +215,8 @@ void *rt_game3d_body_def_static_box(double half_x, double half_y, double half_z)
 }
 
 /// @brief Build a thin static floor box of the given footprint size; see header.
+/// @param size Positive full width and depth of the floor footprint.
+/// @return A new static world-layer floor BodyDef, or NULL when allocation fails.
 void *rt_game3d_body_def_static_plane(double size) {
     double half = game3d_bodydef_extent_or(size, 1.0) * 0.5;
     rt_game3d_body_def *def = (rt_game3d_body_def *)rt_game3d_body_def_static_box(half, 0.05, half);
@@ -192,6 +224,8 @@ void *rt_game3d_body_def_static_plane(double size) {
 }
 
 /// @brief Get the body shape kind (defaults to BOX if the handle is invalid).
+/// @param obj BodyDef to query.
+/// @return A validated RT_GAME3D_BODY_SHAPE_* value.
 int64_t rt_game3d_body_def_get_shape(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_shape: invalid BodyDef");
@@ -208,6 +242,8 @@ int64_t rt_game3d_body_def_get_shape(void *obj) {
 }
 
 /// @brief Set the body shape kind; traps on an unknown BodyShape value.
+/// @param obj BodyDef to configure.
+/// @param shape One of the RT_GAME3D_BODY_SHAPE_* values.
 void rt_game3d_body_def_set_shape(void *obj, int64_t shape) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.set_shape: invalid BodyDef");
@@ -226,6 +262,8 @@ void rt_game3d_body_def_set_shape(void *obj, int64_t shape) {
 }
 
 /// @brief Get the body mass in kg (0 on invalid handle).
+/// @param obj BodyDef to query.
+/// @return The sanitized non-negative mass in kilograms, or 0 when invalid.
 double rt_game3d_body_def_get_mass(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_mass: invalid BodyDef");
@@ -233,6 +271,8 @@ double rt_game3d_body_def_get_mass(void *obj) {
 }
 
 /// @brief Set the body mass; zero mass means static, positive mass means simulated.
+/// @param obj BodyDef to configure.
+/// @param mass Requested non-negative mass in kilograms.
 void rt_game3d_body_def_set_mass(void *obj, double mass) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.set_mass: invalid BodyDef");
@@ -248,6 +288,8 @@ void rt_game3d_body_def_set_mass(void *obj, double mass) {
 }
 
 /// @brief Get the friction coefficient (0 on invalid handle).
+/// @param obj BodyDef to query.
+/// @return The sanitized non-negative friction coefficient, or 0 when invalid.
 double rt_game3d_body_def_get_friction(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_friction: invalid BodyDef");
@@ -256,6 +298,8 @@ double rt_game3d_body_def_get_friction(void *obj) {
 }
 
 /// @brief Set the friction coefficient (negatives keep the prior value).
+/// @param obj BodyDef to configure.
+/// @param friction Requested non-negative friction coefficient.
 void rt_game3d_body_def_set_friction(void *obj, double friction) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.set_friction: invalid BodyDef");
@@ -265,6 +309,8 @@ void rt_game3d_body_def_set_friction(void *obj, double friction) {
 }
 
 /// @brief Get the restitution coefficient (0 on invalid handle).
+/// @param obj BodyDef to query.
+/// @return The restitution coefficient in the range 0 through 1, or 0 when invalid.
 double rt_game3d_body_def_get_restitution(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_restitution: invalid BodyDef");
@@ -272,6 +318,8 @@ double rt_game3d_body_def_get_restitution(void *obj) {
 }
 
 /// @brief Set the restitution coefficient, clamped to [0, 1].
+/// @param obj BodyDef to configure.
+/// @param restitution Requested coefficient of restitution.
 void rt_game3d_body_def_set_restitution(void *obj, double restitution) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.set_restitution: invalid BodyDef");
@@ -280,6 +328,8 @@ void rt_game3d_body_def_set_restitution(void *obj, double restitution) {
 }
 
 /// @brief True if the body is static (0 on invalid handle).
+/// @param obj BodyDef to query.
+/// @return 1 when configured static, or 0 when dynamic or invalid.
 int8_t rt_game3d_body_def_get_static(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_isStatic: invalid BodyDef");
@@ -288,6 +338,8 @@ int8_t rt_game3d_body_def_get_static(void *obj) {
 
 /// @brief Mark the body static/dynamic; static bodies have zero mass, and returning to
 ///   dynamic restores a usable default mass if no explicit mass is present.
+/// @param obj BodyDef to configure.
+/// @param is_static Non-zero for a mass-zero static body; zero for a simulated body.
 void rt_game3d_body_def_set_static(void *obj, int8_t is_static) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.set_isStatic: invalid BodyDef");
@@ -303,6 +355,8 @@ void rt_game3d_body_def_set_static(void *obj, int8_t is_static) {
 }
 
 /// @brief True if the body is kinematic (0 on invalid handle).
+/// @param obj BodyDef to query.
+/// @return 1 when configured kinematic, or 0 when simulated or invalid.
 int8_t rt_game3d_body_def_get_kinematic(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_isKinematic: invalid BodyDef");
@@ -310,6 +364,8 @@ int8_t rt_game3d_body_def_get_kinematic(void *obj) {
 }
 
 /// @brief Mark the body kinematic/simulated; going kinematic clears static and ensures mass.
+/// @param obj BodyDef to configure.
+/// @param is_kinematic Non-zero for a kinematic body; zero for normal simulation.
 void rt_game3d_body_def_set_kinematic(void *obj, int8_t is_kinematic) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.set_isKinematic: invalid BodyDef");
@@ -324,6 +380,8 @@ void rt_game3d_body_def_set_kinematic(void *obj, int8_t is_kinematic) {
 }
 
 /// @brief True if the body is a trigger (0 on invalid handle).
+/// @param obj BodyDef to query.
+/// @return 1 when configured as a trigger volume, or 0 otherwise.
 int8_t rt_game3d_body_def_get_trigger(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_isTrigger: invalid BodyDef");
@@ -331,6 +389,8 @@ int8_t rt_game3d_body_def_get_trigger(void *obj) {
 }
 
 /// @brief Mark the body as a trigger volume or a solid collider.
+/// @param obj BodyDef to configure.
+/// @param is_trigger Non-zero for a trigger volume; zero for a solid collider.
 void rt_game3d_body_def_set_trigger(void *obj, int8_t is_trigger) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.set_isTrigger: invalid BodyDef");
@@ -339,6 +399,8 @@ void rt_game3d_body_def_set_trigger(void *obj, int8_t is_trigger) {
 }
 
 /// @brief True if continuous collision detection is enabled (0 on invalid handle).
+/// @param obj BodyDef to query.
+/// @return 1 when CCD is enabled, or 0 when disabled or invalid.
 int8_t rt_game3d_body_def_get_use_ccd(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_useCCD: invalid BodyDef");
@@ -346,6 +408,8 @@ int8_t rt_game3d_body_def_get_use_ccd(void *obj) {
 }
 
 /// @brief Enable or disable continuous collision detection.
+/// @param obj BodyDef to configure.
+/// @param use_ccd Non-zero to enable CCD; zero to disable it.
 void rt_game3d_body_def_set_use_ccd(void *obj, int8_t use_ccd) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.set_useCCD: invalid BodyDef");
@@ -354,6 +418,8 @@ void rt_game3d_body_def_set_use_ccd(void *obj, int8_t use_ccd) {
 }
 
 /// @brief Get the body's collision layer (defaults to DYNAMIC on invalid handle).
+/// @param obj BodyDef to query.
+/// @return A valid single-bit collision layer.
 int64_t rt_game3d_body_def_get_layer(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_layer: invalid BodyDef");
@@ -361,11 +427,15 @@ int64_t rt_game3d_body_def_get_layer(void *obj) {
 }
 
 /// @brief Property setter for the collision layer (delegates to withLayer).
+/// @param obj BodyDef to configure.
+/// @param layer Positive single-bit collision layer.
 void rt_game3d_body_def_set_layer_prop(void *obj, int64_t layer) {
     (void)rt_game3d_body_def_with_layer(obj, layer);
 }
 
 /// @brief Get a fresh LayerMask handle reflecting the body's collision mask bits.
+/// @param obj BodyDef to query.
+/// @return A new LayerMask containing the configured bits, or NULL when invalid.
 void *rt_game3d_body_def_get_mask(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_mask: invalid BodyDef");
@@ -373,11 +443,15 @@ void *rt_game3d_body_def_get_mask(void *obj) {
 }
 
 /// @brief Property setter for the collision mask (delegates to withMask).
+/// @param obj BodyDef to configure.
+/// @param mask LayerMask whose bits are copied into the definition.
 void rt_game3d_body_def_set_mask_prop(void *obj, void *mask) {
     (void)rt_game3d_body_def_with_mask(obj, mask);
 }
 
 /// @brief Get the body/node sync mode (defaults to NODE_FROM_BODY on invalid handle).
+/// @param obj BodyDef to query.
+/// @return A validated RT_GAME3D_SYNC_* mode.
 int64_t rt_game3d_body_def_get_sync_mode(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.get_syncMode: invalid BodyDef");
@@ -385,11 +459,16 @@ int64_t rt_game3d_body_def_get_sync_mode(void *obj) {
 }
 
 /// @brief Property setter for the sync mode (delegates to withSync).
+/// @param obj BodyDef to configure.
+/// @param sync_mode Candidate RT_GAME3D_SYNC_* value.
 void rt_game3d_body_def_set_sync_mode_prop(void *obj, int64_t sync_mode) {
     (void)rt_game3d_body_def_with_sync(obj, sync_mode);
 }
 
 /// @brief Fluent: set the collision layer (must be a single bit) and return the def.
+/// @param obj BodyDef to configure.
+/// @param layer Positive single-bit collision layer.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_body_def_with_layer(void *obj, int64_t layer) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.withLayer: invalid BodyDef");
@@ -405,6 +484,9 @@ void *rt_game3d_body_def_with_layer(void *obj, int64_t layer) {
 }
 
 /// @brief Fluent: copy a LayerMask's bits into the def's collision mask and return it.
+/// @param obj BodyDef to configure.
+/// @param mask_obj LayerMask whose bits are copied.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_body_def_with_mask(void *obj, void *mask_obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.withMask: invalid BodyDef");
@@ -418,6 +500,8 @@ void *rt_game3d_body_def_with_mask(void *obj, void *mask_obj) {
 }
 
 /// @brief Fluent: mark the def as a trigger and return it.
+/// @param obj BodyDef to configure.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_body_def_as_trigger(void *obj) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.asTrigger: invalid BodyDef");
@@ -427,6 +511,9 @@ void *rt_game3d_body_def_as_trigger(void *obj) {
 }
 
 /// @brief Fluent: set the (validated) sync mode and return the def.
+/// @param obj BodyDef to configure.
+/// @param sync_mode Candidate RT_GAME3D_SYNC_* value.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_body_def_with_sync(void *obj, int64_t sync_mode) {
     rt_game3d_body_def *def =
         game3d_body_def_checked(obj, "Game3D.BodyDef.withSync: invalid BodyDef");
@@ -437,6 +524,8 @@ void *rt_game3d_body_def_with_sync(void *obj, int64_t sync_mode) {
 
 /// @brief Instantiate the concrete Physics3D body matching a BodyDef's shape and mass
 ///   (static bodies are created with mass 0). Returns NULL for a NULL def.
+/// @param def BodyDef whose normalized values configure the new physics body.
+/// @return A new Body3D of the selected shape, or NULL when creation fails.
 void *game3d_body_def_create_body(rt_game3d_body_def *def) {
     void *body = NULL;
     if (!def)

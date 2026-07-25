@@ -16,6 +16,13 @@
 // Links: vgfx3d_backend_d3d11.c, vgfx3d_backend_d3d11_context.inc
 //
 //===----------------------------------------------------------------------===//
+
+/// @file vgfx3d_backend_d3d11_shaders.inc
+/// @brief Defines embedded HLSL programs and thread-safe accessors used by the D3D11 backend.
+/// @details Shader sources are split into C string chunks to keep compiler literals
+///   manageable. Each accessor lazily joins its chunks and atomically publishes one
+///   immutable, process-lifetime source string for all backend contexts.
+
 #include "rt_platform.h"
 
 #include <stddef.h>
@@ -26,6 +33,11 @@
 /// @details Canvas contexts can be created on independent host threads. A plain lazy global
 ///   pointer races in that case and can expose a partially initialized pointer or leak every
 ///   losing allocation. The compare/exchange publishes one winner; losing candidates are freed.
+/// @param[in,out] cache Atomic cache slot that receives the published joined string.
+/// @param[in] chunks Ordered array of null-terminated source fragments.
+/// @param[in] count Number of entries in @p chunks.
+/// @return The immutable joined source, an already-published source from another thread,
+///   or `NULL` for invalid input, size overflow, or allocation failure.
 static const char *d3d11_join_shader_chunks(void *volatile *cache,
                                             const char *const *chunks,
                                             size_t count) {
@@ -2529,6 +2541,8 @@ static const char *const
 
 static void *volatile d3d11_shader_source_cache;
 
+/// @brief Return the lazily assembled primary scene and shadow HLSL source.
+/// @return Process-lifetime immutable shader source, or `NULL` if assembly fails.
 static const char *d3d11_shader_source_get(void) {
     return d3d11_join_shader_chunks(&d3d11_shader_source_cache,
                                     d3d11_shader_source_chunks,
@@ -2581,6 +2595,8 @@ static const char *const d3d11_skybox_shader_source_chunks[] = {
 
 static void *volatile d3d11_skybox_shader_source_cache;
 
+/// @brief Return the lazily assembled skybox HLSL source.
+/// @return Process-lifetime immutable shader source, or `NULL` if assembly fails.
 static const char *d3d11_skybox_shader_source_get(void) {
     return d3d11_join_shader_chunks(&d3d11_skybox_shader_source_cache,
                                     d3d11_skybox_shader_source_chunks,
@@ -2873,6 +2889,8 @@ static const char *const d3d11_postfx_shader_source_chunks[] = {
 
 static void *volatile d3d11_postfx_shader_source_cache;
 
+/// @brief Return the lazily assembled general post-processing and overlay HLSL source.
+/// @return Process-lifetime immutable shader source, or `NULL` if assembly fails.
 static const char *d3d11_postfx_shader_source_get(void) {
     return d3d11_join_shader_chunks(&d3d11_postfx_shader_source_cache,
                                     d3d11_postfx_shader_source_chunks,
@@ -2961,6 +2979,8 @@ static const char *const d3d11_bloom_shader_source_chunks[] = {
 
 static void *volatile d3d11_bloom_shader_source_cache;
 
+/// @brief Return the lazily assembled bloom downsample and upsample HLSL source.
+/// @return Process-lifetime immutable shader source, or `NULL` if assembly fails.
 static const char *d3d11_bloom_shader_source_get(void) {
     return d3d11_join_shader_chunks(&d3d11_bloom_shader_source_cache,
                                     d3d11_bloom_shader_source_chunks,
@@ -3059,6 +3079,8 @@ static const char *const d3d11_taa_shader_source_chunks[] = {
 
 static void *volatile d3d11_taa_shader_source_cache;
 
+/// @brief Return the lazily assembled temporal anti-aliasing resolve HLSL source.
+/// @return Process-lifetime immutable shader source, or `NULL` if assembly fails.
 static const char *d3d11_taa_shader_source_get(void) {
     return d3d11_join_shader_chunks(&d3d11_taa_shader_source_cache,
                                     d3d11_taa_shader_source_chunks,
@@ -3234,6 +3256,8 @@ static const char *const d3d11_ssr_shader_source_chunks[] = {
 
 static void *volatile d3d11_ssr_shader_source_cache;
 
+/// @brief Return the lazily assembled screen-space reflection HLSL source.
+/// @return Process-lifetime immutable shader source, or `NULL` if assembly fails.
 static const char *d3d11_ssr_shader_source_get(void) {
     return d3d11_join_shader_chunks(&d3d11_ssr_shader_source_cache,
                                     d3d11_ssr_shader_source_chunks,

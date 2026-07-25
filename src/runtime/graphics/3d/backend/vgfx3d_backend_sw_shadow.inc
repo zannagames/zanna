@@ -16,6 +16,17 @@
 // Links: vgfx3d_backend_sw.c, vgfx3d_backend_sw_raster.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file vgfx3d_backend_sw_shadow.inc
+ * @brief Implements software wireframe lines and clipped, tiled shadow-depth rasterization.
+ *
+ * Shadow draws transform and clip mesh triangles in homogeneous light space, preserve alpha-mask
+ * attributes, bin resulting screen triangles into fixed-size tiles, and rasterize active tiles
+ * through the context worker pool. Serial paths remain available for small draws or unavailable
+ * worker resources, while canvas-owned depth storage remains valid across shadow reuse.
+ */
+
 /*==========================================================================
  * Wireframe — Bresenham line
  *=========================================================================*/
@@ -25,6 +36,17 @@
 /// Walks the longer of dx or dy, stepping the shorter axis via an
 /// error-accumulator. No anti-aliasing — we trade quality for the
 /// software backend's per-pixel speed.
+/// @param pixels Borrowed mutable RGBA8 framebuffer.
+/// @param fb_w Positive framebuffer width in pixels.
+/// @param fb_h Positive framebuffer height in pixels.
+/// @param stride Framebuffer row stride in bytes.
+/// @param x0 Starting pixel X coordinate.
+/// @param y0 Starting pixel Y coordinate.
+/// @param x1 Ending pixel X coordinate.
+/// @param y1 Ending pixel Y coordinate.
+/// @param r Red byte written to covered pixels.
+/// @param g Green byte written to covered pixels.
+/// @param b Blue byte written to covered pixels.
 static void draw_line(uint8_t *pixels,
                       int32_t fb_w,
                       int32_t fb_h,
@@ -75,11 +97,11 @@ static void draw_line(uint8_t *pixels,
  * Shadow map — depth-only rasterization
  *=========================================================================*/
 
-/// @brief Rasterize a single triangle into a depth buffer (no color, no lighting).
-/// @brief Depth-only triangle rasterizer for the shadow map pass.
-///
-/// Slimmer than `raster_triangle` — only writes Z (no color, lighting,
-/// or texturing). Same edge-function approach.
+/// @brief Advance a shadow edge-function accumulator by a signed number of steps.
+/// @param value Edge-function value at the starting sample.
+/// @param delta Per-step edge-function increment.
+/// @param steps Signed number of pixel or scanline steps.
+/// @return The advanced edge-function value.
 static float shadow_advance_edge_value(float value, float delta, int steps) {
     /* Closed-form advance, matching sw_advance_edge_value in the colour raster path: avoids a
      * per-step loop (previously O(steps) on scissored shadow tiles with a large min-y offset)
@@ -87,6 +109,29 @@ static float shadow_advance_edge_value(float value, float delta, int steps) {
     return value + delta * (float)steps;
 }
 
+/// @brief Rasterize one screen-space triangle into a shadow depth buffer within a scissor.
+/// @details Uses edge functions and perspective-correct alpha/UV interpolation. Opaque fragments
+///          update depth directly; masked fragments sample the base-color alpha using the
+///          material-selected UV set and transform before applying the alpha cutoff.
+/// @param depth Borrowed mutable shadow depth buffer.
+/// @param sw Positive shadow-map width in pixels.
+/// @param sh Positive shadow-map height in pixels.
+/// @param sx Mutable array of three screen-space X coordinates; winding normalization may swap
+///           lanes one and two.
+/// @param sy Mutable array of three screen-space Y coordinates.
+/// @param sz Mutable array of three normalized shadow depths.
+/// @param su Optional first-UV-set U coordinates.
+/// @param sv Optional first-UV-set V coordinates.
+/// @param su1 Optional second-UV-set U coordinates.
+/// @param sv1 Optional second-UV-set V coordinates.
+/// @param sa Optional vertex-alpha values; absent input defaults to one.
+/// @param sinv_w Optional reciprocal clip-space W values for perspective correction.
+/// @param cmd Optional borrowed draw command supplying mask and texture-transform state.
+/// @param alpha_tex Optional borrowed base-color texture view for alpha masking.
+/// @param clip_min_x Inclusive scissor minimum X coordinate.
+/// @param clip_min_y Inclusive scissor minimum Y coordinate.
+/// @param clip_max_x Inclusive scissor maximum X coordinate.
+/// @param clip_max_y Inclusive scissor maximum Y coordinate.
 static void shadow_raster_tri_scissored(float *depth,
                                         int32_t sw,
                                         int32_t sh,
@@ -245,6 +290,22 @@ static void shadow_raster_tri_scissored(float *depth,
     }
 }
 
+/// @brief Rasterize one screen-space triangle across the complete shadow map.
+/// @details Convenience wrapper around @c shadow_raster_tri_scissored() using full-map bounds.
+/// @param depth Borrowed mutable shadow depth buffer.
+/// @param sw Positive shadow-map width in pixels.
+/// @param sh Positive shadow-map height in pixels.
+/// @param sx Mutable array of three screen-space X coordinates.
+/// @param sy Mutable array of three screen-space Y coordinates.
+/// @param sz Mutable array of three normalized shadow depths.
+/// @param su Optional first-UV-set U coordinates.
+/// @param sv Optional first-UV-set V coordinates.
+/// @param su1 Optional second-UV-set U coordinates.
+/// @param sv1 Optional second-UV-set V coordinates.
+/// @param sa Optional vertex-alpha values.
+/// @param sinv_w Optional reciprocal clip-space W values.
+/// @param cmd Optional borrowed draw command supplying alpha-mask state.
+/// @param alpha_tex Optional borrowed base-color texture view for alpha masking.
 static void shadow_raster_tri(float *depth,
                               int32_t sw,
                               int32_t sh,
@@ -291,6 +352,9 @@ typedef struct {
 ///   results mean the vertex is on the inside half-space of that plane. Used by the
 ///   shadow-pass Sutherland-Hodgman polygon clipper to test which side each input
 ///   vertex falls on.
+/// @param v Borrowed homogeneous clip-space vertex.
+/// @param plane Frustum-plane index from zero through five.
+/// @return Signed homogeneous distance, non-negative on the plane's inside half-space.
 static float shadow_clip_distance(const shadow_clip_vertex_t *v, int plane) {
     switch (plane) {
         case 0:
@@ -312,6 +376,10 @@ static float shadow_clip_distance(const shadow_clip_vertex_t *v, int plane) {
 /// @details Used by the shadow polygon clipper to construct the new vertex generated
 ///   when an edge crosses a clip plane. The interpolation runs on the homogeneous
 ///   clip-space coordinates so the resulting position lies on the original edge.
+/// @param a Borrowed edge-start vertex.
+/// @param b Borrowed edge-end vertex.
+/// @param t Interpolation parameter, conventionally in `[0, 1]`.
+/// @return Interpolated clip coordinates, UV sets, and vertex alpha.
 static shadow_clip_vertex_t shadow_clip_lerp(const shadow_clip_vertex_t *a,
                                              const shadow_clip_vertex_t *b,
                                              float t) {
@@ -332,6 +400,9 @@ static shadow_clip_vertex_t shadow_clip_lerp(const shadow_clip_vertex_t *a,
 ///   polygon replaces the input via a `tmp[]` swap buffer (max 16 vertices). Returns the
 ///   final clipped polygon vertex count, with the result written back to @p poly. Used
 ///   by the shadow-pass shadow-map rasterizer to clip triangles against the shadow frustum.
+/// @param poly In/out polygon storage with capacity for 16 vertices.
+/// @param count Initial number of valid vertices in @p poly.
+/// @return Number of vertices remaining after all six planes, or zero when fully clipped.
 static int shadow_clip_polygon(shadow_clip_vertex_t *poly, int count) {
     shadow_clip_vertex_t tmp[16];
     for (int plane = 0; plane < 6; plane++) {
@@ -414,6 +485,8 @@ typedef struct {
     int32_t *failed;
 } sw_shadow_collect_task_t;
 
+/// @brief Release a collected shadow-triangle list and reset its metadata.
+/// @param list Mutable list to release; null is a no-op.
 static void sw_shadow_tri_list_free(sw_shadow_tri_list_t *list) {
     if (!list)
         return;
@@ -423,6 +496,11 @@ static void sw_shadow_tri_list_free(sw_shadow_tri_list_t *list) {
     list->capacity = 0;
 }
 
+/// @brief Ensure a shadow-triangle list can hold at least the requested number of entries.
+/// @param list Mutable list whose backing storage may grow.
+/// @param needed Required total capacity.
+/// @return 1 when sufficient storage is available, otherwise 0 on invalid input, overflow, or
+///         allocation failure.
 static int sw_shadow_tri_list_reserve(sw_shadow_tri_list_t *list, uint32_t needed) {
     uint32_t new_capacity;
     sw_shadow_screen_tri_t *new_items;
@@ -449,6 +527,10 @@ static int sw_shadow_tri_list_reserve(sw_shadow_tri_list_t *list, uint32_t neede
     return 1;
 }
 
+/// @brief Append one screen-space shadow triangle to a growable list.
+/// @param list Mutable destination list.
+/// @param tri Borrowed triangle copied into the list.
+/// @return 1 on success, otherwise 0 for invalid input, count overflow, or allocation failure.
 static int sw_shadow_tri_list_push(sw_shadow_tri_list_t *list, const sw_shadow_screen_tri_t *tri) {
     if (!list || !tri)
         return 0;
@@ -460,6 +542,8 @@ static int sw_shadow_tri_list_push(sw_shadow_tri_list_t *list, const sw_shadow_s
     return 1;
 }
 
+/// @brief Release every tile-bin allocation and reset the shadow tile grid.
+/// @param grid Mutable grid to release; null is a no-op.
 static void sw_shadow_tile_grid_free(sw_shadow_tile_grid_t *grid) {
     if (!grid)
         return;
@@ -478,6 +562,11 @@ static void sw_shadow_tile_grid_free(sw_shadow_tile_grid_t *grid) {
     grid->active_capacity = 0;
 }
 
+/// @brief Initialize an empty fixed-size tile grid for a shadow-map extent.
+/// @param grid Mutable grid receiving zeroed bins and dimensions.
+/// @param width Positive shadow-map width in pixels.
+/// @param height Positive shadow-map height in pixels.
+/// @return 1 when all bins are allocated, otherwise 0 for invalid dimensions, overflow, or OOM.
 static int sw_shadow_tile_grid_init(sw_shadow_tile_grid_t *grid, int32_t width, int32_t height) {
     int32_t cols;
     int32_t rows;
@@ -497,6 +586,10 @@ static int sw_shadow_tile_grid_init(sw_shadow_tile_grid_t *grid, int32_t width, 
     return grid->bins ? 1 : 0;
 }
 
+/// @brief Append a newly non-empty tile to the grid's active-tile work list.
+/// @param grid Mutable tile grid whose active-index storage may grow.
+/// @param tile_index Valid linear tile index to append exactly once.
+/// @return 1 on success, otherwise 0 for invalid input, overflow, or allocation failure.
 static int sw_shadow_tile_grid_mark_active(sw_shadow_tile_grid_t *grid, int32_t tile_index) {
     int32_t new_capacity;
     int32_t *new_indices;
@@ -524,6 +617,10 @@ static int sw_shadow_tile_grid_mark_active(sw_shadow_tile_grid_t *grid, int32_t 
     return 1;
 }
 
+/// @brief Append a triangle index to one growable shadow tile bin.
+/// @param bin Mutable tile bin whose index storage may grow.
+/// @param tri_index Index into the shared collected-triangle list.
+/// @return 1 on success, otherwise 0 for invalid input, overflow, or allocation failure.
 static int sw_shadow_tile_bin_append(sw_shadow_tile_bin_t *bin, uint32_t tri_index) {
     uint32_t new_capacity;
     uint32_t *new_indices;
@@ -549,6 +646,15 @@ static int sw_shadow_tile_bin_append(sw_shadow_tile_bin_t *bin, uint32_t tri_ind
     return 1;
 }
 
+/// @brief Compute a finite, clipped pixel bounding box for a screen-space shadow triangle.
+/// @param tri Borrowed screen-space triangle.
+/// @param sw Positive shadow-map width in pixels.
+/// @param sh Positive shadow-map height in pixels.
+/// @param out_min_x Receives the inclusive minimum X coordinate.
+/// @param out_min_y Receives the inclusive minimum Y coordinate.
+/// @param out_max_x Receives the inclusive maximum X coordinate.
+/// @param out_max_y Receives the inclusive maximum Y coordinate.
+/// @return 1 for a finite non-degenerate on-map triangle, otherwise 0.
 static int sw_shadow_tri_bounds(const sw_shadow_screen_tri_t *tri,
                                 int32_t sw,
                                 int32_t sh,
@@ -581,6 +687,12 @@ static int sw_shadow_tri_bounds(const sw_shadow_screen_tri_t *tri,
     return 1;
 }
 
+/// @brief Bin every collected shadow triangle into all intersected tiles.
+/// @param grid Mutable initialized tile grid receiving triangle indices.
+/// @param tris Borrowed collected screen-space triangles.
+/// @param sw Positive shadow-map width in pixels.
+/// @param sh Positive shadow-map height in pixels.
+/// @return 1 when binning completes, otherwise 0 on invalid input or allocation failure.
 static int sw_shadow_bin_triangles(sw_shadow_tile_grid_t *grid,
                                    const sw_shadow_tri_list_t *tris,
                                    int32_t sw,
@@ -618,6 +730,15 @@ static int sw_shadow_bin_triangles(sw_shadow_tile_grid_t *grid,
     return 1;
 }
 
+/// @brief Transform, frustum-clip, triangulate, and collect a contiguous source-triangle range.
+/// @param cmd Borrowed sanitized indexed draw command.
+/// @param tri_begin Inclusive source triangle index.
+/// @param tri_end Exclusive source triangle index.
+/// @param lmvp Borrowed row-major light-model-view-projection matrix.
+/// @param half_w Half the shadow-map width used for viewport conversion.
+/// @param half_h Half the shadow-map height used for viewport conversion.
+/// @param out Mutable list receiving zero or more clipped screen triangles.
+/// @return 1 when the range is processed, otherwise 0 on invalid input or list-growth failure.
 static int sw_shadow_collect_triangles_range(const vgfx3d_draw_cmd_t *cmd,
                                              uint32_t tri_begin,
                                              uint32_t tri_end,
@@ -689,6 +810,9 @@ static int sw_shadow_collect_triangles_range(const vgfx3d_draw_cmd_t *cmd,
     return 1;
 }
 
+/// @brief Thread-pool callback that collects one assigned source-triangle range.
+/// @param arg Borrowed pointer to a @c sw_shadow_collect_task_t valid through the completion
+///            barrier.
 static void sw_shadow_collect_task_run(void *arg) {
     sw_shadow_collect_task_t *task = (sw_shadow_collect_task_t *)arg;
     if (!task)
@@ -704,6 +828,17 @@ static void sw_shadow_collect_task_run(void *arg) {
     }
 }
 
+/// @brief Collect clipped screen-space shadow triangles across the context worker pool.
+/// @details Partitions source triangles into deterministic contiguous ranges, runs unsent tasks
+///          synchronously if submission stops, then concatenates results in task order.
+/// @param ctx Borrowed software context containing the worker pool.
+/// @param cmd Borrowed sanitized indexed draw command.
+/// @param index_count Validated index count, rounded to complete triangles by the caller.
+/// @param lmvp Borrowed row-major light-model-view-projection matrix.
+/// @param half_w Half the shadow-map width used for viewport conversion.
+/// @param half_h Half the shadow-map height used for viewport conversion.
+/// @param out Mutable list receiving all collected triangles.
+/// @return 1 on complete collection, otherwise 0 when parallel prerequisites or allocation fail.
 static int sw_shadow_collect_triangles_parallel(sw_context_t *ctx,
                                                 const vgfx3d_draw_cmd_t *cmd,
                                                 uint32_t index_count,
@@ -776,6 +911,9 @@ static int sw_shadow_collect_triangles_parallel(sw_context_t *ctx,
     return 1;
 }
 
+/// @brief Thread-pool callback that claims active tiles and rasterizes their triangle bins.
+/// @param arg Borrowed pointer to shared @c sw_shadow_raster_task_t state valid through the
+///            completion barrier.
 static void sw_shadow_raster_task_run(void *arg) {
     sw_shadow_raster_task_t *task = (sw_shadow_raster_task_t *)arg;
     if (!task || !task->grid || !task->tris || !task->next_tile)
@@ -830,6 +968,16 @@ static void sw_shadow_raster_task_run(void *arg) {
     }
 }
 
+/// @brief Rasterize all active shadow tiles using dynamically claimed worker tasks.
+/// @param ctx Borrowed software context containing the worker pool.
+/// @param grid Borrowed binned tile grid.
+/// @param tris Borrowed collected screen-space triangles referenced by the bins.
+/// @param depth Borrowed mutable shadow depth buffer.
+/// @param sw Positive shadow-map width in pixels.
+/// @param sh Positive shadow-map height in pixels.
+/// @param cmd Borrowed sanitized draw command supplying alpha-mask state.
+/// @param alpha_tex Optional borrowed base-color view for cutout shadow sampling.
+/// @return 1 after all active tiles finish, otherwise 0 when prerequisites are unavailable.
 static int sw_shadow_raster_tiles_parallel(sw_context_t *ctx,
                                            const sw_shadow_tile_grid_t *grid,
                                            const sw_shadow_tri_list_t *tris,
@@ -870,6 +1018,11 @@ static int sw_shadow_raster_tiles_parallel(sw_context_t *ctx,
     return 1;
 }
 
+/// @brief Attempt the complete parallel collection, binning, and rasterization path for one draw.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param cmd Borrowed sanitized indexed draw command.
+/// @return 1 when the draw was fully handled, including valid no-output cases; otherwise 0 so the
+///         caller can use the serial path.
 static int sw_shadow_draw_parallel(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     int32_t slot;
@@ -944,6 +1097,12 @@ cleanup:
 /// Caller-provided depth buffer (so the canvas owns the storage and
 /// can resize without consulting the backend). Captures the light VP
 /// matrix that `shadow_draw` will use.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param slot Shadow-resource array slot to arm.
+/// @param depth_buf Borrowed canvas-owned depth storage for @p w times @p h floats.
+/// @param w Positive shadow-map width in pixels.
+/// @param h Positive shadow-map height in pixels.
+/// @param light_vp Borrowed 16-float row-major light view-projection matrix.
 static void sw_shadow_begin(
     void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
@@ -982,6 +1141,8 @@ static void sw_shadow_begin(
 /// but feeds each triangle to `shadow_raster_tri` instead of the full
 /// rasterizer. Triangles are clipped in homogeneous light clip-space before
 /// perspective divide so near-plane crossings cannot poison the shadow map.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param cmd Borrowed sanitized indexed draw command to cast into the active shadow slot.
 static void sw_shadow_draw_serial(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     int32_t slot;
@@ -1093,6 +1254,9 @@ static void sw_shadow_draw_serial(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
     }
 }
 
+/// @brief Sanitize and rasterize one shadow-casting draw through the parallel or serial path.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param cmd Borrowed indexed draw command; null is a no-op.
 static void sw_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
     vgfx3d_draw_cmd_t safe_cmd;
     if (!cmd)
@@ -1104,6 +1268,9 @@ static void sw_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
 }
 
 /// @brief Backend `shadow_end` op — mark shadow map ready and store the bias.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param slot Shadow-resource slot whose active pass is ending.
+/// @param bias Requested constant comparison bias, clamped to the backend-safe range.
 static void sw_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     if (!ctx || slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS)
@@ -1123,6 +1290,13 @@ static void sw_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
 /// so when Canvas3D proves the slot's contents are unchanged it only needs the
 /// per-frame slot registration (pointer/size/VP + complete flag) redone without
 /// the FLT_MAX clear or any rasterization.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param slot Shadow-resource array slot to re-arm.
+/// @param depth_buf Borrowed canvas-owned prior-frame depth storage.
+/// @param w Positive shadow-map width in pixels.
+/// @param h Positive shadow-map height in pixels.
+/// @param light_vp Borrowed 16-float row-major light view-projection matrix.
+/// @return 1 when the prior depth buffer is registered as complete, otherwise 0.
 static int8_t sw_shadow_reuse(
     void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;

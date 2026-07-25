@@ -370,6 +370,199 @@ TEST(image_focusable_opt_in_focus_and_ring) {
     vgfx_destroy_window(win);
 }
 
+TEST(groupbox_children_arranged_parent_relative) {
+    /* Painters and vg_widget_get_screen_bounds sum ancestor origins, so a
+     * container that bakes its own (x, y) into child coordinates displaces
+     * the whole card interior by its own offset (regression: inspector group
+     * content painting outside its pane). */
+    vg_groupbox_t *gb = vg_groupbox_create(NULL, "Card");
+    ASSERT_NOT_NULL(gb);
+
+    vg_widget_t *child = vg_widget_create(VG_WIDGET_CONTAINER);
+    ASSERT_NOT_NULL(child);
+    vg_widget_set_preferred_size(child, 60.0f, 20.0f);
+    vg_groupbox_add_child(gb, child);
+
+    vg_widget_measure(&gb->base, 200.0f, 400.0f);
+    vg_widget_arrange(&gb->base, 50.0f, 80.0f, 200.0f, gb->base.measured_height);
+
+    /* Stored child coordinates are relative to the card, not the screen. */
+    ASSERT(child->x < 50.0f);
+    ASSERT(child->y < 80.0f);
+
+    /* Screen conversion adds the card origin exactly once. */
+    float sx = 0.0f, sy = 0.0f, sw = 0.0f, sh = 0.0f;
+    vg_widget_get_screen_bounds(child, &sx, &sy, &sw, &sh);
+    ASSERT_EQ((int)sx, (int)(50.0f + child->x));
+    ASSERT_EQ((int)sy, (int)(80.0f + child->y));
+
+    vg_groupbox_destroy(gb);
+}
+
+TEST(colorpicker_children_arranged_parent_relative) {
+    /* Same convention for the picker's child sliders: their stored
+     * coordinates must exclude the picker origin or labels, hits, and paint
+     * drift by the picker's own offset inside scrolled panes. */
+    vg_colorpicker_t *picker = vg_colorpicker_create(NULL);
+    ASSERT_NOT_NULL(picker);
+
+    vg_widget_arrange(&picker->base, 40.0f, 60.0f, 220.0f, 150.0f);
+    ASSERT_NOT_NULL(picker->slider_r);
+    ASSERT(picker->slider_r->base.x < 40.0f);
+    ASSERT(picker->slider_r->base.y < 60.0f);
+
+    float sx = 0.0f, sy = 0.0f, sw = 0.0f, sh = 0.0f;
+    vg_widget_get_screen_bounds(&picker->slider_r->base, &sx, &sy, &sw, &sh);
+    ASSERT_EQ((int)sx, (int)(40.0f + picker->slider_r->base.x));
+    ASSERT_EQ((int)sy, (int)(60.0f + picker->slider_r->base.y));
+
+    vg_widget_destroy(&picker->base);
+}
+
+TEST(scroll_content_remeasures_narrower_after_pane_shrinks) {
+    /* Regression: inspector panes that first lay out wide must re-wrap and
+     * shrink when the pane narrows. Build scrollview -> padded VBox ->
+     * group box -> wrapping flex row of fixed-width children, measure the
+     * chain wide, then narrow, asserting each level shrinks. */
+    vg_scrollview_t *scroll = vg_scrollview_create(NULL);
+    ASSERT_NOT_NULL(scroll);
+    vg_scrollview_set_direction(scroll, VG_SCROLL_VERTICAL);
+
+    vg_widget_t *column = vg_vbox_create(6.0f);
+    ASSERT_NOT_NULL(column);
+    vg_widget_set_padding(column, 8.0f);
+    vg_widget_add_child(&scroll->base, column);
+
+    vg_groupbox_t *gb = vg_groupbox_create(column, "Card");
+    ASSERT_NOT_NULL(gb);
+
+    vg_widget_t *row = vg_flex_create();
+    ASSERT_NOT_NULL(row);
+    vg_flex_set_direction(row, VG_DIRECTION_ROW);
+    vg_flex_set_wrap(row, true);
+    vg_flex_set_gap(row, 4.0f);
+    vg_groupbox_add_child(gb, row);
+    for (int i = 0; i < 5; i++) {
+        vg_widget_t *item = vg_widget_create(VG_WIDGET_CONTAINER);
+        ASSERT_NOT_NULL(item);
+        vg_widget_set_preferred_size(item, 80.0f, 20.0f);
+        vg_widget_add_child(row, item);
+    }
+
+    /* Wide first: the row fits on one line and everything measures wide. */
+    vg_widget_measure(&gb->base, 460.0f, 400.0f);
+    ASSERT(row->measured_width > 400.0f);
+
+    /* Narrow re-measure of the row alone wraps it. */
+    vg_widget_measure(row, 200.0f, 400.0f);
+    ASSERT(row->measured_width <= 200.0f);
+    ASSERT(row->measured_height > 30.0f);
+
+    /* Narrow re-measure of the group shrinks the card. */
+    vg_widget_measure(&gb->base, 220.0f, 400.0f);
+    ASSERT(gb->base.measured_width <= 220.0f);
+
+    /* Narrow re-measure of the column shrinks it too. */
+    vg_widget_measure(column, 230.0f, 400.0f);
+    ASSERT(column->measured_width <= 230.0f);
+
+    /* Full scrollview arrange at a narrow pane re-measures content to fit:
+     * the column may keep at most scrollbar-width of overhang. */
+    vg_widget_arrange(&scroll->base, 0.0f, 0.0f, 240.0f, 300.0f);
+    ASSERT(column->width <= 240.0f);
+    ASSERT(gb->base.width <= 240.0f);
+
+    /* And re-widening recovers single-line rows. */
+    vg_widget_arrange(&scroll->base, 0.0f, 0.0f, 520.0f, 300.0f);
+    ASSERT(row->measured_height <= 30.0f);
+
+    vg_widget_destroy(&scroll->base);
+}
+
+/// @brief Paint hook that manages its own clip, like list boxes and editors do.
+static void clipping_child_paint(vg_widget_t *widget, void *canvas) {
+    vgfx_window_t win = (vgfx_window_t)canvas;
+    vgfx_set_clip(win,
+                  (int32_t)widget->x,
+                  (int32_t)widget->y,
+                  (int32_t)widget->width,
+                  (int32_t)widget->height);
+    vgfx_fill_rect(win,
+                   (int32_t)widget->x,
+                   (int32_t)widget->y,
+                   (int32_t)widget->width,
+                   (int32_t)widget->height,
+                   0xFF4400);
+    vgfx_clear_clip(win);
+}
+
+/// @brief Fixed 10x20 measure so the scroll view flows real content height.
+static void clipping_child_measure(vg_widget_t *widget,
+                                   float available_width,
+                                   float available_height) {
+    (void)available_width;
+    (void)available_height;
+    widget->measured_width = 10.0f;
+    widget->measured_height = 20.0f;
+}
+
+static vg_widget_vtable_t g_clipping_child_vtable = {.measure = clipping_child_measure,
+                                                     .paint = clipping_child_paint};
+
+TEST(scrollview_contains_descendants_that_manage_their_own_clip) {
+    /* Regression: a descendant that sets/clears its own clip while painting
+     * (list boxes, code editors) must not escape the scroll viewport — with a
+     * plain clip rectangle everything painted after such a descendant leaked
+     * below the pane (inspector rows over the output panel). */
+    vgfx_window_params_t params = {
+        .width = 24, .height = 24, .title = "scroll", .fps = 0, .resizable = 0};
+    vgfx_window_t win = vgfx_create_window(&params);
+    ASSERT_NOT_NULL(win);
+
+    vg_scrollview_t *scroll = vg_scrollview_create(NULL);
+    ASSERT_NOT_NULL(scroll);
+
+    vg_widget_t *tall = vg_widget_create(VG_WIDGET_CUSTOM);
+    ASSERT_NOT_NULL(tall);
+    tall->vtable = &g_clipping_child_vtable;
+    vg_widget_set_preferred_size(tall, 10.0f, 20.0f);
+    vg_widget_add_child(&scroll->base, tall);
+
+    /* Viewport covers only the top 8 rows; content is 20 tall. */
+    vg_widget_measure(&scroll->base, 24.0f, 8.0f);
+    vg_widget_arrange(&scroll->base, 0.0f, 0.0f, 24.0f, 8.0f);
+
+    vgfx_cls(win, VGFX_BLACK);
+    vg_widget_paint(&scroll->base, win);
+
+    vgfx_color_t color = 0;
+    ASSERT_EQ(vgfx_point(win, 2, 2, &color), 1);
+    ASSERT_EQ(color, 0xFF4400); /* inside the viewport */
+    ASSERT_EQ(vgfx_point(win, 2, 12, &color), 1);
+    ASSERT_EQ(color, VGFX_BLACK); /* below the viewport stays untouched */
+
+    vg_widget_destroy(&scroll->base);
+    vgfx_destroy_window(win);
+}
+
+TEST(textinput_single_line_measures_bounded_natural_width) {
+    /* Regression: a single-line input that claims the entire available width
+     * at measure time poisons parents that sum intrinsic child widths — every
+     * "label + input + button" row then measures wider than its own lane. */
+    vg_textinput_t *input = vg_textinput_create(NULL);
+    ASSERT_NOT_NULL(input);
+
+    vg_widget_measure(&input->base, 1000.0f, 100.0f);
+    ASSERT(input->base.measured_width <= 200.0f);
+
+    /* Preferred width still wins. */
+    vg_widget_set_preferred_size(&input->base, 320.0f, 0.0f);
+    vg_widget_measure(&input->base, 1000.0f, 100.0f);
+    ASSERT_EQ((int)input->base.measured_width, 320);
+
+    vg_widget_destroy(&input->base);
+}
+
 TEST(image_opacity_and_stretch_affect_framebuffer) {
     vgfx_window_params_t params = {
         .width = 8, .height = 8, .title = "image", .fps = 0, .resizable = 0};
@@ -1041,6 +1234,11 @@ int main(void) {
     printf("\nGroup E2c — Image:\n");
     RUN(image_scale_none_preserves_original_size);
     RUN(image_focusable_opt_in_focus_and_ring);
+    RUN(groupbox_children_arranged_parent_relative);
+    RUN(colorpicker_children_arranged_parent_relative);
+    RUN(scroll_content_remeasures_narrower_after_pane_shrinks);
+    RUN(textinput_single_line_measures_bounded_natural_width);
+    RUN(scrollview_contains_descendants_that_manage_their_own_clip);
     RUN(image_opacity_and_stretch_affect_framebuffer);
     RUN(image_atomic_upload_and_region_update);
     RUN(image_bilinear_filter_and_scaled_cache);

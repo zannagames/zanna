@@ -23,6 +23,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_physics3d_character.c
+ * @brief Implements the swept Character3D controller and standalone Trigger3D volumes.
+ *
+ * Character movement uses bounded penetration recovery, conservative
+ * broadphase shortlists, binary-refined capsule sweeps, slide projection,
+ * stair stepping, slope classification, optional dynamic-body pushing, and
+ * moving-platform displacement. Trigger volumes maintain weak occupancy sets
+ * and derive aggregate enter/exit edges from world-space AABB overlap.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_collider3d.h"
@@ -67,6 +78,8 @@ typedef struct {
 } rt_character3d;
 
 /// @brief Validate @p obj as a Character3D handle (NULL on mismatch).
+/// @param obj Runtime object handle to validate.
+/// @return Typed Character3D payload, or NULL for a class mismatch.
 static rt_character3d *character3d_checked(void *obj) {
     return (rt_character3d *)rt_g3d_checked_or_null(obj, RT_G3D_CHARACTER3D_CLASS_ID);
 }
@@ -89,6 +102,8 @@ typedef struct {
 #define CHARACTER3D_DT_MAX 1.0
 
 /// @brief Clamp a character/trigger coordinate to a finite physics state range.
+/// @param value Coordinate to sanitize.
+/// @return Finite coordinate limited to the controller's absolute range.
 static double character3d_saturate_coord(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -100,6 +115,7 @@ static double character3d_saturate_coord(double value) {
 }
 
 /// @brief Clamp a Vec3 in place for character controller math.
+/// @param v Three-component vector to sanitize, or NULL.
 static void character3d_sanitize_vec3(double v[3]) {
     if (!v)
         return;
@@ -109,6 +125,9 @@ static void character3d_sanitize_vec3(double v[3]) {
 }
 
 /// @brief Normalize a collision normal, returning 0 when no reliable direction exists.
+/// @param out Three-component output receiving the sanitized unit normal.
+/// @param normal Three-component source normal.
+/// @return One when a reliable normalized direction was produced, otherwise zero.
 static int character3d_sanitize_contact_normal(double out[3], const double *normal) {
     if (!out || !normal)
         return 0;
@@ -119,6 +138,9 @@ static int character3d_sanitize_contact_normal(double out[3], const double *norm
 }
 
 /// @brief Copy and cap a movement vector, preserving direction for extreme finite velocities.
+/// @param src Three-component movement vector to sanitize.
+/// @param out Three-component output receiving the capped vector.
+/// @return Sanitized vector length, or zero for invalid or negligible input.
 static double character3d_sanitize_delta(const double *src, double out[3]) {
     double len;
     if (!src || !out)
@@ -142,6 +164,8 @@ static double character3d_sanitize_delta(const double *src, double out[3]) {
 }
 
 /// @brief Clamp controller step heights to a non-negative, physically usable range.
+/// @param value Requested step height.
+/// @return Finite step height between zero and the controller maximum.
 static double character3d_sanitize_step_height(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 0.0;
@@ -153,6 +177,8 @@ static double character3d_sanitize_step_height(double value) {
 // step-up over small obstacles, ground probing for "is grounded" state.
 
 /// @brief Retain @p body into the controller's ground slot (NULL clears).
+/// @param ctrl Character3D payload whose support reference is replaced.
+/// @param body Supporting Body3D to retain, or NULL when airborne.
 static void character3d_retain_ground_body(rt_character3d *ctrl, rt_body3d *body) {
     if (!ctrl || ctrl->ground_body == body)
         return;
@@ -167,6 +193,9 @@ static void character3d_retain_ground_body(rt_character3d *ctrl, rt_body3d *body
 ///
 /// Negates the contact normal because the contact normal points from
 /// the body toward the ground; we want the surface normal pointing up.
+/// @param ctrl Character3D payload whose public and body ground state is updated.
+/// @param grounded Nonzero when the controller has walkable support.
+/// @param normal Optional body-to-ground contact normal.
 static void character3d_set_ground_state(rt_character3d *ctrl,
                                          int8_t grounded,
                                          const double *normal) {
@@ -198,6 +227,9 @@ static void character3d_set_ground_state(rt_character3d *ctrl,
 ///
 /// `slope_limit_cos = cos(max_slope_angle)`; a "walkable" surface has
 /// `normal_y >= cos(angle)`. Used to gate ground-snapping and step-up.
+/// @param ctrl Character3D payload providing the slope threshold.
+/// @param normal Body-to-surface contact normal to classify.
+/// @return One when the surface is walkable, otherwise zero.
 static int character3d_normal_is_walkable(const rt_character3d *ctrl, const double *normal) {
     double contact_normal[3];
     return ctrl && normal && character3d_sanitize_contact_normal(contact_normal, normal) &&
@@ -210,6 +242,9 @@ static int character3d_normal_is_walkable(const rt_character3d *ctrl, const doub
 /// `push_strength`) by default; `rt_character3d_set_collide_dynamic(ctrl, 0)`
 /// restores the legacy ghost-through behavior. Honors the standard
 /// layer/mask filter.
+/// @param ctrl Character3D payload providing self, world, and filter state.
+/// @param other Candidate world body.
+/// @return One when the controller should collide with @p other, otherwise zero.
 static int character3d_candidate_body(const rt_character3d *ctrl, const rt_body3d *other) {
     if (!ctrl || !ctrl->body || !ctrl->world || !other)
         return 0;
@@ -223,6 +258,9 @@ static int character3d_candidate_body(const rt_character3d *ctrl, const rt_body3
 }
 
 /// @brief Ensure the per-Move candidate shortlist can hold @p needed body pointers.
+/// @param ctrl Character3D payload whose reusable buffer may grow.
+/// @param needed Required non-negative number of pointer slots.
+/// @return One when capacity is available, otherwise zero.
 static int character3d_reserve_move_candidates(rt_character3d *ctrl, int32_t needed) {
     rt_body3d **grown;
     int32_t new_cap;
@@ -252,6 +290,9 @@ static int character3d_reserve_move_candidates(rt_character3d *ctrl, int32_t nee
 /// motion onto any axis), the capsule extents, the step-up/probe reach, and a
 /// safety margin. Falls back to full-world scans (shortlist inactive) if the
 /// broadphase cannot be built.
+/// @param ctrl Character3D payload whose candidate cache is prepared.
+/// @param start Three-component world-space movement start.
+/// @param move_len Conservative total requested movement length.
 static void character3d_begin_move_candidates(rt_character3d *ctrl,
                                               const double *start,
                                               double move_len) {
@@ -292,6 +333,7 @@ static void character3d_begin_move_candidates(rt_character3d *ctrl,
 }
 
 /// @brief Deactivate the per-Move shortlist (buffer is kept for reuse).
+/// @param ctrl Character3D payload whose active shortlist is cleared.
 static void character3d_end_move_candidates(rt_character3d *ctrl) {
     if (!ctrl)
         return;
@@ -306,6 +348,10 @@ static void character3d_end_move_candidates(rt_character3d *ctrl) {
 /// is active, otherwise every world body), restores the original position,
 /// and returns the deepest contact (if any). Used for both penetration
 /// resolution and binary-searched sweeps.
+/// @param ctrl Character3D payload and world to test.
+/// @param pos Three-component candidate world position.
+/// @param out_hit Optional output receiving the deepest contact.
+/// @return One when the candidate position penetrates a blocking body, otherwise zero.
 static int character3d_test_position(rt_character3d *ctrl,
                                      const double *pos,
                                      rt_character_hit3d *out_hit) {
@@ -358,6 +404,7 @@ static int character3d_test_position(rt_character3d *ctrl,
 /// deepest normal by `depth + 1e-4` epsilon, repeat. Bails early
 /// when no penetration remains. Bounded so degenerate stuck cases
 /// terminate quickly.
+/// @param ctrl Character3D payload whose body position may be corrected.
 static void character3d_resolve_penetration(rt_character3d *ctrl) {
     if (!ctrl || !ctrl->body)
         return;
@@ -384,6 +431,10 @@ static void character3d_resolve_penetration(rt_character3d *ctrl) {
 /// 14 iterations of bisection refine the impact `t`. On no-hit, body
 /// is moved to the end position and the function returns 0. Step count
 /// is bounded to 128.
+/// @param ctrl Character3D payload whose body is swept and moved.
+/// @param delta Three-component requested world-space displacement.
+/// @param out_hit Optional output receiving the refined first collision.
+/// @return One when motion was clipped by a blocking body, otherwise zero.
 static int character3d_sweep(rt_character3d *ctrl,
                              const double *delta,
                              rt_character_hit3d *out_hit) {
@@ -472,6 +523,8 @@ static int character3d_sweep(rt_character3d *ctrl,
 /// Used to detect grounded state when the controller is just barely
 /// above the floor (after a small jump or when sliding down a slight
 /// slope). Updates the body's grounded flag accordingly.
+/// @param ctrl Character3D payload to probe and update.
+/// @return One when a walkable supporting surface is found, otherwise zero.
 static int character3d_probe_ground(rt_character3d *ctrl) {
     if (!ctrl || !ctrl->body)
         return 0;
@@ -499,6 +552,9 @@ static int character3d_probe_ground(rt_character3d *ctrl) {
 ///   3. Sweep down (slightly past `step_height`) onto the new surface.
 ///      If the new surface is walkable, commit and mark grounded.
 /// On any failure the controller is restored to its original position.
+/// @param ctrl Character3D payload whose body attempts the step.
+/// @param horizontal_delta Three-component horizontal displacement remaining after impact.
+/// @return One when the complete up-across-down traversal succeeds, otherwise zero.
 static int character3d_try_step(rt_character3d *ctrl, const double *horizontal_delta) {
     double step_delta[3];
     if (!ctrl || !ctrl->body || ctrl->step_height <= 1e-6 ||
@@ -546,6 +602,10 @@ static int character3d_try_step(rt_character3d *ctrl, const double *horizontal_d
 ///   normal proportional to the approach speed, mass-ratio scaled so light props
 ///   yield and heavy props wall the controller. Applied only on the resolved
 ///   contact (never inside sweep bisection) so bodies cannot gain energy.
+/// @param ctrl Character3D payload providing push tuning and the source mass.
+/// @param hit Resolved collision against a candidate dynamic body.
+/// @param attempted_delta Three-component displacement that approached the contact.
+/// @param dt Positive movement interval used to recover approach speed.
 static void character3d_push_dynamic(rt_character3d *ctrl,
                                      const rt_character_hit3d *hit,
                                      const double *attempted_delta,
@@ -598,6 +658,10 @@ static void character3d_push_dynamic(rt_character3d *ctrl,
 /// gives the "slide along walls" feel typical of FPS controllers.
 /// Vertical hits onto walkable surfaces also set the grounded flag
 /// so gravity stops compounding.
+/// @param ctrl Character3D payload whose body is moved.
+/// @param initial_delta Three-component requested displacement.
+/// @param allow_step Nonzero to permit stair-step traversal for horizontal obstructions.
+/// @param dt Positive movement interval used for dynamic-body push impulses.
 static void character3d_move_axis(rt_character3d *ctrl,
                                   const double *initial_delta,
                                   int allow_step,
@@ -662,6 +726,7 @@ static void character3d_move_axis(rt_character3d *ctrl,
 }
 
 /// @brief GC finalizer for `Character3D` — release the body, world, and ground refs.
+/// @param obj Character3D payload to finalize.
 static void character3d_finalizer(void *obj) {
     rt_character3d *c = (rt_character3d *)obj;
     if (!c)
@@ -688,6 +753,10 @@ static void character3d_finalizer(void *obj) {
 /// 30cm step height, 45° max walkable slope. The character is not
 /// added to a world automatically — call `SetWorld` before using
 /// `Move`.
+/// @param radius Capsule radius in world units.
+/// @param height Total capsule height including both caps.
+/// @param mass Character mass used for dynamic-body pushing.
+/// @return Newly allocated Character3D handle, or NULL when construction fails.
 void *rt_character3d_new(double radius, double height, double mass) {
     rt_character3d *c = (rt_character3d *)rt_obj_new_i64(RT_G3D_CHARACTER3D_CLASS_ID,
                                                          (int64_t)sizeof(rt_character3d));
@@ -728,6 +797,9 @@ void *rt_character3d_new(double radius, double height, double mass) {
 /// ground if not already grounded. Updates the body's velocity to the
 /// actual achieved displacement / dt — useful for animation systems
 /// that read velocity off the controller.
+/// @param obj Character3D handle to move.
+/// @param velocity_vec Vec3 requested world-space velocity.
+/// @param dt Positive finite movement interval, capped at one second.
 void rt_character3d_move(void *obj, void *velocity_vec, double dt) {
     rt_character3d *ctrl = character3d_checked(obj);
     if (!ctrl || !rt_g3d_is_vec3(velocity_vec) || !isfinite(dt) || dt <= 0)
@@ -807,6 +879,8 @@ void rt_character3d_move(void *obj, void *velocity_vec, double dt) {
 }
 
 /// @brief `Character3D.set_StepHeight(h)` — max obstacle height the controller can step over.
+/// @param o Character3D handle to modify.
+/// @param h Requested non-negative step height in world units.
 void rt_character3d_set_step_height(void *o, double h) {
     rt_character3d *c = character3d_checked(o);
     if (c)
@@ -814,6 +888,8 @@ void rt_character3d_set_step_height(void *o, double h) {
 }
 
 /// @brief `Character3D.GetStepHeight` — read the configured step height.
+/// @param o Character3D handle to inspect.
+/// @return Sanitized step height, or the default 0.3 for an invalid handle.
 double rt_character3d_get_step_height(void *o) {
     rt_character3d *c = character3d_checked(o);
     return c ? character3d_sanitize_step_height(c->step_height) : 0.3;
@@ -823,6 +899,8 @@ double rt_character3d_get_step_height(void *o) {
 ///
 /// Stored as `cos(angle)` to make the per-step "is this surface walkable"
 /// test a single comparison (no trig in the hot path).
+/// @param o Character3D handle to modify.
+/// @param degrees Requested walkable angle, clamped below 90 degrees.
 void rt_character3d_set_slope_limit(void *o, double degrees) {
     rt_character3d *c = character3d_checked(o);
     if (c) {
@@ -838,6 +916,8 @@ void rt_character3d_set_slope_limit(void *o, double degrees) {
 ///
 /// Required before `Move` will collide against anything. Releases any
 /// previous world reference and retains the new one. NULL detaches.
+/// @param o Character3D handle to modify.
+/// @param world World3D handle to retain, or NULL to detach.
 void rt_character3d_set_world(void *o, void *world) {
     rt_character3d *ctrl = character3d_checked(o);
     rt_world3d *w = world3d_checked(world);
@@ -855,12 +935,16 @@ void rt_character3d_set_world(void *o, void *world) {
 }
 
 /// @brief `Character3D.GetWorld` — borrowed reference to the bound world.
+/// @param o Character3D handle to inspect.
+/// @return Borrowed World3D handle, or NULL when unbound or invalid.
 void *rt_character3d_get_world(void *o) {
     rt_character3d *c = character3d_checked(o);
     return c ? c->world : NULL;
 }
 
 /// @brief `Character3D.IsGrounded` — true when standing on a walkable surface.
+/// @param o Character3D handle to inspect.
+/// @return One when grounded on a walkable surface, otherwise zero.
 int8_t rt_character3d_is_grounded(void *o) {
     rt_character3d *c = character3d_checked(o);
     return c ? c->is_grounded : 0;
@@ -870,6 +954,8 @@ int8_t rt_character3d_is_grounded(void *o) {
 ///
 /// Compares this frame's grounded state to the previous frame's. Useful
 /// for landing animations, fall-damage triggers, dust puffs, etc.
+/// @param o Character3D handle to inspect.
+/// @return One for the first grounded frame after being airborne, otherwise zero.
 int8_t rt_character3d_just_landed(void *o) {
     rt_character3d *c = character3d_checked(o);
     if (!c)
@@ -878,6 +964,8 @@ int8_t rt_character3d_just_landed(void *o) {
 }
 
 /// @brief `Character3D.GetPosition` — fresh `Vec3` of the body's position.
+/// @param o Character3D handle to inspect.
+/// @return Newly allocated world-position Vec3, or the origin when invalid.
 void *rt_character3d_get_position(void *o) {
     rt_character3d *c = character3d_checked(o);
     if (!c)
@@ -889,6 +977,10 @@ void *rt_character3d_get_position(void *o) {
 ///
 /// Direct delegation to the underlying body. Caller is responsible for
 /// avoiding teleports into geometry.
+/// @param o Character3D handle to reposition.
+/// @param x Finite world-space X coordinate.
+/// @param y Finite world-space Y coordinate.
+/// @param z Finite world-space Z coordinate.
 void rt_character3d_set_position(void *o, double x, double y, double z) {
     rt_character3d *c = character3d_checked(o);
     if (c)
@@ -902,6 +994,9 @@ void rt_character3d_set_position(void *o, double x, double y, double z) {
 /// the enlarged capsule and fails (returns 0) when blocked — `TryStand`
 /// semantics come free. The capsule bounds revision is bumped so the
 /// broadphase re-inserts the body.
+/// @param o Character3D handle to resize.
+/// @param height Requested positive total capsule height.
+/// @return One when the resized capsule fits and is committed, otherwise zero.
 int8_t rt_character3d_try_set_height(void *o, double height) {
     rt_character3d *c = character3d_checked(o);
     if (!c || !c->body || !c->body->collider)
@@ -950,11 +1045,15 @@ int8_t rt_character3d_try_set_height(void *o, double height) {
 }
 
 /// @brief `Character3D.set_Height(h)` — property form of TrySetHeight (result ignored).
+/// @param o Character3D handle to resize.
+/// @param height Requested positive total capsule height.
 void rt_character3d_set_height(void *o, double height) {
     (void)rt_character3d_try_set_height(o, height);
 }
 
 /// @brief `Character3D.get_Height` — current capsule height including caps.
+/// @param o Character3D handle to inspect.
+/// @return Current total capsule height, or zero when invalid.
 double rt_character3d_get_height(void *o) {
     rt_character3d *c = character3d_checked(o);
     if (!c || !c->body)
@@ -964,6 +1063,8 @@ double rt_character3d_get_height(void *o) {
 }
 
 /// @brief `Character3D.set_PushStrength(s)` — dynamic push impulse scale (0 = block only).
+/// @param o Character3D handle to modify.
+/// @param strength Requested non-negative push scale, capped at 1000.
 void rt_character3d_set_push_strength(void *o, double strength) {
     rt_character3d *c = character3d_checked(o);
     if (c)
@@ -972,6 +1073,8 @@ void rt_character3d_set_push_strength(void *o, double strength) {
 }
 
 /// @brief `Character3D.get_PushStrength` — dynamic push impulse scale.
+/// @param o Character3D handle to inspect.
+/// @return Configured dynamic-body push scale, or zero when invalid.
 double rt_character3d_get_push_strength(void *o) {
     rt_character3d *c = character3d_checked(o);
     return c ? c->push_strength : 0.0;
@@ -979,6 +1082,8 @@ double rt_character3d_get_push_strength(void *o) {
 
 /// @brief `Character3D.set_CollideDynamic(on)` — dynamic bodies block/push (default)
 ///   or ghost through (legacy compatibility).
+/// @param o Character3D handle to modify.
+/// @param enabled Nonzero to collide with dynamic bodies; zero to ignore them.
 void rt_character3d_set_collide_dynamic(void *o, int8_t enabled) {
     rt_character3d *c = character3d_checked(o);
     if (c)
@@ -986,12 +1091,16 @@ void rt_character3d_set_collide_dynamic(void *o, int8_t enabled) {
 }
 
 /// @brief `Character3D.get_CollideDynamic` — whether dynamic bodies block the controller.
+/// @param o Character3D handle to inspect.
+/// @return One when dynamic bodies are blockers, otherwise zero.
 int8_t rt_character3d_get_collide_dynamic(void *o) {
     rt_character3d *c = character3d_checked(o);
     return c ? c->collide_dynamic : 0;
 }
 
 /// @brief `Character3D.set_RidePlatforms(on)` — track kinematic ground motion.
+/// @param o Character3D handle to modify.
+/// @param enabled Nonzero to inherit supporting-platform motion; zero to disable it.
 void rt_character3d_set_ride_platforms(void *o, int8_t enabled) {
     rt_character3d *c = character3d_checked(o);
     if (c)
@@ -999,12 +1108,16 @@ void rt_character3d_set_ride_platforms(void *o, int8_t enabled) {
 }
 
 /// @brief `Character3D.get_RidePlatforms` — whether the controller rides platforms.
+/// @param o Character3D handle to inspect.
+/// @return One when platform riding is enabled, otherwise zero.
 int8_t rt_character3d_get_ride_platforms(void *o) {
     rt_character3d *c = character3d_checked(o);
     return c ? c->ride_platforms : 0;
 }
 
 /// @brief `Character3D.IsSliding` — true while resting on a too-steep surface.
+/// @param o Character3D handle to inspect.
+/// @return One while resting against an unwalkable slope, otherwise zero.
 int8_t rt_character3d_is_sliding(void *o) {
     rt_character3d *c = character3d_checked(o);
     return c ? c->is_sliding : 0;
@@ -1012,6 +1125,8 @@ int8_t rt_character3d_is_sliding(void *o) {
 
 /// @brief `Character3D.GetGroundBody` — borrowed body under the controller's feet
 ///   (NULL while airborne). Gameplay uses it for conveyors and surface queries.
+/// @param o Character3D handle to inspect.
+/// @return Borrowed supporting Body3D handle, or NULL while airborne or invalid.
 void *rt_character3d_get_ground_body(void *o) {
     rt_character3d *c = character3d_checked(o);
     return c ? c->ground_body : NULL;
@@ -1040,6 +1155,8 @@ typedef struct {
 } rt_trigger3d;
 
 /// @brief Validate @p obj as a Trigger3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Runtime object handle to validate.
+/// @return Typed Trigger3D payload, or NULL for a class mismatch.
 static rt_trigger3d *trigger3d_checked(void *obj) {
     return (rt_trigger3d *)rt_g3d_checked_or_null(obj, RT_G3D_TRIGGER3D_CLASS_ID);
 }
@@ -1050,6 +1167,7 @@ static rt_trigger3d *trigger3d_checked(void *obj) {
 /// because the trigger is only an observer). Weak refs is fine here:
 /// if a tracked body is destroyed the next `Update` will discover the
 /// stale pointer and clean it up.
+/// @param obj Trigger3D payload whose tracking buffers are released.
 static void trigger3d_finalizer(void *obj) {
     rt_trigger3d *t = (rt_trigger3d *)obj;
     if (!t)
@@ -1067,6 +1185,13 @@ static void trigger3d_finalizer(void *obj) {
 }
 
 /// @brief Store ordered, finite trigger bounds.
+/// @param t Trigger3D payload to modify.
+/// @param x0 First corner X coordinate.
+/// @param y0 First corner Y coordinate.
+/// @param z0 First corner Z coordinate.
+/// @param x1 Opposite corner X coordinate.
+/// @param y1 Opposite corner Y coordinate.
+/// @param z1 Opposite corner Z coordinate.
 static void trigger3d_set_bounds_raw(
     rt_trigger3d *t, double x0, double y0, double z0, double x1, double y1, double z1) {
     double a[3] = {character3d_saturate_coord(x0),
@@ -1089,6 +1214,13 @@ static void trigger3d_set_bounds_raw(
 ///
 /// Auto-orders the corners so caller can pass them in any order. Occupancy
 /// tracking grows on demand — any number of bodies can be inside at once.
+/// @param x0 First corner X coordinate.
+/// @param y0 First corner Y coordinate.
+/// @param z0 First corner Z coordinate.
+/// @param x1 Opposite corner X coordinate.
+/// @param y1 Opposite corner Y coordinate.
+/// @param z1 Opposite corner Z coordinate.
+/// @return Newly allocated Trigger3D handle, or NULL on allocation failure.
 void *rt_trigger3d_new(double x0, double y0, double z0, double x1, double y1, double z1) {
     rt_trigger3d *t =
         (rt_trigger3d *)rt_obj_new_i64(RT_G3D_TRIGGER3D_CLASS_ID, (int64_t)sizeof(rt_trigger3d));
@@ -1110,6 +1242,9 @@ void *rt_trigger3d_new(double x0, double y0, double z0, double x1, double y1, do
 /// Synchronous query; doesn't update enter/exit state. Use this for
 /// ad-hoc "is the player in the safe zone" checks; use `Update` +
 /// `EnterCount`/`ExitCount` for transition-based logic.
+/// @param obj Trigger3D handle to query.
+/// @param point Vec3 world-space point to test.
+/// @return One when the point is within the inclusive trigger bounds, otherwise zero.
 int8_t rt_trigger3d_contains(void *obj, void *point) {
     rt_trigger3d *t = trigger3d_checked(obj);
     if (!t || !rt_g3d_is_vec3(point))
@@ -1127,6 +1262,9 @@ int8_t rt_trigger3d_contains(void *obj, void *point) {
 }
 
 /// @brief Find a tracked body's slot, or -1 when it is not tracked.
+/// @param t Trigger3D payload whose occupancy table is searched.
+/// @param body Exact weak Body3D pointer to find.
+/// @return Zero-based tracked slot, or -1 when absent.
 static int32_t trigger3d_find_index(const rt_trigger3d *t, const void *body) {
     for (int32_t i = 0; i < t->tracked_count; i++)
         if (t->tracked_bodies[i] == body)
@@ -1135,6 +1273,8 @@ static int32_t trigger3d_find_index(const rt_trigger3d *t, const void *body) {
 }
 
 /// @brief Claim a new tracked slot, growing the parallel arrays on demand.
+/// @param t Trigger3D payload whose tracking arrays may grow.
+/// @param body Weak Body3D pointer stored in the new slot.
 /// @return Slot index, or -1 on allocation failure (the body is skipped this
 ///   frame and retried on the next Update — graceful degradation, no cap).
 static int32_t trigger3d_add(rt_trigger3d *t, void *body) {
@@ -1177,6 +1317,8 @@ static int32_t trigger3d_add(rt_trigger3d *t, void *body) {
 }
 
 /// @brief Swap-remove a tracked slot (order is not meaningful).
+/// @param t Trigger3D payload whose parallel arrays are compacted.
+/// @param i Zero-based valid slot to remove.
 static void trigger3d_remove_at(rt_trigger3d *t, int32_t i) {
     int32_t last = t->tracked_count - 1;
     t->tracked_bodies[i] = t->tracked_bodies[last];
@@ -1196,6 +1338,8 @@ static void trigger3d_remove_at(rt_trigger3d *t, int32_t i) {
 /// previous to produce `enter_count` and `exit_count` totals — no per-body
 /// events are stored, so callers learn "how many entered" but not "which".
 /// Run once per frame after `World3D.Step`.
+/// @param obj Trigger3D handle whose occupancy history is advanced.
+/// @param world_obj World3D handle containing bodies to test.
 void rt_trigger3d_update(void *obj, void *world_obj) {
     rt_trigger3d *t = trigger3d_checked(obj);
     rt_world3d *w = world3d_checked(world_obj);
@@ -1268,12 +1412,16 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
 }
 
 /// @brief `Trigger3D.EnterCount` — bodies that entered this trigger this frame.
+/// @param obj Trigger3D handle to inspect.
+/// @return Number of bodies newly inside during the latest update.
 int64_t rt_trigger3d_get_enter_count(void *obj) {
     rt_trigger3d *t = trigger3d_checked(obj);
     return t ? t->enter_count : 0;
 }
 
 /// @brief `Trigger3D.ExitCount` — bodies that left this trigger this frame.
+/// @param obj Trigger3D handle to inspect.
+/// @return Number of bodies that left during the latest update.
 int64_t rt_trigger3d_get_exit_count(void *obj) {
     rt_trigger3d *t = trigger3d_checked(obj);
     return t ? t->exit_count : 0;
@@ -1284,6 +1432,13 @@ int64_t rt_trigger3d_get_exit_count(void *obj) {
 /// Auto-orders the corners. Tracked-body state is preserved across the
 /// resize, so a body that was inside the old box and is also inside
 /// the new box remains "in" without firing an enter event.
+/// @param obj Trigger3D handle to modify.
+/// @param x0 First corner X coordinate.
+/// @param y0 First corner Y coordinate.
+/// @param z0 First corner Z coordinate.
+/// @param x1 Opposite corner X coordinate.
+/// @param y1 Opposite corner Y coordinate.
+/// @param z1 Opposite corner Z coordinate.
 void rt_trigger3d_set_bounds(
     void *obj, double x0, double y0, double z0, double x1, double y1, double z1) {
     rt_trigger3d *t = trigger3d_checked(obj);

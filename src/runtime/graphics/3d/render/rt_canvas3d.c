@@ -25,6 +25,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Canvas3D construction, frame lifecycle, input, presentation, and render state.
+/// @details This translation unit owns the platform-window and backend-selection boundary for
+/// `Zanna.Graphics3D.Canvas3D`. It also coordinates deterministic input and timing, frame-owned
+/// resource snapshots, output resizing, lighting, fog, shadows, and presentation. Draw, post-FX,
+/// shadow, occlusion, and streaming implementation fragments included below share the same
+/// `rt_canvas3d` lifetime and deferred-submission invariants.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -156,6 +164,12 @@ void rt_canvas3d_test_fail_next_mesh_snapshot(void *canvas) {
         c->test_fail_next_mesh_snapshot = 1;
 }
 
+/// @brief Emit the process-wide backend fallback diagnostic at most once.
+/// @details The atomic guard prevents duplicate messages when multiple canvases concurrently fail
+/// to initialize their preferred backend. Empty or NULL names are replaced with descriptive
+/// fallback labels, and the function does not retain either string.
+/// @param requested Borrowed requested-backend name, or NULL when no name is available.
+/// @param active Borrowed fallback-backend name, or NULL when no name is available.
 static void canvas3d_emit_backend_fallback_notice_once(const char *requested, const char *active) {
     int expected = 0;
     if (!rt_atomic_compare_exchange_i32(&g_canvas3d_backend_fallback_notice_emitted,
@@ -174,16 +188,22 @@ static void canvas3d_emit_backend_fallback_notice_once(const char *requested, co
 /// @details Only one canvas may drive synthetic (test/replay) input at a time; this enforces it
 /// with
 ///          an acquire-release exchange across MSVC and GCC/Clang atomics.
+/// @param c New synthetic-input owner, or NULL to clear the global owner.
+/// @return Previous borrowed owner pointer, which may be NULL. The caller is responsible for
+/// releasing any self-reference held by that owner.
 static rt_canvas3d *canvas3d_synthetic_owner_exchange(rt_canvas3d *c) {
     return (rt_canvas3d *)rt_atomic_exchange_ptr(&g_canvas3d_synthetic_owner, c, __ATOMIC_ACQ_REL);
 }
 
 /// @brief Atomically load the current global synthetic-input owner (acquire ordering).
+/// @return Borrowed current owner pointer, or NULL when synthetic input has no owner.
 static rt_canvas3d *canvas3d_synthetic_owner_load(void) {
     return (rt_canvas3d *)rt_atomic_load_ptr(&g_canvas3d_synthetic_owner, __ATOMIC_ACQUIRE);
 }
 
 /// @brief CAS the synthetic-input owner from @p expected_owner to @p desired_owner.
+/// @param expected_owner Owner value that must still be installed for the exchange to succeed.
+/// @param desired_owner Replacement owner, or NULL to relinquish ownership.
 /// @return Non-zero if this caller won ownership (the owner equalled @p expected_owner).
 static int canvas3d_synthetic_owner_compare_exchange(rt_canvas3d *expected_owner,
                                                      rt_canvas3d *desired_owner) {
@@ -194,17 +214,24 @@ static int canvas3d_synthetic_owner_compare_exchange(rt_canvas3d *expected_owner
 
 /// @brief Sanitize an input-source mode (0 live, 1 synthetic, 2 live+synthetic); out of
 ///   range falls back to 0 (live).
+/// @param mode Runtime input-source selector.
+/// @return Normalized mode in the inclusive range 0 through 2.
 static int32_t canvas3d_input_source_from_mode(int64_t mode) {
     return (mode >= 0 && mode <= 2) ? (int32_t)mode : 0;
 }
 
 /// @brief Sanitize a clock-source mode: 1 = fixed synthetic delta, anything else = live.
+/// @param mode Runtime clock-source selector.
+/// @return 1 for synthetic time when @p mode is exactly 1; otherwise 0 for live time.
 static int32_t canvas3d_clock_source_from_mode(int64_t mode) {
     return mode == 1 ? 1 : 0;
 }
 
 /// @brief Convert a synthetic frame delta (seconds) to microseconds, clamping negatives
 ///   to 0 and capping at CANVAS3D_SYNTHETIC_DT_MAX_US.
+/// @param dt Requested frame duration in seconds.
+/// @return Rounded, non-negative duration in microseconds, capped at the synthetic-time limit;
+/// non-finite values return zero.
 static int64_t canvas3d_synthetic_seconds_to_us(double dt) {
     if (!isfinite(dt) || dt < 0.0)
         return 0;
@@ -219,6 +246,8 @@ static int64_t canvas3d_synthetic_seconds_to_us(double dt) {
 ///          live windows and avoiding divide-by-zero if a deterministic test intentionally advances
 ///          with a zero synthetic timestep. The rolling window is maintained as both per-slot
 ///          values and a running total so `rt_canvas3d_get_fps` stays O(1).
+/// @param c Canvas whose embedded FPS sample ring is updated; NULL is ignored.
+/// @param delta_us Positive frame duration in microseconds; zero and negative samples are ignored.
 static void canvas3d_record_frame_time_sample(rt_canvas3d *c, int64_t delta_us) {
     if (!c || delta_us <= 0)
         return;
@@ -245,6 +274,8 @@ static void canvas3d_record_frame_time_sample(rt_canvas3d *c, int64_t delta_us) 
 
 /// @brief Round a synthetic mouse delta to an integer (half-away-from-zero), clamped to
 ///   ±CANVAS3D_SYNTHETIC_MOUSE_ABS_MAX; non-finite → 0.
+/// @param value Requested synthetic displacement in logical mouse units.
+/// @return Rounded and clamped signed displacement, or zero for non-finite input.
 static int64_t canvas3d_round_synthetic_mouse_delta(double value) {
     if (!isfinite(value))
         return 0;
@@ -257,6 +288,9 @@ static int64_t canvas3d_round_synthetic_mouse_delta(double value) {
 
 /// @brief Accumulate a queued synthetic mouse delta onto the running total, saturating
 ///   at ±CANVAS3D_SYNTHETIC_MOUSE_ABS_MAX and treating non-finite inputs safely.
+/// @param current Previously accumulated displacement; non-finite values are treated as zero.
+/// @param delta Additional displacement; non-finite values leave @p current unchanged.
+/// @return Finite saturated sum in logical mouse units.
 static double canvas3d_accumulate_synthetic_mouse_delta(double current, double delta) {
     double next;
     if (!isfinite(delta))
@@ -287,6 +321,8 @@ static int64_t canvas3d_synthetic_mouse_button_mask(void) {
 
 /// @brief Drive the canvas's delta-time fields from the latched synthetic timestep
 ///   (used when the clock source is synthetic for deterministic frames).
+/// @param c Canvas timing state to update; NULL is ignored.
+/// @param record_fps_sample Non-zero to append the synthetic delta to the rolling FPS window.
 static void canvas3d_apply_synthetic_clock(rt_canvas3d *c, int record_fps_sample) {
     if (!c)
         return;
@@ -302,6 +338,7 @@ static void canvas3d_apply_synthetic_clock(rt_canvas3d *c, int record_fps_sample
 /// @brief Update the canvas delta-time from the real wall clock at each flip.
 /// @details Measures microseconds since the previous flip (clamped non-negative) and records both
 ///          microsecond and millisecond deltas; the first flip reports zero.
+/// @param c Canvas timing state to update; NULL is ignored.
 static void canvas3d_update_live_clock(rt_canvas3d *c) {
     if (!c)
         return;
@@ -320,6 +357,8 @@ static void canvas3d_update_live_clock(rt_canvas3d *c) {
 }
 
 /// @brief Release the self-reference a canvas held while it was the synthetic-input owner.
+/// @param c Former owner whose retained GC reference is released; NULL and non-heap fixtures are
+/// ignored.
 static void canvas3d_release_global_owner_ref(rt_canvas3d *c) {
     if (c && rt_heap_is_payload(c) && rt_obj_release_check0(c))
         rt_obj_free(c);
@@ -328,6 +367,7 @@ static void canvas3d_release_global_owner_ref(rt_canvas3d *c) {
 /// @brief Make @p c the global synthetic-input owner, releasing any previous owner's reference.
 /// @details Retains @p c for as long as it owns synthetic input so the handle can't be freed
 ///          out from under the input path.
+/// @param c New owner, or NULL to clear ownership and release the previous owner's synthetic state.
 static void canvas3d_set_synthetic_owner(rt_canvas3d *c) {
     rt_canvas3d *previous;
     if (c && rt_heap_is_payload(c))
@@ -346,6 +386,8 @@ static void canvas3d_set_synthetic_owner(rt_canvas3d *c) {
 /// @brief Replay queued synthetic input into the live input runtime for one frame:
 ///   apply pending key transitions, the accumulated mouse delta, button state changes,
 ///   and wheel scroll, then clear the queues.
+/// @param c Canvas containing the queued samples; NULL is ignored. The canvas becomes the global
+/// synthetic-input owner before its samples are applied.
 static void canvas3d_apply_synthetic_input(rt_canvas3d *c) {
     if (!c)
         return;
@@ -394,6 +436,7 @@ static void canvas3d_apply_synthetic_input(rt_canvas3d *c) {
 
 /// @brief Release every key/button the synthetic source is currently holding (called
 ///   when synthetic input is cleared/disabled) so no key stays stuck down.
+/// @param c Canvas whose queued transitions and held-state arrays are cleared; NULL is ignored.
 static void canvas3d_release_synthetic_state(rt_canvas3d *c) {
     if (!c)
         return;
@@ -418,6 +461,9 @@ static void canvas3d_release_synthetic_state(rt_canvas3d *c) {
 }
 
 /// @brief Clear all queued synthetic keyboard/mouse input state on the canvas.
+/// @details If @p c owns the process-wide synthetic source, ownership and the corresponding
+/// self-reference are also released.
+/// @param c Canvas to clear; NULL is ignored.
 static void canvas3d_release_synthetic_input(rt_canvas3d *c) {
     if (!c)
         return;
@@ -431,6 +477,8 @@ static void canvas3d_release_synthetic_input(rt_canvas3d *c) {
 /// Requires the backend to expose `present_postfx` AND the canvas
 /// not be in RTT mode (RTT outputs are read back directly without
 /// post-processing).
+/// @param c Canvas whose backend hooks and target mode are inspected; may be NULL.
+/// @return Non-zero when post-FX can be applied by the GPU present hook.
 static int canvas3d_backend_uses_gpu_postfx(const rt_canvas3d *c) {
     return c && c->backend && c->backend->present_postfx && c->render_target == NULL;
 }
@@ -440,6 +488,8 @@ static int canvas3d_backend_uses_gpu_postfx(const rt_canvas3d *c) {
 /// Split-capable backends composite the post-FX scene first, then Canvas3D
 /// replays final-overlay commands over that composited target before calling
 /// the normal present hook.
+/// @param c Canvas whose backend hooks and target mode are inspected; may be NULL.
+/// @return Non-zero when separate apply-post-FX and present hooks are available for a window.
 static int canvas3d_backend_splits_gpu_postfx_present(const rt_canvas3d *c) {
     return c && c->backend && c->backend->apply_postfx && c->backend->present &&
            c->render_target == NULL;
@@ -450,6 +500,8 @@ static int canvas3d_backend_splits_gpu_postfx_present(const rt_canvas3d *c) {
 /// Software backends fall back to a CPU-side copy for RTT; hardware
 /// backends (D3D11/OpenGL/Metal) keep the texture on the GPU and
 /// only read it back when the user requests `Pixels()`.
+/// @param c Canvas whose target and backend are inspected; may be NULL.
+/// @return Non-zero when a render target is bound to a non-software backend.
 static int canvas3d_backend_owns_gpu_rtt(const rt_canvas3d *c) {
     return c && c->render_target && c->backend && c->backend != &vgfx3d_software_backend;
 }
@@ -458,6 +510,8 @@ static int canvas3d_backend_owns_gpu_rtt(const rt_canvas3d *c) {
 /// @details Canvas-facing RGB/alpha inputs come in as `double` from the IL, but the
 ///   backends consume `float`. Sanitising and narrowing at this boundary keeps NaN out
 ///   of shader uniforms and caps values at the physical [0, 1] range.
+/// @param value Runtime scalar to sanitize.
+/// @return Finite single-precision value in the inclusive range 0 through 1.
 float canvas3d_clamp01_f64(double value) {
     if (!isfinite(value))
         return 0.0f;
@@ -469,6 +523,8 @@ float canvas3d_clamp01_f64(double value) {
 }
 
 /// @brief Clamp a float to [0,1] (NaN/inf → 0) and convert to a 0-255 byte.
+/// @param value Normalized channel value to sanitize and quantize.
+/// @return Nearest unsigned 8-bit channel value after clamping.
 uint8_t canvas3d_clamp01_to_u8(float value) {
     if (!isfinite(value))
         value = 0.0f;
@@ -481,6 +537,8 @@ uint8_t canvas3d_clamp01_to_u8(float value) {
 
 /// @brief Check whether @p value is finite and within ±FLT_MAX.
 /// @details Pre-flight test for safe `double → float` narrowing.
+/// @param value Double-precision value to test.
+/// @return Non-zero when conversion to float cannot overflow and the value is finite.
 int canvas3d_double_fits_float(double value) {
     return isfinite(value) && value >= -CANVAS3D_FLOAT_ABS_MAX && value <= CANVAS3D_FLOAT_ABS_MAX;
 }
@@ -488,6 +546,9 @@ int canvas3d_double_fits_float(double value) {
 /// @brief Narrow a 16-entry double Mat4 to float, returning 0 if any entry is non-finite.
 /// @details Used by every matrix-keyed Canvas3D draw entry so a malformed Mat4
 ///          surfaces as a no-op instead of feeding garbage to the GPU backend.
+/// @param src Borrowed array of 16 row-major double entries.
+/// @param dst Writable array receiving 16 float entries only when validation succeeds.
+/// @return Non-zero on complete conversion; zero for NULL arrays or any out-of-range entry.
 static int canvas3d_mat4_d2f_checked(const double *src, float *dst) {
     if (!src || !dst)
         return 0;
@@ -502,11 +563,14 @@ static int canvas3d_mat4_d2f_checked(const double *src, float *dst) {
 /// @brief Whether the current frame uploads geometry relative to a camera origin (floating origin).
 /// @details Active only for 3D frames with the mode enabled; 2D and out-of-frame paths upload
 /// absolute.
+/// @param c Canvas frame state to inspect; may be NULL.
+/// @return Non-zero only during an active 3D frame with camera-relative upload enabled.
 int canvas3d_uses_camera_relative_upload(const rt_canvas3d *c) {
     return c && c->camera_relative_upload && c->in_frame && !c->frame_is_2d;
 }
 
 /// @brief Reset the per-frame camera-relative origin to (0, 0, 0).
+/// @param c Canvas whose three origin lanes are reset; NULL is ignored.
 static void canvas3d_reset_camera_relative_origin(rt_canvas3d *c) {
     if (!c)
         return;
@@ -516,6 +580,8 @@ static void canvas3d_reset_camera_relative_origin(rt_canvas3d *c) {
 }
 
 /// @brief Read the active camera-relative frame origin into @p out_origin.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @param[out] out_origin Writable three-double array. It is zero-filled before validation.
 /// @return 1 if camera-relative upload is active (origin written), 0 otherwise (origin zeroed).
 int rt_canvas3d_get_camera_relative_origin(void *obj, double out_origin[3]) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -533,6 +599,8 @@ int rt_canvas3d_get_camera_relative_origin(void *obj, double out_origin[3]) {
 }
 
 /// @brief Whether a row-major 4x4 matrix equals the identity (within 1e-12, all entries finite).
+/// @param m Borrowed array of 16 row-major double entries.
+/// @return Non-zero when every lane is finite and within the comparison tolerance of identity.
 static int canvas3d_mat4_is_identity(const double *m) {
     if (!m)
         return 0;
@@ -551,6 +619,9 @@ static int canvas3d_mat4_is_identity(const double *m) {
 ///   helper opts in only when at least one authoritative local coordinate is outside the
 ///   float-friendly range or differs materially from the uploaded float copy, where rebasing can
 ///   prevent visible jitter/flicker after transforms.
+/// @param mesh Mesh whose authoritative double positions and uploaded float copy are compared.
+/// @return Non-zero when vertex rebasing is expected to preserve meaningful precision. The result
+/// is cached against the mesh geometry revision.
 static int canvas3d_mesh_positions64_needs_vertex_rebase(rt_mesh3d *mesh) {
     const double precision_risk_threshold = 65536.0;
 
@@ -591,6 +662,12 @@ static int canvas3d_mesh_positions64_needs_vertex_rebase(rt_mesh3d *mesh) {
 ///   are better served by translation-only rebasing because rewriting their vertices adds snapshot
 ///   cost without improving precision. Returns 0 for non-invertible or non-finite linear
 ///   transforms, in which case callers fall back to translation-only rebasing.
+/// @param c Canvas providing the active camera-relative origin.
+/// @param model_matrix Borrowed row-major 4-by-4 double model matrix.
+/// @param[out] out_shift Receives the three-component local-space vertex shift on success.
+/// @param[out] out_model_matrix Receives the adjusted row-major float matrix on success.
+/// @return Non-zero when both outputs were computed; zero for invalid inputs, inactive rebasing,
+/// unsupported projective matrices, singular transforms, or unsafe float narrowing.
 static int canvas3d_compute_vertex_rebase_shift(const rt_canvas3d *c,
                                                 const double *model_matrix,
                                                 double out_shift[3],
@@ -670,6 +747,10 @@ static int canvas3d_compute_vertex_rebase_shift(const rt_canvas3d *c,
 }
 
 /// @brief Narrow a model matrix after subtracting the active frame origin from translation.
+/// @param c Canvas providing optional camera-relative state; may be NULL for absolute conversion.
+/// @param src Borrowed array of 16 row-major double entries.
+/// @param dst Writable array receiving 16 float entries on success.
+/// @return Non-zero on complete finite conversion; zero for NULL arrays or unsafe narrowing.
 static int canvas3d_model_mat4_d2f_checked(const rt_canvas3d *c, const double *src, float *dst) {
     if (!src || !dst)
         return 0;
@@ -694,6 +775,10 @@ static int canvas3d_model_mat4_d2f_checked(const rt_canvas3d *c, const double *s
 /// @details Under floating-origin upload the translation is rebased and then validated. Returning
 ///   failure is deliberately stricter than clamping: a failed instance is skipped/trapped by the
 ///   caller instead of being moved to the origin for a frame.
+/// @param c Canvas providing optional camera-relative state; may be NULL for an absolute copy.
+/// @param src Borrowed array of 16 row-major float entries.
+/// @param dst Writable array receiving the validated frame-relative matrix.
+/// @return Non-zero on success; zero for NULL arrays, non-finite input, or translation overflow.
 static int canvas3d_copy_mat4_f32_for_frame(const rt_canvas3d *c, const float *src, float *dst) {
     if (!src || !dst)
         return 0;
@@ -720,6 +805,11 @@ static int canvas3d_copy_mat4_f32_for_frame(const rt_canvas3d *c, const float *s
 /// @details Instancing APIs pass float matrices, while the regular mesh path works from double
 ///   Mat4 values. This adapter keeps the same rebase math and validation contract for the
 ///   per-instance fallback used by large double-position meshes.
+/// @param c Canvas providing the active camera-relative origin.
+/// @param model_matrix Borrowed row-major 4-by-4 float model matrix.
+/// @param[out] out_shift Receives the three-component local-space vertex shift on success.
+/// @param[out] out_model_matrix Receives the adjusted row-major float matrix on success.
+/// @return Non-zero when the float matrix was finite and generalized rebasing succeeded.
 static int canvas3d_compute_vertex_rebase_shift_f32(const rt_canvas3d *c,
                                                     const float *model_matrix,
                                                     double out_shift[3],
@@ -737,6 +827,9 @@ static int canvas3d_compute_vertex_rebase_shift_f32(const rt_canvas3d *c,
 
 /// @brief Verify every entry across an array of @p count Mat4s is finite.
 /// @details Used to validate instanced draw matrix arrays before submission.
+/// @param matrices Borrowed contiguous array containing @p count row-major 4-by-4 matrices.
+/// @param count Number of matrices to inspect; must be positive.
+/// @return Non-zero when all lanes are finite; zero for NULL, empty, or invalid input.
 static int canvas3d_matrices_f32_are_finite(const float *matrices, int32_t count) {
     if (!matrices || count <= 0)
         return 0;
@@ -751,6 +844,8 @@ static int canvas3d_matrices_f32_are_finite(const float *matrices, int32_t count
 }
 
 /// @brief Validate @p obj is a live `Zanna.Math.Mat4` heap object, NULL otherwise.
+/// @param obj Candidate runtime object.
+/// @return Borrowed Mat4 implementation pointer, or NULL for a wrong-class, dead, or NULL object.
 static mat4_impl *canvas3d_mat4_checked(void *obj) {
     if (!obj || !rt_heap_is_payload(obj) || rt_obj_class_id(obj) != RT_MAT4_CLASS_ID)
         return NULL;
@@ -761,6 +856,10 @@ static mat4_impl *canvas3d_mat4_checked(void *obj) {
 /// @details Used for scalar knobs without an upper bound (exposure, intensities, strengths)
 ///   where the canvas wants to preserve the author's value faithfully but still refuse
 ///   non-finite input.
+/// @param value Runtime scalar to sanitize.
+/// @param fallback Value returned for non-finite input.
+/// @return Zero for negative input, `FLT_MAX` for overflow, @p fallback for non-finite input, or
+/// the safely narrowed value.
 float canvas3d_sanitize_nonnegative_f64(double value, float fallback) {
     if (!isfinite(value))
         return fallback;
@@ -772,11 +871,19 @@ float canvas3d_sanitize_nonnegative_f64(double value, float fallback) {
 }
 
 /// @brief Narrow a double to float, returning `fallback` when out of float range or non-finite.
+/// @param value Runtime scalar to narrow.
+/// @param fallback Value returned when @p value cannot be represented safely as float.
+/// @return Safely narrowed value or @p fallback.
 float canvas3d_sanitize_f64_to_float(double value, float fallback) {
     return canvas3d_double_fits_float(value) ? (float)value : fallback;
 }
 
 /// @brief Clamp a finite double to [lo, hi] and narrow to float; non-finite -> fallback.
+/// @param value Runtime scalar to sanitize.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @param fallback Value returned when @p value is non-finite or outside float range.
+/// @return Safely narrowed value clamped to the supplied bounds, or @p fallback.
 float canvas3d_clamp_f64_to_float(double value, double lo, double hi, float fallback) {
     if (!canvas3d_double_fits_float(value))
         return fallback;
@@ -788,6 +895,10 @@ float canvas3d_clamp_f64_to_float(double value, double lo, double hi, float fall
 }
 
 /// @brief Floor a float to int32, clamped to [@p lo, @p hi]; non-finite input returns @p lo.
+/// @param value Floating-point coordinate to floor.
+/// @param lo Inclusive minimum result.
+/// @param hi Inclusive maximum result.
+/// @return Floored and clamped coordinate, or @p lo for non-finite input.
 static int32_t canvas3d_floor_to_i32_clamped(float value, int32_t lo, int32_t hi) {
     if (!isfinite(value))
         return lo;
@@ -799,6 +910,10 @@ static int32_t canvas3d_floor_to_i32_clamped(float value, int32_t lo, int32_t hi
 }
 
 /// @brief Ceil a float to int32, clamped to [@p lo, @p hi]; non-finite input returns @p lo.
+/// @param value Floating-point coordinate to ceil.
+/// @param lo Inclusive minimum result.
+/// @param hi Inclusive maximum result.
+/// @return Ceiled and clamped coordinate, or @p lo for non-finite input.
 static int32_t canvas3d_ceil_to_i32_clamped(float value, int32_t lo, int32_t hi) {
     if (!isfinite(value))
         return lo;
@@ -810,6 +925,10 @@ static int32_t canvas3d_ceil_to_i32_clamped(float value, int32_t lo, int32_t hi)
 }
 
 /// @brief Clamp an integer cell coordinate into [@p lo, @p hi].
+/// @param value Integer coordinate to clamp.
+/// @param lo Inclusive minimum result.
+/// @param hi Inclusive maximum result.
+/// @return @p value constrained to the supplied bounds.
 static int32_t canvas3d_clamp_i32(int32_t value, int32_t lo, int32_t hi) {
     if (value < lo)
         return lo;
@@ -820,6 +939,10 @@ static int32_t canvas3d_clamp_i32(int32_t value, int32_t lo, int32_t hi) {
 
 /// @brief Validate an RGBA8 readback target: positive dimensions, a non-negative stride
 ///   at least 4·w bytes, and no 32-bit overflow in the row size.
+/// @param w Target width in pixels.
+/// @param h Target height in pixels.
+/// @param stride Destination row stride in bytes.
+/// @return Non-zero when the dimensions and stride describe a safe RGBA8 destination.
 int canvas3d_rgba8_stride_valid(int32_t w, int32_t h, int32_t stride) {
     int64_t required;
     if (w <= 0 || h <= 0 || stride < 0)
@@ -834,6 +957,7 @@ int canvas3d_rgba8_stride_valid(int32_t w, int32_t h, int32_t stride) {
 /// @details Called on every early-return path of `rt_canvas3d_draw_mesh_matrix_keyed`
 ///          so a failed splat-configured draw cannot leak its splat-map and four
 ///          layer pointers into the next successful draw.
+/// @param c Canvas whose pending splat state is zeroed; NULL is ignored.
 static void canvas3d_clear_pending_splat(rt_canvas3d *c) {
     if (!c)
         return;
@@ -847,6 +971,9 @@ static void canvas3d_clear_pending_splat(rt_canvas3d *c) {
 
 /// @brief True if every lane of a bone palette (bone_count × 16 floats, capped at
 ///   VGFX3D_MAX_BONES) is finite; guards skinning uploads against NaN-corrupted matrices.
+/// @param palette Borrowed contiguous matrix palette.
+/// @param bone_count Requested number of matrices; values above the backend limit are capped.
+/// @return Non-zero when at least one matrix is requested and every inspected lane is finite.
 static int canvas3d_palette_finite(const float *palette, int32_t bone_count) {
     size_t lane_count;
     if (!palette || bone_count <= 0)
@@ -876,6 +1003,10 @@ static float *canvas3d_snapshot_float_payload(rt_canvas3d *c,
 ///          producing one-frame skinning pops or motion-vector flicker. Shallow stack meshes used
 ///          by the explicit GPU-skinning fast path keep their source pointers: the owning animation
 ///          object is retained by that path and tests depend on this path remaining zero-copy.
+/// @param c Canvas that owns any snapshots created for deferred submission.
+/// @param cmd Draw command whose skinning fields are initialized or cleared.
+/// @param mesh Borrowed source mesh containing palette and influence data.
+/// @param prev_bone_palette Optional borrowed previous-frame palette overriding the mesh fallback.
 static void canvas3d_bind_skinning_cmd(rt_canvas3d *c,
                                        vgfx3d_draw_cmd_t *cmd,
                                        const rt_mesh3d *mesh,
@@ -930,6 +1061,9 @@ static void canvas3d_bind_skinning_cmd(rt_canvas3d *c,
 }
 
 /// @brief True if all `count` floats are finite (NULL/empty array returns false).
+/// @param values Borrowed float array to validate.
+/// @param count Number of lanes to inspect.
+/// @return Non-zero when @p count is positive and every lane is finite.
 static int canvas3d_float_array_finite(const float *values, size_t count) {
     if (!values || count == 0)
         return 0;
@@ -1034,6 +1168,12 @@ static void canvas3d_record_float_snapshot(
 ///   source/count/content tuples in one frame reuse the first copy to avoid per-draw heap churn.
 ///   Allocation or tracking failure leaves the caller with NULL so it can disable the optional
 ///   feature safely.
+/// @param c Canvas that owns the per-frame snapshot cache and temp-buffer list.
+/// @param values Borrowed source array to validate and copy.
+/// @param count Number of float lanes to snapshot.
+/// @param trap_message Optional diagnostic used for allocation failures.
+/// @return Frame-owned stable copy, a matching same-frame cached copy, or NULL for invalid input,
+/// non-finite data, overflow, allocation failure, or tracking failure.
 static float *canvas3d_snapshot_float_payload(rt_canvas3d *c,
                                               const float *values,
                                               size_t count,
@@ -1076,6 +1216,10 @@ static float *canvas3d_snapshot_float_payload(rt_canvas3d *c,
 ///   mutate those buffers after the draw is queued. Retained `MorphTarget3D` payloads are forwarded
 ///   directly: the retained object supplies lifetime stability and its generation key guards
 ///   backend caches, preserving the zero-copy GPU morph path.
+/// @param c Canvas that owns snapshots and retained morph-target objects for the frame.
+/// @param cmd Draw command whose morph fields are initialized or cleared.
+/// @param mesh Borrowed source mesh containing raw or retained morph payloads.
+/// @param prev_morph_weights Optional borrowed previous-frame weights overriding the mesh fallback.
 static void canvas3d_bind_morph_cmd(rt_canvas3d *c,
                                     vgfx3d_draw_cmd_t *cmd,
                                     const rt_mesh3d *mesh,
@@ -1183,6 +1327,9 @@ static void canvas3d_bind_morph_cmd(rt_canvas3d *c,
 }
 
 /// @brief True if both AABB corners are finite and min ≤ max on every axis.
+/// @param minv Borrowed three-component minimum corner.
+/// @param maxv Borrowed three-component maximum corner.
+/// @return Non-zero when both arrays exist and describe an ordered finite box.
 static int canvas3d_bounds_are_valid(const float minv[3], const float maxv[3]) {
     if (!minv || !maxv)
         return 0;
@@ -1195,6 +1342,10 @@ static int canvas3d_bounds_are_valid(const float minv[3], const float maxv[3]) {
 
 /// @brief Fill out_min/out_max from the mesh's cached local AABB when it is valid,
 ///   otherwise compute the bounds directly from the vertex array.
+/// @param mesh Borrowed mesh providing cached bounds and the safe vertex count.
+/// @param vertices Borrowed vertex array used when cached bounds are unavailable.
+/// @param[out] out_min Writable three-component minimum corner; NULL suppresses the operation.
+/// @param[out] out_max Writable three-component maximum corner; NULL suppresses the operation.
 static void canvas3d_copy_or_compute_local_bounds(const rt_mesh3d *mesh,
                                                   const vgfx3d_vertex_t *vertices,
                                                   float out_min[3],
@@ -1212,6 +1363,9 @@ static void canvas3d_copy_or_compute_local_bounds(const rt_mesh3d *mesh,
 #include "rt_canvas3d_frame_postfx.inc"
 
 /// @brief Estimate a physical backing size for a requested logical size.
+/// @param c Canvas whose window scale is consulted; NULL implies scale 1.
+/// @param logical Logical dimension in canvas units.
+/// @return Rounded physical dimension. Non-positive or overflow-prone inputs are returned unchanged.
 static int32_t canvas3d_scale_logical_size(rt_canvas3d *c, int32_t logical) {
     float scale;
 
@@ -1226,6 +1380,9 @@ static int32_t canvas3d_scale_logical_size(rt_canvas3d *c, int32_t logical) {
 }
 
 /// @brief Convert a physical framebuffer dimension back to the public logical space.
+/// @param c Canvas whose window scale is consulted; NULL implies scale 1.
+/// @param physical Physical framebuffer dimension in backing pixels.
+/// @return Rounded logical dimension. Non-positive inputs are returned unchanged.
 static int32_t canvas3d_unscale_physical_size(rt_canvas3d *c, int32_t physical) {
     float scale;
 
@@ -1243,6 +1400,11 @@ static int32_t canvas3d_unscale_physical_size(rt_canvas3d *c, int32_t physical) 
 /// is the framebuffer/backing-pixel size used by native backends. Keeping
 /// both prevents Retina/HiDPI resize events from leaking 2x dimensions into
 /// Game3D and Canvas3D public APIs.
+/// @param c Canvas and backend state to resize; NULL is ignored.
+/// @param logical_w Positive public width in logical units.
+/// @param logical_h Positive public height in logical units.
+/// @param physical_w Backing width in pixels, or a non-positive value to derive it from scale.
+/// @param physical_h Backing height in pixels, or a non-positive value to derive it from scale.
 static void rt_canvas3d_apply_resize(
     rt_canvas3d *c, int32_t logical_w, int32_t logical_h, int32_t physical_w, int32_t physical_h) {
     int size_changed;
@@ -1274,6 +1436,10 @@ static void rt_canvas3d_apply_resize(
 
 /// @brief Record an event type code into the canvas's per-frame event tally (for
 /// diagnostics/tests).
+/// @details The fixed-capacity queue drops its oldest entry on overflow and increments a saturating
+/// drop counter before appending the new type.
+/// @param c Canvas event queue to update; NULL is ignored.
+/// @param type Backend event code; `VGFX_EVENT_NONE` is ignored.
 static void canvas3d_record_event_type(rt_canvas3d *c, int64_t type) {
     if (!c || type == VGFX_EVENT_NONE)
         return;
@@ -1290,6 +1456,12 @@ static void canvas3d_record_event_type(rt_canvas3d *c, int64_t type) {
 }
 
 /// @brief Public resize entry point mirroring window resize events.
+/// @details Offscreen canvases reject direct resizing because their dimensions belong to the bound
+/// render target. Windowed canvases accept dimensions from 1 through
+/// `CANVAS3D_MAX_DIMENSION`, resize the platform window, and immediately synchronize the backend.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param w Requested logical width in pixels.
+/// @param h Requested logical height in pixels.
 void rt_canvas3d_resize(void *obj, int64_t w, int64_t h) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -1314,6 +1486,9 @@ void rt_canvas3d_resize(void *obj, int64_t w, int64_t h) {
 /// When a render target is bound, 2D overlays and coordinate
 /// conversions should operate in render-target pixel space rather than
 /// the window's framebuffer size.
+/// @param c Canvas whose bound target or logical window size is inspected.
+/// @param[out] out_w Optional destination for the active width; initialized to zero.
+/// @param[out] out_h Optional destination for the active height; initialized to zero.
 static void canvas3d_active_output_size(const rt_canvas3d *c, int32_t *out_w, int32_t *out_h) {
     if (out_w)
         *out_w = 0;
@@ -1342,6 +1517,9 @@ static void canvas3d_active_output_size(const rt_canvas3d *c, int32_t *out_w, in
 ///
 /// Hooked into the underlying `vgfx_window_t`'s resize event so the
 /// canvas state stays in sync without requiring per-frame polling.
+/// @param userdata Borrowed callback payload expected to point to the owning canvas.
+/// @param w Physical framebuffer width reported by the platform.
+/// @param h Physical framebuffer height reported by the platform.
 static void rt_canvas3d_on_resize(void *userdata, int32_t w, int32_t h) {
     rt_canvas3d *c = (rt_canvas3d *)userdata;
     int32_t logical_w = 0;
@@ -1360,6 +1538,8 @@ static void rt_canvas3d_on_resize(void *userdata, int32_t w, int32_t h) {
 ///
 /// Idempotent — safe to call on already-NULL slots. Used in the
 /// canvas finalizer to release every owned sub-object cleanly.
+/// @param[in,out] slot Address of an owned GC-reference slot; NULL is ignored and a released slot
+/// is set to NULL.
 static void canvas3d_release_owned_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
@@ -1372,6 +1552,8 @@ static void canvas3d_release_owned_ref(void **slot) {
 ///          the new value through a transitive reference. The early
 ///          return on `*slot == value` skips the round trip when the
 ///          assignment is a no-op.
+/// @param[in,out] slot Address of the owned reference slot; NULL is ignored.
+/// @param value New GC-managed value to retain, or NULL to clear the slot.
 static void canvas3d_assign_owned_ref(void **slot, void *value) {
     if (!slot || *slot == value)
         return;
@@ -1385,6 +1567,7 @@ static void canvas3d_assign_owned_ref(void **slot, void *value) {
 /// Called when the canvas is destroyed. Without this, focus
 /// queries would still return the dead window pointer until the
 /// next focus event arrived.
+/// @param gfx_win Window handle to detach from both input subsystems; NULL is ignored.
 static void rt_canvas3d_detach_input(vgfx_window_t gfx_win) {
     if (!gfx_win)
         return;
@@ -1419,6 +1602,13 @@ static int canvas3d_track_temp_object_new(rt_canvas3d *c, const void *obj, int *
 /// @details Stores only resources newly retained by this draw attempt. If the draw later fails to
 ///          append to the queue, callers release the recorded refs without disturbing resources
 ///          that were already retained for previous queued draws.
+/// @param c Canvas that owns the frame transient-object set.
+/// @param obj Borrowed resource to retain, or NULL for an intentional no-op success.
+/// @param[out] new_refs Optional caller-owned rollback array receiving newly retained objects.
+/// @param[in,out] new_ref_count Optional count of populated rollback entries.
+/// @param new_ref_capacity Capacity of @p new_refs; a newly inserted reference is rolled back when
+/// the capacity is exhausted.
+/// @return Non-zero when the resource is NULL, already tracked, or newly tracked and recorded.
 static int canvas3d_track_draw_resource(rt_canvas3d *c,
                                         const void *obj,
                                         void **new_refs,
@@ -1442,6 +1632,9 @@ static int canvas3d_track_draw_resource(rt_canvas3d *c,
 }
 
 /// @brief Release every newly inserted transient object recorded for a failed draw append.
+/// @param c Canvas that owns the tracked references; NULL is ignored.
+/// @param new_refs Borrowed rollback array populated by `canvas3d_track_draw_resource`.
+/// @param new_ref_count Number of entries to release in reverse insertion order.
 static void canvas3d_release_new_draw_resources(rt_canvas3d *c,
                                                 void *const *new_refs,
                                                 int32_t new_ref_count) {
@@ -1455,6 +1648,13 @@ static void canvas3d_release_new_draw_resources(rt_canvas3d *c,
 /// @details Draw commands borrow raw Pixels/TextureAsset/CubeMap pointers. Retaining the source
 ///          objects until frame end makes deferred submission stable even when the material is
 ///          edited or a texture slot is replaced before Canvas3D.End().
+/// @param c Canvas that owns the frame transient-object set.
+/// @param mat Borrowed material whose texture and environment slots are tracked.
+/// @param[out] new_refs Optional rollback array receiving references inserted by this attempt.
+/// @param[in,out] new_ref_count Optional rollback-array population count.
+/// @param new_ref_capacity Maximum number of entries available in @p new_refs.
+/// @return Non-zero when every applicable resource is retained or already tracked; zero leaves
+/// rollback responsibility with the caller.
 static int canvas3d_track_material_resources(rt_canvas3d *c,
                                              const rt_material3d *mat,
                                              void **new_refs,
@@ -1509,6 +1709,8 @@ static int canvas3d_track_material_resources(rt_canvas3d *c,
 /// (D3D11/OpenGL/Software) destroy themselves through their
 /// virtual `destroy_ctx`. Idempotent: nulled pointers prevent
 /// double-free if the GC sweeps the canvas twice during shutdown.
+/// @param obj Canvas payload supplied by the runtime finalizer. It must point to an initialized
+/// `rt_canvas3d`.
 static void rt_canvas3d_finalize(void *obj) {
     rt_canvas3d *c = (rt_canvas3d *)obj;
     canvas3d_release_synthetic_input(c);
@@ -1653,6 +1855,7 @@ static void rt_canvas3d_finalize(void *obj) {
 /// @brief Tear down the canvas's platform window and flag it closed.
 /// @details Detaches input, destroys the backing window, and sets `should_close`
 ///          so the next poll reports the canvas as closed. Safe on a NULL canvas.
+/// @param c Canvas whose optional window is destroyed.
 static void canvas3d_close_window(rt_canvas3d *c) {
     if (!c)
         return;
@@ -1676,6 +1879,8 @@ static void canvas3d_close_window(rt_canvas3d *c) {
 /// @details GPU backends use native display-sync/swap-interval control, so vgfx must not add its
 ///          independent CPU sleep. Software presentation has no native swap clock and keeps the
 ///          frame limit captured when the window was created while requested vsync is enabled.
+/// @param c Canvas whose platform-window frame limiter is synchronized; NULL and offscreen
+/// canvases are ignored.
 static void canvas3d_apply_window_pacing(rt_canvas3d *c) {
     int software_backend;
 
@@ -1696,6 +1901,12 @@ static void canvas3d_apply_window_pacing(rt_canvas3d *c) {
 /// @param title Window title (runtime string).
 /// @param w     Window width in pixels (1–CANVAS3D_MAX_DIMENSION).
 /// @param h     Window height in pixels (1–CANVAS3D_MAX_DIMENSION).
+/// @param fullscreen Non-zero to create a desktop-sized fullscreen window; ignored for offscreen
+/// construction.
+/// @param offscreen_target Optional validated RenderTarget3D whose dimensions and lifetime become
+/// the canvas output contract. A non-NULL target suppresses window and live-input setup.
+/// @param offscreen_prefer_gpu Non-zero to request a headless platform backend before software
+/// fallback; meaningful only with @p offscreen_target.
 /// @return Opaque canvas handle, or NULL on failure.
 static void *canvas3d_new_impl(rt_string title,
                                int64_t w,
@@ -1971,6 +2182,10 @@ static void *canvas3d_new_impl(rt_string title,
 
 /// @brief Create a new 3D rendering canvas (window + backend context).
 /// @details See canvas3d_new_impl — this is the windowed entry point.
+/// @param title Borrowed runtime string used as the platform-window title.
+/// @param w Logical window width in pixels, from 1 through `CANVAS3D_MAX_DIMENSION`.
+/// @param h Logical window height in pixels, from 1 through `CANVAS3D_MAX_DIMENSION`.
+/// @return New GC-managed Canvas3D handle, or NULL after reporting construction failure.
 void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h) {
     return canvas3d_new_impl(title, w, h, 0, NULL, 0);
 }
@@ -1979,11 +2194,17 @@ void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h) {
 /// @details The window is created directly in fullscreen (no windowed flash);
 ///          requested dimensions come from the primary display. Toggle back
 ///          to windowed at runtime via SetFullscreen/ToggleFullscreen.
+/// @param title Borrowed runtime string used as the platform-window title.
+/// @return New GC-managed fullscreen Canvas3D handle, or NULL after reporting construction failure.
 void *rt_canvas3d_new_fullscreen(rt_string title) {
     return canvas3d_new_impl(title, 0, 0, 1, NULL, 0);
 }
 
 /// @brief Shared validation and construction for both windowless constructors.
+/// @param target Candidate live RenderTarget3D object. The resulting canvas retains it on success.
+/// @param prefer_gpu Non-zero to request a headless platform GPU backend before software fallback.
+/// @return New GC-managed offscreen Canvas3D handle, or NULL after trapping invalid target,
+/// allocation, or backend initialization failures.
 static void *canvas3d_new_offscreen_impl(void *target, int32_t prefer_gpu) {
     rt_rendertarget3d *rtd =
         (rt_rendertarget3d *)rt_g3d_checked_or_null(target, RT_G3D_RENDERTARGET3D_CLASS_ID);
@@ -2004,6 +2225,9 @@ static void *canvas3d_new_offscreen_impl(void *target, int32_t prefer_gpu) {
 /// @details The software backend accepts a NULL platform window and writes directly into the
 ///          retained target. No global input canvas, resize callback, or presentation state is
 ///          installed. The caller can replace the target later with SetRenderTarget.
+/// @param target Live RenderTarget3D object with valid color and depth storage.
+/// @return New GC-managed software-backed offscreen canvas, or NULL on validation or construction
+/// failure. The canvas retains the target.
 void *rt_canvas3d_new_offscreen(void *target) {
     return canvas3d_new_offscreen_impl(target, 0);
 }
@@ -2014,11 +2238,16 @@ void *rt_canvas3d_new_offscreen(void *target) {
 ///          backend and reports it through IsBackendFallback/BackendName. Output is NOT
 ///          promised to be byte-identical to the software constructor; determinism-sensitive
 ///          callers (probes, bakes, goldens) must keep using NewOffscreen.
+/// @param target Live RenderTarget3D object with valid color and depth storage.
+/// @return New GC-managed offscreen canvas using the platform backend or truthful software
+/// fallback, or NULL on validation or construction failure.
 void *rt_canvas3d_new_offscreen_accelerated(void *target) {
     return canvas3d_new_offscreen_impl(target, 1);
 }
 
 /// @brief Report whether a Canvas3D was created without a platform window.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return 1 for a valid offscreen canvas; otherwise 0.
 int8_t rt_canvas3d_get_is_offscreen(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c && c->offscreen ? 1 : 0;
@@ -2033,6 +2262,10 @@ int8_t rt_canvas3d_get_is_offscreen(void *obj) {
  *=========================================================================*/
 
 /// @brief Replay recorded final-overlay commands after post-FX.
+/// @details Starts a dedicated overlay frame, submits each retained command in order, ends the
+/// backend frame, and restores the canvas to an out-of-frame state. Missing backend state or an
+/// empty overlay is a no-op.
+/// @param c Canvas owning the final-overlay command list and backend context.
 static void canvas3d_replay_final_overlay(rt_canvas3d *c) {
     deferred_draw_t *cmds;
 
@@ -2051,6 +2284,10 @@ static void canvas3d_replay_final_overlay(rt_canvas3d *c) {
 /// @brief Apply post-FX and final overlay exactly once, optionally presenting to the window.
 /// @details `present_to_window` is false for screenshot capture so finalization can composite the
 ///   final frame without swapping/presenting a drawable as a side effect.
+/// @param c Canvas whose current frame is finalized; NULL and canvases without an output are
+/// ignored.
+/// @param present_to_window Non-zero to permit the backend presentation path; zero composites for
+/// readback only.
 static void canvas3d_finalize_frame_impl(rt_canvas3d *c, int present_to_window) {
     if (!c)
         return;
@@ -2104,23 +2341,33 @@ static void canvas3d_finalize_frame_impl(rt_canvas3d *c, int present_to_window) 
 }
 
 /// @brief Apply post-FX and final overlay exactly once.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 void rt_canvas3d_finalize_frame(void *obj) {
     canvas3d_finalize_frame_impl(rt_canvas3d_checked_or_stack(obj), 1);
 }
 
 /// @brief Return whether the current frame has already been finalized.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return 1 when the valid canvas has completed final compositing; otherwise 0.
 int8_t rt_canvas3d_get_frame_finalized(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c && c->frame_finalized ? 1 : 0;
 }
 
 /// @brief Capture finalized frame pixels, finalizing first if needed.
+/// @details Finalization is performed without presenting a window drawable, after which the normal
+/// screenshot path returns the active output. Ownership matches `rt_canvas3d_screenshot`.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Screenshot Pixels object from the active output, or NULL on invalid input or readback
+/// failure.
 void *rt_canvas3d_screenshot_final(void *obj) {
     canvas3d_finalize_frame_impl(rt_canvas3d_checked_or_stack(obj), 0);
     return rt_canvas3d_screenshot(obj);
 }
 
 /// @brief Finalize the current frame if needed, then copy it into an existing Pixels object.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @param pixels Caller-owned destination Pixels object accepted by the normal screenshot-copy API.
 /// @return 1 on successful finalization/readback, or 0 for invalid input/readback failure.
 int8_t rt_canvas3d_try_copy_screenshot_final_to(void *obj, void *pixels) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -2134,6 +2381,8 @@ int8_t rt_canvas3d_try_copy_screenshot_final_to(void *obj, void *pixels) {
 /// @details Finalizes the frame if needed, then presents finalized pixels.
 ///          Updates the FPS counter and delta-time calculation for the next
 ///          frame.
+/// @param obj Windowed Canvas3D handle or approved stack fixture. Invalid and offscreen canvases
+/// are ignored.
 void rt_canvas3d_flip(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2169,6 +2418,8 @@ void rt_canvas3d_flip(void *obj) {
 /// @details `vgfx_mouse_pos()` already returns logical coordinates once
 ///          Canvas3D enables the window coordinate scale, so live polling must
 ///          pass those values through without applying the scale a second time.
+/// @param x Logical horizontal cursor coordinate.
+/// @param y Logical vertical cursor coordinate.
 static void rt_canvas3d_update_mouse_from_logical(int32_t x, int32_t y) {
     rt_mouse_update_pos((int64_t)x, (int64_t)y);
 }
@@ -2177,6 +2428,9 @@ static void rt_canvas3d_update_mouse_from_logical(int32_t x, int32_t y) {
 /// @details Platform mouse events carry physical backing-pixel coordinates.
 ///          Dividing by the per-window scale keeps event positions aligned
 ///          with Canvas3D's public logical coordinate space.
+/// @param gfx_win Window whose HiDPI scale converts backing pixels to logical units.
+/// @param x Physical horizontal event coordinate in backing pixels.
+/// @param y Physical vertical event coordinate in backing pixels.
 static void rt_canvas3d_update_mouse_from_physical(vgfx_window_t gfx_win, int32_t x, int32_t y) {
     float scale = vgfx_window_get_scale(gfx_win);
     if (!isfinite(scale) || scale < 0.001f)
@@ -2192,6 +2446,8 @@ static void rt_canvas3d_update_mouse_from_physical(vgfx_window_t gfx_win, int32_
 /// gamepad/action input subsystems, updates the wall-clock dt
 /// (capped at `dt_max` to prevent huge jumps after pauses), and
 /// dispatches resize / focus / close events.
+/// @param obj Canvas3D handle or approved stack fixture. A window is required unless the input
+/// source is synthetic-only.
 /// @return 1 if the window remains open, 0 if the user requested close.
 int64_t rt_canvas3d_poll(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -2336,6 +2592,8 @@ int64_t rt_canvas3d_poll(void *obj) {
 /// @brief Pop the next queued window/input event for the canvas, encoded as an int64 code.
 /// @details Returns one event per call (0 when the queue is empty), advancing the per-frame event
 ///          tally; pair with the window pump that fills the queue.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Oldest queued `VGFX_EVENT_*` type, or `VGFX_EVENT_NONE` for invalid or empty input.
 int64_t rt_canvas3d_poll_event(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || c->event_type_count <= 0)
@@ -2347,12 +2605,16 @@ int64_t rt_canvas3d_poll_event(void *obj) {
 }
 
 /// @brief Check if the canvas window received a close request.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Non-zero when a valid canvas has been marked for closure; zero for invalid input.
 int8_t rt_canvas3d_should_close(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->should_close : 0;
 }
 
 /// @brief Enable or disable wireframe rendering mode.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param enabled Non-zero to render polygon edges; zero for filled rasterization.
 void rt_canvas3d_set_wireframe(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (c)
@@ -2360,6 +2622,8 @@ void rt_canvas3d_set_wireframe(void *obj, int8_t enabled) {
 }
 
 /// @brief Enable or disable backface culling (CCW winding = front face).
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param enabled Non-zero to cull clockwise back faces; zero to submit both sides.
 void rt_canvas3d_set_backface_cull(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (c)
@@ -2371,6 +2635,9 @@ void rt_canvas3d_set_backface_cull(void *obj, int8_t enabled) {
 /// Used by skinning / morph-target paths that allocate
 /// per-draw vertex transforms — the canvas owns the lifetime
 /// until after the GPU has consumed the data on `end()`.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @param buffer Non-NULL malloc-compatible allocation whose ownership transfers on success.
+/// @return Non-zero when the canvas accepted ownership; zero leaves ownership with the caller.
 int rt_canvas3d_add_temp_buffer(void *obj, void *buffer) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || !buffer)
@@ -2379,6 +2646,9 @@ int rt_canvas3d_add_temp_buffer(void *obj, void *buffer) {
 }
 
 /// @brief Undo temp-buffer ownership transfer before frame cleanup.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @param buffer Previously tracked allocation to remove without freeing.
+/// @return Non-zero when the allocation was found and untracked; zero otherwise.
 int rt_canvas3d_remove_temp_buffer(void *obj, void *buffer) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || !buffer)
@@ -2391,6 +2661,10 @@ int rt_canvas3d_remove_temp_buffer(void *obj, void *buffer) {
 /// Lets a draw call reference an object (mesh, material, pixels)
 /// that might otherwise be collected before the deferred queue
 /// flushes. The canvas drops the reference in `rt_canvas3d_end`.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @param value Non-NULL GC-managed object to retain through frame cleanup.
+/// @return Non-zero when the object is retained or already tracked; zero on invalid input or
+/// allocation failure.
 int rt_canvas3d_add_temp_object(void *obj, void *value) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || !value)
@@ -2399,6 +2673,8 @@ int rt_canvas3d_add_temp_object(void *obj, void *value) {
 }
 
 /// @brief Get the current canvas width in pixels (updates on window resize).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Active render-target width when bound, otherwise logical window width; zero when invalid.
 int64_t rt_canvas3d_get_width(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2409,6 +2685,9 @@ int64_t rt_canvas3d_get_width(void *obj) {
 }
 
 /// @brief Get the current canvas height in pixels (updates on window resize).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Active render-target height when bound, otherwise logical window height; zero when
+/// invalid.
 int64_t rt_canvas3d_get_height(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2419,12 +2698,16 @@ int64_t rt_canvas3d_get_height(void *obj) {
 }
 
 /// @brief Get the backing window's logical width, ignoring any bound render target.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Positive logical window width, or zero for invalid, offscreen, or unavailable state.
 int64_t rt_canvas3d_get_window_width(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return (c && c->width > 0) ? c->width : 0;
 }
 
 /// @brief Get the backing window's logical height, ignoring any bound render target.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Positive logical window height, or zero for invalid, offscreen, or unavailable state.
 int64_t rt_canvas3d_get_window_height(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return (c && c->height > 0) ? c->height : 0;
@@ -2438,6 +2721,8 @@ int64_t rt_canvas3d_get_window_height(void *obj) {
 ///          event. The per-frame projection derives aspect from the active output
 ///          size (see `canvas3d_active_output_size`), so updating width/height here
 ///          is sufficient to keep the view un-stretched across the toggle.
+/// @param c Windowed canvas whose live logical size is queried; NULL and offscreen canvases are
+/// ignored.
 static void rt_canvas3d_resync_window_size(rt_canvas3d *c) {
     int32_t logical_w = 0;
     int32_t logical_h = 0;
@@ -2479,16 +2764,23 @@ void rt_canvas3d_toggle_fullscreen(void *obj) {
 }
 
 /// @brief Explicit alias for Width: the active output width, including render targets.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Same value and invalid-input behavior as `rt_canvas3d_get_width`.
 int64_t rt_canvas3d_get_active_output_width(void *obj) {
     return rt_canvas3d_get_width(obj);
 }
 
 /// @brief Explicit alias for Height: the active output height, including render targets.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Same value and invalid-input behavior as `rt_canvas3d_get_height`.
 int64_t rt_canvas3d_get_active_output_height(void *obj) {
     return rt_canvas3d_get_height(obj);
 }
 
 /// @brief Get the rolling-average frames-per-second from recent timing samples.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Nearest integer FPS from the rolling microsecond window, with legacy delta fallbacks;
+/// zero when no positive timing sample is available or the handle is invalid.
 int64_t rt_canvas3d_get_fps(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2505,6 +2797,9 @@ int64_t rt_canvas3d_get_fps(void *obj) {
 /// @brief Get the time elapsed since the last frame in milliseconds.
 /// @details Clamped to dt_max (default 100ms) to prevent physics explosions
 ///          after long pauses (e.g., window drag, breakpoint, alt-tab).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Non-negative elapsed milliseconds, capped by `dt_max_ms` when enabled; zero for invalid
+/// input or a non-positive sample.
 int64_t rt_canvas3d_get_delta_time(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2520,6 +2815,10 @@ int64_t rt_canvas3d_get_delta_time(void *obj) {
 }
 
 /// @brief Get the time elapsed since the last frame in seconds.
+/// @details Uses microsecond timing when available, applies the same optional `dt_max_ms` cap as
+/// the millisecond getter, and falls back to that getter for legacy timing state.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Non-negative elapsed seconds, or zero for invalid input or no positive sample.
 double rt_canvas3d_get_delta_time_sec(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2537,6 +2836,9 @@ double rt_canvas3d_get_delta_time_sec(void *obj) {
 }
 
 /// @brief Cap the per-frame delta-time at `max_ms` milliseconds (prevents huge jumps after pauses).
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param max_ms Positive cap in milliseconds. Non-positive values disable clamping, and very large
+/// values are limited so conversion to microseconds cannot overflow.
 void rt_canvas3d_set_dt_max(void *obj, int64_t max_ms) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (c)
@@ -2544,6 +2846,11 @@ void rt_canvas3d_set_dt_max(void *obj, int64_t max_ms) {
 }
 
 /// @brief Select live, synthetic, or live+synthetic input.
+/// @details Modes outside the supported range select live input. Returning to live-only releases
+/// held synthetic keys/buttons and ownership; selecting a synthetic mode transfers the single
+/// process-wide synthetic owner when necessary.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param mode 0 for live input, 1 for synthetic-only, or 2 for combined live and synthetic input.
 void rt_canvas3d_set_input_source(void *obj, int64_t mode) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2560,6 +2867,11 @@ void rt_canvas3d_set_input_source(void *obj, int64_t mode) {
 }
 
 /// @brief Queue a synthetic keyboard transition for the next synthetic input frame.
+/// @details Invalid key codes and samples beyond the fixed queue capacity are ignored without
+/// displacing already queued transitions.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @param key Runtime key code strictly between zero and `ZANNA_KEY_MAX`.
+/// @param down Non-zero for key-down; zero for key-up.
 void rt_canvas3d_push_synthetic_key(void *obj, int64_t key, int8_t down) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || key <= 0 || key >= ZANNA_KEY_MAX)
@@ -2572,6 +2884,14 @@ void rt_canvas3d_push_synthetic_key(void *obj, int64_t key, int8_t down) {
 }
 
 /// @brief Queue a synthetic mouse movement/button/wheel sample.
+/// @details Movement and wheel deltas accumulate with finite saturation. The button bitset replaces
+/// the previous pending button sample after masking unsupported bits.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param dx Horizontal logical displacement to accumulate.
+/// @param dy Vertical logical displacement to accumulate.
+/// @param buttons Bitset of buttons that should be held after the sample; non-positive values clear
+/// all supported buttons.
+/// @param wheel Vertical wheel displacement to accumulate.
 void rt_canvas3d_push_synthetic_mouse(
     void *obj, double dx, double dy, int64_t buttons, double wheel) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -2586,12 +2906,17 @@ void rt_canvas3d_push_synthetic_mouse(
 }
 
 /// @brief Clear queued synthetic input and release keys/buttons held by the synthetic source.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 void rt_canvas3d_clear_synthetic_input(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     canvas3d_release_synthetic_input(c);
 }
 
 /// @brief Select live wall-clock or fixed synthetic delta-time source.
+/// @details Selecting synthetic time immediately publishes the stored fixed delta without recording
+/// an FPS sample. Modes other than 1 select the live clock.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param mode 1 for fixed synthetic time; any other value for live wall-clock time.
 void rt_canvas3d_set_clock_source(void *obj, int64_t mode) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2603,6 +2928,10 @@ void rt_canvas3d_set_clock_source(void *obj, int64_t mode) {
 }
 
 /// @brief Set the fixed synthetic delta time in seconds.
+/// @details The value is rounded to microseconds, clamps negative and non-finite input to zero, and
+/// caps excessively large durations. An active synthetic clock is updated immediately.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param dt Requested deterministic frame duration in seconds.
 void rt_canvas3d_set_synthetic_delta_time_sec(void *obj, double dt) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2613,6 +2942,9 @@ void rt_canvas3d_set_synthetic_delta_time_sec(void *obj, double dt) {
 }
 
 /// @brief Advance one deterministic synthetic input/timing frame.
+/// @details Resets per-frame device state, applies queued synthetic input, refreshes actions, and,
+/// when selected, publishes and samples the fixed synthetic delta. Rendering is not advanced.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 void rt_canvas3d_advance_synthetic_frame(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2630,6 +2962,11 @@ void rt_canvas3d_advance_synthetic_frame(void *obj) {
 
 /// @brief Assign a light to one of the per-canvas light slots.
 /// @details Slot index must be in [0, VGFX3D_MAX_LIGHTS). Pass NULL to clear a slot.
+/// The canvas retains a valid replacement and releases the previous slot value. Type and range
+/// violations trap without modifying the slot.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param index Zero-based fixed light-slot index.
+/// @param light Live Light3D object to retain, or NULL to clear the slot.
 void rt_canvas3d_set_light(void *obj, int64_t index, void *light) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2647,6 +2984,8 @@ void rt_canvas3d_set_light(void *obj, int64_t index, void *light) {
 }
 
 /// @brief Clear every retained per-canvas light slot.
+/// @details Releases all light references and invalidates the flattened light-parameter cache.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 void rt_canvas3d_clear_lights(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2657,6 +2996,8 @@ void rt_canvas3d_clear_lights(void *obj) {
 }
 
 /// @brief Count active per-canvas light slots.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Number of slots containing a live, enabled Light3D; zero for invalid input.
 int64_t rt_canvas3d_get_light_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     int64_t count = 0;
@@ -2705,6 +3046,10 @@ int8_t rt_canvas3d_try_set_clustered_lighting(void *obj, int8_t enabled) {
 }
 
 /// @brief Enable the clustered-lighting path only when advertised by the backend.
+/// @details Disabling always succeeds for a valid canvas. An unsupported explicit enable reports a
+/// runtime trap after preserving the classic forward-light path.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param enabled Non-zero to request clustered forward-plus lighting; zero for classic lighting.
 void rt_canvas3d_set_clustered_lighting(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2719,18 +3064,26 @@ void rt_canvas3d_set_clustered_lighting(void *obj, int8_t enabled) {
 }
 
 /// @brief Report whether the clustered-lighting path is currently enabled.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return 1 when clustered lighting is active; otherwise 0.
 int8_t rt_canvas3d_get_clustered_lighting(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return (c && c->clustered_lighting) ? 1 : 0;
 }
 
 /// @brief Report the active lighting budget: 64 when clustered lighting is on, else 16.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Backend-appropriate maximum number of flattened active lights.
 int64_t rt_canvas3d_get_max_active_lights(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return canvas3d_active_light_limit(c);
 }
 
 /// @brief Install a readable key/fill/ambient setup without enabling implicit fallback lighting.
+/// @details Replaces all retained lights, sets a neutral ambient color, creates two directional
+/// lights, and transfers their references into slots zero and one. Allocation failures may leave
+/// either slot empty but do not leak partially created runtime objects.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 void rt_canvas3d_set_default_lighting(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     void *key_dir;
@@ -2769,6 +3122,11 @@ void rt_canvas3d_set_default_lighting(void *obj) {
 }
 
 /// @brief Set the global ambient light color for the canvas (applied to all surfaces).
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param r Red channel; clamped to the inclusive normalized range, with non-finite input becoming
+/// zero.
+/// @param g Green channel with the same sanitization as @p r.
+/// @param b Blue channel with the same sanitization as @p r.
 void rt_canvas3d_set_ambient(void *obj, double r, double g, double b) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2785,6 +3143,8 @@ void rt_canvas3d_set_ambient(void *obj, double r, double g, double b) {
 /// @details This setter only toggles state. The skybox's SH-9 irradiance and
 ///   GGX-prefiltered specular mip chain are prepared lazily by the first eligible
 ///   PBR draw so UI/control paths do not hitch when changing IBL state.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param enabled Non-zero to allow skybox-based diffuse and specular environment lighting.
 void rt_canvas3d_set_ibl_enabled(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2793,12 +3153,17 @@ void rt_canvas3d_set_ibl_enabled(void *obj, int8_t enabled) {
 }
 
 /// @brief True when image-based lighting is enabled for this canvas.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return 1 when IBL is enabled on a valid canvas; otherwise 0.
 int8_t rt_canvas3d_get_ibl_enabled(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return (c && c->ibl_enabled) ? 1 : 0;
 }
 
 /// @brief Scale the environment lighting contribution (default 1.0, clamped to [0, 8]).
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param intensity Requested non-negative multiplier. Non-finite and negative values become zero;
+/// values above eight are capped.
 void rt_canvas3d_set_ibl_intensity(void *obj, double intensity) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2811,6 +3176,8 @@ void rt_canvas3d_set_ibl_intensity(void *obj, double intensity) {
 }
 
 /// @brief Current environment lighting intensity scale.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Stored IBL multiplier, or zero for invalid input.
 double rt_canvas3d_get_ibl_intensity(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? (double)c->ibl_intensity : 0.0;
@@ -2829,6 +3196,13 @@ double rt_canvas3d_get_ibl_intensity(void *obj) {
 /// Applied by the postFX stage as a depth-keyed blend toward
 /// `fog_color`. Setting `fog_density` to 0 disables fog without
 /// changing the queued draws.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param near_dist Non-negative distance at which linear fog begins.
+/// @param far_dist Distance at which fog reaches full strength; sanitized to remain greater than
+/// the near distance.
+/// @param r Normalized fog red channel.
+/// @param g Normalized fog green channel.
+/// @param b Normalized fog blue channel.
 void rt_canvas3d_set_fog(
     void *obj, double near_dist, double far_dist, double r, double g, double b) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -2852,6 +3226,11 @@ void rt_canvas3d_set_fog(
 ///   combined transmittance (1 - (1-df)(1-hf)), weighted by @p blend, and shares the
 ///   distance fog's color (call SetFog first to pick the color; height fog alone
 ///   defaults to the current fog color).
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param base_height World-space height at which the exponential density reference is evaluated.
+/// @param falloff Non-negative exponential thinning rate per world-space height unit.
+/// @param density Non-negative base density.
+/// @param blend Contribution weight clamped to the inclusive normalized range.
 void rt_canvas3d_set_height_fog(
     void *obj, double base_height, double falloff, double density, double blend) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -2873,6 +3252,12 @@ void rt_canvas3d_set_height_fog(
 ///   @p amount * pow(max(dot(viewDir, sunDir), 0), @p power). The sun direction is
 ///   resolved per frame from the first enabled directional light; amount 0 (the
 ///   default) disables the term so legacy height fog renders unchanged.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param r Non-negative red channel for the sun-scattering tint.
+/// @param g Non-negative green channel for the sun-scattering tint.
+/// @param b Non-negative blue channel for the sun-scattering tint.
+/// @param power Non-negative angular exponent controlling the forward-scattering lobe.
+/// @param amount Tint contribution clamped to the inclusive normalized range.
 void rt_canvas3d_set_height_fog_sun(
     void *obj, double r, double g, double b, double power, double amount) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -2891,6 +3276,7 @@ void rt_canvas3d_set_height_fog_sun(
 }
 
 /// @brief Disable height fog only (distance fog, if set, remains active).
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 void rt_canvas3d_clear_height_fog(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2899,12 +3285,15 @@ void rt_canvas3d_clear_height_fog(void *obj) {
 }
 
 /// @brief True while exponential height fog is enabled on this canvas.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return 1 when height fog is enabled on a valid canvas; otherwise 0.
 int8_t rt_canvas3d_get_height_fog_enabled(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c && c->height_fog_enabled ? 1 : 0;
 }
 
 /// @brief Disable distance AND height fog on the canvas.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 void rt_canvas3d_clear_fog(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2921,6 +3310,9 @@ void rt_canvas3d_clear_fog(void *obj) {
 /// @details Creates a shadow depth buffer and configures directional and spot
 ///          light shadow casting. The shadow map is rendered from the light's
 ///          perspective and sampled during the main render pass.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param resolution Requested square-map dimension, clamped from 64 through 4096 pixels.
+/// Allocation failure leaves shadows disabled.
 void rt_canvas3d_enable_shadows(void *obj, int64_t resolution) {
     int ok;
 
@@ -2940,6 +3332,7 @@ void rt_canvas3d_enable_shadows(void *obj, int64_t resolution) {
 }
 
 /// @brief Disable shadow mapping and free the shadow depth buffer.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 void rt_canvas3d_disable_shadows(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2949,6 +3342,9 @@ void rt_canvas3d_disable_shadows(void *obj) {
 }
 
 /// @brief Set the shadow map depth bias to reduce shadow acne artifacts.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param bias Sampling-comparison bias clamped to the supported finite non-negative range;
+/// non-finite input restores the default.
 void rt_canvas3d_set_shadow_bias(void *obj, double bias) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2962,6 +3358,8 @@ void rt_canvas3d_set_shadow_bias(void *obj, double bias) {
 ///   backends to bias depth during the shadow-map draw itself. Raising it reduces acne on grazing
 ///   angles and helps stabilize flickering coplanar caster triangles; values that are too high can
 ///   detach shadows from their casters. The value is clamped to a finite non-negative range.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param bias Requested slope-scaled rasterization bias; non-finite input restores the default.
 void rt_canvas3d_set_shadow_slope_bias(void *obj, double bias) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2973,6 +3371,8 @@ void rt_canvas3d_set_shadow_slope_bias(void *obj, double bias) {
 /// @brief Set how dark fully-occluded texels get (0 = shadows disabled, 1 = fully black).
 /// @details Replaces the previously hard-coded 0.15 lit floor; the default 0.85
 ///   reproduces the legacy look. Values are clamped to [0, 1].
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param strength Requested occlusion darkness; non-finite input restores 0.85.
 void rt_canvas3d_set_shadow_strength(void *obj, double strength) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2991,6 +3391,8 @@ void rt_canvas3d_set_shadow_strength(void *obj, double strength) {
 ///   outside [0, 2] clamp. `Canvas3D.SetQuality` also drives this (PERFORMANCE=0,
 ///   BALANCED=1, CINEMATIC=2); an explicit call overrides the profile until the next
 ///   SetQuality.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param quality Requested filtering tier, clamped from zero through two.
 void rt_canvas3d_set_shadow_quality(void *obj, int64_t quality) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -3003,6 +3405,10 @@ void rt_canvas3d_set_shadow_quality(void *obj, int64_t quality) {
 }
 
 /// @brief Configure cascaded shadow-map count, preserving current single-map fallback.
+/// @details Counts above one require the active backend's `shadow-csm` capability. An unsupported
+/// request traps without changing the existing cascade count.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param count Requested cascade count, clamped from one through `VGFX3D_CSM_SLOTS`.
 void rt_canvas3d_set_shadow_cascades(void *obj, int64_t count) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -3031,6 +3437,9 @@ void rt_canvas3d_set_shadow_cascades(void *obj, int64_t count) {
 /// @details Values <= 0 (and non-finite values) restore the automatic default of
 ///   min(camera far, 300). Explicit values are clamped to the camera far plane at use
 ///   time, so a distance larger than the clip range never degrades cascade fitting.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param distance Requested coverage in world units. Non-positive and non-finite values select
+/// automatic coverage; very large values are capped before storage.
 void rt_canvas3d_set_shadow_distance(void *obj, double distance) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -3045,6 +3454,9 @@ void rt_canvas3d_set_shadow_distance(void *obj, double distance) {
 }
 
 /// @brief Read back the configured shadow distance (0 = automatic).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Stored positive distance in world units, or zero for automatic, invalid, or corrupt
+/// state.
 double rt_canvas3d_get_shadow_distance(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || !isfinite(c->shadow_distance) || c->shadow_distance < 0.0f)
@@ -3058,6 +3470,9 @@ double rt_canvas3d_get_shadow_distance(void *obj) {
 ///   Disabling removes both forms of pacing for lowest latency (with possible tearing). The
 ///   requested state is retained even when a backend has no native control so the getter reflects
 ///   intent and the software limiter still follows it.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param enabled Non-zero to request synchronized presentation; zero to disable presentation
+/// pacing.
 void rt_canvas3d_set_vsync(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -3069,6 +3484,8 @@ void rt_canvas3d_set_vsync(void *obj, int8_t enabled) {
 }
 
 /// @brief Requested vsync state (defaults to on).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Stored requested state for a valid canvas; 1 for invalid input to preserve the default.
 int8_t rt_canvas3d_get_vsync(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->vsync_enabled : 1;
@@ -3114,6 +3531,8 @@ int8_t rt_canvas3d_try_set_render_scale(void *obj, double scale) {
 }
 
 /// @brief Currently requested render scale (1 = native resolution).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Stored finite scale in the inclusive supported range; 1.0 for invalid or corrupt state.
 double rt_canvas3d_get_render_scale(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || !isfinite(c->render_scale) || c->render_scale <= 0.0f || c->render_scale > 1.0f)
@@ -3127,6 +3546,8 @@ double rt_canvas3d_get_render_scale(void *obj) {
 ///   scaled by the effective shadow distance. Scene culling extends node bounds by this
 ///   vector so off-screen casters keep contributing shadows instead of popping at the
 ///   frustum edge.
+/// @param c Canvas whose retained and scene light lists are searched and whose sweep state is
+/// replaced. NULL is ignored.
 void canvas3d_update_shadow_caster_sweep(rt_canvas3d *c) {
     const rt_light3d *dir_light = NULL;
     double dx;
@@ -3173,6 +3594,10 @@ void canvas3d_update_shadow_caster_sweep(rt_canvas3d *c) {
 }
 
 /// @brief Effective directional-shadow coverage distance for this canvas.
+/// @details Uses the explicit positive setting when available, otherwise the automatic maximum,
+/// then clamps coverage to the cached camera far plane and a one-world-unit minimum.
+/// @param c Canvas providing cached camera and shadow settings; NULL uses defaults.
+/// @return Finite coverage distance in world units.
 float canvas3d_effective_shadow_distance(const rt_canvas3d *c) {
     float far_plane = 1000.0f;
     float distance;
@@ -3194,6 +3619,8 @@ float canvas3d_effective_shadow_distance(const rt_canvas3d *c) {
 /// @details Independent of occlusion culling: the CPU occlusion grid derives its own
 ///   projected coverage from the cached view-projection, so disabling frustum culling
 ///   no longer force-disables occlusion culling.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param enabled Non-zero to reject draws outside the cached view frustum.
 void rt_canvas3d_set_frustum_culling(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -3208,6 +3635,8 @@ void rt_canvas3d_set_frustum_culling(void *obj, int8_t enabled) {
 /// @details Independent of frustum culling: toggling occlusion no longer overwrites the
 ///   frustum-culling flag (frustum culling defaults on; games may configure each
 ///   independently).
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param enabled Non-zero to enable the coarse CPU occlusion-history path.
 void rt_canvas3d_set_occlusion_culling(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)

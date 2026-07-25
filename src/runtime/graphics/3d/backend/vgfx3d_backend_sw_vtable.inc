@@ -16,6 +16,18 @@
 // Links: vgfx3d_backend_sw.c, vgfx3d_backend.h
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file vgfx3d_backend_sw_vtable.inc
+ * @brief Implements context, frame, draw, scaling, resize, and render-target operations for the
+ *        software Graphics3D backend.
+ *
+ * The fragment resolves CPU output surfaces, transforms and clips draws, selects serial or tiled
+ * worker-pool rasterization, handles instancing, snapshots opaque depth, and upscales reduced
+ * resolution window frames. Public backend boundaries sanitize caller-owned snapshots before
+ * passing them to the synchronous raster pipeline.
+ */
+
 /*==========================================================================
  * Backend vtable implementation
  *=========================================================================*/
@@ -24,6 +36,11 @@
 ///
 /// Trivial compared to hardware backends — no shaders, no FBOs, no
 /// device. Just a `sw_context_t` with a deferred-allocated zbuffer.
+/// @param win Borrowed window handle used to query physical framebuffer dimensions.
+/// @param w Logical fallback width when no framebuffer is available.
+/// @param h Logical fallback height when no framebuffer is available.
+/// @return Newly allocated software context, or null when allocation or initial depth storage
+///         fails.
 static void *sw_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
     sw_context_t *ctx = (sw_context_t *)calloc(1, sizeof(sw_context_t));
     if (!ctx)
@@ -51,6 +68,7 @@ static void *sw_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
 }
 
 /// @brief Backend `destroy_ctx` op — free zbuffer + struct.
+/// @param ctx_ptr Opaque owned pointer returned by @c sw_create_ctx(); null is a no-op.
 static void sw_destroy_ctx(void *ctx_ptr) {
     if (!ctx_ptr)
         return;
@@ -64,6 +82,8 @@ static void sw_destroy_ctx(void *ctx_ptr) {
 }
 
 /// @brief True when window-backed frames should rasterize at reduced resolution.
+/// @param ctx Borrowed software context.
+/// @return Non-zero when no RTT is bound and a finite render scale below one is active.
 static int sw_render_scale_active(const sw_context_t *ctx) {
     return ctx && !ctx->render_target && isfinite(ctx->render_scale) && ctx->render_scale < 0.999f;
 }
@@ -71,6 +91,11 @@ static int sw_render_scale_active(const sw_context_t *ctx) {
 /// @brief Compute scaled software-rasterization dimensions using the shared backend contract.
 /// @details The context scale is maintained in `[0.25, 1]`; a defensive native-size fallback
 ///          keeps callers safe if private state is ever corrupt.
+/// @param ctx Borrowed software context containing the render scale.
+/// @param fb_w Native framebuffer width.
+/// @param fb_h Native framebuffer height.
+/// @param out_w Receives a positive scaled or fallback width.
+/// @param out_h Receives a positive scaled or fallback height.
 static void sw_scaled_dims(
     const sw_context_t *ctx, int32_t fb_w, int32_t fb_h, int32_t *out_w, int32_t *out_h) {
     if (!ctx || !vgfx3d_compute_scaled_scene_extent(fb_w, fb_h, ctx->render_scale, out_w, out_h)) {
@@ -82,6 +107,10 @@ static void sw_scaled_dims(
 }
 
 /// @brief Ensure the internal scaled color buffer holds at least w*h pixels.
+/// @param ctx Borrowed software context that owns the scaled color storage.
+/// @param w Positive scaled width in pixels.
+/// @param h Positive scaled height in pixels.
+/// @return 1 when sufficient storage is ready, otherwise 0 for invalid input, overflow, or OOM.
 static int sw_ensure_scaled_color(sw_context_t *ctx, int32_t w, int32_t h) {
     size_t pixel_count;
     if (!ctx || !sw_pixel_count_checked(w, h, &pixel_count))
@@ -105,6 +134,8 @@ static int sw_ensure_scaled_color(sw_context_t *ctx, int32_t w, int32_t h) {
 /// @details Row-index mapping precomputes nothing; the per-row source index uses a
 ///   fixed-point step to avoid per-pixel divides. Covers every framebuffer pixel, so
 ///   no pre-clear of the framebuffer is required.
+/// @param ctx Borrowed software context containing the completed scaled color buffer.
+/// @param fb Borrowed mutable destination framebuffer descriptor.
 static void sw_upscale_to_framebuffer(const sw_context_t *ctx, const vgfx_framebuffer_t *fb) {
     size_t scaled_pixels;
     if (!ctx || !fb || !ctx->scaled_color || ctx->scaled_w <= 0 || ctx->scaled_h <= 0 ||
@@ -178,6 +209,11 @@ static void sw_fill_rgba_rows(uint8_t *pixels,
 /// @brief Backend `clear` op: clear the framebuffer to a solid color and reset Z.
 /// @details Fills every color pixel with `(r, g, b, 1)` and sets every depth
 ///   value to FLT_MAX so the next draw's less-than depth tests succeed.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param win Borrowed window used when no render target is bound.
+/// @param r Normalized clear red component.
+/// @param g Normalized clear green component.
+/// @param b Normalized clear blue component.
 static void sw_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, float b) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     if (!ctx)
@@ -226,6 +262,8 @@ static void sw_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, float b
 ///
 /// Multiplies projection × view, captures fog state and camera
 /// position. Doesn't touch any pixels — drawing happens in `submit_draw`.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param cam Borrowed camera snapshot sanitized and copied for this frame.
 static void sw_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     static const float fallback_forward[3] = {0.0f, 0.0f, -1.0f};
@@ -318,6 +356,7 @@ static void sw_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
 ///   depth buffer at the opaque->transparent seam so blend draws (soft
 ///   particles) can fade against the opaque scene. A plain memcpy: the SW
 ///   depth buffer is CPU memory already.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
 static void sw_resolve_opaque_targets(void *ctx_ptr) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     const float *src = NULL;
@@ -372,6 +411,8 @@ typedef struct {
 /// @brief Copy each present material map (base color, emissive, normal, specular,
 ///   metallic-roughness, AO) into @p mv, setting the matching pointer non-NULL
 ///   only when the view has non-empty dimensions and backing data.
+/// @param cmd Borrowed draw command containing material image identities.
+/// @param mv Receives self-contained validated views and pointers into those views.
 static void sw_resolve_material_views(const vgfx3d_draw_cmd_t *cmd, sw_material_views *mv) {
     mv->tex_ptr = NULL;
     mv->emissive_ptr = NULL;
@@ -409,6 +450,14 @@ static void sw_resolve_material_views(const vgfx3d_draw_cmd_t *cmd, sw_material_
 /// @brief Select the render output buffers — either the bound render target or
 ///   the window framebuffer — ensuring their color/depth allocations. Returns 1
 ///   with the out-params filled, or 0 if a required buffer could not be ensured.
+/// @param ctx Borrowed software context containing target and render-scale state.
+/// @param win Borrowed window used when no render target is bound.
+/// @param out_pixels Receives the mutable RGBA8 output pointer.
+/// @param out_zbuf Receives the matching mutable depth pointer.
+/// @param out_w Receives output width in pixels.
+/// @param out_h Receives output height in pixels.
+/// @param out_stride Receives RGBA output row stride in bytes.
+/// @return 1 when all output pointers and dimensions are ready, otherwise 0.
 static int sw_resolve_output_target(sw_context_t *ctx,
                                     vgfx_window_t win,
                                     uint8_t **out_pixels,
@@ -463,6 +512,16 @@ static int sw_resolve_output_target(sw_context_t *ctx,
 ///   position (via MVP), UVs, and color. Computes per-vertex Gouraud lighting for
 ///   legacy unlit/non-normal-mapped materials; otherwise stores raw albedo so the
 ///   fragment stage can light per-pixel.
+/// @param ctx Borrowed software context containing camera and shadow state.
+/// @param cmd Borrowed sanitized draw command and source vertices.
+/// @param pv Mutable pipeline-vertex array indexed like the source mesh.
+/// @param begin Inclusive source vertex index.
+/// @param end Exclusive source vertex index.
+/// @param mvp Borrowed row-major model-view-projection matrix.
+/// @param normal_matrix Borrowed row-major inverse-transpose normal matrix.
+/// @param lights Optional borrowed sanitized light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Borrowed three-component ambient color.
 static void sw_transform_vertices_range(sw_context_t *ctx,
                                         const vgfx3d_draw_cmd_t *cmd,
                                         pipe_vert_t *pv,
@@ -535,6 +594,16 @@ static void sw_transform_vertices_range(sw_context_t *ctx,
     }
 }
 
+/// @brief Transform the complete source vertex array into pipeline scratch storage.
+/// @param ctx Borrowed software context containing camera and shadow state.
+/// @param cmd Borrowed sanitized draw command and source vertices.
+/// @param pv Mutable pipeline-vertex array with room for @p vc entries.
+/// @param vc Number of source vertices to transform.
+/// @param mvp Borrowed row-major model-view-projection matrix.
+/// @param normal_matrix Borrowed row-major inverse-transpose normal matrix.
+/// @param lights Optional borrowed sanitized light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Borrowed three-component ambient color.
 static void sw_transform_vertices(sw_context_t *ctx,
                                   const vgfx3d_draw_cmd_t *cmd,
                                   pipe_vert_t *pv,
@@ -550,6 +619,13 @@ static void sw_transform_vertices(sw_context_t *ctx,
 
 /// @brief Emit verbose per-draw diagnostics (command params, MVP rows, first few
 ///   transformed vertices) to stderr for the first 8 draws when SW debug is on.
+/// @param cmd Borrowed sanitized draw command.
+/// @param ctx Borrowed software context containing the bounded debug counter.
+/// @param mvp Borrowed row-major model-view-projection matrix.
+/// @param pv Borrowed transformed pipeline vertices.
+/// @param vc Number of valid entries in @p pv.
+/// @param ambient Optional borrowed ambient RGB triplet.
+/// @param light_count Number of active lights.
 static void sw_debug_log_draw(const vgfx3d_draw_cmd_t *cmd,
                               sw_context_t *ctx,
                               const float *mvp,
@@ -617,6 +693,11 @@ static void sw_debug_log_draw(const vgfx3d_draw_cmd_t *cmd,
 /// @brief Perspective-divide one clipped pipeline vertex into a screen-space
 ///   vertex (viewport-mapped position + perspective-correct attribute carriers).
 ///   Returns 0 (skip the triangle) when the clip-space w is degenerate.
+/// @param p Borrowed clipped pipeline vertex.
+/// @param half_w Half the output width used for viewport mapping.
+/// @param half_h Half the output height used for viewport mapping.
+/// @param sv Receives screen coordinates and interpolation carriers.
+/// @return 1 for a finite vertex inside the depth range, otherwise 0.
 static int sw_project_clip_to_screen(const pipe_vert_t *p,
                                      float half_w,
                                      float half_h,
@@ -652,8 +733,10 @@ static int sw_project_clip_to_screen(const pipe_vert_t *p,
     return 1;
 }
 
-/// @brief Draw the three edges of a screen-space triangle as wireframe lines,
-///   colored from the first vertex's interpolated color.
+/// @brief Convert a finite screen coordinate to an integer without overflowing @c int.
+/// @param value Floating-point screen coordinate.
+/// @return Truncated coordinate saturated at @c INT_MIN or @c INT_MAX; non-finite input maps to
+///         zero.
 static int sw_screen_coord_to_int(float value) {
     if (!isfinite(value))
         return 0;
@@ -664,6 +747,13 @@ static int sw_screen_coord_to_int(float value) {
     return (int)value;
 }
 
+/// @brief Draw the three edges of a screen-space triangle as wireframe lines.
+/// @details Uses the first vertex's interpolated RGB color for all three edges.
+/// @param pixels Borrowed mutable RGBA8 framebuffer.
+/// @param fb_w Positive framebuffer width in pixels.
+/// @param fb_h Positive framebuffer height in pixels.
+/// @param stride Framebuffer row stride in bytes.
+/// @param sv Borrowed array of three screen-space vertices.
 static void sw_draw_wireframe_tri(
     uint8_t *pixels, int32_t fb_w, int32_t fb_h, int32_t stride, const screen_vert_t *sv) {
     uint8_t wr = (uint8_t)(clamp01f(sv[0].r) * 255.0f);
@@ -780,6 +870,8 @@ typedef struct {
     sw_context_t *fog_ctx;
 } sw_raster_task_t;
 
+/// @brief Release a collected screen-triangle list and reset its metadata.
+/// @param list Mutable list to release; null is a no-op.
 static void sw_screen_tri_list_free(sw_screen_tri_list_t *list) {
     if (!list)
         return;
@@ -789,6 +881,11 @@ static void sw_screen_tri_list_free(sw_screen_tri_list_t *list) {
     list->capacity = 0;
 }
 
+/// @brief Ensure a screen-triangle list can hold at least the requested entry count.
+/// @param list Mutable list whose backing storage may grow.
+/// @param needed Required total capacity.
+/// @return 1 when sufficient storage is available, otherwise 0 on invalid input, overflow, or
+///         allocation failure.
 static int sw_screen_tri_list_reserve(sw_screen_tri_list_t *list, uint32_t needed) {
     uint32_t new_capacity;
     sw_screen_tri_t *new_items;
@@ -814,6 +911,10 @@ static int sw_screen_tri_list_reserve(sw_screen_tri_list_t *list, uint32_t neede
     return 1;
 }
 
+/// @brief Copy one projected triangle into a growable screen-triangle list.
+/// @param list Mutable destination list.
+/// @param sv Borrowed array of three screen-space vertices.
+/// @return 1 on success, otherwise 0 for invalid input, count overflow, or allocation failure.
 static int sw_screen_tri_list_push(sw_screen_tri_list_t *list, const screen_vert_t sv[3]) {
     if (!list || !sv)
         return 0;
@@ -826,6 +927,8 @@ static int sw_screen_tri_list_push(sw_screen_tri_list_t *list, const screen_vert
     return 1;
 }
 
+/// @brief Release every color-raster tile bin and reset the tile grid.
+/// @param grid Mutable grid to release; null is a no-op.
 static void sw_tile_grid_free(sw_tile_grid_t *grid) {
     if (!grid)
         return;
@@ -844,6 +947,11 @@ static void sw_tile_grid_free(sw_tile_grid_t *grid) {
     grid->active_capacity = 0;
 }
 
+/// @brief Initialize an empty fixed-size color-raster tile grid for an output extent.
+/// @param grid Mutable grid receiving zeroed bins and dimensions.
+/// @param width Positive output width in pixels.
+/// @param height Positive output height in pixels.
+/// @return 1 when all bins are allocated, otherwise 0 for invalid dimensions, overflow, or OOM.
 static int sw_tile_grid_init(sw_tile_grid_t *grid, int32_t width, int32_t height) {
     int32_t cols;
     int32_t rows;
@@ -863,6 +971,10 @@ static int sw_tile_grid_init(sw_tile_grid_t *grid, int32_t width, int32_t height
     return grid->bins ? 1 : 0;
 }
 
+/// @brief Append a newly non-empty tile to the grid's active work list.
+/// @param grid Mutable tile grid whose active-index storage may grow.
+/// @param tile_index Valid linear tile index to append exactly once.
+/// @return 1 on success, otherwise 0 for invalid input, overflow, or allocation failure.
 static int sw_tile_grid_mark_active(sw_tile_grid_t *grid, int32_t tile_index) {
     int32_t new_capacity;
     int32_t *new_indices;
@@ -890,6 +1002,10 @@ static int sw_tile_grid_mark_active(sw_tile_grid_t *grid, int32_t tile_index) {
     return 1;
 }
 
+/// @brief Append a screen-triangle index to one growable tile bin.
+/// @param bin Mutable tile bin whose index storage may grow.
+/// @param tri_index Index into the shared screen-triangle list.
+/// @return 1 on success, otherwise 0 for invalid input, overflow, or allocation failure.
 static int sw_tile_bin_append(sw_tile_bin_t *bin, uint32_t tri_index) {
     uint32_t new_capacity;
     uint32_t *new_indices;
@@ -915,6 +1031,9 @@ static int sw_tile_bin_append(sw_tile_bin_t *bin, uint32_t tri_index) {
     return 1;
 }
 
+/// @brief Thread-pool callback that transforms one contiguous source-vertex range.
+/// @param arg Borrowed pointer to @c sw_transform_task_t state valid through the completion
+///            barrier.
 static void sw_transform_task_run(void *arg) {
     sw_transform_task_t *task = (sw_transform_task_t *)arg;
     if (!task)
@@ -931,6 +1050,19 @@ static void sw_transform_task_run(void *arg) {
                                 task->ambient);
 }
 
+/// @brief Transform a draw's vertices across the context worker pool.
+/// @details Partitions the vertex array into deterministic contiguous ranges and completes any
+///          tasks that could not be submitted synchronously before waiting at the barrier.
+/// @param ctx Borrowed software context containing the worker pool.
+/// @param cmd Borrowed sanitized draw command.
+/// @param pv Mutable pipeline-vertex array with room for @p vc entries.
+/// @param vc Number of vertices to transform.
+/// @param mvp Borrowed row-major model-view-projection matrix.
+/// @param normal_matrix Borrowed row-major inverse-transpose normal matrix.
+/// @param lights Optional borrowed sanitized light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Borrowed three-component ambient color.
+/// @return 1 when every range completes, otherwise 0 when parallel prerequisites are unavailable.
 static int sw_parallel_transform_vertices(sw_context_t *ctx,
                                           const vgfx3d_draw_cmd_t *cmd,
                                           pipe_vert_t *pv,
@@ -974,6 +1106,16 @@ static int sw_parallel_transform_vertices(sw_context_t *ctx,
     return 1;
 }
 
+/// @brief Clip, fan-triangulate, and project one contiguous indexed-triangle range.
+/// @param cmd Borrowed sanitized indexed draw command.
+/// @param pv Borrowed transformed pipeline vertices.
+/// @param vc Number of valid entries in @p pv.
+/// @param tri_begin Inclusive source triangle index.
+/// @param tri_end Exclusive source triangle index.
+/// @param half_w Half the output width used for viewport conversion.
+/// @param half_h Half the output height used for viewport conversion.
+/// @param out Mutable list receiving projected screen triangles.
+/// @return 1 when the range is processed, otherwise 0 on list-growth failure.
 static int sw_collect_screen_triangles_range(const vgfx3d_draw_cmd_t *cmd,
                                              const pipe_vert_t *pv,
                                              uint32_t vc,
@@ -1011,6 +1153,8 @@ static int sw_collect_screen_triangles_range(const vgfx3d_draw_cmd_t *cmd,
     return 1;
 }
 
+/// @brief Thread-pool callback that clips and projects one assigned triangle range.
+/// @param arg Borrowed pointer to @c sw_clip_task_t state valid through the completion barrier.
 static void sw_clip_task_run(void *arg) {
     sw_clip_task_t *task = (sw_clip_task_t *)arg;
     if (!task)
@@ -1027,6 +1171,18 @@ static void sw_clip_task_run(void *arg) {
     }
 }
 
+/// @brief Collect clipped screen-space triangles across the context worker pool.
+/// @details Worker-local lists avoid synchronization during clipping and are concatenated in task
+///          order after the completion barrier for deterministic downstream binning.
+/// @param ctx Borrowed software context containing the worker pool.
+/// @param cmd Borrowed sanitized indexed draw command.
+/// @param pv Borrowed transformed pipeline vertices.
+/// @param vc Number of valid entries in @p pv.
+/// @param index_count Validated source index count.
+/// @param half_w Half the output width used for viewport conversion.
+/// @param half_h Half the output height used for viewport conversion.
+/// @param out Mutable list receiving all projected triangles.
+/// @return 1 on complete collection, otherwise 0 when prerequisites or allocation fail.
 static int sw_collect_screen_triangles_parallel(sw_context_t *ctx,
                                                 const vgfx3d_draw_cmd_t *cmd,
                                                 const pipe_vert_t *pv,
@@ -1102,6 +1258,13 @@ static int sw_collect_screen_triangles_parallel(sw_context_t *ctx,
     return 1;
 }
 
+/// @brief Bin every projected triangle into all output tiles intersecting its raster bounds.
+/// @param grid Mutable initialized tile grid receiving triangle indices.
+/// @param tris Borrowed projected screen-triangle list.
+/// @param fb_w Positive output width in pixels.
+/// @param fb_h Positive output height in pixels.
+/// @param backface_cull Non-zero to exclude back-facing triangles during bounds preparation.
+/// @return 1 when binning completes, otherwise 0 on invalid input or allocation failure.
 static int sw_bin_screen_triangles(sw_tile_grid_t *grid,
                                    const sw_screen_tri_list_t *tris,
                                    int32_t fb_w,
@@ -1141,6 +1304,9 @@ static int sw_bin_screen_triangles(sw_tile_grid_t *grid,
     return 1;
 }
 
+/// @brief Thread-pool callback that claims active tiles and shades their triangle bins.
+/// @param arg Borrowed pointer to shared @c sw_raster_task_t state valid through the completion
+///            barrier.
 static void sw_raster_task_run(void *arg) {
     sw_raster_task_t *task = (sw_raster_task_t *)arg;
     if (!task || !task->grid || !task->tris || !task->next_tile)
@@ -1193,6 +1359,22 @@ static void sw_raster_task_run(void *arg) {
     }
 }
 
+/// @brief Rasterize all active color tiles using dynamically claimed worker tasks.
+/// @param ctx Borrowed software context containing the worker pool and fog/shadow state.
+/// @param grid Borrowed binned tile grid.
+/// @param tris Borrowed projected triangles referenced by tile bins.
+/// @param pixels Borrowed mutable RGBA8 output surface.
+/// @param zbuf Borrowed mutable matching depth buffer.
+/// @param fb_w Positive output width in pixels.
+/// @param fb_h Positive output height in pixels.
+/// @param stride Output row stride in bytes.
+/// @param mv Borrowed validated material texture views.
+/// @param cmd Borrowed sanitized draw command.
+/// @param lights Optional borrowed sanitized light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Borrowed three-component ambient color.
+/// @param backface_cull Non-zero to reject back-facing triangles.
+/// @return 1 after every active tile completes, otherwise 0 when prerequisites are unavailable.
 static int sw_raster_tiles_parallel(sw_context_t *ctx,
                                     const sw_tile_grid_t *grid,
                                     const sw_screen_tri_list_t *tris,
@@ -1253,6 +1435,17 @@ static int sw_raster_tiles_parallel(sw_context_t *ctx,
     return 1;
 }
 
+/// @brief Attempt the complete parallel transform, clip, bin, and raster pipeline for one draw.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param win Borrowed window used when no render target is bound.
+/// @param cmd Borrowed sanitized indexed draw command.
+/// @param lights Optional borrowed sanitized light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Borrowed three-component ambient color.
+/// @param wireframe Non-zero for wireframe rendering, which makes this path decline the draw.
+/// @param backface_cull Non-zero to reject back-facing triangles.
+/// @return 1 when the draw was fully handled, including valid no-output cases; otherwise 0 so the
+///         caller can use serial rasterization.
 static int sw_submit_draw_parallel(void *ctx_ptr,
                                    vgfx_window_t win,
                                    const vgfx3d_draw_cmd_t *cmd,
@@ -1481,6 +1674,14 @@ static void sw_submit_draw_serial_prepared(sw_context_t *ctx,
 /// @brief Backend `submit_draw` op for the software rasterizer. Resolves output
 ///   buffers, transforms vertices, then clips and rasterizes (or wireframes) each
 ///   triangle of the mesh.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param win Borrowed window used when no render target is bound.
+/// @param cmd Borrowed sanitized indexed draw command.
+/// @param lights Optional borrowed sanitized light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Borrowed three-component ambient color.
+/// @param wireframe Non-zero to draw triangle edges only.
+/// @param backface_cull Non-zero to reject back-facing triangles.
 static void sw_submit_draw_serial(void *ctx_ptr,
                                   vgfx_window_t win,
                                   const vgfx3d_draw_cmd_t *cmd,
@@ -1510,6 +1711,15 @@ static void sw_submit_draw_serial(void *ctx_ptr,
         ctx, cmd, &setup, lights, light_count, ambient, wireframe, backface_cull);
 }
 
+/// @brief Sanitize and execute one software draw through the parallel or serial path.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param win Borrowed window used when no render target is bound.
+/// @param cmd Borrowed caller-provided indexed draw command.
+/// @param lights Optional borrowed caller-provided light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Optional borrowed ambient RGB triplet.
+/// @param wireframe Non-zero to draw triangle edges only.
+/// @param backface_cull Non-zero to reject back-facing triangles.
 static void sw_submit_draw(void *ctx_ptr,
                            vgfx_window_t win,
                            const vgfx3d_draw_cmd_t *cmd,
@@ -1556,6 +1766,16 @@ static void sw_submit_draw(void *ctx_ptr,
 ///   per-instance queue overhead (and its fallback cap) for opaque instanced
 ///   batches on the software path; material/texture views and the shared
 ///   geometry stay identical across instances.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param win Borrowed window used when no render target is bound.
+/// @param cmd Borrowed caller-provided indexed draw command shared by all instances.
+/// @param instance_matrices Borrowed contiguous array of @p instance_count row-major matrices.
+/// @param instance_count Positive number of instances.
+/// @param lights Optional borrowed caller-provided light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Optional borrowed ambient RGB triplet.
+/// @param wireframe Non-zero to draw triangle edges only.
+/// @param backface_cull Non-zero to reject back-facing triangles.
 static void sw_submit_draw_instanced(void *ctx_ptr,
                                      vgfx_window_t win,
                                      const vgfx3d_draw_cmd_t *cmd,
@@ -1613,6 +1833,7 @@ static void sw_submit_draw_instanced(void *ctx_ptr,
 
 /// @brief Backend `end_frame` op — upscale scaled frames; otherwise a no-op
 ///   (frames write directly to fb).
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
 static void sw_end_frame(void *ctx_ptr) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     if (!ctx || !ctx->scaled_frame_active)
@@ -1627,6 +1848,9 @@ static void sw_end_frame(void *ctx_ptr) {
 }
 
 /// @brief Backend hook: set the window-backed rasterization scale ([0.25, 1]).
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param scale Requested scale, clamped to `[0.25, 1]` with non-finite input mapped to one.
+/// @return 1 when the context is updated, otherwise 0 for a null context.
 static int8_t sw_set_render_scale(void *ctx_ptr, float scale) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     if (!ctx)
@@ -1640,6 +1864,9 @@ static int8_t sw_set_render_scale(void *ctx_ptr, float scale) {
 }
 
 /// @brief Backend `resize` op — re-allocate the depth buffer to the new size.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param w Positive new window framebuffer width.
+/// @param h Positive new window framebuffer height.
 static void sw_resize(void *ctx_ptr, int32_t w, int32_t h) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     if (!ctx || ctx->render_target)
@@ -1652,6 +1879,8 @@ static void sw_resize(void *ctx_ptr, int32_t w, int32_t h) {
 /// Software backend RTT is just "render directly to the user-supplied
 /// host buffer instead of the swapchain". No GPU resources to manage.
 /// NULL `rt` reverts to swapchain rendering.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param rt Optional borrowed runtime render target to validate and bind.
 static void sw_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     if (!ctx)

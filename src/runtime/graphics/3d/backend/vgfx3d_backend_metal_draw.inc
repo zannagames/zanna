@@ -17,11 +17,25 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Metal draw submission, shadow passes, presentation, readback, and post-FX.
+/// @details This implementation fragment translates sanitized renderer commands into Metal
+///          encoders, manages per-frame target transitions, and exposes the draw-related hooks
+///          installed in the Metal backend vtable. It is included by `vgfx3d_backend_metal.m`.
+
 /// @brief Encode and submit a single 3D draw command (the backend's main draw entry point).
 /// @details Selects/creates the pipeline state for the material, binds geometry, textures,
 /// lighting,
 ///          skinning, and morph data, applies the camera-relative transform, and issues the draw
 ///          (instanced when an instance buffer is provided).
+/// @param ctx_ptr Borrowed `VGFXMetalContext` that owns the active command encoder.
+/// @param win Window handle supplied by the backend interface; unused by the Metal draw path.
+/// @param cmd Borrowed mesh, material, animation, and per-draw state to encode.
+/// @param lights Borrowed array of scene-light snapshots; may be NULL when @p light_count is zero.
+/// @param light_count Number of entries available through @p lights.
+/// @param ambient Borrowed three-component ambient-light color; NULL is sanitized to black.
+/// @param wireframe Nonzero to render triangle edges instead of filled triangles.
+/// @param backface_cull Nonzero to cull back-facing triangles.
 static void metal_submit_draw(void *ctx_ptr,
                               vgfx_window_t win,
                               const vgfx3d_draw_cmd_t *cmd,
@@ -473,6 +487,7 @@ static void metal_submit_draw(void *ctx_ptr,
 }
 
 /// @brief End the frame: close the scene encoder, run GPU post-FX, present, and commit.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` whose active frame is to be finalized.
 static void metal_end_frame(void *ctx_ptr) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -504,6 +519,8 @@ static void metal_end_frame(void *ctx_ptr) {
 }
 
 /// @brief Read the total bytes uploaded to Metal textures so far this frame (diagnostics counter).
+/// @param ctx_ptr Borrowed `VGFXMetalContext`; may be NULL.
+/// @return The context's accumulated texture-upload byte count, or zero for a NULL context.
 static uint64_t metal_get_texture_upload_bytes(void *ctx_ptr) {
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
     return ctx ? ctx.textureUploadBytes : 0;
@@ -512,6 +529,7 @@ static uint64_t metal_get_texture_upload_bytes(void *ctx_ptr) {
 /// @brief Present the most recent on-screen drawable. Called from Flip().
 /// Commits the frame's command buffer (which contains all render passes)
 /// and presents the drawable to the display in one atomic operation.
+/// @param backend_ctx Borrowed `VGFXMetalContext` backend handle.
 static void metal_present(void *backend_ctx) {
     if (!backend_ctx)
         return;
@@ -560,6 +578,9 @@ static void metal_present(void *backend_ctx) {
 }
 
 /// @brief Handle a window resize: update the layer size and recreate the main render targets.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` whose output resources must be resized.
+/// @param w New logical output width in pixels; non-positive values are ignored.
+/// @param h New logical output height in pixels; non-positive values are ignored.
 static void metal_resize(void *ctx_ptr, int32_t w, int32_t h) {
     if (!ctx_ptr || w <= 0 || h <= 0)
         return;
@@ -584,6 +605,11 @@ static void metal_resize(void *ctx_ptr, int32_t w, int32_t h) {
 }
 
 /// @brief Read the current frame's rendered image back into a CPU RGBA buffer (for screenshots).
+/// @param ctx_ptr Borrowed `VGFXMetalContext` providing the current readable texture.
+/// @param[out] dst_rgba Caller-owned destination buffer for tightly packed RGBA pixels.
+/// @param w Requested output width in pixels.
+/// @param h Requested output height in pixels.
+/// @param stride Destination row stride in bytes; must accommodate at least @p w RGBA pixels.
 /// @return 1 on success, 0 if no readable texture is available.
 static int metal_readback_rgba(
     void *ctx_ptr, uint8_t *dst_rgba, int32_t w, int32_t h, int32_t stride) {
@@ -637,6 +663,8 @@ static int metal_readback_rgba(
 /// to GPU textures instead of the on-screen CAMetalLayer drawable. When rt is NULL,
 /// rendering reverts to the screen. RTT color stays GPU-owned until the runtime
 /// explicitly asks for CPU pixels through the lazy sync_color hook.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` whose target routing is updated.
+/// @param rt Borrowed render target to activate, or NULL to restore on-screen rendering.
 static void metal_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -676,6 +704,7 @@ static void metal_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
 //=============================================================================
 
 /// @brief Abort an active shadow encoder and resume the scene pass without clearing it.
+/// @param ctx Borrowed Metal context whose shadow pass is being left.
 static void metal_leave_shadow_pass(VGFXMetalContext *ctx) {
     if (!ctx || ctx->_shadowPassSlot < 0)
         return;
@@ -695,6 +724,12 @@ static void metal_leave_shadow_pass(VGFXMetalContext *ctx) {
 /// @details The CPU @p depth_buf is ignored — the GPU path stores depth in an MTLTexture. No-op for
 ///   an out-of-range @p slot, or when the device/shadow pipeline/@p light_vp is unavailable or the
 ///   dimensions are non-positive.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` that owns the shadow resources and encoder.
+/// @param slot Shadow-light slot to initialize.
+/// @param depth_buf Ignored CPU depth buffer retained for backend-interface compatibility.
+/// @param w Requested shadow-map width in pixels.
+/// @param h Requested shadow-map height in pixels.
+/// @param light_vp Borrowed 4x4 light view-projection matrix.
 static void metal_shadow_begin(
     void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
     @autoreleasepool {
@@ -799,6 +834,8 @@ static void metal_shadow_begin(
 }
 
 /// @brief Encode a draw into the active shadow-map depth pass (depth-only, from the light's view).
+/// @param ctx_ptr Borrowed `VGFXMetalContext` with an active shadow encoder.
+/// @param cmd Borrowed draw command supplying geometry, transforms, alpha state, and deformation.
 static void metal_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -915,6 +952,9 @@ static void metal_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
 /// bias.
 /// @details Marks the slot complete so the lighting pass can sample it; @p bias offsets depth
 ///          comparisons to reduce shadow acne.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` whose shadow encoder is finalized.
+/// @param slot Shadow-light slot expected to own the active pass.
+/// @param bias Depth-comparison bias stored for subsequent scene lighting.
 static void metal_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -946,6 +986,13 @@ static void metal_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
 ///   shared atlas texture is whole-cleared on its first tile pass each frame, so a reused
 ///   atlas tile would be wiped whenever any other tile re-renders — atlas slots decline
 ///   reuse and take the normal render path.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` containing prior-frame shadow textures.
+/// @param slot Classic CSM slot whose persistent texture should be reused.
+/// @param depth_buf Ignored CPU depth buffer retained for backend-interface compatibility.
+/// @param w Expected width of the persistent shadow texture.
+/// @param h Expected height of the persistent shadow texture.
+/// @param light_vp Borrowed replacement 4x4 light view-projection matrix.
+/// @return 1 when the slot was successfully rearmed, or 0 when reuse is unavailable.
 static int8_t metal_shadow_reuse(
     void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
     @autoreleasepool {
@@ -976,6 +1023,16 @@ static int8_t metal_shadow_reuse(
 ///   @p ambient and honor @p wireframe and @p backface_cull. The function is a no-op outside an
 ///   active frame, on empty geometry, or with no instances. NULL @p ambient defaults to black and
 ///   a negative @p light_count is treated as zero.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` that owns the active command encoder.
+/// @param win Window handle supplied by the backend interface; unused by this Metal path.
+/// @param cmd Borrowed mesh, material, particle, animation, and per-draw state.
+/// @param instance_matrices Borrowed array of column-major 4x4 transforms, or NULL for particles.
+/// @param instance_count Number of instances or compact particle records to submit.
+/// @param lights Borrowed array of scene-light snapshots; may be NULL when @p light_count is zero.
+/// @param light_count Number of entries available through @p lights.
+/// @param ambient Borrowed three-component ambient-light color; NULL is sanitized to black.
+/// @param wireframe Nonzero to render triangle edges instead of filled triangles.
+/// @param backface_cull Nonzero to cull back-facing triangles.
 static void metal_submit_draw_instanced(void *ctx_ptr,
                                         vgfx_window_t win,
                                         const vgfx3d_draw_cmd_t *cmd,
@@ -1516,6 +1573,7 @@ typedef struct {
 
 /// @brief Copy the current drawable's contents into the persistent display texture.
 /// @details Lets later passes (and the software-present fallback) read the last presented image.
+/// @param ctx Borrowed Metal context providing the drawable, command buffer, and display texture.
 /// @return 1 on success, 0 if no drawable is available.
 static int metal_capture_current_drawable_to_display_texture(VGFXMetalContext *ctx) {
     NSUInteger copy_w;
@@ -1562,6 +1620,13 @@ static int metal_capture_current_drawable_to_display_texture(VGFXMetalContext *c
 /// @details Resolution-dependent sampling uses the source extent, not the logical output extent,
 ///          because the first pass may upscale a reduced scene while later passes consume an
 ///          already native-sized intermediate.
+/// @param ctx Borrowed Metal context supplying temporal matrices and camera state.
+/// @param postfx Borrowed effect snapshot to sanitize and encode, or NULL for passthrough values.
+/// @param overlay_enabled Nonzero when the overlay texture will be composited by this pass.
+/// @param bloom_tex_enabled Nonzero when a prefiltered bloom texture is bound for sampling.
+/// @param source_width Width of the pass's source texture in pixels.
+/// @param source_height Height of the pass's source texture in pixels.
+/// @param[out] params Destination uniform structure populated for the fragment shader.
 static void metal_fill_postfx_params(VGFXMetalContext *ctx,
                                      const vgfx3d_postfx_snapshot_t *postfx,
                                      int overlay_enabled,
@@ -1618,6 +1683,12 @@ static void metal_fill_postfx_params(VGFXMetalContext *ctx,
 
 /// @brief Encode one full-screen post-processing pass, sampling @p source into a new output
 /// texture.
+/// @param ctx Borrowed Metal context providing pipelines, attachments, and the command buffer.
+/// @param source_texture Borrowed color texture sampled by the post-processing shader.
+/// @param target_texture Borrowed color attachment that receives the processed image.
+/// @param postfx Borrowed effect snapshot, or NULL to perform a passthrough/composite pass.
+/// @param overlay_enabled Nonzero to composite the context's overlay texture.
+/// @param bloom_texture Borrowed prefiltered bloom texture, or nil when bloom is unavailable.
 /// @return The pass output texture (nil on failure).
 static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
                                                id<MTLTexture> source_texture,
@@ -1675,6 +1746,9 @@ static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
 ///          further mip is a plain 13-tap downsample. The upsample walk tent-filters each
 ///          deeper mip and additively accumulates it into the one above, leaving mip 0
 ///          holding the summed octaves. Returns mip 0 (nil when resources are missing).
+/// @param ctx Borrowed Metal context providing the HDR scene color, bloom textures, and pipelines.
+/// @param threshold Luminance threshold applied by the first bloom downsample pass.
+/// @return The accumulated first bloom mip, or nil when encoding prerequisites are unavailable.
 static id<MTLTexture> metal_encode_bloom_chain(VGFXMetalContext *ctx, float threshold) {
     NSUInteger levels;
 
@@ -1738,6 +1812,10 @@ static id<MTLTexture> metal_encode_bloom_chain(VGFXMetalContext *ctx, float thre
 /// @brief Encode the Plan 05 TAA resolve: reproject + neighborhood-clamp the ping-pong
 ///        history against @p source_texture, writing the resolved frame into the other
 ///        history slot (which becomes the new history). Returns the resolved texture.
+/// @param ctx Borrowed Metal context providing temporal history, motion, depth, and matrices.
+/// @param source_texture Borrowed current-frame color texture to resolve.
+/// @param postfx Borrowed TAA settings snapshot, or NULL to use the default blend.
+/// @return The newly resolved history texture, or nil when prerequisites or encoding fail.
 static id<MTLTexture> metal_encode_taa_pass(VGFXMetalContext *ctx,
                                             id<MTLTexture> source_texture,
                                             const vgfx3d_postfx_snapshot_t *postfx) {
@@ -1795,6 +1873,11 @@ static id<MTLTexture> metal_encode_taa_pass(VGFXMetalContext *ctx,
 ///        reflected scene color over @p source_texture into @p target_texture.
 ///        Misses keep the source pixel (its env-map reflection term). Returns the
 ///        target on success, nil when prerequisites are missing.
+/// @param ctx Borrowed Metal context providing depth, motion, camera state, and the SSR pipeline.
+/// @param source_texture Borrowed scene color sampled by the SSR pass.
+/// @param target_texture Borrowed color attachment that receives the SSR composite.
+/// @param postfx Borrowed SSR settings snapshot, or NULL to use fallback values.
+/// @return @p target_texture after successful encoding, or nil when prerequisites are unavailable.
 static id<MTLTexture> metal_encode_ssr_pass(VGFXMetalContext *ctx,
                                             id<MTLTexture> source_texture,
                                             id<MTLTexture> target_texture,
@@ -1840,6 +1923,9 @@ static id<MTLTexture> metal_encode_ssr_pass(VGFXMetalContext *ctx,
 /// @brief Run the post-FX chain on the scene color texture if post-processing is enabled.
 /// @details Applies each enabled effect (tonemap, bloom, etc.) in sequence and returns the final
 ///          texture; returns the unmodified scene texture when post-FX is disabled or empty.
+/// @param ctx Borrowed Metal context whose scene and intermediate textures are processed.
+/// @param postfx Borrowed ordered effect chain, or NULL to encode the required passthrough pass.
+/// @return The final display-ready texture, or nil when required resources or encoding fail.
 static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
                                                     const vgfx3d_postfx_chain_t *postfx) {
     id<MTLTexture> source_texture;
@@ -1930,6 +2016,8 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
 /// @brief Metal PostFX presentation: render fullscreen quad with PostFX shader.
 /// Runs the fullscreen post-processing pass into an offscreen texture, then
 /// presents that texture through the CAMetalLayer drawable when available.
+/// @param backend_ctx Borrowed `VGFXMetalContext` backend handle.
+/// @param postfx Borrowed ordered post-processing chain to encode before presentation.
 static void metal_present_postfx(void *backend_ctx, const vgfx3d_postfx_chain_t *postfx) {
     if (!backend_ctx || !postfx)
         return;
@@ -1957,6 +2045,8 @@ static void metal_present_postfx(void *backend_ctx, const vgfx3d_postfx_chain_t 
 }
 
 /// @brief Metal `apply_postfx` — composite post-FX to the drawable without committing.
+/// @param backend_ctx Borrowed `VGFXMetalContext` backend handle.
+/// @param postfx Borrowed ordered post-processing chain to composite.
 static void metal_apply_postfx(void *backend_ctx, const vgfx3d_postfx_chain_t *postfx) {
     if (!backend_ctx || !postfx)
         return;
@@ -1975,6 +2065,8 @@ static void metal_apply_postfx(void *backend_ctx, const vgfx3d_postfx_chain_t *p
 }
 
 /// @brief Draw the skybox using a full-screen triangle sampling the bound environment cubemap.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` with an active scene encoder.
+/// @param cubemap_ptr Borrowed runtime cubemap whose cached Metal texture is sampled.
 static void metal_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
     if (!ctx_ptr || !cubemap_ptr)
         return;
@@ -2036,6 +2128,8 @@ static void metal_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
 }
 
 /// @brief Enable or disable the GPU post-processing pass for subsequent frames.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` whose post-processing route is updated.
+/// @param enabled Nonzero to enable GPU post-processing when its pipeline is available.
 static void metal_set_gpu_postfx_enabled(void *ctx_ptr, int8_t enabled) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -2109,6 +2203,8 @@ static int8_t metal_set_render_scale(void *ctx_ptr, float scale) {
 }
 
 /// @brief Install a post-FX chain snapshot to drive the GPU post-processing pass (deep-copied).
+/// @param ctx_ptr Borrowed `VGFXMetalContext` that owns the resulting chain copy.
+/// @param postfx Borrowed chain to copy, or NULL to clear the installed chain.
 static void metal_set_gpu_postfx_snapshot(void *ctx_ptr, const vgfx3d_postfx_chain_t *postfx) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -2134,6 +2230,7 @@ static void metal_set_gpu_postfx_snapshot(void *ctx_ptr, const vgfx3d_postfx_cha
 /* Hide the Metal layer during software RTT or 2D mode */
 /// @brief Hide the Metal layer so GPU-rendered frames stop being presented (used during
 ///   teardown or when switching away from the GPU backend).
+/// @param backend_ctx Borrowed `VGFXMetalContext` whose layer should be hidden.
 static void metal_hide_gpu_layer(void *backend_ctx) {
     if (!backend_ctx)
         return;
@@ -2145,6 +2242,7 @@ static void metal_hide_gpu_layer(void *backend_ctx) {
 }
 
 /// @brief Make the Metal layer visible (attach/unhide it) so GPU-rendered frames are presented.
+/// @param backend_ctx Borrowed `VGFXMetalContext` whose layer should be resized and shown.
 static void metal_show_gpu_layer(void *backend_ctx) {
     if (!backend_ctx)
         return;
@@ -2158,6 +2256,8 @@ static void metal_show_gpu_layer(void *backend_ctx) {
 }
 
 /// @brief Backend hook: toggle CAMetalLayer display sync (vsync).
+/// @param backend_ctx Borrowed `VGFXMetalContext` that owns the presentation layer.
+/// @param enabled Nonzero to synchronize presentation to the display refresh.
 static void metal_set_vsync(void *backend_ctx, int8_t enabled) {
     if (!backend_ctx)
         return;
@@ -2171,6 +2271,10 @@ static void metal_set_vsync(void *backend_ctx, int8_t enabled) {
 /// @brief Backend hook: register one NDC scene-depth probe for this frame.
 /// @details Blits are encoded at commit; results publish through the command buffer's
 ///   completed handler, so reads see the previous frame's depth without stalling.
+/// @param backend_ctx Borrowed `VGFXMetalContext` receiving the probe request.
+/// @param ndc_x Horizontal normalized-device coordinate, clamped to `[-1, 1]`.
+/// @param ndc_y Vertical normalized-device coordinate, clamped to `[-1, 1]`.
+/// @return The nonnegative request slot, or -1 when the request cannot be queued.
 static int32_t metal_queue_depth_probe(void *backend_ctx, float ndc_x, float ndc_y) {
     if (!backend_ctx)
         return -1;
@@ -2190,6 +2294,9 @@ static int32_t metal_queue_depth_probe(void *backend_ctx, float ndc_x, float ndc
 }
 
 /// @brief Backend hook: read a probe result captured on a previous completed frame.
+/// @param backend_ctx Borrowed `VGFXMetalContext` containing published probe results.
+/// @param slot Nonnegative probe slot previously returned by metal_queue_depth_probe().
+/// @return The sampled scene depth, or -1 when the context or slot has no available result.
 static float metal_read_depth_probe(void *backend_ctx, int32_t slot) {
     if (!backend_ctx || slot < 0)
         return -1.0f;

@@ -4,6 +4,17 @@
 // rt_physics3d_collision.c; not a standalone translation unit) Purpose: Physics3D GJK/EPA,
 // mesh-like tests, and the collider-pair dispatcher
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_physics3d_collision_meshconvex.inc
+ * @brief Implements GJK/EPA, mesh and heightfield tests, compound traversal, and pair dispatch.
+ *
+ * The routines in this fragment provide bounded convex-overlap and penetration
+ * recovery, triangle-versus-hull tests, terrain contacts, recursive compound
+ * leaf selection, broadphase rejection, and top-level manifold construction
+ * while preserving the body-A-to-body-B normal convention.
+ */
+
 typedef struct {
     double v[3];
 } gjk_support_point;
@@ -47,6 +58,10 @@ typedef struct {
 /// origin;
 ///          when the inputs are collinear (near-zero result) it substitutes an arbitrary
 ///          perpendicular.
+/// @param a First three-component vector.
+/// @param b Second three-component vector.
+/// @param c Third three-component vector.
+/// @param out Three-component output receiving the stable triple cross product.
 static void vec3_triple_cross(const double *a, const double *b, const double *c, double *out) {
     double tmp[3];
     vec3_cross(a, b, tmp);
@@ -62,6 +77,12 @@ static void vec3_triple_cross(const double *a, const double *b, const double *c,
 /// @brief Minkowski-difference support point: support(A, dir) − support(B, −dir).
 /// @details The farthest point of the configuration-space obstacle (A ⊖ B) along @p direction —
 ///          the single primitive GJK and EPA query to probe the shapes' combined geometry.
+/// @param a_collider First convex Collider3D.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_collider Second convex Collider3D.
+/// @param b_pose World pose of @p b_collider.
+/// @param direction Three-component Minkowski search direction.
+/// @param out Output receiving the Minkowski-difference support point.
 static void gjk_support(void *a_collider,
                         const rt_collider_pose *a_pose,
                         void *b_collider,
@@ -79,6 +100,9 @@ static void gjk_support(void *a_collider,
 
 /// @brief GJK support callback for a collider pair: the Minkowski-difference support point
 ///   (collider A's support along @p direction minus collider B's along the opposite direction).
+/// @param ctx Collider-pair support context.
+/// @param direction Three-component Minkowski search direction.
+/// @param out Output receiving the support point.
 static void gjk_support_collider_pair(void *ctx, const double *direction, gjk_support_point *out) {
     ph3d_collider_pair_support_ctx *pair = (ph3d_collider_pair_support_ctx *)ctx;
     if (!pair || !out)
@@ -87,6 +111,9 @@ static void gjk_support_collider_pair(void *ctx, const double *direction, gjk_su
 }
 
 /// @brief Support point of a triangle: the vertex farthest along @p direction.
+/// @param tri Three world-space triangle vertices.
+/// @param direction Three-component support direction.
+/// @param out Three-component output receiving the farthest vertex.
 static void triangle_support_point(const double tri[3][3], const double *direction, double *out) {
     double best_dot = -DBL_MAX;
     int best = 0;
@@ -102,6 +129,9 @@ static void triangle_support_point(const double tri[3][3], const double *directi
 
 /// @brief GJK support callback for a triangle-vs-convex-hull pair: the Minkowski-difference
 ///   support point (triangle support along @p direction minus hull support along −direction).
+/// @param ctx Triangle/hull support context.
+/// @param direction Three-component Minkowski search direction.
+/// @param out Output receiving the support point.
 static void gjk_support_triangle_hull(void *ctx, const double *direction, gjk_support_point *out) {
     ph3d_triangle_hull_support_ctx *pair = (ph3d_triangle_hull_support_ctx *)ctx;
     double tri_point[3];
@@ -116,12 +146,17 @@ static void gjk_support_triangle_hull(void *ctx, const double *direction, gjk_su
 }
 
 /// @brief Reduce the simplex to the single vertex @p a.
+/// @param simplex GJK simplex to replace.
+/// @param a Most-recent support vertex retained.
 static void gjk_simplex_set1(gjk_simplex *simplex, const gjk_support_point *a) {
     simplex->p[0] = *a;
     simplex->count = 1;
 }
 
 /// @brief Set the simplex to the line segment (b, a) with @p a as the most-recent vertex.
+/// @param simplex GJK simplex to replace.
+/// @param b Older segment support vertex.
+/// @param a Most-recent segment support vertex.
 static void gjk_simplex_set2(gjk_simplex *simplex,
                              const gjk_support_point *b,
                              const gjk_support_point *a) {
@@ -131,6 +166,10 @@ static void gjk_simplex_set2(gjk_simplex *simplex,
 }
 
 /// @brief Set the simplex to the triangle (c, b, a) with @p a as the most-recent vertex.
+/// @param simplex GJK simplex to replace.
+/// @param c Oldest triangle support vertex.
+/// @param b Middle triangle support vertex.
+/// @param a Most-recent triangle support vertex.
 static void gjk_simplex_set3(gjk_simplex *simplex,
                              const gjk_support_point *c,
                              const gjk_support_point *b,
@@ -144,6 +183,9 @@ static void gjk_simplex_set3(gjk_simplex *simplex,
 /// @brief Evolve a 2-point (line) simplex toward the origin, updating the search @p direction.
 /// @details Keeps the edge if the origin projects onto it (search perpendicular toward origin),
 ///          else drops back to the newest vertex. Returns 0 (origin not yet enclosed).
+/// @param simplex Two-point GJK simplex updated in place.
+/// @param direction Three-component output receiving the next search direction.
+/// @return Zero because a line simplex cannot enclose the origin in 3D.
 static int gjk_update_line(gjk_simplex *simplex, double *direction) {
     gjk_support_point a = simplex->p[simplex->count - 1];
     gjk_support_point b = simplex->p[simplex->count - 2];
@@ -164,6 +206,9 @@ static int gjk_update_line(gjk_simplex *simplex, double *direction) {
 /// @details Tests the origin against the triangle's edge regions and the two face half-spaces,
 ///          reducing to the relevant edge or keeping the triangle (with the face normal toward the
 ///          origin) as the next search direction. Returns 0 (origin not yet enclosed).
+/// @param simplex Three-point GJK simplex updated in place.
+/// @param direction Three-component output receiving the next search direction.
+/// @return Zero because a triangle simplex cannot enclose a 3D volume.
 static int gjk_update_triangle(gjk_simplex *simplex, double *direction) {
     gjk_support_point a = simplex->p[2];
     gjk_support_point b = simplex->p[1];
@@ -209,6 +254,11 @@ static int gjk_update_triangle(gjk_simplex *simplex, double *direction) {
 /// @brief Compute the unit normal of face (a, b, c) oriented to point away from @p opposite.
 /// @details Used per-face in the tetrahedron test so each face normal points outward; degenerate
 ///          faces fall back to +Y.
+/// @param a First face support vertex.
+/// @param b Second face support vertex.
+/// @param c Third face support vertex.
+/// @param opposite Tetrahedron vertex opposite the face.
+/// @param normal Three-component output receiving the outward unit normal.
 static void gjk_face_normal_away_from_point(const gjk_support_point *a,
                                             const gjk_support_point *b,
                                             const gjk_support_point *c,
@@ -234,6 +284,8 @@ static void gjk_face_normal_away_from_point(const gjk_support_point *a,
 /// lies
 ///          outside one, drops to that face and continues. If inside all three, the origin is
 ///          enclosed.
+/// @param simplex Four-point GJK simplex updated when the origin lies outside a face.
+/// @param direction Three-component output receiving the next search direction when needed.
 /// @return 1 if the origin is inside the tetrahedron (collision), 0 to keep searching.
 static int gjk_update_tetrahedron(gjk_simplex *simplex, double *direction) {
     gjk_support_point a = simplex->p[3];
@@ -269,6 +321,8 @@ static int gjk_update_tetrahedron(gjk_simplex *simplex, double *direction) {
 }
 
 /// @brief Advance the GJK simplex one step by dispatching on its current vertex count.
+/// @param simplex GJK simplex to classify and reduce.
+/// @param direction Three-component output receiving the next search direction.
 /// @return 1 when the simplex (a tetrahedron) encloses the origin, else 0.
 static int gjk_update_simplex(gjk_simplex *simplex, double *direction) {
     if (!simplex || !direction)
@@ -287,6 +341,12 @@ static int gjk_update_simplex(gjk_simplex *simplex, double *direction) {
 /// @brief Build an EPA polytope face from three vertex indices, oriented outward from the origin.
 /// @details Computes the unit normal and its signed distance from the origin; flips the winding so
 ///          the normal faces away from the origin (distance >= 0). Returns 0 for a degenerate face.
+/// @param vertices EPA support-vertex array.
+/// @param a First face vertex index.
+/// @param b Second face vertex index.
+/// @param c Third face vertex index.
+/// @param face Output receiving the oriented EPA face.
+/// @return One for a valid non-degenerate face, otherwise zero.
 static int epa_make_face(
     const gjk_support_point *vertices, int32_t a, int32_t b, int32_t c, epa_face *face) {
     double ab[3];
@@ -317,6 +377,11 @@ static int epa_make_face(
 /// @details A directed edge shared by two removed faces appears once as (a,b) and once as (b,a);
 ///          cancelling those pairs leaves exactly the silhouette/horizon edges that the new faces
 ///          must close over. Caps the edge list to avoid unbounded growth.
+/// @param edges Fixed-capacity EPA horizon-edge array.
+/// @param edge_count In/out number of active edges.
+/// @param a Directed edge start vertex index.
+/// @param b Directed edge end vertex index.
+/// @return One when the edge was canceled or appended, otherwise zero on capacity exhaustion.
 static int epa_add_edge(epa_edge *edges, int32_t *edge_count, int32_t a, int32_t b) {
     if (!edges || !edge_count)
         return 0;
@@ -335,6 +400,12 @@ static int epa_add_edge(epa_edge *edges, int32_t *edge_count, int32_t a, int32_t
 }
 
 /// @brief Append an EPA face (a, b, c) to the polytope, skipping degenerate faces.
+/// @param vertices EPA support-vertex array.
+/// @param faces Fixed-capacity face array.
+/// @param face_count In/out number of active face records.
+/// @param a First face vertex index.
+/// @param b Second face vertex index.
+/// @param c Third face vertex index.
 /// @return 0 only when the face array is full; 1 otherwise (including a skipped degenerate face).
 static int epa_add_face(const gjk_support_point *vertices,
                         epa_face *faces,
@@ -356,6 +427,11 @@ static int epa_add_face(const gjk_support_point *vertices,
 ///          point past the closest face, removes all faces it can "see", and re-closes the
 ///          resulting horizon, until the closest face stops moving (within @p tolerance). Writes
 ///          the outward contact @p normal and penetration @p depth.
+/// @param support_fn Shape-pair support callback.
+/// @param support_ctx Opaque context passed to @p support_fn.
+/// @param simplex Origin-enclosing GJK tetrahedron.
+/// @param normal Three-component output receiving the EPA normal.
+/// @param depth Output receiving non-negative penetration depth.
 /// @return 1 on success, 0 if the input simplex is not a tetrahedron or the polytope degenerates.
 static int epa_solve_with_support(ph3d_gjk_support_fn support_fn,
                                   void *support_ctx,
@@ -432,6 +508,13 @@ static int epa_solve_with_support(ph3d_gjk_support_fn support_fn,
 
 /// @brief Run EPA (Expanding Polytope Algorithm) on a collider pair, given a GJK simplex that
 ///   encloses the origin, to recover the penetration @p normal and @p depth.
+/// @param a_collider First convex Collider3D.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_collider Second convex Collider3D.
+/// @param b_pose World pose of @p b_collider.
+/// @param simplex Origin-enclosing GJK tetrahedron.
+/// @param normal Three-component output receiving the penetration normal.
+/// @param depth Output receiving non-negative penetration depth.
 /// @return 1 on success, 0 if EPA fails to converge.
 static int epa_solve(void *a_collider,
                      const rt_collider_pose *a_pose,
@@ -446,6 +529,11 @@ static int epa_solve(void *a_collider,
 
 /// @brief Generic GJK overlap test followed by EPA penetration recovery, driven by a
 ///   caller-provided @p support_fn and seeded from @p seed_direction.
+/// @param support_fn Shape-pair support callback.
+/// @param support_ctx Opaque context passed to @p support_fn.
+/// @param seed_direction Optional initial search direction.
+/// @param normal Three-component output receiving the overlap normal.
+/// @param depth Output receiving non-negative penetration depth.
 /// @return 1 if the shapes overlap (with @p normal / @p depth set), 0 otherwise.
 static int gjk_epa_with_support(ph3d_gjk_support_fn support_fn,
                                 void *support_ctx,
@@ -510,6 +598,14 @@ static int gjk_epa_with_support(ph3d_gjk_support_fn support_fn,
 /// @details Runs GJK seeded from the center-to-center direction until it builds an origin-enclosing
 ///          tetrahedron (or an iteration cap proves separation), then hands that simplex to EPA for
 ///          the penetration @p normal and @p depth.
+/// @param a_collider First convex Collider3D.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_collider Second convex Collider3D.
+/// @param b_pose World pose of @p b_collider.
+/// @param a_center Optional first shape center used to seed and orient the normal.
+/// @param b_center Optional second shape center used to seed and orient the normal.
+/// @param normal Three-component output receiving the A-to-B contact normal.
+/// @param depth Output receiving non-negative penetration depth.
 /// @return 1 if the shapes overlap (normal/depth written), 0 if separate.
 static int test_convex_hull_gjk_epa(void *a_collider,
                                     const rt_collider_pose *a_pose,
@@ -573,6 +669,12 @@ static int test_convex_hull_gjk_epa(void *a_collider,
 
 /// @brief Narrow-phase collision test between a triangle and a convex-hull collider via
 ///   GJK/EPA, seeded from the triangle centroid toward the hull.
+/// @param tri Three world-space triangle vertices.
+/// @param hull_collider Convex-hull Collider3D.
+/// @param hull_pose World pose of @p hull_collider.
+/// @param hull_center Optional hull center used to seed and orient the normal.
+/// @param normal Three-component output receiving the triangle-to-hull normal.
+/// @param depth Output receiving non-negative penetration depth.
 /// @return 1 on overlap (filling @p normal / @p depth), 0 otherwise.
 static int test_triangle_convex_hull_gjk_epa(const double tri[3][3],
                                              void *hull_collider,
@@ -607,6 +709,13 @@ static int test_triangle_convex_hull_gjk_epa(const double tri[3][3],
 
 /// @brief Mesh-vs-convex-hull narrow phase: broad mesh nodes by the hull AABB,
 ///   then use GJK/EPA against each candidate triangle.
+/// @param mesh Triangle mesh providing candidate faces and optional BVH.
+/// @param mesh_pose World pose applied to @p mesh.
+/// @param hull_collider Convex-hull Collider3D.
+/// @param hull_pose World pose of @p hull_collider.
+/// @param normal Three-component output receiving the mesh-to-hull normal.
+/// @param depth Output receiving the deepest penetration.
+/// @return One when any mesh triangle overlaps the hull, otherwise zero.
 static int test_meshlike_convex_hull(rt_mesh3d *mesh,
                                      const rt_collider_pose *mesh_pose,
                                      void *hull_collider,
@@ -760,6 +869,12 @@ mesh_hull_done:
 /// whether the sphere bottom is below the surface. Skips the cost of
 /// per-cell triangle intersection by using the heightfield's analytical
 /// normal directly.
+/// @param heightfield Heightfield Collider3D handle to sample.
+/// @param field_pose World pose of the heightfield.
+/// @param sphere Sphere proxy body to test.
+/// @param normal Three-component output receiving the field-to-sphere normal.
+/// @param depth Output receiving normal-projected penetration depth.
+/// @return One when the sphere penetrates the sampled surface, otherwise zero.
 static int test_heightfield_sphere(void *heightfield,
                                    const rt_collider_pose *field_pose,
                                    const rt_body3d *sphere,
@@ -798,6 +913,12 @@ static int test_heightfield_sphere(void *heightfield,
 /// Samples along the oriented capsule axis and keeps the deepest hit. The sample
 /// count adapts to the axis length (like the box-capsule path) so a long capsule
 /// lying across a narrow ridge cannot straddle it between fixed samples.
+/// @param heightfield Heightfield Collider3D handle to sample.
+/// @param field_pose World pose of the heightfield.
+/// @param capsule Capsule proxy body to test.
+/// @param normal Three-component output receiving the deepest field normal.
+/// @param depth Output receiving the deepest penetration.
+/// @return One when any capsule-axis sphere sample penetrates, otherwise zero.
 static int test_heightfield_capsule(void *heightfield,
                                     const rt_collider_pose *field_pose,
                                     const rt_body3d *capsule,
@@ -836,6 +957,7 @@ static int test_heightfield_capsule(void *heightfield,
 /// @details A tumbled box's local -Y face can be sideways or on top; probing it lets the
 ///   box sink into the heightfield before any contact fires. Selecting the face by its
 ///   world orientation keeps the 3x3 probe on the true lowest face for any rotation.
+/// @param box_pose World pose whose rotation determines the lowest face.
 /// @param axis_out Local axis index (0..2) of the chosen face.
 /// @param sign_out +1/-1 selecting the positive/negative face along that axis.
 static void heightfield_box_lowest_face(const rt_collider_pose *box_pose,
@@ -871,6 +993,12 @@ static void heightfield_box_lowest_face(const rt_collider_pose *box_pose,
 /// heightfield at that face's corners, edge midpoints, and center; the deepest
 /// penetration wins. The edge samples catch narrow ridges that can pass between
 /// the old corner+center probe pattern.
+/// @param heightfield Heightfield Collider3D handle to sample.
+/// @param field_pose World pose of the heightfield.
+/// @param box Box proxy body to test.
+/// @param normal Three-component output receiving the deepest field normal.
+/// @param depth Output receiving normal-projected penetration depth.
+/// @return One when at least one lowest-face sample penetrates, otherwise zero.
 static int test_heightfield_box(void *heightfield,
                                 const rt_collider_pose *field_pose,
                                 const rt_body3d *box,
@@ -944,25 +1072,18 @@ static int test_heightfield_box(void *heightfield,
     return 1;
 }
 
-/// @brief Recursive collider-vs-collider dispatcher with leaf identification.
-///
-/// The "real" collision routine — handles every combination of:
-///   - compound × anything (recurse into children)
-///   - simple × simple (route via `test_simple_collision`)
-///   - convex hull / mesh × simple and mesh × convex hull (route via BVH/GJK helpers)
-///   - heightfield × simple (route via `test_heightfield_*`)
-///
-/// Shape pairs without an exact narrow phase fail closed. Treating their broad-phase AABBs as a
-/// contact used to create phantom collision impulses for disjoint triangle meshes and for
-/// mesh/heightfield combinations.
-///
-/// Outputs the leaf colliders that actually touched (so the higher-level
-/// contact event can carry the precise child collider, not just the
-/// outer compound). Reverses the normal when it has to swap A and B
-/// for symmetric dispatch.
 /// @brief Record the contributing leaf collider + pose for both bodies of a hit
 ///   (honoring NULL out-params) and report the pair as colliding. Centralizes the
 ///   identical bookkeeping every successful direct (non-swapped) dispatch case shares.
+/// @param leaf_a_out Optional output receiving the first contributing leaf collider.
+/// @param leaf_a_pose_out Optional output receiving the first leaf's world pose.
+/// @param a_collider First contributing Collider3D.
+/// @param a_pose World pose of @p a_collider.
+/// @param leaf_b_out Optional output receiving the second contributing leaf collider.
+/// @param leaf_b_pose_out Optional output receiving the second leaf's world pose.
+/// @param b_collider Second contributing Collider3D.
+/// @param b_pose World pose of @p b_collider.
+/// @return One, indicating the already-tested pair collides.
 static int commit_pair_leaves(void **leaf_a_out,
                               rt_collider_pose *leaf_a_pose_out,
                               void *a_collider,
@@ -982,6 +1103,22 @@ static int commit_pair_leaves(void **leaf_a_out,
     return 1;
 }
 
+/// @brief Dispatch one collider pair, recursively descending compound children.
+/// @param a_body First owning Body3D.
+/// @param a_collider First Collider3D at the current recursion level.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_body Second owning Body3D.
+/// @param b_collider Second Collider3D at the current recursion level.
+/// @param b_pose World pose of @p b_collider.
+/// @param recursion_depth Current bounded compound recursion depth.
+/// @param normal Output receiving the A-to-B contact normal.
+/// @param depth Output receiving penetration depth.
+/// @param leaf_a_out Optional output receiving the first contributing leaf.
+/// @param leaf_a_pose_out Optional output receiving the first leaf pose.
+/// @param leaf_b_out Optional output receiving the second contributing leaf.
+/// @param leaf_b_pose_out Optional output receiving the second leaf pose.
+/// @param manifold_acc Optional contact record accumulating compound leaf points.
+/// @return One when a supported leaf pair overlaps, otherwise zero.
 static int test_collider_pair(const rt_body3d *a_body,
                               void *a_collider,
                               const rt_collider_pose *a_pose,
@@ -1003,6 +1140,22 @@ static int test_collider_pair(const rt_body3d *a_body,
 ///        When @p manifold_acc is provided, every touching leaf contributes a manifold point
 ///        during THIS pass, so the solver no longer re-runs the whole compound narrow phase a
 ///        second time just to expand the manifold.
+/// @param a_body First owning Body3D.
+/// @param a_collider First collider at this recursion level.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_body Second owning Body3D.
+/// @param b_collider Second collider at this recursion level.
+/// @param b_pose World pose of @p b_collider.
+/// @param compound_is_a Nonzero when @p a_collider is the compound to descend.
+/// @param recursion_depth Current bounded recursion depth.
+/// @param normal Output receiving the deepest A-to-B contact normal.
+/// @param depth Output receiving the deepest penetration.
+/// @param leaf_a_out Optional output receiving the first deepest leaf.
+/// @param leaf_a_pose_out Optional output receiving the first deepest leaf pose.
+/// @param leaf_b_out Optional output receiving the second deepest leaf.
+/// @param leaf_b_pose_out Optional output receiving the second deepest leaf pose.
+/// @param manifold_acc Optional contact record accumulating all touching leaf points.
+/// @return One when at least one compound child overlaps the other collider, otherwise zero.
 static int test_compound_collider(const rt_body3d *a_body,
                                   void *a_collider,
                                   const rt_collider_pose *a_pose,
@@ -1101,6 +1254,17 @@ static int test_compound_collider(const rt_body3d *a_body,
 
 /// @brief Broad-phase AABB reject for a collider pair: compute both world AABBs, return 0 when
 ///        they are disjoint, else fill the AABB extents and centers and return 1.
+/// @param a_collider First Collider3D.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_collider Second Collider3D.
+/// @param b_pose World pose of @p b_collider.
+/// @param amn Output receiving the first world AABB minimum.
+/// @param amx Output receiving the first world AABB maximum.
+/// @param bmn Output receiving the second world AABB minimum.
+/// @param bmx Output receiving the second world AABB maximum.
+/// @param a_center Output receiving the first AABB center.
+/// @param b_center Output receiving the second AABB center.
+/// @return One when the world AABBs overlap, otherwise zero.
 static int collider_pair_broadphase(void *a_collider,
                                     const rt_collider_pose *a_pose,
                                     void *b_collider,
@@ -1130,6 +1294,24 @@ static int collider_pair_broadphase(void *a_collider,
 /// @brief Narrow-phase collision test between two bodies' colliders: AABB broad-phase reject,
 ///   then per-shape GJK/EPA, returning the contact @p normal / @p depth and the deepest
 ///   contributing leaf colliders and their poses.
+/// @details Recursively descends compound colliders, routes simple, convex,
+///   mesh, and heightfield combinations to exact narrow phases, reverses
+///   normals when symmetric dispatch swaps the pair, and fails closed for
+///   unsupported shape combinations.
+/// @param a_body First owning Body3D.
+/// @param a_collider First Collider3D at the current recursion level.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_body Second owning Body3D.
+/// @param b_collider Second Collider3D at the current recursion level.
+/// @param b_pose World pose of @p b_collider.
+/// @param recursion_depth Current bounded compound recursion depth.
+/// @param normal Output receiving the A-to-B contact normal.
+/// @param depth Output receiving penetration depth.
+/// @param leaf_a_out Optional output receiving the first contributing leaf.
+/// @param leaf_a_pose_out Optional output receiving the first leaf pose.
+/// @param leaf_b_out Optional output receiving the second contributing leaf.
+/// @param leaf_b_pose_out Optional output receiving the second leaf pose.
+/// @param manifold_acc Optional contact record accumulating compound leaf points.
 /// @return 1 on contact, 0 otherwise.
 static int test_collider_pair(const rt_body3d *a_body,
                               void *a_collider,
@@ -1375,6 +1557,14 @@ static int test_collider_pair(const rt_body3d *a_body,
 }
 
 /// @brief Collect distinct leaf contacts for a compound pair into an existing body-pair manifold.
+/// @param contact Contact record whose bounded manifold is expanded.
+/// @param a_body First owning Body3D.
+/// @param a_collider First collider at the current recursion level.
+/// @param a_pose World pose of @p a_collider.
+/// @param b_body Second owning Body3D.
+/// @param b_collider Second collider at the current recursion level.
+/// @param b_pose World pose of @p b_collider.
+/// @param recursion_depth Current bounded compound recursion depth.
 static void contact3d_collect_compound_leaf_points(rt_contact3d *contact,
                                                    const rt_body3d *a_body,
                                                    void *a_collider,
@@ -1470,6 +1660,9 @@ static void contact3d_collect_compound_leaf_points(rt_contact3d *contact,
 }
 
 /// @brief Add contacts from multiple touching compound leaves to a body-pair manifold.
+/// @param contact Existing contact record to expand.
+/// @param a First Body3D in the pair.
+/// @param b Second Body3D in the pair.
 void contact3d_expand_compound_manifold(rt_contact3d *contact,
                                         const rt_body3d *a,
                                         const rt_body3d *b) {
@@ -1497,6 +1690,17 @@ void contact3d_expand_compound_manifold(rt_contact3d *contact,
 /// actual recursion, then reconstructs an estimated contact point via
 /// `compute_contact_point_from_leafs`. Outputs the leaf colliders that
 /// touched, so contact events can carry sub-collider identity.
+/// @param a First Body3D, establishing the normal origin.
+/// @param b Second Body3D, toward which the contact normal points.
+/// @param normal Output receiving the A-to-B contact normal.
+/// @param depth Output receiving penetration depth.
+/// @param point Optional output receiving a representative world contact point.
+/// @param leaf_a_out Optional output receiving the first contributing leaf collider.
+/// @param leaf_b_out Optional output receiving the second contributing leaf collider.
+/// @param leaf_a_pose_out Optional output receiving the first leaf's world pose.
+/// @param leaf_b_pose_out Optional output receiving the second leaf's world pose.
+/// @param manifold_acc Optional contact record accumulating compound leaf points.
+/// @return One when the bodies collide, otherwise zero.
 int test_collision_manifold(const rt_body3d *a,
                             const rt_body3d *b,
                             double *normal,
@@ -1566,6 +1770,16 @@ int test_collision_manifold(const rt_body3d *a,
 ///
 /// Thin wrapper over test_collision_manifold with no manifold accumulator —
 /// queries and probes only need the single deepest result.
+/// @param a First Body3D, establishing the normal origin.
+/// @param b Second Body3D, toward which the contact normal points.
+/// @param normal Output receiving the A-to-B contact normal.
+/// @param depth Output receiving penetration depth.
+/// @param point Optional output receiving a representative world contact point.
+/// @param leaf_a_out Optional output receiving the first contributing leaf collider.
+/// @param leaf_b_out Optional output receiving the second contributing leaf collider.
+/// @param leaf_a_pose_out Optional output receiving the first leaf's world pose.
+/// @param leaf_b_pose_out Optional output receiving the second leaf's world pose.
+/// @return One when the bodies collide, otherwise zero.
 int test_collision(const rt_body3d *a,
                    const rt_body3d *b,
                    double *normal,

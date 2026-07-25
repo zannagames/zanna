@@ -5,30 +5,43 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_pixels_draw.c
-// Purpose: Drawing primitives for Zanna.Graphics.Pixels. Provides Canvas-
-//   compatible drawing operations (line, box, disc, ring, ellipse, triangle,
-//   Bezier, flood fill) that operate on a Pixels buffer using integer
-//   coordinates and 0x00RRGGBB color format.
+// File: src/runtime/graphics/2d/rt_pixels_draw.c
+// Purpose: Clipped raster primitives and bitmap-font rendering for
+//   Zanna.Graphics.Pixels, including lines, rectangles, circles, ellipses,
+//   triangles, quadratic Beziers, flood fill, text, and explicit-alpha
+//   compositing.
 //
 // Key invariants:
-//   - Color format is 0x00RRGGBB (Canvas-compatible), NOT 0xRRGGBBAA.
-//     Internally converts via rgb_to_rgba() before writing to the pixel buffer.
+//   - Public drawing colors are normalized by rt_pixels_color_to_rgba(), so
+//     Canvas-style 0x00RRGGBB, raw 0xRRGGBBAA, and tagged Color.RGBA values
+//     share the Pixels buffer's canonical 0xRRGGBBAA storage.
 //   - All drawing is clipped to buffer bounds (no out-of-bounds writes).
 //   - Flood fill uses an iterative scanline algorithm with a malloc'd stack.
 //   - Thick lines are drawn as a series of filled discs along the line.
 //   - Triangle fill uses scanline rasterization with sorted vertices.
+//   - Text uses the built-in 8x8 ASCII font; unsupported or malformed UTF-8
+//     input renders as the question-mark glyph.
 //   - Alpha blending uses Porter-Duff "over" compositing.
 //
 // Ownership/Lifetime:
 //   - Drawing functions modify the target Pixels in place (no new allocations).
 //   - Flood fill temporarily allocates a work stack (freed before return).
 //
-// Links: src/runtime/graphics/rt_pixels_internal.h (shared struct and helpers),
-//        src/runtime/graphics/rt_pixels.c (core operations),
-//        src/runtime/graphics/rt_pixels.h (public API)
+// Links: src/runtime/graphics/2d/rt_pixels_internal.h (shared representation),
+//        src/runtime/graphics/2d/rt_pixels.c (core operations),
+//        src/runtime/graphics/2d/rt_pixels.h (public API),
+//        src/runtime/graphics/text/rt_font.h (built-in glyph data)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements clipped Pixels drawing primitives, text, and compositing.
+///
+/// Every public operation validates the opaque Pixels handle, clips writes to
+/// the destination extent, and advances the mutation generation only when at
+/// least one stored pixel is written by the requested raster operation.
+/// Geometry calculations use saturating integer helpers and bounded
+/// `long double` intermediates to keep extreme caller coordinates defined.
 
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
@@ -42,16 +55,31 @@
 #include <string.h>
 
 //=============================================================================
-// Drawing Primitives  (color format: 0x00RRGGBB — Canvas-compatible)
+// Drawing Primitives
 //=============================================================================
 
-/// @brief Write an opaque RGB pixel (color in 0x00RRGGBB format, alpha forced to 0xFF).
-/// Out-of-bounds is a silent no-op (delegates to `rt_pixels_set`).
+/// @brief Write one opaque Canvas-style RGB pixel.
+/// @details Converts the low 24 bits of @p color from `0x00RRGGBB` to canonical
+///          `0xRRGGBBFF` storage and delegates validation, clipping, and
+///          generation tracking to `rt_pixels_set()`.
+/// @param pixels Opaque Pixels handle; a null or invalid handle traps through
+///        `rt_pixels_set()`.
+/// @param x Zero-based destination column; an out-of-bounds value is a no-op.
+/// @param y Zero-based destination row; an out-of-bounds value is a no-op.
+/// @param color Canvas-style RGB value whose high bits are ignored.
 void rt_pixels_set_rgb(void *pixels, int64_t x, int64_t y, int64_t color) {
     rt_pixels_set(pixels, x, y, (int64_t)rgb_to_rgba(color));
 }
 
-/// @brief Read an RGB pixel (returns 0x00RRGGBB, dropping the alpha channel).
+/// @brief Read one pixel as Canvas-style RGB.
+/// @details Delegates validation and bounds behavior to `rt_pixels_get()` and
+///          discards the stored alpha byte.
+/// @param pixels Opaque Pixels handle; a null or invalid handle traps through
+///        `rt_pixels_get()`.
+/// @param x Zero-based source column.
+/// @param y Zero-based source row.
+/// @return The pixel's `0x00RRGGBB` channels, or the delegated out-of-bounds
+///         sentinel after its trap behavior.
 int64_t rt_pixels_get_rgb(void *pixels, int64_t x, int64_t y) {
     return rt_pixels_get(pixels, x, y) >> 8;
 }
@@ -60,6 +88,9 @@ int64_t rt_pixels_get_rgb(void *pixels, int64_t x, int64_t y) {
 /// @details Guards the (int64_t) cast against undefined behavior when the value
 ///   is outside the representable range.  Used when converting floating-point
 ///   coordinates produced by the rasterizer back into pixel indices.
+/// @param value Floating-point coordinate to round to the nearest integer, with
+///        halves rounded away from zero.
+/// @return The rounded coordinate, clamped to the signed 64-bit range.
 static int64_t pixels_round_ld_to_i64_sat(long double value) {
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
@@ -71,6 +102,8 @@ static int64_t pixels_round_ld_to_i64_sat(long double value) {
 /// @brief Floor a long double to int64_t, saturating at INT64_MAX / INT64_MIN.
 /// @details Used for the left-edge pixel coordinate in span fills — ensures the
 ///   span starts on the leftmost integer column that is fully inside the shape.
+/// @param value Floating-point coordinate to round toward negative infinity.
+/// @return The floored coordinate, clamped to the signed 64-bit range.
 static int64_t pixels_floor_ld_to_i64_sat(long double value) {
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
@@ -82,6 +115,8 @@ static int64_t pixels_floor_ld_to_i64_sat(long double value) {
 /// @brief Ceil a long double to int64_t, saturating at INT64_MAX / INT64_MIN.
 /// @details Used for the right-edge pixel coordinate in span fills — ensures the
 ///   span ends on the rightmost column that is at least partially inside the shape.
+/// @param value Floating-point coordinate to round toward positive infinity.
+/// @return The ceiling coordinate, clamped to the signed 64-bit range.
 static int64_t pixels_ceil_ld_to_i64_sat(long double value) {
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
@@ -93,6 +128,8 @@ static int64_t pixels_ceil_ld_to_i64_sat(long double value) {
 /// @brief Truncate (round toward zero) a long double to int64_t, saturating at extremes.
 /// @details Used for the scanline x-intercept in triangle fills where truncation toward
 ///   zero matches the expected top-left rasterization rule.
+/// @param value Floating-point coordinate to truncate toward zero.
+/// @return The truncated coordinate, clamped to the signed 64-bit range.
 static int64_t pixels_trunc_ld_to_i64_sat(long double value) {
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
@@ -107,6 +144,12 @@ static int64_t pixels_trunc_ld_to_i64_sat(long double value) {
 ///   (reject) when the line is proven entirely outside the boundary.  @p p is the
 ///   component of the direction vector pointing into the boundary (negative = moving
 ///   toward boundary); @p q is the signed distance from the start point to the boundary.
+/// @param p Signed direction component for the tested clip boundary.
+/// @param q Signed distance from the segment start to that boundary.
+/// @param u1 In/out lower bound of the retained parametric segment interval.
+/// @param u2 In/out upper bound of the retained parametric segment interval.
+/// @return Nonzero when the interval still intersects the boundary half-plane;
+///         zero when the segment can be rejected.
 static int8_t pixels_clip_line_test(long double p,
                                     long double q,
                                     long double *u1,
@@ -128,6 +171,16 @@ static int8_t pixels_clip_line_test(long double p,
     return 1;
 }
 
+/// @brief Forward declaration of the axis-aligned Liang-Barsky clipper.
+/// @param min_x Inclusive rectangle left edge.
+/// @param min_y Inclusive rectangle top edge.
+/// @param max_x Inclusive rectangle right edge.
+/// @param max_y Inclusive rectangle bottom edge.
+/// @param x1 In/out first endpoint X coordinate.
+/// @param y1 In/out first endpoint Y coordinate.
+/// @param x2 In/out second endpoint X coordinate.
+/// @param y2 In/out second endpoint Y coordinate.
+/// @return Nonzero when a visible segment remains; zero otherwise.
 static int8_t pixels_clip_line_to_rect(int64_t min_x,
                                        int64_t min_y,
                                        int64_t max_x,
@@ -141,6 +194,14 @@ static int8_t pixels_clip_line_to_rect(int64_t min_x,
 /// @details Thin wrapper around pixels_clip_line_to_rect that converts the buffer's
 ///   width/height into a [0, width-1] × [0, height-1] clip rectangle.  Returns 0
 ///   if @p p is NULL or has no pixel data, or if the line is entirely outside bounds.
+/// @param p Destination implementation whose inclusive pixel bounds form the
+///        clip rectangle.
+/// @param x1 In/out first endpoint X coordinate.
+/// @param y1 In/out first endpoint Y coordinate.
+/// @param x2 In/out second endpoint X coordinate.
+/// @param y2 In/out second endpoint Y coordinate.
+/// @return Nonzero when a visible segment remains; zero for invalid storage,
+///         invalid endpoint pointers, or a fully clipped segment.
 static int8_t pixels_clip_line_to_bounds(
     rt_pixels_impl *p, int64_t *x1, int64_t *y1, int64_t *x2, int64_t *y2) {
     if (!p || !p->data || p->width <= 0 || p->height <= 0 || !x1 || !y1 || !x2 || !y2)
@@ -153,6 +214,14 @@ static int8_t pixels_clip_line_to_bounds(
 ///   lies inside the rectangle [min_x, max_x] × [min_y, max_y].  Works in long double to
 ///   avoid integer intermediate overflow when dealing with large coordinates.  Updates
 ///   the endpoint pointers in place to the clipped values on success.
+/// @param min_x Inclusive rectangle left edge.
+/// @param min_y Inclusive rectangle top edge.
+/// @param max_x Inclusive rectangle right edge.
+/// @param max_y Inclusive rectangle bottom edge.
+/// @param x1 In/out first endpoint X coordinate.
+/// @param y1 In/out first endpoint Y coordinate.
+/// @param x2 In/out second endpoint X coordinate.
+/// @param y2 In/out second endpoint Y coordinate.
 /// @return 1 if any portion of the line is inside the rectangle, 0 if entirely outside.
 static int8_t pixels_clip_line_to_rect(int64_t min_x,
                                        int64_t min_y,
@@ -196,6 +265,10 @@ static int8_t pixels_clip_line_to_rect(int64_t min_x,
 /// @brief Return the last pixel coordinate of a range starting at @p start with @p length pixels.
 /// @details Returns @p start when length <= 1 (degenerate single-pixel rect).  Uses
 ///   saturating addition to avoid overflow when @p start is near INT64_MAX.
+/// @param start First coordinate in the range.
+/// @param length Requested number of coordinates.
+/// @return @p start for a non-positive or unit length; otherwise the saturated
+///         inclusive coordinate `start + length - 1`.
 static int64_t pixels_rect_last(int64_t start, int64_t length) {
     if (length <= 1)
         return start;
@@ -206,6 +279,13 @@ static int64_t pixels_rect_last(int64_t start, int64_t length) {
 /// @details Clips the run to the buffer's x extent silently.  Skips the row entirely if
 ///   @p y is out of the buffer's y range or if x1 < x0.  Does NOT call pixels_touch —
 ///   callers must do that before the first span of a primitive.
+/// @param p Destination implementation.
+/// @param y Destination row.
+/// @param x0 Inclusive first column.
+/// @param x1 Inclusive last column.
+/// @param rgba Canonical raw `0xRRGGBBAA` value to store.
+/// @return Nonzero when a clipped span was written; zero when storage or the
+///         requested span does not intersect the destination.
 static int8_t pixels_fill_span(
     rt_pixels_impl *p, int64_t y, int64_t x0, int64_t x1, uint32_t rgba) {
     if (!p || !p->data || y < 0 || y >= p->height || x1 < x0 || x1 < 0 || x0 >= p->width)
@@ -224,6 +304,12 @@ static int8_t pixels_fill_span(
 ///          standard Bresenham error-accumulator loop. Each step writes one
 ///          pixel directly into p->data[y * width + x]. Used by Line, Polyline,
 ///          and the disc/ring outline primitives.
+/// @param p Destination implementation.
+/// @param x1 First endpoint X coordinate.
+/// @param y1 First endpoint Y coordinate.
+/// @param x2 Second endpoint X coordinate.
+/// @param y2 Second endpoint Y coordinate.
+/// @param rgba Canonical raw `0xRRGGBBAA` value to store.
 /// @return 1 if any pixel was written, 0 if the line lies outside the buffer.
 static int8_t pixels_draw_line_raw(
     rt_pixels_impl *p, int64_t x1, int64_t y1, int64_t x2, int64_t y2, uint32_t rgba) {
@@ -259,6 +345,11 @@ static int8_t pixels_draw_line_raw(
 
 /// @brief Squared distance between two points in long double (no sqrt, no
 ///        overflow) — used only to compare relative edge lengths.
+/// @param x1 First point X coordinate.
+/// @param y1 First point Y coordinate.
+/// @param x2 Second point X coordinate.
+/// @param y2 Second point Y coordinate.
+/// @return Squared Euclidean distance in extended precision.
 static long double pixels_dist2_ld(int64_t x1, int64_t y1, int64_t x2, int64_t y2) {
     long double dx = (long double)x2 - (long double)x1;
     long double dy = (long double)y2 - (long double)y1;
@@ -268,6 +359,14 @@ static long double pixels_dist2_ld(int64_t x1, int64_t y1, int64_t x2, int64_t y
 /// @brief Degenerate-triangle fallback: when the three vertices are collinear
 ///        (zero area), rasterize just the longest of the three edges so the
 ///        triangle still renders as the line it visually is.
+/// @param pixels Opaque destination Pixels handle.
+/// @param x1 First vertex X coordinate.
+/// @param y1 First vertex Y coordinate.
+/// @param x2 Second vertex X coordinate.
+/// @param y2 Second vertex Y coordinate.
+/// @param x3 Third vertex X coordinate.
+/// @param y3 Third vertex Y coordinate.
+/// @param color Runtime drawing color forwarded to `rt_pixels_draw_line()`.
 static void pixels_draw_degenerate_triangle_line(void *pixels,
                                                  int64_t x1,
                                                  int64_t y1,
@@ -288,8 +387,17 @@ static void pixels_draw_degenerate_triangle_line(void *pixels,
     }
 }
 
-/// @brief Draw a 1-pixel-wide line between (x1,y1) and (x2,y2) using Bresenham.
-/// Color accepts 0x00RRGGBB, raw 0xRRGGBBAA, or tagged Color.RGBA.
+/// @brief Draw a clipped one-pixel-wide Bresenham line.
+/// @details Both endpoints are inclusive. The color accepts Canvas
+///          `0x00RRGGBB`, raw `0xRRGGBBAA`, or tagged `Color.RGBA` form. A
+///          line wholly outside the destination is a no-op.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x1 First endpoint X coordinate.
+/// @param y1 First endpoint Y coordinate.
+/// @param x2 Second endpoint X coordinate.
+/// @param y2 Second endpoint Y coordinate.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_line(
     void *pixels, int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t color) {
     if (!pixels) {
@@ -305,8 +413,18 @@ void rt_pixels_draw_line(
         pixels_touch(p);
 }
 
-/// @brief Fill an axis-aligned rectangle with @p color.
-/// Auto-clipped to buffer bounds; rectangles entirely outside are no-ops.
+/// @brief Fill a clipped axis-aligned rectangle.
+/// @details The rectangle covers half-open coordinates `[x, x + w)` and
+///          `[y, y + h)`. Non-positive or wholly out-of-bounds rectangles are
+///          no-ops. The color accepts every form supported by
+///          `rt_pixels_color_to_rgba()`.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x Rectangle left coordinate.
+/// @param y Rectangle top coordinate.
+/// @param w Rectangle width in pixels.
+/// @param h Rectangle height in pixels.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_box(void *pixels, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color) {
     if (!pixels) {
         rt_trap("Pixels.DrawBox: null pixels");
@@ -327,8 +445,16 @@ void rt_pixels_draw_box(void *pixels, int64_t x, int64_t y, int64_t w, int64_t h
             p->data[row * p->width + col] = rgba;
 }
 
-/// @brief Draw a 1-pixel-wide rectangle outline (top/bottom rows + side columns).
-/// Inverse of `_draw_box`. Color is 0x00RRGGBB.
+/// @brief Draw a clipped one-pixel-wide rectangle outline.
+/// @details Draws the top, bottom, left, and right inclusive edges by invoking
+///          `rt_pixels_draw_line()`. Non-positive dimensions are no-ops;
+///          unit dimensions may redraw the same row or column.
+/// @param pixels Opaque destination Pixels handle; a null handle traps.
+/// @param x Rectangle left coordinate.
+/// @param y Rectangle top coordinate.
+/// @param w Rectangle width in pixels.
+/// @param h Rectangle height in pixels.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_frame(void *pixels, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color) {
     if (!pixels) {
         rt_trap("Pixels.DrawFrame: null pixels");
@@ -345,8 +471,16 @@ void rt_pixels_draw_frame(void *pixels, int64_t x, int64_t y, int64_t w, int64_t
     rt_pixels_draw_line(pixels, x1, y, x1, y1, color);
 }
 
-/// @brief Fill a circle of radius @p r centered at (cx,cy) with @p color.
-/// Uses integer square root for span widths — no floating point.
+/// @brief Fill a clipped disc centered at an integer coordinate.
+/// @details For each visible row, solves the circle equation in `long double`
+///          and fills the resulting inclusive horizontal span. A zero radius
+///          addresses the center pixel; a negative radius is a no-op.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param cx Center X coordinate.
+/// @param cy Center Y coordinate.
+/// @param r Radius in pixels.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_disc(void *pixels, int64_t cx, int64_t cy, int64_t r, int64_t color) {
     if (!pixels) {
         rt_trap("Pixels.DrawDisc: null pixels");
@@ -385,8 +519,17 @@ void rt_pixels_draw_disc(void *pixels, int64_t cx, int64_t cy, int64_t r, int64_
         pixels_touch(p);
 }
 
-/// @brief Draw a 1-pixel-wide circle outline (Midpoint algorithm with 8-way symmetry).
-/// Inverse of `_draw_disc`.
+/// @brief Draw a clipped one-pixel-wide circle outline.
+/// @details Solves the circle equation along both visible axes in `long
+///          double`, rounds the complementary coordinate, and emits symmetric
+///          boundary pixels. A zero radius addresses the center pixel; a
+///          negative radius is a no-op.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param cx Center X coordinate.
+/// @param cy Center Y coordinate.
+/// @param r Radius in pixels.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_ring(void *pixels, int64_t cx, int64_t cy, int64_t r, int64_t color) {
     if (!pixels) {
         rt_trap("Pixels.DrawRing: null pixels");
@@ -441,8 +584,17 @@ void rt_pixels_draw_ring(void *pixels, int64_t cx, int64_t cy, int64_t r, int64_
         pixels_touch(p);
 }
 
-/// @brief Fill an ellipse with X/Y radii (rx, ry) centered at (cx, cy).
-/// Scanline rasterization in pure integer arithmetic.
+/// @brief Fill a clipped axis-aligned ellipse.
+/// @details Evaluates the ellipse equation in `long double` for every visible
+///          row and fills the inclusive horizontal span bounded by the two
+///          roots. Either non-positive radius makes the request a no-op.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param cx Center X coordinate.
+/// @param cy Center Y coordinate.
+/// @param rx Horizontal radius in pixels.
+/// @param ry Vertical radius in pixels.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_ellipse(
     void *pixels, int64_t cx, int64_t cy, int64_t rx, int64_t ry, int64_t color) {
     if (!pixels) {
@@ -484,7 +636,17 @@ void rt_pixels_draw_ellipse(
         pixels_touch(p);
 }
 
-/// @brief Draw a 1-pixel-wide ellipse outline using midpoint algorithm with 4-quadrant symmetry.
+/// @brief Draw a clipped one-pixel-wide axis-aligned ellipse outline.
+/// @details Evaluates the ellipse equation along both visible axes in `long
+///          double`, rounds the complementary coordinate, and writes the
+///          symmetric boundary pixels. Either non-positive radius is a no-op.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param cx Center X coordinate.
+/// @param cy Center Y coordinate.
+/// @param rx Horizontal radius in pixels.
+/// @param ry Vertical radius in pixels.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_ellipse_frame(
     void *pixels, int64_t cx, int64_t cy, int64_t rx, int64_t ry, int64_t color) {
     if (!pixels) {
@@ -582,7 +744,16 @@ static int pixels_fill_segment_push(
 ///          and right across a contiguous target-color run, writes that run, then
 ///          scans the adjacent rows for new target-color runs. This keeps memory
 ///          proportional to the boundary/run complexity of the region instead of
-///          allocating `width * height` queue and visited arrays.
+///          allocating `width * height` queue and visited arrays. If stack
+///          growth fails after writes begin, the already visited part remains
+///          filled, the stack is released, and the mutation generation still
+///          advances. An out-of-bounds seed or a color already equal to the
+///          seed pixel is a no-op.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x Seed X coordinate.
+/// @param y Seed Y coordinate.
+/// @param color Replacement color in any supported runtime drawing form.
 void rt_pixels_flood_fill(void *pixels, int64_t x, int64_t y, int64_t color) {
     if (!pixels) {
         rt_trap("Pixels.FloodFill: null pixels");
@@ -656,8 +827,20 @@ void rt_pixels_flood_fill(void *pixels, int64_t x, int64_t y, int64_t color) {
         pixels_touch(p);
 }
 
-/// @brief Draw a line of arbitrary thickness by stamping filled discs along the path.
-/// Falls back to the 1-pixel `_draw_line` when @p thickness <= 1.
+/// @brief Draw a rounded line by stamping filled discs along a Bresenham path.
+/// @details A thickness of one or less delegates to
+///          `rt_pixels_draw_line()`. Larger values use `thickness / 2` as the
+///          disc radius, clipped to a buffer-derived maximum so extreme input
+///          cannot create unbounded work. The expanded line is clipped before
+///          stamping, and individual disc calls perform final pixel clipping.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x1 First centerline endpoint X coordinate.
+/// @param y1 First centerline endpoint Y coordinate.
+/// @param x2 Second centerline endpoint X coordinate.
+/// @param y2 Second centerline endpoint Y coordinate.
+/// @param thickness Requested width in pixels.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_thick_line(void *pixels,
                                int64_t x1,
                                int64_t y1,
@@ -723,9 +906,20 @@ void rt_pixels_draw_thick_line(void *pixels,
     }
 }
 
-/// @brief Fill a solid triangle defined by three vertices using scanline rasterization.
-/// Vertices are sorted top-to-bottom internally; degenerate (collinear) triangles
-/// produce no output.
+/// @brief Fill a clipped solid triangle with scanline rasterization.
+/// @details Vertices are sorted by ascending Y, extended-precision edge
+///          intersections produce each inclusive span, and only visible rows
+///          are visited. A zero-area triangle draws its longest edge so
+///          collinear input remains visible.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x1 First vertex X coordinate.
+/// @param y1 First vertex Y coordinate.
+/// @param x2 Second vertex X coordinate.
+/// @param y2 Second vertex Y coordinate.
+/// @param x3 Third vertex X coordinate.
+/// @param y3 Third vertex Y coordinate.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_triangle(void *pixels,
                              int64_t x1,
                              int64_t y1,
@@ -826,8 +1020,20 @@ void rt_pixels_draw_triangle(void *pixels,
         pixels_touch(p);
 }
 
-/// @brief Draw a quadratic Bézier curve from (x1,y1) to (x2,y2) via control point.
-/// Step count is adaptive (capped at 10000) using integer de Casteljau evaluation.
+/// @brief Draw a clipped quadratic Bezier curve through one control point.
+/// @details Selects an adaptive sample count from the endpoint and control
+///          extents, clamps it to `[2, 10000]`, evaluates de Casteljau
+///          interpolation in `long double`, and joins rounded adjacent samples
+///          with raw Bresenham segments.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x1 Start-point X coordinate.
+/// @param y1 Start-point Y coordinate.
+/// @param cx_ctrl Control-point X coordinate.
+/// @param cy_ctrl Control-point Y coordinate.
+/// @param x2 End-point X coordinate.
+/// @param y2 End-point Y coordinate.
+/// @param color Runtime drawing color.
 void rt_pixels_draw_bezier(void *pixels,
                            int64_t x1,
                            int64_t y1,
@@ -890,7 +1096,11 @@ void rt_pixels_draw_bezier(void *pixels,
 // Text Rendering
 //=============================================================================
 
-/// @brief Saturating multiply for non-negative dimensions and font metrics.
+/// @brief Multiply non-negative dimensions with signed 64-bit saturation.
+/// @param a First factor.
+/// @param b Second factor.
+/// @return Zero if either factor is non-positive; otherwise the product
+///         clamped to `INT64_MAX`.
 static int64_t pixels_mul_nonneg_sat64(int64_t a, int64_t b) {
     if (a <= 0 || b <= 0)
         return 0;
@@ -899,7 +1109,10 @@ static int64_t pixels_mul_nonneg_sat64(int64_t a, int64_t b) {
     return a * b;
 }
 
-/// @brief Saturating int64 subtraction for alignment arithmetic.
+/// @brief Subtract signed 64-bit alignment operands with saturation.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @return `a - b` clamped to the signed 64-bit range.
 static int64_t pixels_sub_sat64(int64_t a, int64_t b) {
     long double value = (long double)a - (long double)b;
     if (value >= (long double)INT64_MAX)
@@ -909,7 +1122,17 @@ static int64_t pixels_sub_sat64(int64_t a, int64_t b) {
     return (int64_t)value;
 }
 
-/// @brief Decode the next UTF-8 codepoint, substituting '?' for malformed sequences.
+/// @brief Decode one UTF-8 code point with deterministic malformed-input recovery.
+/// @details Valid one- through four-byte sequences advance as a unit.
+///          Overlong encodings, surrogates, out-of-range values, truncated
+///          sequences, and stray continuation bytes produce `'?'` while
+///          advancing at least one byte. Glyph support is applied separately.
+/// @param str UTF-8 byte buffer.
+/// @param byte_len Number of readable bytes in @p str.
+/// @param index In/out byte offset; advanced past the consumed sequence.
+/// @param codepoint_out Receives the decoded scalar value or `'?'`.
+/// @return Nonzero when one input unit was consumed; zero for invalid pointers
+///         or an offset at or beyond @p byte_len.
 static int pixels_next_codepoint(const char *str,
                                  size_t byte_len,
                                  size_t *index,
@@ -960,7 +1183,18 @@ static int pixels_next_codepoint(const char *str,
     return 1;
 }
 
-/// @brief Fill a clipped rectangle directly with raw RGBA.
+/// @brief Fill a clipped rectangle directly with canonical raw RGBA.
+/// @details This internal helper does not advance the Pixels mutation
+///          generation; the owning primitive performs one touch after all
+///          glyph runs have been emitted.
+/// @param p Destination implementation.
+/// @param x Rectangle left coordinate.
+/// @param y Rectangle top coordinate.
+/// @param w Rectangle width in pixels.
+/// @param h Rectangle height in pixels.
+/// @param rgba Canonical raw `0xRRGGBBAA` value to store.
+/// @return Nonzero when at least one clipped pixel was written; zero when the
+///         rectangle does not intersect valid storage.
 static int8_t pixels_fill_rect_raw(
     rt_pixels_impl *p, int64_t x, int64_t y, int64_t w, int64_t h, uint32_t rgba) {
     if (!rt_pixels_clip_rect_to_bounds(p, &x, &y, &w, &h))
@@ -972,7 +1206,14 @@ static int8_t pixels_fill_rect_raw(
     return 1;
 }
 
-/// @brief Return rendered monospace text width by counting UTF-8 codepoints.
+/// @brief Measure built-in monospace text by decoded UTF-8 code-point count.
+/// @details Every decoded scalar, including unsupported scalars that will use
+///          the fallback glyph, occupies one eight-pixel cell multiplied by
+///          @p scale. Arithmetic saturates at `INT64_MAX`.
+/// @param text Retained runtime string to measure; null measures as zero.
+/// @param scale Positive integer pixel scale.
+/// @return Saturated width in pixels, or zero when @p text is null, has no C
+///         string storage, is empty, or @p scale is less than one.
 static int64_t pixels_text_codepoint_width(rt_string text, int64_t scale) {
     if (!text || scale < 1)
         return 0;
@@ -991,7 +1232,23 @@ static int64_t pixels_text_codepoint_width(rt_string text, int64_t scale) {
     return pixels_mul_nonneg_sat64(pixels_mul_nonneg_sat64(count, 8), scale);
 }
 
-/// @brief Rasterize text into a Pixels buffer; optional background fills full glyph cells.
+/// @brief Rasterize built-in 8x8 text directly into a Pixels buffer.
+/// @details Decodes UTF-8 with `pixels_next_codepoint()`, maps code points
+///          outside printable ASCII `[32, 126]` to `'?'`, coalesces adjacent
+///          equal-state cells into clipped rectangles, and advances by
+///          `8 * scale` pixels per glyph. When @p bg is non-null, unlit cells
+///          are filled too, producing a complete scaled 8x8 background cell.
+///          This helper does not touch the mutation generation.
+/// @param p Destination implementation.
+/// @param x Left coordinate of the first glyph cell.
+/// @param y Top coordinate shared by all glyph cells.
+/// @param text Runtime UTF-8 string to render.
+/// @param scale Positive integer scale applied to both glyph axes.
+/// @param fg Canonical raw `0xRRGGBBAA` foreground color.
+/// @param bg Optional pointer to a canonical raw background color; null leaves
+///        unlit cells unchanged.
+/// @return Nonzero when at least one clipped foreground or background pixel
+///         was written; zero for invalid input or wholly clipped output.
 static int8_t pixels_draw_text_raw(rt_pixels_impl *p,
                                    int64_t x,
                                    int64_t y,
@@ -1048,7 +1305,16 @@ static int8_t pixels_draw_text_raw(rt_pixels_impl *p,
     return wrote;
 }
 
-/// @brief Draw built-in 8x8 bitmap-font text at (x, y).
+/// @brief Draw built-in 8x8 bitmap-font text at unit scale.
+/// @details Printable ASCII uses its native glyph; valid unsupported Unicode
+///          and malformed UTF-8 render as `'?'`. Unlit glyph cells preserve
+///          the destination, and all writes are clipped.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x Left coordinate of the first glyph cell.
+/// @param y Top coordinate of the glyph row.
+/// @param text Runtime UTF-8 string; null is a no-op.
+/// @param color Runtime foreground color.
 void rt_pixels_draw_text(void *pixels, int64_t x, int64_t y, rt_string text, int64_t color) {
     if (!pixels) {
         rt_trap("Pixels.DrawText: null pixels");
@@ -1063,7 +1329,16 @@ void rt_pixels_draw_text(void *pixels, int64_t x, int64_t y, rt_string text, int
         pixels_touch(p);
 }
 
-/// @brief Draw text with foreground and full 8x8 cell background colors.
+/// @brief Draw unit-scale text with foreground and full-cell background colors.
+/// @details Every decoded character occupies a clipped 8x8 cell: lit glyph
+///          bits receive @p fg and all remaining bits receive @p bg.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x Left coordinate of the first glyph cell.
+/// @param y Top coordinate of the glyph row.
+/// @param text Runtime UTF-8 string; null is a no-op.
+/// @param fg Runtime foreground color.
+/// @param bg Runtime background color.
 void rt_pixels_draw_text_bg(
     void *pixels, int64_t x, int64_t y, rt_string text, int64_t fg, int64_t bg) {
     if (!pixels) {
@@ -1080,17 +1355,30 @@ void rt_pixels_draw_text_bg(
         pixels_touch(p);
 }
 
-/// @brief Return rendered text width in pixels at 1x scale.
+/// @brief Measure built-in monospace text at unit scale.
+/// @param text Runtime UTF-8 string; null measures as zero.
+/// @return Eight pixels per decoded code point, saturated at `INT64_MAX`.
 int64_t rt_pixels_text_width(rt_string text) {
     return pixels_text_codepoint_width(text, 1);
 }
 
-/// @brief Return built-in font line height in pixels.
+/// @brief Return the built-in bitmap font's unscaled line height.
+/// @return Eight pixels.
 int64_t rt_pixels_text_height(void) {
     return 8;
 }
 
-/// @brief Draw built-in text scaled by an integer factor.
+/// @brief Draw built-in bitmap-font text at an integer scale.
+/// @details Each source glyph bit becomes a `scale`-by-`scale` clipped block.
+///          Unsupported or malformed input uses `'?'`; a scale below one is a
+///          no-op.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x Left coordinate of the first glyph cell.
+/// @param y Top coordinate of the glyph row.
+/// @param text Runtime UTF-8 string; null is a no-op.
+/// @param scale Positive integer scale applied to both axes.
+/// @param color Runtime foreground color.
 void rt_pixels_draw_text_scaled(
     void *pixels, int64_t x, int64_t y, rt_string text, int64_t scale, int64_t color) {
     if (!pixels) {
@@ -1106,7 +1394,18 @@ void rt_pixels_draw_text_scaled(
         pixels_touch(p);
 }
 
-/// @brief Draw scaled text with foreground and full scaled-cell background colors.
+/// @brief Draw integer-scaled text with foreground and full-cell background.
+/// @details Every glyph occupies an `8 * scale` square cell. Lit blocks
+///          receive @p fg and all remaining blocks receive @p bg. A scale
+///          below one is a no-op.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x Left coordinate of the first glyph cell.
+/// @param y Top coordinate of the glyph row.
+/// @param text Runtime UTF-8 string; null is a no-op.
+/// @param scale Positive integer scale applied to both axes.
+/// @param fg Runtime foreground color.
+/// @param bg Runtime background color.
 void rt_pixels_draw_text_scaled_bg(
     void *pixels, int64_t x, int64_t y, rt_string text, int64_t scale, int64_t fg, int64_t bg) {
     if (!pixels) {
@@ -1123,12 +1422,24 @@ void rt_pixels_draw_text_scaled_bg(
         pixels_touch(p);
 }
 
-/// @brief Return rendered text width in pixels at the given integer scale.
+/// @brief Measure built-in monospace text at an integer scale.
+/// @param text Runtime UTF-8 string; null measures as zero.
+/// @param scale Positive integer glyph scale.
+/// @return `decoded_code_points * 8 * scale`, saturated at `INT64_MAX`, or
+///         zero when @p scale is less than one.
 int64_t rt_pixels_text_scaled_width(rt_string text, int64_t scale) {
     return pixels_text_codepoint_width(text, scale);
 }
 
-/// @brief Draw text horizontally centered in the Pixels buffer at row y.
+/// @brief Draw unit-scale text horizontally centered in the destination.
+/// @details Computes the first-cell X coordinate from the measured decoded
+///          text width. Text wider than the destination starts at a negative
+///          X coordinate and is clipped symmetrically by the rasterizer.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param y Top coordinate of the glyph row.
+/// @param text Runtime UTF-8 string; null is a no-op.
+/// @param color Runtime foreground color.
 void rt_pixels_draw_text_centered(void *pixels, int64_t y, rt_string text, int64_t color) {
     if (!pixels) {
         rt_trap("Pixels.DrawTextCentered: null pixels");
@@ -1144,7 +1455,17 @@ void rt_pixels_draw_text_centered(void *pixels, int64_t y, rt_string text, int64
         pixels_touch(p);
 }
 
-/// @brief Draw text right-aligned to the Pixels buffer with a margin.
+/// @brief Draw unit-scale text right-aligned inside the destination.
+/// @details Places the text so its measured right edge is @p margin pixels
+///          from the destination width. Saturating subtraction keeps extreme
+///          widths and margins defined; final writes are clipped.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param margin Distance from the destination's right edge; negative values
+///        intentionally shift text beyond that edge.
+/// @param y Top coordinate of the glyph row.
+/// @param text Runtime UTF-8 string; null is a no-op.
+/// @param color Runtime foreground color.
 void rt_pixels_draw_text_right(
     void *pixels, int64_t margin, int64_t y, rt_string text, int64_t color) {
     if (!pixels) {
@@ -1161,7 +1482,15 @@ void rt_pixels_draw_text_right(
         pixels_touch(p);
 }
 
-/// @brief Draw scaled text horizontally centered in the Pixels buffer at row y.
+/// @brief Draw integer-scaled text horizontally centered in the destination.
+/// @details Measures with the same decoded-code-point and saturation rules as
+///          `rt_pixels_text_scaled_width()`. A scale below one is a no-op.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param y Top coordinate of the glyph row.
+/// @param text Runtime UTF-8 string; null is a no-op.
+/// @param color Runtime foreground color.
+/// @param scale Positive integer scale applied to both glyph axes.
 void rt_pixels_draw_text_centered_scaled(
     void *pixels, int64_t y, rt_string text, int64_t color, int64_t scale) {
     if (!pixels) {
@@ -1179,8 +1508,19 @@ void rt_pixels_draw_text_centered_scaled(
         pixels_touch(p);
 }
 
-/// @brief Composite an RGB pixel onto the buffer using Porter-Duff "over" with @p alpha [0..255].
-/// Fast paths: alpha==0 → no-op, alpha==255 → opaque write. Otherwise blends src over dst.
+/// @brief Composite one color over a destination pixel with explicit alpha.
+/// @details Converts @p color to RGB but intentionally ignores any alpha
+///          carried by that value: @p alpha alone controls source opacity.
+///          Values at or below zero are no-ops and values above 255 clamp to
+///          255. Fully opaque input stores `0xRRGGBBFF`; intermediate input
+///          uses `rt_pixels_alpha_over_rgba()` to preserve the destination's
+///          Porter-Duff contribution. Out-of-bounds coordinates are no-ops.
+/// @param pixels Opaque destination Pixels handle; null or invalid handles
+///        trap.
+/// @param x Zero-based destination column.
+/// @param y Zero-based destination row.
+/// @param color Runtime color supplying source RGB channels.
+/// @param alpha Explicit source alpha, clamped to `[0, 255]`.
 void rt_pixels_blend_pixel(void *pixels, int64_t x, int64_t y, int64_t color, int64_t alpha) {
     if (!pixels) {
         rt_trap("Pixels.BlendPixel: null pixels");

@@ -8,6 +8,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the concurrent Graphics3D worker-to-main-thread commit queue.
+/// @details Producers enqueue callbacks with ownership cleanup and cost metadata; the main thread
+///   drains FIFO work under count and cost budgets, while teardown cancels payloads that never ran
+///   and atomic counters expose approximate progress.
+
 #include "rt_g3d_commit_queue.h"
 
 #include "rt_concqueue.h"
@@ -36,6 +42,7 @@ typedef struct rt_g3d_commit_queue {
 static volatile int g_rt_g3d_commit_queue_fail_allocations;
 
 /// @brief Consume one requested allocation failure without racing concurrent producers.
+/// @return 1 when this allocation attempt must fail, or 0 when normal allocation may proceed.
 static int rt_g3d_commit_queue_should_fail_allocation(void) {
     int remaining = rt_atomic_load_i32(&g_rt_g3d_commit_queue_fail_allocations, __ATOMIC_ACQUIRE);
     while (remaining > 0) {
@@ -52,6 +59,8 @@ static int rt_g3d_commit_queue_should_fail_allocation(void) {
 }
 
 /// @brief Configure deterministic allocation failure injection for unit tests.
+/// @param count Number of subsequent item-wrapper allocations to suppress; non-positive input
+///   clears failure injection.
 void rt_g3d_commit_queue_test_fail_next_allocations(int32_t count) {
     rt_atomic_store_i32(
         &g_rt_g3d_commit_queue_fail_allocations, count > 0 ? count : 0, __ATOMIC_RELEASE);
@@ -74,6 +83,7 @@ void *rt_g3d_commit_queue_new(void) {
 /// @brief Drain and free every pending item without running its callback.
 /// @details Used during teardown so worker-produced commits still in the queue are
 ///          reclaimed rather than leaked; the callbacks are intentionally skipped.
+/// @param queue Queue whose pending payloads receive their optional cancellation callbacks.
 static void rt_g3d_commit_queue_discard_pending(rt_g3d_commit_queue *queue) {
     if (!queue || !queue->items)
         return;
@@ -88,6 +98,7 @@ static void rt_g3d_commit_queue_discard_pending(rt_g3d_commit_queue *queue) {
 }
 
 /// @brief Close the queue, discard any pending commits, and free all backing memory.
+/// @param obj Queue handle to destroy; ignored when `NULL`.
 void rt_g3d_commit_queue_free(void *obj) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
     if (!queue)
@@ -106,6 +117,12 @@ void rt_g3d_commit_queue_free(void *obj) {
 /// @details If allocation fails, ownership remains with the caller and zero is returned. If the
 ///          queue is later closed before the item drains, `cancel_fn` receives `user_data` so
 ///          payload ownership can be released.
+/// @param obj Commit queue receiving the item.
+/// @param fn Non-null main-thread callback invoked with @p user_data after dequeue.
+/// @param user_data Opaque callback payload; ownership transfers only when enqueue succeeds.
+/// @param cost Estimated main-thread cost used by budgeted drains.
+/// @param cancel_fn Optional cleanup invoked for successfully queued payloads discarded at
+///   teardown.
 /// @return 1 when queued; 0 for invalid input, a closed queue, or allocation failure.
 int8_t rt_g3d_commit_queue_enqueue_cost_cancel(void *obj,
                                                rt_g3d_commit_fn fn,
@@ -135,6 +152,11 @@ int8_t rt_g3d_commit_queue_enqueue_cost_cancel(void *obj,
 }
 
 /// @brief Enqueue a commit callback tagged with a main-thread cost estimate.
+/// @param obj Commit queue receiving the item.
+/// @param fn Non-null main-thread callback.
+/// @param user_data Opaque callback payload; ownership transfers only when enqueue succeeds.
+/// @param cost Estimated main-thread cost used by budgeted drains.
+/// @return 1 when queued, or 0 when validation, closure, or allocation prevents enqueue.
 int8_t rt_g3d_commit_queue_enqueue_cost(void *obj,
                                         rt_g3d_commit_fn fn,
                                         void *user_data,
@@ -143,6 +165,10 @@ int8_t rt_g3d_commit_queue_enqueue_cost(void *obj,
 }
 
 /// @brief Enqueue a commit callback with the default unit cost (1).
+/// @param obj Commit queue receiving the item.
+/// @param fn Non-null main-thread callback.
+/// @param user_data Opaque callback payload; ownership transfers only when enqueue succeeds.
+/// @return 1 when queued, or 0 when validation, closure, or allocation prevents enqueue.
 int8_t rt_g3d_commit_queue_enqueue(void *obj, rt_g3d_commit_fn fn, void *user_data) {
     return rt_g3d_commit_queue_enqueue_cost(obj, fn, user_data, RT_G3D_COMMIT_COST_UNIT);
 }
@@ -150,6 +176,9 @@ int8_t rt_g3d_commit_queue_enqueue(void *obj, rt_g3d_commit_fn fn, void *user_da
 /// @brief Saturating unsigned add — clamps to UINT64_MAX instead of overflowing.
 /// @details Keeps the running cost budget monotonic even when per-item costs sum
 ///          past 64 bits, so the drain loop's budget comparison never wraps around.
+/// @param a First non-negative cost.
+/// @param b Second non-negative cost.
+/// @return The mathematical sum when representable, otherwise `UINT64_MAX`.
 static uint64_t rt_g3d_commit_queue_cost_add(uint64_t a, uint64_t b) {
     if (UINT64_MAX - a < b)
         return UINT64_MAX;
@@ -162,6 +191,9 @@ static uint64_t rt_g3d_commit_queue_cost_add(uint64_t a, uint64_t b) {
 ///          budget disables cost limiting. The first item always runs even if it exceeds a positive
 ///          budget (the `count > 0` guard), so an oversized asset commit cannot stall the queue
 ///          forever. Asserts it is called on the main thread.
+/// @param obj Commit queue to drain.
+/// @param max_items Maximum callbacks to run; non-positive values impose no count limit.
+/// @param max_cost Maximum cumulative cost, or `RT_G3D_COMMIT_COST_UNLIMITED` for no cost limit.
 /// @return Number of commits actually run.
 int64_t rt_g3d_commit_queue_drain_budget(void *obj, int64_t max_items, uint64_t max_cost) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
@@ -204,11 +236,16 @@ int64_t rt_g3d_commit_queue_drain_budget(void *obj, int64_t max_items, uint64_t 
 }
 
 /// @brief Drain up to @p max_items commits with no cost budget.
+/// @param obj Commit queue to drain on the main thread.
+/// @param max_items Maximum callbacks to run; non-positive values drain until empty.
+/// @return Number of callbacks run.
 int64_t rt_g3d_commit_queue_drain(void *obj, int64_t max_items) {
     return rt_g3d_commit_queue_drain_budget(obj, max_items, RT_G3D_COMMIT_COST_UNLIMITED);
 }
 
 /// @brief Approximate count of commits still waiting to run.
+/// @param obj Commit queue to query.
+/// @return A non-negative approximate queue length, or zero for an invalid queue.
 int64_t rt_g3d_commit_queue_pending(void *obj) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
     if (!queue || !queue->items)
@@ -218,6 +255,8 @@ int64_t rt_g3d_commit_queue_pending(void *obj) {
 }
 
 /// @brief Total commits ever accepted by the queue (monotonic counter).
+/// @param obj Commit queue to query.
+/// @return The non-negative submitted count, or zero for an invalid queue.
 int64_t rt_g3d_commit_queue_submitted(void *obj) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
     if (!queue)
@@ -227,6 +266,8 @@ int64_t rt_g3d_commit_queue_submitted(void *obj) {
 }
 
 /// @brief Total commits ever run by a drain call (monotonic counter).
+/// @param obj Commit queue to query.
+/// @return The non-negative drained count, or zero for an invalid queue.
 int64_t rt_g3d_commit_queue_drained(void *obj) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
     if (!queue)

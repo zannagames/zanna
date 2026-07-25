@@ -534,12 +534,24 @@ static void scrollview_paint(vg_widget_t *widget, void *canvas) {
     int32_t clip_h = (int32_t)content_area_height;
 
     if (clip_w > 0 && clip_h > 0) {
-        vgfx_set_clip(win, clip_x, clip_y, clip_w, clip_h);
+        // A ceiling scope rather than a plain clip: descendants (list boxes,
+        // nested scroll views, editors) set and clear their own clip
+        // rectangles while painting, and a plain rectangle would let
+        // everything painted after such a descendant escape the content
+        // viewport. On exhausted nesting depth fall back to the plain clip
+        // restored between direct children.
+        bool limited = vgfx_push_clip_limit(win, clip_x, clip_y, clip_w, clip_h) != 0;
+        if (!limited)
+            vgfx_set_clip(win, clip_x, clip_y, clip_w, clip_h);
         VG_FOREACH_VISIBLE_CHILD(widget, child) {
             scrollview_render_normal_subtree(child, canvas, widget->x, widget->y);
-            vgfx_set_clip(win, clip_x, clip_y, clip_w, clip_h);
+            if (!limited)
+                vgfx_set_clip(win, clip_x, clip_y, clip_w, clip_h);
         }
-        vgfx_clear_clip(win);
+        if (limited)
+            vgfx_pop_clip_limit(win);
+        else
+            vgfx_clear_clip(win);
     }
 
     // Overlay children such as dropdown panels and tooltips should escape the

@@ -31,6 +31,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_physics3d.c
+ * @brief Assembles the Physics3D world, body, contact, query, and event implementation.
+ *
+ * This translation unit defines shared validation, allocation, state-sanitizing,
+ * broadphase invalidation, fixed-step, and joint-wake helpers before including
+ * the focused detection, world, event, and body implementation fragments. The
+ * world owns registered bodies, joints, contact history, query caches, and
+ * reusable step scratch while transactional stepping preserves published state
+ * across internal failures.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_physics3d.h"
@@ -84,6 +96,7 @@ static int8_t g_ph3d_test_force_step_failure = 0;
 /// @brief Enable deterministic broadphase allocation failure for internal tests.
 /// @details The hook affects both simulation and query broadphase reserves and
 ///   is never exposed through the public runtime registry.
+/// @param enabled Nonzero to force subsequent broadphase reserve attempts to fail.
 void rt_world3d_test_set_broadphase_alloc_failure(int8_t enabled) {
     g_ph3d_test_force_broadphase_alloc_failure = enabled ? 1 : 0;
 }
@@ -91,6 +104,7 @@ void rt_world3d_test_set_broadphase_alloc_failure(int8_t enabled) {
 /// @brief Enable deterministic failure after integration for transaction tests.
 /// @details The step boundary observes this flag only after body state has
 ///   changed, ensuring tests exercise restoration rather than an early no-op.
+/// @param enabled Nonzero to request failure at the post-integration transaction checkpoint.
 void rt_world3d_test_set_step_failure(int8_t enabled) {
     g_ph3d_test_force_step_failure = enabled ? 1 : 0;
 }
@@ -122,6 +136,7 @@ void world3d_step_fail(rt_world3d *w, const char *message) {
 /// @details Active transactions defer both the world counter and global Game3D
 ///   diagnostic. Non-transactional callers retain the historical immediate
 ///   behavior. Pending count saturates instead of overflowing corrupt state.
+/// @param w World receiving immediate or transaction-deferred telemetry.
 void world3d_note_broadphase_fallback(rt_world3d *w) {
     if (!w)
         return;
@@ -139,6 +154,7 @@ void world3d_note_broadphase_fallback(rt_world3d *w) {
 /// @details Adds pending events to the persistent counter with saturation, then
 ///   mirrors each event to Game3D diagnostics. The current step performs at most
 ///   one detect pass, but the loop keeps the helper correct if that changes.
+/// @param w World whose pending transaction-local fallback count is committed.
 void world3d_commit_broadphase_fallbacks(rt_world3d *w) {
     int32_t pending;
     if (!w)
@@ -186,16 +202,22 @@ _Static_assert(offsetof(rt_body3d, inv_inertia) == offsetof(rt_body3d_kinematics
                "rt_body3d_kinematics.inv_inertia offset drift");
 
 /// @brief Validate @p obj as a World3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Candidate runtime handle.
+/// @return Borrowed World3D payload, or NULL on class mismatch.
 rt_world3d *world3d_checked(void *obj) {
     return (rt_world3d *)rt_g3d_checked_or_null(obj, RT_G3D_WORLD3D_CLASS_ID);
 }
 
 /// @brief Validate @p obj as a Body3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Candidate runtime handle.
+/// @return Borrowed Body3D payload, or NULL on class mismatch.
 static rt_body3d *body3d_checked(void *obj) {
     return (rt_body3d *)rt_g3d_checked_or_null(obj, RT_G3D_BODY3D_CLASS_ID);
 }
 
 /// @brief Return the body's Collider3D slot only when it still has the expected class.
+/// @param body Body3D payload to inspect.
+/// @return Borrowed Collider3D handle, or NULL when absent or invalid.
 static void *body3d_collider_ref(const rt_body3d *body) {
     return body ? rt_g3d_checked_or_null(body->collider, RT_G3D_COLLIDER3D_CLASS_ID) : NULL;
 }
@@ -203,6 +225,8 @@ static void *body3d_collider_ref(const rt_body3d *body) {
 /// @brief Advance a non-zero world broadphase revision, wrapping past UINT64_MAX to 1.
 /// @details Query broadphase cache validation compares this revision in O(1) instead of hashing
 ///   every body on every query. Zero is reserved as an invalid/no-cache sentinel.
+/// @param current Current revision value.
+/// @return Next nonzero revision with defined wraparound.
 static uint64_t world3d_next_broadphase_revision(uint64_t current) {
     return current == UINT64_MAX ? 1u : current + 1u;
 }
@@ -210,6 +234,7 @@ static uint64_t world3d_next_broadphase_revision(uint64_t current) {
 /// @brief Mark all world-level broadphase caches stale after a body set or body bounds change.
 /// @details Bodies still keep their own revision for debugging and future fine-grained caches, but
 ///   the world revision is the fast invalidation key used by spatial queries.
+/// @param world World whose revision and query-cache state are invalidated.
 static void world3d_bump_broadphase_revision(rt_world3d *world) {
     if (!world)
         return;
@@ -222,6 +247,7 @@ static void world3d_bump_broadphase_revision(rt_world3d *world) {
 
 /// @brief Bump a body's broadphase revision (wrapping past UINT64_MAX to 1) so cached broadphase
 ///        structures know to re-evaluate it.
+/// @param body Body whose shape, filter, membership, or bounds-affecting state changed.
 void body3d_touch_broadphase(rt_body3d *body) {
     if (!body)
         return;
@@ -238,6 +264,7 @@ void body3d_touch_broadphase(rt_body3d *body) {
 ///   and only a body escaping its fat bounds forces a full rebuild. Shape, filter, and
 ///   membership changes must keep using body3d_touch_broadphase / the explicit
 ///   invalidate so the entry set itself is refreshed.
+/// @param body Body whose pose changed without changing broadphase membership semantics.
 void body3d_touch_broadphase_moved(rt_body3d *body) {
     if (!body)
         return;
@@ -248,6 +275,7 @@ void body3d_touch_broadphase_moved(rt_body3d *body) {
 }
 
 /// @brief Invalidate the world's cached query broadphase so the next spatial query rebuilds it.
+/// @param world World whose query cache is invalidated.
 static void world3d_invalidate_query_broadphase(rt_world3d *world) {
     world3d_bump_broadphase_revision(world);
 }
@@ -255,6 +283,9 @@ static void world3d_invalidate_query_broadphase(rt_world3d *world) {
 /// @brief Verify that @p joint is a live joint of the kind named by @p joint_type.
 /// @details Used by World3D before dispatching joint solving to confirm the table
 ///   entry hasn't been swapped out from under the cached type tag.
+/// @param joint Candidate concrete joint handle.
+/// @param joint_type Expected `RT_JOINT_*` discriminator.
+/// @return One when the runtime class matches the requested discriminator, otherwise zero.
 static int joint3d_matches_type(void *joint, int64_t joint_type) {
     if (!joint)
         return 0;
@@ -274,6 +305,8 @@ static int joint3d_matches_type(void *joint, int64_t joint_type) {
 /// @brief True when @p b can drive a joint this substep: an awake dynamic body,
 ///   or a kinematic body with nonzero commanded velocity. Static anchors and
 ///   sleeping dynamics can't initiate constraint motion.
+/// @param b Body3D payload to classify.
+/// @return One for an active driver, otherwise zero.
 static int body3d_is_joint_driver(const rt_body3d *b) {
     if (!b)
         return 0;
@@ -293,6 +326,9 @@ static int body3d_is_joint_driver(const rt_body3d *b) {
 ///   Without this gate a sleeping jointed body silently discarded every
 ///   spring/hinge impulse (the integrator skips sleeping bodies) and
 ///   position-correcting joints teleported sleeping bodies without waking them.
+/// @param body_a First joint endpoint.
+/// @param body_b Second joint endpoint.
+/// @return One when either endpoint can drive the joint and the pair is awakened, otherwise zero.
 int joint3d_pair_begin_solve(rt_body3d_kinematics *body_a, rt_body3d_kinematics *body_b) {
     rt_body3d *a = (rt_body3d *)body_a;
     rt_body3d *b = (rt_body3d *)body_b;
@@ -304,6 +340,7 @@ int joint3d_pair_begin_solve(rt_body3d_kinematics *body_a, rt_body3d_kinematics 
 }
 
 /// @brief Joint-solver bridge: pose-only broadphase touch after a joint moved a body.
+/// @param body Body3D kinematic prefix whose containing payload moved.
 void joint3d_mark_body_moved(rt_body3d_kinematics *body) {
     body3d_touch_broadphase_moved((rt_body3d *)body);
 }
@@ -315,6 +352,8 @@ static int32_t world3d_joint_count_safe(const rt_world3d *w);
 ///   teleported static or kinematic anchor must re-activate sleeping partners
 ///   so the constraint re-solves against the new pose. O(joint_count), only on
 ///   user action.
+/// @param w World containing the retained joint table.
+/// @param body Body whose directly connected dynamic partners should wake.
 static void world3d_wake_joint_partners(rt_world3d *w, const rt_body3d *body) {
     if (!w || !body)
         return;
@@ -333,6 +372,8 @@ static void world3d_wake_joint_partners(rt_world3d *w, const rt_body3d *body) {
 }
 
 /// @brief Return non-zero only when every component of @p v is finite.
+/// @param v Three-component vector.
+/// @return One when @p v is non-null and finite, otherwise zero.
 int ph3d_vec3_all_finite(const double v[3]) {
     return v && isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]);
 }
@@ -365,6 +406,8 @@ static int32_t ph3d_next_capacity(int32_t current, int32_t needed, int32_t initi
 ///            3. On successful grow, zero-initialize the freshly extended tail so
 ///               unused slots are always NULL-valued and can be scanned safely.
 ///          Only the pointer array is touched; body lifetime is owned elsewhere.
+/// @param w World whose retained body-pointer table may grow.
+/// @param needed Minimum number of body slots required.
 /// @return 1 on success (including no-op), 0 on allocation failure.
 static int world3d_reserve_body_capacity(rt_world3d *w, int32_t needed) {
     if (!w || needed <= w->body_capacity)
@@ -391,6 +434,10 @@ static int world3d_reserve_body_capacity(rt_world3d *w, int32_t needed) {
 ///          four thin wrappers below exist only to pick the right `(array, capacity)`
 ///          field pair; keeping one body avoids the five-copy-paste bug-multiplication
 ///          this code used to have.
+/// @param array Address of the contact-array pointer to grow.
+/// @param capacity Address of the current allocated capacity.
+/// @param needed Minimum number of contact slots required.
+/// @return One on success, including a no-op, otherwise zero.
 static int world3d_reserve_contact_array(rt_contact3d **array, int32_t *capacity, int32_t needed) {
     if (!array || !capacity || needed <= *capacity)
         return 1;
@@ -408,6 +455,9 @@ static int world3d_reserve_contact_array(rt_contact3d **array, int32_t *capacity
 }
 
 /// @brief Grow w->contacts to hold at least @p needed entries.
+/// @param w World whose current-substep contact array may grow.
+/// @param needed Minimum number of entries required.
+/// @return One on success, including a no-op, otherwise zero.
 int world3d_reserve_contacts(rt_world3d *w, int32_t needed) {
     if (!w)
         return 0;
@@ -418,6 +468,9 @@ int world3d_reserve_contacts(rt_world3d *w, int32_t needed) {
 /// @details Frame contacts aggregate unique pairs across all CCD substeps so
 ///          very brief substep contacts still participate in the frame's
 ///          enter/stay/exit event diff.
+/// @param w World whose frame-aggregate contact array may grow.
+/// @param needed Minimum number of entries required.
+/// @return One on success, including a no-op, otherwise zero.
 int world3d_reserve_frame_contacts(rt_world3d *w, int32_t needed) {
     if (!w)
         return 0;
@@ -426,6 +479,9 @@ int world3d_reserve_frame_contacts(rt_world3d *w, int32_t needed) {
 
 /// @brief Grow w->previous_contacts to hold at least @p needed entries.
 /// @details Stores the contact set from the previous step for enter/exit event diffing.
+/// @param w World whose previous-contact array may grow.
+/// @param needed Minimum number of entries required.
+/// @return One on success, including a no-op, otherwise zero.
 static int world3d_reserve_previous_contacts(rt_world3d *w, int32_t needed) {
     return world3d_reserve_contact_array(
         &w->previous_contacts, &w->previous_contact_capacity, needed);
@@ -434,6 +490,9 @@ static int world3d_reserve_previous_contacts(rt_world3d *w, int32_t needed) {
 /// @brief Grow w->enter_events to hold at least @p needed entries.
 /// @details Enter events are emitted when a contact pair appears this step but
 ///   was absent from the previous step's contact set.
+/// @param w World whose enter-event array may grow.
+/// @param needed Minimum number of entries required.
+/// @return One on success, including a no-op, otherwise zero.
 static int world3d_reserve_enter_events(rt_world3d *w, int32_t needed) {
     return world3d_reserve_contact_array(&w->enter_events, &w->enter_event_capacity, needed);
 }
@@ -441,6 +500,9 @@ static int world3d_reserve_enter_events(rt_world3d *w, int32_t needed) {
 /// @brief Grow w->stay_events to hold at least @p needed entries.
 /// @details Stay events are emitted for contact pairs that existed both last step
 ///   and this step (continuous contact).
+/// @param w World whose stay-event array may grow.
+/// @param needed Minimum number of entries required.
+/// @return One on success, including a no-op, otherwise zero.
 static int world3d_reserve_stay_events(rt_world3d *w, int32_t needed) {
     return world3d_reserve_contact_array(&w->stay_events, &w->stay_event_capacity, needed);
 }
@@ -448,11 +510,17 @@ static int world3d_reserve_stay_events(rt_world3d *w, int32_t needed) {
 /// @brief Grow w->exit_events to hold at least @p needed entries.
 /// @details Exit events are emitted when a contact pair was present last step but
 ///   is absent this step (separation).
+/// @param w World whose exit-event array may grow.
+/// @param needed Minimum number of entries required.
+/// @return One on success, including a no-op, otherwise zero.
 static int world3d_reserve_exit_events(rt_world3d *w, int32_t needed) {
     return world3d_reserve_contact_array(&w->exit_events, &w->exit_event_capacity, needed);
 }
 
 /// @brief Increment `value` into `*out`, returning 0 (no write) on INT32_MAX overflow or NULL out.
+/// @param value Current non-negative count.
+/// @param out Receives the incremented count on success.
+/// @return One when incremented without overflow, otherwise zero.
 int world3d_checked_increment(int32_t value, int32_t *out) {
     if (!out || value == INT32_MAX)
         return 0;
@@ -465,6 +533,9 @@ int world3d_checked_increment(int32_t value, int32_t *out) {
 /// @details The two new arrays are allocated before the world is mutated. On failure,
 ///          the old arrays and `joint_capacity` remain unchanged. Both tails are
 ///          zero-initialized on success so unused slots always read as NULL / 0 joint_type.
+/// @param w World whose parallel joint tables may grow.
+/// @param needed Minimum number of joint slots required.
+/// @return One on success, including a no-op, otherwise zero.
 static int world3d_reserve_joint_capacity(rt_world3d *w, int32_t needed) {
     if (!w || needed <= w->joint_capacity)
         return 1;
@@ -494,6 +565,9 @@ static int world3d_reserve_joint_capacity(rt_world3d *w, int32_t needed) {
 ///        so the initial floor tracks `PH3D_INITIAL_BODIES`. Unlike the body-pointer
 ///        array, entries are treated as pure scratch — the tail is NOT zero-initialized
 ///        because the broadphase rebuild always writes every entry before reading it.
+/// @param w World whose simulation broadphase table may grow.
+/// @param needed Minimum number of entries required.
+/// @return One on success, including a no-op, otherwise zero.
 int world3d_reserve_broadphase_capacity(rt_world3d *w, int32_t needed) {
     if (!w)
         return 1;
@@ -518,6 +592,9 @@ int world3d_reserve_broadphase_capacity(rt_world3d *w, int32_t needed) {
 ///   the solver refills and re-sorts its entries on the widest-spread axis every Step,
 ///   which would silently clobber a still-valid query cache sorted by min-X. Entries are
 ///   pure scratch (every rebuild writes each entry before reading it).
+/// @param w World whose query broadphase table may grow.
+/// @param needed Minimum number of entries required.
+/// @return One on success, including a no-op, otherwise zero.
 int world3d_reserve_query_broadphase_capacity(rt_world3d *w, int32_t needed) {
     if (!w)
         return 1;
@@ -542,6 +619,9 @@ int world3d_reserve_query_broadphase_capacity(rt_world3d *w, int32_t needed) {
 /// @details The buffer is pure scratch; callers write every element before reading it. Keeping it
 ///   on the world avoids per-step temporary allocation and lets the query broadphase share the
 ///   same storage.
+/// @param w World whose reusable sort buffer may grow.
+/// @param needed Minimum number of entries required.
+/// @return One on success, including a no-op, otherwise zero.
 int world3d_reserve_broadphase_sort_scratch(rt_world3d *w, int32_t needed) {
     if (!w)
         return 1;
@@ -567,6 +647,10 @@ int world3d_reserve_broadphase_sort_scratch(rt_world3d *w, int32_t needed) {
 ///   removes all per-substep malloc/free churn. Contents are scratch: callers
 ///   must not rely on values surviving between acquires. @p zeroed gives
 ///   calloc semantics for the first @p bytes.
+/// @param w World owning the persistent scratch slots.
+/// @param slot Zero-based scratch-slot index.
+/// @param bytes Minimum requested byte size.
+/// @param zeroed Nonzero to clear the requested prefix before returning.
 /// @return Slot buffer, or NULL on invalid args / allocation failure.
 void *world3d_step_scratch_acquire(rt_world3d *w, int32_t slot, size_t bytes, int zeroed) {
     if (!w || slot < 0 || slot >= PH3D_WORLD_SCRATCH_SLOTS || bytes == 0)
@@ -592,6 +676,7 @@ void *world3d_step_scratch_acquire(rt_world3d *w, int32_t slot, size_t bytes, in
 }
 
 /// @brief Release every step-scratch slot (world teardown / reset only).
+/// @param w World whose scratch allocations are freed and reset.
 void world3d_step_scratch_free_all(rt_world3d *w) {
     if (!w)
         return;
@@ -605,6 +690,9 @@ void world3d_step_scratch_free_all(rt_world3d *w) {
 /// @brief Clamp @p value to [0, +∞), substituting @p fallback for non-finite inputs.
 /// @details Used to sanitize body properties such as mass, restitution, and damping
 ///   on creation so internal state never contains NaN or negative physical quantities.
+/// @param value Candidate physical parameter.
+/// @param fallback Replacement for a non-finite candidate.
+/// @return Finite value clamped to `[0, PH3D_PARAM_ABS_MAX]`, or @p fallback.
 double ph3d_clamp_nonnegative_finite(double value, double fallback) {
     if (!isfinite(value))
         return fallback;
@@ -616,11 +704,16 @@ double ph3d_clamp_nonnegative_finite(double value, double fallback) {
 /// @brief Return @p value if it is finite, otherwise return @p fallback.
 /// @details Thin guard used wherever scalar inputs (gravity components, position offsets)
 ///   must be well-defined doubles before being stored in body or world state.
+/// @param value Candidate scalar.
+/// @param fallback Replacement for a non-finite candidate.
+/// @return @p value when finite, otherwise @p fallback.
 double ph3d_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Clamp user-facing solver iterations to the runtime-supported range.
+/// @param value Requested iteration count.
+/// @return Count in the inclusive range one through `PH3D_MAX_SOLVER_ITERATIONS`.
 static int32_t ph3d_clamp_solver_iterations(int64_t value) {
     if (value < 1)
         return 1;
@@ -630,6 +723,9 @@ static int32_t ph3d_clamp_solver_iterations(int64_t value) {
 }
 
 /// @brief Clamp a public [0, 1] solver tuning scalar, replacing non-finite input.
+/// @param value Candidate tuning scalar.
+/// @param fallback Replacement used when @p value is non-finite.
+/// @return Finite scalar in the inclusive range zero to one.
 static double ph3d_clamp_unit_finite(double value, double fallback) {
     if (!isfinite(value))
         value = fallback;
@@ -641,6 +737,8 @@ static double ph3d_clamp_unit_finite(double value, double fallback) {
 }
 
 /// @brief Sanitize a fixed-step size: invalid inputs fall back to the 60 Hz default.
+/// @param dt Candidate fixed-step duration in seconds.
+/// @return Positive duration capped at `PH3D_STEP_DT_MAX`.
 static double ph3d_sanitize_fixed_dt(double dt) {
     if (!isfinite(dt) || dt <= 0.0)
         return 1.0 / 60.0;
@@ -648,6 +746,8 @@ static double ph3d_sanitize_fixed_dt(double dt) {
 }
 
 /// @brief Clamp max fixed steps to the non-negative int32 range used by the loop.
+/// @param max_steps Requested maximum substep count.
+/// @return Count in the range zero through `INT32_MAX`.
 static int32_t ph3d_clamp_fixed_step_limit(int64_t max_steps) {
     if (max_steps <= 0)
         return 0;
@@ -657,6 +757,8 @@ static int32_t ph3d_clamp_fixed_step_limit(int64_t max_steps) {
 }
 
 /// @brief Add dropped fixed steps using saturating i64 arithmetic.
+/// @param w World whose cumulative counter is updated.
+/// @param dropped Positive number of discarded substeps.
 static void ph3d_add_dropped_fixed_steps(rt_world3d *w, int64_t dropped) {
     if (!w || dropped <= 0)
         return;
@@ -667,6 +769,8 @@ static void ph3d_add_dropped_fixed_steps(rt_world3d *w, int64_t dropped) {
 }
 
 /// @brief Publish the fixed-step interpolation alpha from accumulator/fixed_dt.
+/// @param w World whose interpolation fraction is updated.
+/// @param fixed_dt Positive fixed-step duration.
 static void ph3d_update_fixed_step_alpha(rt_world3d *w, double fixed_dt) {
     if (!w || !isfinite(fixed_dt) || fixed_dt <= 0.0) {
         if (w)
@@ -683,6 +787,8 @@ static void ph3d_update_fixed_step_alpha(rt_world3d *w, double fixed_dt) {
 /// @brief Clamp a physics state scalar to ±PH3D_STATE_ABS_MAX, mapping NaN/inf to 0.
 /// @details Keeps positions/velocities from blowing up to non-finite values that would poison the
 ///          whole simulation; the bound is large enough not to affect well-behaved bodies.
+/// @param value Candidate state scalar.
+/// @return Finite signed value within the state envelope.
 static double ph3d_saturate_state_value(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -696,6 +802,10 @@ static double ph3d_saturate_state_value(double value) {
 /// @brief Write a sanitized 3D vector to @p dst, replacing each NaN/Inf component with 0.
 /// @details Used when accepting Vec3 arguments from Zia to populate force, velocity, and
 ///   position arrays — ensures that a single bad component cannot contaminate the solver.
+/// @param dst Three-component destination.
+/// @param x Candidate X component.
+/// @param y Candidate Y component.
+/// @param z Candidate Z component.
 static void ph3d_vec3_set_finite(double *dst, double x, double y, double z) {
     dst[0] = ph3d_saturate_state_value(x);
     dst[1] = ph3d_saturate_state_value(y);
@@ -703,6 +813,8 @@ static void ph3d_vec3_set_finite(double *dst, double x, double y, double z) {
 }
 
 /// @brief Clamp an extent-like quantity to a finite, non-negative runtime bound.
+/// @param value Candidate signed extent.
+/// @return Absolute finite extent capped at `PH3D_PARAM_ABS_MAX`.
 static double ph3d_sanitize_extent_value(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -713,6 +825,8 @@ static double ph3d_sanitize_extent_value(double value) {
 }
 
 /// @brief Clamp a transform scale component while preserving sign and rejecting collapsed axes.
+/// @param value Candidate scale component.
+/// @return Finite nonzero scale bounded by `PH3D_PARAM_ABS_MAX`.
 static double ph3d_sanitize_scale_value(double value) {
     if (!isfinite(value) || fabs(value) <= 1e-12)
         return 1.0;
@@ -724,6 +838,8 @@ static double ph3d_sanitize_scale_value(double value) {
 }
 
 /// @brief Clamp a public Step duration to a stable, finite frame-sized delta.
+/// @param dt Candidate frame duration in seconds.
+/// @return Duration in `[0, PH3D_STEP_DT_MAX]`.
 static double ph3d_sanitize_step_dt(double dt) {
     if (!isfinite(dt) || dt <= 0.0)
         return 0.0;
@@ -731,6 +847,7 @@ static double ph3d_sanitize_step_dt(double dt) {
 }
 
 /// @brief Saturate each component of a state vector in place (see ph3d_saturate_state_value).
+/// @param v Three-component state vector; a null pointer is ignored.
 void ph3d_vec3_sanitize_state(double *v) {
     if (!v)
         return;
@@ -740,6 +857,8 @@ void ph3d_vec3_sanitize_state(double *v) {
 }
 
 /// @brief Copy and saturate a physics state vector.
+/// @param dst Three-component destination.
+/// @param src Optional source; NULL produces the origin.
 static void ph3d_vec3_copy_state(double *dst, const double *src) {
     if (!dst)
         return;
@@ -754,6 +873,10 @@ static void ph3d_vec3_copy_state(double *dst, const double *src) {
 
 /// @brief Add (x, y, z) into @p dst, sanitizing the addends and saturating the result per
 /// component.
+/// @param dst Three-component state accumulator.
+/// @param x X increment.
+/// @param y Y increment.
+/// @param z Z increment.
 static void ph3d_vec3_accumulate_state(double *dst, double x, double y, double z) {
     if (!dst)
         return;
@@ -763,33 +886,49 @@ static void ph3d_vec3_accumulate_state(double *dst, double x, double y, double z
 }
 
 /// @brief Validate @p obj as a PhysicsHit3D handle (NULL on mismatch).
+/// @param obj Candidate runtime handle.
+/// @return Borrowed PhysicsHit3D payload, or NULL on class mismatch.
 static rt_physics_hit3d_obj *physics_hit3d_checked(void *obj) {
     return (rt_physics_hit3d_obj *)rt_g3d_checked_or_null(obj, RT_G3D_PHYSICSHIT3D_CLASS_ID);
 }
 
 /// @brief Validate @p obj as a PhysicsHitList3D handle (NULL on mismatch).
+/// @param obj Candidate runtime handle.
+/// @return Borrowed PhysicsHitList3D payload, or NULL on class mismatch.
 static rt_physics_hit_list3d_obj *physics_hit_list3d_checked(void *obj) {
     return (rt_physics_hit_list3d_obj *)rt_g3d_checked_or_null(obj,
                                                                RT_G3D_PHYSICSHITLIST3D_CLASS_ID);
 }
 
 /// @brief Validate @p obj as a CollisionEvent3D handle (NULL on mismatch).
+/// @param obj Candidate runtime handle.
+/// @return Borrowed CollisionEvent3D payload, or NULL on class mismatch.
 static rt_collision_event3d_obj *collision_event3d_checked(void *obj) {
     return (rt_collision_event3d_obj *)rt_g3d_checked_or_null(obj,
                                                               RT_G3D_COLLISIONEVENT3D_CLASS_ID);
 }
 
 /// @brief Validate @p obj as a ContactPoint3D handle (NULL on mismatch).
+/// @param obj Candidate runtime handle.
+/// @return Borrowed ContactPoint3D payload, or NULL on class mismatch.
 static rt_contact_point3d_obj *contact_point3d_checked(void *obj) {
     return (rt_contact_point3d_obj *)rt_g3d_checked_or_null(obj, RT_G3D_CONTACTPOINT3D_CLASS_ID);
 }
 
+/// @brief Clamp a logical array count to readable allocated storage.
+/// @param array Backing allocation whose presence is required.
+/// @param count Logical number of live entries.
+/// @param capacity Allocated entry capacity.
+/// @return Zero for invalid storage, otherwise the lesser of count and capacity.
 static int32_t ph3d_clamped_array_count(const void *array, int32_t count, int32_t capacity) {
     if (!array || count <= 0 || capacity <= 0)
         return 0;
     return count < capacity ? count : capacity;
 }
 
+/// @brief Count the valid contiguous Body3D prefix of a world's retained body table.
+/// @param w World to inspect.
+/// @return Safely bounded number of class-valid body entries.
 static int32_t world3d_body_count_safe(const rt_world3d *w) {
     int32_t limit = w ? ph3d_clamped_array_count(w->bodies, w->body_count, w->body_capacity) : 0;
     int32_t count = 0;
@@ -801,6 +940,9 @@ static int32_t world3d_body_count_safe(const rt_world3d *w) {
     return count;
 }
 
+/// @brief Count the valid contiguous joint/type prefix of a world's joint tables.
+/// @param w World to inspect.
+/// @return Safely bounded number of class-valid joint entries.
 static int32_t world3d_joint_count_safe(const rt_world3d *w) {
     if (!w || !w->joint_types)
         return 0;
@@ -814,6 +956,11 @@ static int32_t world3d_joint_count_safe(const rt_world3d *w) {
     return count;
 }
 
+/// @brief Count the valid contiguous contact prefix with two class-valid bodies per entry.
+/// @param contacts Contact array to inspect.
+/// @param count Logical entry count.
+/// @param capacity Allocated entry capacity.
+/// @return Safely bounded number of valid contacts.
 static int32_t world3d_contact_count_safe(const rt_contact3d *contacts,
                                           int32_t count,
                                           int32_t capacity) {
@@ -827,6 +974,9 @@ static int32_t world3d_contact_count_safe(const rt_contact3d *contacts,
     return valid;
 }
 
+/// @brief Clamp a collision event's contact count to its inline manifold capacity.
+/// @param event Collision event to inspect.
+/// @return Number of readable inline contact points.
 static int32_t collision_event3d_contact_count_safe(const rt_collision_event3d_obj *event) {
     if (!event || event->contact_count <= 0)
         return 0;
@@ -834,6 +984,9 @@ static int32_t collision_event3d_contact_count_safe(const rt_collision_event3d_o
                                                            : PH3D_MAX_MANIFOLD_POINTS;
 }
 
+/// @brief Clamp a hit list's logical count to all allocation and policy bounds.
+/// @param list PhysicsHitList3D payload to inspect.
+/// @return Number of safely readable hit entries.
 static int64_t physics_hit_list3d_count_safe(const rt_physics_hit_list3d_obj *list) {
     if (!list || !list->items || list->count <= 0 || list->capacity <= 0 ||
         list->allocated_count <= 0)
@@ -844,10 +997,16 @@ static int64_t physics_hit_list3d_count_safe(const rt_physics_hit_list3d_obj *li
     return list->count < cap ? list->count : cap;
 }
 
+/// @brief Validate and borrow a Body3D reference for boxed result ownership.
+/// @param body Candidate Body3D handle.
+/// @return Borrowed Body3D payload, or NULL on class mismatch.
 static rt_body3d *ph3d_body_ref_or_null(void *body) {
     return body3d_checked(body);
 }
 
+/// @brief Validate and borrow a Collider3D reference for boxed result ownership.
+/// @param collider Candidate Collider3D handle.
+/// @return Borrowed Collider3D handle, or NULL on class mismatch.
 static void *ph3d_collider_ref_or_null(void *collider) {
     return rt_g3d_checked_or_null(collider, RT_G3D_COLLIDER3D_CLASS_ID);
 }
@@ -899,6 +1058,8 @@ int test_collision_manifold(const rt_body3d *a,
                             rt_contact3d *manifold_acc);
 
 /// @brief Sanitize and order a broadphase AABB after a raw collider/body bounds calculation.
+/// @param mn In/out three-component minimum corner.
+/// @param mx In/out three-component maximum corner.
 static void ph3d_sanitize_aabb(double *mn, double *mx) {
     if (!mn || !mx)
         return;
@@ -921,6 +1082,8 @@ static void ph3d_sanitize_aabb(double *mn, double *mx) {
 /// collider before they participate in collision. The cached-shape fallback
 /// keeps legacy/internal primitive bodies usable if their collider pointer is
 /// absent but their primitive dimensions are still populated.
+/// @param body Body3D payload to inspect.
+/// @return One when a valid collider or non-empty cached primitive is present, otherwise zero.
 int body3d_has_collision_geometry(const rt_body3d *body) {
     if (!body)
         return 0;

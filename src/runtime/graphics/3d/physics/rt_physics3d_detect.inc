@@ -3,6 +3,16 @@
 // File: src/runtime/graphics/3d/physics/rt_physics3d_detect.inc  (#included from rt_physics3d.c;
 // not a standalone translation unit) Purpose: Physics3D collision-detection helpers
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_physics3d_detect.inc
+ * @brief Implements shared Physics3D math, pose, body-state, hit, and event helpers.
+ *
+ * This fragment provides finite-safe vector/quaternion transforms, collider
+ * pose composition, body bounds and inertia caches, contact impulse math,
+ * boxed query/event ownership, and transactional collision-event diffing.
+ */
+
 /*==========================================================================
  * Collision detection helpers
  *=========================================================================*/
@@ -13,6 +23,9 @@
 /// compute the bounds in the body's pose. Otherwise falls back to the
 /// cached primitive shape (AABB / sphere / capsule). This is the broad-
 /// phase primitive used by every collision query.
+/// @param b Body3D whose collision geometry is bounded.
+/// @param mn Three-component output receiving the world minimum corner.
+/// @param mx Three-component output receiving the world maximum corner.
 void body_aabb(const rt_body3d *b, double *mn, double *mx) {
     if (!mn || !mx)
         return;
@@ -63,6 +76,10 @@ void body_aabb(const rt_body3d *b, double *mn, double *mx) {
 // treated as plain xyz triples (no SIMD layout constraints).
 
 /// @brief Clamp `v` into `[lo, hi]`.
+/// @param v Value to clamp.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @return @p v limited to the requested interval.
 double clampd(double v, double lo, double hi) {
     if (v < lo)
         return lo;
@@ -72,21 +89,30 @@ double clampd(double v, double lo, double hi) {
 }
 
 /// @brief 3D dot product `a · b`.
+/// @param a First three-component vector.
+/// @param b Second three-component vector.
+/// @return Scalar dot product.
 double vec3_dot(const double *a, const double *b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
 /// @brief Squared length `|v|²` — avoids the sqrt when the magnitude isn't needed.
+/// @param v Three-component vector.
+/// @return Sum of squared components.
 double vec3_len_sq(const double *v) {
     return vec3_dot(v, v);
 }
 
 /// @brief Euclidean length `|v|`.
+/// @param v Three-component vector.
+/// @return Euclidean vector magnitude.
 double vec3_len(const double *v) {
     return sqrt(vec3_len_sq(v));
 }
 
 /// @brief Copy `src` xyz into `dst`.
+/// @param dst Three-component destination.
+/// @param src Three-component source.
 void vec3_copy(double *dst, const double *src) {
     dst[0] = src[0];
     dst[1] = src[1];
@@ -94,6 +120,10 @@ void vec3_copy(double *dst, const double *src) {
 }
 
 /// @brief Set `dst` to `(x, y, z)`.
+/// @param dst Three-component destination.
+/// @param x X component.
+/// @param y Y component.
+/// @param z Z component.
 void vec3_set(double *dst, double x, double y, double z) {
     dst[0] = x;
     dst[1] = y;
@@ -101,6 +131,8 @@ void vec3_set(double *dst, double x, double y, double z) {
 }
 
 /// @brief In-place scalar multiply: `dst *= s`.
+/// @param dst Three-component vector to scale.
+/// @param s Scalar multiplier.
 void vec3_scale_in_place(double *dst, double s) {
     dst[0] *= s;
     dst[1] *= s;
@@ -108,6 +140,9 @@ void vec3_scale_in_place(double *dst, double s) {
 }
 
 /// @brief Component subtract: `out = a - b`.
+/// @param a First three-component vector.
+/// @param b Second three-component vector.
+/// @param out Three-component difference output.
 void vec3_sub(const double *a, const double *b, double *out) {
     out[0] = a[0] - b[0];
     out[1] = a[1] - b[1];
@@ -115,6 +150,9 @@ void vec3_sub(const double *a, const double *b, double *out) {
 }
 
 /// @brief Component add: `out = a + b`.
+/// @param a First three-component vector.
+/// @param b Second three-component vector.
+/// @param out Three-component sum output.
 static void vec3_add(const double *a, const double *b, double *out) {
     out[0] = a[0] + b[0];
     out[1] = a[1] + b[1];
@@ -122,6 +160,9 @@ static void vec3_add(const double *a, const double *b, double *out) {
 }
 
 /// @brief Cross product: `out = a x b`.
+/// @param a First three-component vector.
+/// @param b Second three-component vector.
+/// @param out Three-component cross-product output.
 void vec3_cross(const double *a, const double *b, double *out) {
     out[0] = a[1] * b[2] - a[2] * b[1];
     out[1] = a[2] * b[0] - a[0] * b[2];
@@ -129,6 +170,8 @@ void vec3_cross(const double *a, const double *b, double *out) {
 }
 
 /// @brief Negate: `dst = -src`.
+/// @param src Three-component source vector.
+/// @param dst Three-component negated output.
 void vec3_negate(const double *src, double *dst) {
     dst[0] = -src[0];
     dst[1] = -src[1];
@@ -136,6 +179,8 @@ void vec3_negate(const double *src, double *dst) {
 }
 
 /// @brief Normalize `v` in place. Returns the original length (0 → no-op).
+/// @param v Three-component vector to normalize.
+/// @return Original vector magnitude.
 double vec3_normalize_in_place(double *v) {
     double len = vec3_len(v);
     if (len > 1e-12) {
@@ -147,6 +192,8 @@ double vec3_normalize_in_place(double *v) {
 }
 
 /// @brief Copy a vector and normalize it, falling back to +Y for invalid normals.
+/// @param dst Three-component normalized output.
+/// @param src Three-component source normal.
 static void ph3d_vec3_copy_normal_or_up(double *dst, const double *src) {
     ph3d_vec3_copy_state(dst, src);
     if (vec3_normalize_in_place(dst) <= 1e-12)
@@ -154,11 +201,15 @@ static void ph3d_vec3_copy_normal_or_up(double *dst, const double *src) {
 }
 
 /// @brief Sanitize a signed scalar stored in contact/query objects.
+/// @param value Scalar runtime state to sanitize.
+/// @return Finite value saturated to the supported state range.
 static double ph3d_sanitize_contact_scalar(double value) {
     return ph3d_saturate_state_value(value);
 }
 
 /// @brief Clamp a query fraction to [0, 1], treating NaN/Inf as 0.
+/// @param value Parametric fraction to sanitize.
+/// @return Finite fraction in the inclusive range zero to one.
 static double ph3d_sanitize_fraction_value(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -174,6 +225,7 @@ static double ph3d_sanitize_fraction_value(double value) {
 // integration step.
 
 /// @brief Set `q` to the identity quaternion (no rotation).
+/// @param q Four-component XYZW quaternion output.
 void quat_identity(double *q) {
     q[0] = 0.0;
     q[1] = 0.0;
@@ -182,6 +234,8 @@ void quat_identity(double *q) {
 }
 
 /// @brief Squared norm `|q|²`.
+/// @param q Four-component XYZW quaternion.
+/// @return Sum of squared quaternion components.
 static double quat_len_sq(const double *q) {
     return q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
 }
@@ -190,6 +244,7 @@ static double quat_len_sq(const double *q) {
 ///
 /// Important for stability: numerical drift over many integration steps
 /// gradually denormalizes orientations, which causes geometry to skew.
+/// @param q Four-component XYZW quaternion normalized in place.
 void quat_normalize(double *q) {
     if (!isfinite(q[0]) || !isfinite(q[1]) || !isfinite(q[2]) || !isfinite(q[3])) {
         quat_identity(q);
@@ -212,6 +267,9 @@ void quat_normalize(double *q) {
 /// Convention: applying `a*b` to a vector first applies `b` then `a`,
 /// matching the "right-multiply pre-rotation" convention used in
 /// `quat_integrate`.
+/// @param a Left XYZW quaternion factor.
+/// @param b Right XYZW quaternion factor.
+/// @param out Four-component Hamilton-product output.
 static void quat_mul(const double *a, const double *b, double *out) {
     out[0] = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
     out[1] = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
@@ -223,6 +281,9 @@ static void quat_mul(const double *a, const double *b, double *out) {
 ///
 /// Standard formula: `q = (sin(θ/2) * axis_unit, cos(θ/2))`. Returns
 /// the identity for zero-length axis or zero angle.
+/// @param axis Three-component rotation axis.
+/// @param angle Rotation angle in radians.
+/// @param out Four-component unit XYZW quaternion output.
 static void quat_from_axis_angle(const double *axis, double angle, double *out) {
     double axis_len = vec3_len(axis);
     if (!isfinite(axis_len) || !isfinite(angle) || axis_len < 1e-12 || fabs(angle) < 1e-12) {
@@ -243,6 +304,9 @@ static void quat_from_axis_angle(const double *axis, double angle, double *out) 
 /// Uses the discrete update `q ← Δq * q` where `Δq` is built from
 /// `(angular_velocity / |ω|, |ω| * dt)`. Re-normalizes after each step
 /// to prevent drift. Skipped when angular velocity or `dt` is zero.
+/// @param orientation Four-component XYZW orientation updated in place.
+/// @param angular_velocity Three-component world angular velocity in radians per second.
+/// @param dt Positive elapsed time in seconds.
 void quat_integrate(double *orientation, const double *angular_velocity, double dt) {
     double speed = vec3_len(angular_velocity);
     if (!isfinite(speed) || !isfinite(dt) || speed < 1e-12 || dt <= 0.0)
@@ -260,6 +324,8 @@ void quat_integrate(double *orientation, const double *angular_velocity, double 
 }
 
 /// @brief Conjugate `out = q*` — for unit quaternions equivalent to the inverse.
+/// @param q Four-component XYZW source quaternion.
+/// @param out Four-component conjugate output.
 void quat_conjugate(const double *q, double *out) {
     out[0] = -q[0];
     out[1] = -q[1];
@@ -272,6 +338,9 @@ void quat_conjugate(const double *q, double *out) {
 /// The classic sandwich formula. Allocates two temporaries on the stack.
 /// For hot inner loops we'd inline a more efficient form, but this is
 /// only called once per pose composition so the cost is irrelevant.
+/// @param q Four-component XYZW rotation quaternion.
+/// @param v Three-component vector to rotate.
+/// @param out Three-component rotated output.
 void quat_rotate_vec3(const double *q, const double *v, double *out) {
     double safe_q[4];
     double qv[4];
@@ -306,6 +375,7 @@ void quat_rotate_vec3(const double *q, const double *v, double *out) {
 // points into world space.
 
 /// @brief Reset a pose to identity (origin, no rotation, unit scale).
+/// @param pose Collider pose to initialize.
 void collider_pose_identity(rt_collider_pose *pose) {
     if (!pose)
         return;
@@ -318,6 +388,8 @@ void collider_pose_identity(rt_collider_pose *pose) {
 ///
 /// Per-body scale is multiplied with any per-collider child scale during
 /// composition (`collider_pose_compose`).
+/// @param body Body3D whose sanitized transform is copied.
+/// @param pose Output receiving the collider world pose.
 void collider_pose_from_body(const rt_body3d *body, rt_collider_pose *pose) {
     collider_pose_identity(pose);
     if (!body || !pose)
@@ -339,6 +411,11 @@ void collider_pose_from_body(const rt_body3d *body, rt_collider_pose *pose) {
 /// scales component-wise, then rotates the child position by the parent
 /// rotation before adding it to the parent position. Child rotation is
 /// pre-multiplied into the parent rotation, then re-normalized.
+/// @param parent Parent world pose.
+/// @param child_position Three-component child-local translation.
+/// @param child_rotation Four-component child-local XYZW rotation.
+/// @param child_scale Three-component child-local scale.
+/// @param out Output receiving the composed world pose.
 void collider_pose_compose(const rt_collider_pose *parent,
                            const double *child_position,
                            const double *child_rotation,
@@ -393,6 +470,9 @@ void collider_pose_compose(const rt_collider_pose *parent,
 ///
 /// Applies scale → rotation → translation. Used to lift collision
 /// query points (e.g., raycast hits) back into world coordinates.
+/// @param pose World pose defining the transform.
+/// @param local_point Three-component local-space point.
+/// @param world_point Three-component world-space output.
 void transform_point_from_pose(const rt_collider_pose *pose,
                                const double *local_point,
                                double *world_point) {
@@ -417,6 +497,9 @@ void transform_point_from_pose(const rt_collider_pose *pose,
 /// Applies translation → conjugate rotation → inverse scale. Skips
 /// the divide-by-scale step on near-zero axes to avoid divide-by-zero
 /// when a body has been collapsed along an axis.
+/// @param pose World pose defining the inverse transform.
+/// @param world_point Three-component world-space point.
+/// @param local_point Three-component local-space output.
 void transform_point_to_local(const rt_collider_pose *pose,
                               const double *world_point,
                               double *local_point) {
@@ -447,6 +530,8 @@ void transform_point_to_local(const rt_collider_pose *pose,
 }
 
 /// @brief Absolute scale factor sanitized for division: non-finite or near-zero → 1.0.
+/// @param value Scale component to sanitize.
+/// @return Positive finite absolute scale suitable for division.
 double pose_abs_scale_or_unit(double value) {
     value = fabs(value);
     if (!isfinite(value) || value <= 1e-12)
@@ -455,6 +540,8 @@ double pose_abs_scale_or_unit(double value) {
 }
 
 /// @brief Absolute scale factor with non-finite mapped to 1.0 (zero is preserved).
+/// @param value Scale component to sanitize.
+/// @return Finite bounded absolute scale, preserving zero.
 double pose_abs_scale_or_zero(double value) {
     value = fabs(value);
     if (!isfinite(value))
@@ -464,6 +551,9 @@ double pose_abs_scale_or_zero(double value) {
 
 /// @brief Transform a world-space vector into pose-local space.
 /// @details Translation is ignored; inverse rotation and inverse scale are applied.
+/// @param pose World pose defining the inverse vector transform.
+/// @param world_vec Three-component world-space vector.
+/// @param local_vec Three-component local-space output.
 void transform_vector_to_local(const rt_collider_pose *pose,
                                const double *world_vec,
                                double *local_vec) {
@@ -490,6 +580,9 @@ void transform_vector_to_local(const rt_collider_pose *pose,
 }
 
 /// @brief Transform a local-space normal into world space via inverse-transpose scale.
+/// @param pose World pose defining the normal transform.
+/// @param local_normal Three-component local unit normal.
+/// @param world_normal Three-component normalized world output.
 void transform_normal_from_local(const rt_collider_pose *pose,
                                  const double *local_normal,
                                  double *world_normal) {
@@ -513,6 +606,9 @@ void transform_normal_from_local(const rt_collider_pose *pose,
 ///   sample spheres always overlap and a thin obstacle between samples cannot
 ///   slip through untested. The count is hard-capped at 2048 for degenerate
 ///   content (a capsule longer than ~4096 radii).
+/// @param axis_len Non-negative capsule central-axis length.
+/// @param radius Capsule radius controlling sample spacing.
+/// @return Bounded number of sample centers.
 int capsule_axis_sample_count(double axis_len, double radius) {
     double spacing;
     int samples;
@@ -543,6 +639,7 @@ int capsule_axis_sample_count(double axis_len, double radius) {
 }
 
 /// @brief Repair cached primitive shape fields after collider geometry or body scale changes.
+/// @param body Body3D whose denormalized shape cache is sanitized.
 static void body3d_sanitize_shape_cache(rt_body3d *body) {
     if (!body)
         return;
@@ -562,6 +659,8 @@ static void body3d_sanitize_shape_cache(rt_body3d *body) {
 }
 
 /// @brief Convert an inertia term to a bounded inverse-inertia component.
+/// @param inertia Principal-axis inertia term.
+/// @return Finite non-negative reciprocal, or zero for immovable/invalid input.
 static double body3d_inverse_inertia_from(double inertia) {
     if (!isfinite(inertia) || inertia <= 1e-12)
         return 0.0;
@@ -575,6 +674,7 @@ static double body3d_inverse_inertia_from(double inertia) {
 /// on every comparison. This needs to be re-run whenever the collider's
 /// shape parameters change. Falls back to an AABB derived from the
 /// collider's local bounds for any non-primitive shape (mesh, hull, etc.).
+/// @param body Body3D whose collider-derived cache is rebuilt.
 void body3d_update_shape_cache_from_collider(rt_body3d *body) {
     double local_min[3];
     double local_max[3];
@@ -651,6 +751,7 @@ void body3d_update_shape_cache_from_collider(rt_body3d *body) {
 ///              `I_yy = m r²/2`.
 /// Static and kinematic bodies get zero inverse-inertia (they don't
 /// rotate from impulses).
+/// @param b Body3D whose local principal inverse inertia is recomputed.
 static void body3d_compute_inv_inertia(rt_body3d *b) {
     if (!b)
         return;
@@ -712,6 +813,7 @@ static void body3d_compute_inv_inertia(rt_body3d *b) {
 /// (zero for static/kinematic), wipes inverse inertia for non-dynamic
 /// bodies, and clears the sleep timer so a mode change doesn't leave a
 /// previously-sleeping body inert in the wrong mode.
+/// @param b Body3D whose derived motion fields are synchronized.
 static void body3d_refresh_motion_mode(rt_body3d *b) {
     if (!b)
         return;
@@ -741,6 +843,11 @@ static void body3d_refresh_motion_mode(rt_body3d *b) {
 /// DYNAMIC bodies remain rejected because dynamic-vs-mesh response is
 /// numerically unstable. Traps with `api_name` as the trap message when an
 /// invalid combination is requested. Returns 1 when the mode is allowed.
+/// @param body Body3D requesting the mode; reserved for future body-specific policy.
+/// @param collider Collider3D to validate, or NULL.
+/// @param desired_mode Requested `PH3D_MODE_*` discriminator.
+/// @param api_name Trap message used for an incompatible dynamic collider.
+/// @return One when the requested mode is permitted, otherwise zero.
 static int body3d_motion_mode_allowed(const rt_body3d *body,
                                       void *collider,
                                       int32_t desired_mode,
@@ -761,6 +868,7 @@ static int body3d_motion_mode_allowed(const rt_body3d *body,
 /// Called whenever something happens that should re-enter the sim:
 /// applied force/torque, teleport, manual velocity change, or contact
 /// from a non-sleeping neighbour.
+/// @param b Body3D to wake when it is dynamic.
 void body3d_wake_if_dynamic(rt_body3d *b) {
     if (!b || b->motion_mode != PH3D_MODE_DYNAMIC)
         return;
@@ -769,6 +877,8 @@ void body3d_wake_if_dynamic(rt_body3d *b) {
 }
 
 /// @brief Apply a world-space angular impulse through the body's local diagonal inertia.
+/// @param b Dynamic Body3D whose angular velocity is updated.
+/// @param angular_impulse Three-component world angular impulse.
 static void body3d_apply_world_angular_impulse(rt_body3d *b, const double *angular_impulse) {
     double inv_rotation[4];
     double local_impulse[3];
@@ -789,7 +899,10 @@ static void body3d_apply_world_angular_impulse(rt_body3d *b, const double *angul
     ph3d_vec3_accumulate_state(b->angular_velocity, world_delta[0], world_delta[1], world_delta[2]);
 }
 
-/// @brief Return `I^-1 * v` in world space using the body's local diagonal inertia.
+/// @brief Return `inverse(I) * v` in world space using the body's local diagonal inertia.
+/// @param b Dynamic Body3D providing orientation and principal inverse inertia.
+/// @param v Three-component world vector to transform.
+/// @param out Three-component world result, or zero for an immovable/invalid body.
 void body3d_world_inv_inertia_mul(const rt_body3d *b, const double *v, double *out) {
     double inv_rotation[4];
     double local_v[3];
@@ -809,6 +922,9 @@ void body3d_world_inv_inertia_mul(const rt_body3d *b, const double *v, double *o
 }
 
 /// @brief Velocity at a world-space contact point, including angular motion.
+/// @param b Body3D providing center velocity and angular velocity.
+/// @param r Three-component offset from center of mass to the contact.
+/// @param out Three-component world contact velocity.
 void body3d_contact_velocity(const rt_body3d *b, const double *r, double *out) {
     double angular_component[3];
     if (!out)
@@ -823,6 +939,10 @@ void body3d_contact_velocity(const rt_body3d *b, const double *r, double *out) {
 }
 
 /// @brief Effective inverse mass contribution for an impulse direction at offset `r`.
+/// @param b Dynamic Body3D contributing effective mass.
+/// @param r Three-component contact offset from center of mass.
+/// @param dir Three-component impulse direction.
+/// @return Finite non-negative linear-plus-angular inverse-mass denominator.
 double body3d_contact_impulse_denominator(const rt_body3d *b, const double *r, const double *dir) {
     double r_cross_dir[3];
     double inv_i_term[3];
@@ -839,6 +959,9 @@ double body3d_contact_impulse_denominator(const rt_body3d *b, const double *r, c
 }
 
 /// @brief Apply a world-space linear impulse at a contact offset from the center of mass.
+/// @param b Dynamic Body3D whose velocities are updated.
+/// @param impulse Three-component world linear impulse.
+/// @param r Three-component application offset from center of mass.
 void body3d_apply_contact_impulse(rt_body3d *b, const double *impulse, const double *r) {
     double angular_impulse[3];
     double impulse_safe[3];
@@ -864,6 +987,8 @@ void body3d_apply_contact_impulse(rt_body3d *b, const double *impulse, const dou
 /// fastest a body can move in one step before tunneling becomes a
 /// risk. CCD substepping uses this to decide whether the displacement
 /// for a step exceeds the body's footprint and needs to be subdivided.
+/// @param b Body3D whose cached shape dimensions are inspected.
+/// @return Positive CCD movement threshold, or zero when no usable extent exists.
 static double body3d_ccd_threshold(const rt_body3d *b) {
     if (!b)
         return 0.0;
@@ -885,6 +1010,7 @@ static double body3d_ccd_threshold(const rt_body3d *b) {
 // holder remains.
 
 /// @brief GC finalizer for `PhysicsHit3D` — release referenced body/collider.
+/// @param obj PhysicsHit3D payload to finalize.
 static void physics_hit3d_finalizer(void *obj) {
     rt_physics_hit3d_obj *hit = (rt_physics_hit3d_obj *)obj;
     if (!hit)
@@ -898,6 +1024,7 @@ static void physics_hit3d_finalizer(void *obj) {
 }
 
 /// @brief GC finalizer for `PhysicsHitList3D` — release lazy boxes and packed raw references.
+/// @param obj PhysicsHitList3D payload to finalize.
 static void physics_hit_list3d_finalizer(void *obj) {
     rt_physics_hit_list3d_obj *list = (rt_physics_hit_list3d_obj *)obj;
     if (!list)
@@ -933,6 +1060,7 @@ static void physics_hit_list3d_finalizer(void *obj) {
 }
 
 /// @brief GC finalizer for `CollisionEvent3D` — release both bodies and both colliders.
+/// @param obj CollisionEvent3D payload to finalize.
 static void collision_event3d_finalizer(void *obj) {
     rt_collision_event3d_obj *event = (rt_collision_event3d_obj *)obj;
     if (!event)
@@ -952,6 +1080,7 @@ static void collision_event3d_finalizer(void *obj) {
 }
 
 /// @brief Release the body/collider references currently retained by a collision event.
+/// @param event CollisionEvent3D payload whose retained pair references are cleared.
 static void collision_event3d_release_refs(rt_collision_event3d_obj *event) {
     if (!event)
         return;
@@ -970,6 +1099,8 @@ static void collision_event3d_release_refs(rt_collision_event3d_obj *event) {
 }
 
 /// @brief Refresh an existing boxed collision event from a transient contact snapshot.
+/// @param event Existing CollisionEvent3D payload to overwrite.
+/// @param contact Transient contact snapshot whose sanitized fields and references are copied.
 static void collision_event3d_assign_from_contact(rt_collision_event3d_obj *event,
                                                   const rt_contact3d *contact) {
     if (!event || !contact)
@@ -1009,6 +1140,8 @@ static void collision_event3d_assign_from_contact(rt_collision_event3d_obj *even
 ///
 /// Copies all hit fields and retains the body/collider pointers so the
 /// hit object can outlive the originating query call.
+/// @param src Transient query-hit snapshot to box, or NULL for a zeroed hit.
+/// @return Newly allocated PhysicsHit3D handle, or NULL on allocation failure.
 void *physics_hit3d_new(const rt_query_hit3d *src) {
     rt_physics_hit3d_obj *hit = (rt_physics_hit3d_obj *)rt_obj_new_i64(
         RT_G3D_PHYSICSHIT3D_CLASS_ID, (int64_t)sizeof(rt_physics_hit3d_obj));
@@ -1040,6 +1173,11 @@ void *physics_hit3d_new(const rt_query_hit3d *src) {
 /// Stores the raw hits and lazy-box pointer slots in the list object's single allocation. A
 /// PhysicsHit3D is materialized only if Get(index) is called, avoiding N managed allocations for
 /// callers that only inspect Count/TotalCount. Empty queries return a valid zero-count list.
+/// @param hits Contiguous transient query-hit snapshots, or NULL when @p count is zero.
+/// @param count Number of retained hits to copy.
+/// @param total_count Number of matches before bounded truncation.
+/// @param truncated Nonzero when matches were omitted.
+/// @return Newly allocated PhysicsHitList3D handle, or NULL on invalid input or failure.
 void *physics_hit_list3d_new_ex(const rt_query_hit3d *hits,
                                 int32_t count,
                                 int64_t total_count,
@@ -1097,6 +1235,8 @@ void *physics_hit_list3d_new_ex(const rt_query_hit3d *hits,
 ///
 /// Only point/normal/separation are exposed — `body_*` and impulse
 /// belong to the higher-level `CollisionEvent3D`.
+/// @param contact Contact snapshot whose first geometric point is boxed.
+/// @return Newly allocated ContactPoint3D handle, or NULL on invalid input or failure.
 static void *contact_point3d_new_from_contact(const rt_contact3d *contact) {
     rt_contact_point3d_obj *point;
     if (!contact)
@@ -1120,6 +1260,8 @@ static void *contact_point3d_new_from_contact(const rt_contact3d *contact) {
 /// speed, and the resolved normal impulse so Zia handlers can branch
 /// on collision strength, identify the colliding parties, etc. Retains
 /// every reference so the event survives past the world step.
+/// @param contact Contact snapshot to sanitize, retain, and box.
+/// @return Newly allocated CollisionEvent3D handle, or NULL on invalid input or failure.
 static void *collision_event3d_new_from_contact(const rt_contact3d *contact) {
     rt_collision_event3d_obj *event;
     if (!contact)
@@ -1139,6 +1281,8 @@ static void *collision_event3d_new_from_contact(const rt_contact3d *contact) {
 /// @brief Release every cached collision-event object in an array and NULL each slot.
 /// @details The array itself is kept (capacity unchanged) for reuse next frame; only the pooled
 ///          event objects are released.
+/// @param array Address of the reusable event-object pointer array.
+/// @param capacity Address of the number of allocated slots.
 static void world3d_release_event_object_array(void ***array, int32_t *capacity) {
     if (!array || !capacity || !*array)
         return;
@@ -1151,6 +1295,7 @@ static void world3d_release_event_object_array(void ***array, int32_t *capacity)
 }
 
 /// @brief Release all four cached collision-event object pools (collision/enter/stay/exit).
+/// @param w World3D whose cached boxed events are released.
 static void world3d_release_cached_event_objects(rt_world3d *w) {
     if (!w)
         return;
@@ -1162,6 +1307,10 @@ static void world3d_release_cached_event_objects(rt_world3d *w) {
 }
 
 /// @brief Ensure an event-object pool array holds at least @p needed slots (zero-filled growth).
+/// @param array Address of the event-object pointer array.
+/// @param capacity In/out allocated slot count.
+/// @param needed Required non-negative slot count.
+/// @return One when sufficient capacity is available, otherwise zero.
 static int world3d_reserve_event_object_array(void ***array, int32_t *capacity, int32_t needed) {
     void **grown;
     if (!array || !capacity)
@@ -1183,6 +1332,11 @@ static int world3d_reserve_event_object_array(void ***array, int32_t *capacity, 
 /// @brief Get (or lazily build) the pooled collision-event object for @p contact at @p index.
 /// @details Reuses the slot's existing event object across frames — refreshing its fields from the
 ///          contact — to avoid per-frame allocation in the collision callback path.
+/// @param array Address of the reusable event-object pointer array.
+/// @param capacity In/out allocated slot count.
+/// @param index Zero-based event slot.
+/// @param contact Contact snapshot used to refresh or create the event.
+/// @return Retained CollisionEvent3D handle for the caller, or NULL on failure.
 static void *world3d_cached_event_from_contact(void ***array,
                                                int32_t *capacity,
                                                int64_t index,
@@ -1211,6 +1365,10 @@ static void *world3d_cached_event_from_contact(void ***array,
 ///   memory pressure, but for large scenes it can cause an unbounded frame spike.
 ///   This helper caps the fallback by pair comparisons and lets Step fail cleanly
 ///   when both contact sets are too large to diff without hash tables.
+/// @param w World3D providing current and previous contact counts.
+/// @param previous_table Hash table for previous contacts, or NULL on allocation failure.
+/// @param current_table Hash table for current contacts, or NULL on allocation failure.
+/// @return One when hash lookup or bounded linear fallback is safe, otherwise zero.
 static int world3d_event_diff_fallback_allowed(const rt_world3d *w,
                                                const contact_pair_hash_entry *previous_table,
                                                const contact_pair_hash_entry *current_table) {
@@ -1228,6 +1386,7 @@ static int world3d_event_diff_fallback_allowed(const rt_world3d *w,
 /// @details Used by explicit ClearCollisionEvents. Failed transactional steps
 ///   restore the previous arrays instead, so callers keep the last committed
 ///   contacts and event state when allocation or overflow prevents progress.
+/// @param w World3D whose visible contact and transition state is cleared.
 static void world3d_clear_visible_collision_events(rt_world3d *w) {
     if (!w)
         return;
@@ -1248,6 +1407,8 @@ static void world3d_clear_visible_collision_events(rt_world3d *w) {
 /// this frame's contacts as the new "previous" for the next call. The
 /// Event arrays grow with the live contact list so large production scenes
 /// do not silently drop contacts after the initial capacity.
+/// @param w World3D whose committed contact sets are diffed transactionally.
+/// @return One when all transition buffers and the new snapshot are committed, otherwise zero.
 static int world3d_build_event_buffers(rt_world3d *w) {
     contact_pair_hash_entry *previous_table = NULL;
     contact_pair_hash_entry *current_table = NULL;

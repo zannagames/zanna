@@ -3,8 +3,17 @@
 // File: src/runtime/graphics/3d/anim/rt_animcontroller3d_api.inc  (#included from rt_animcontroller3d.c; not a standalone translation unit)
 // Purpose: AnimController3D public API: states, transitions, play/crossfade, update, IK, events
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements the AnimController3D public ABI and frame update.
+/// @details This private fragment is included by `rt_animcontroller3d.c` after
+///          the controller storage, lifecycle, and sampling helpers. It owns
+///          construction/finalization, state-machine commands, event and
+///          root-motion APIs, layer control, and renderer-facing pose access.
+
 /// @brief Finite-guard each lane of the controller's accumulated root-motion delta, zeroing
 ///   any non-finite component.
+/// @param[in,out] controller Controller whose three translation lanes to
+///                           sanitize; `NULL` is ignored.
 static void controller_sanitize_root_motion_delta(rt_anim_controller3d *controller) {
     if (!controller)
         return;
@@ -17,6 +26,8 @@ static void controller_sanitize_root_motion_delta(rt_anim_controller3d *controll
 ///          players, and frees the states / transitions / events / palette
 ///          buffers. Slot pointers are NULL'd via `controller_release_ref`
 ///          so a re-entrant call (shouldn't happen but defensive) is safe.
+/// @param[in,out] obj AnimController3D storage being finalized; `NULL` is
+///                    ignored.
 static void controller_finalize(void *obj) {
     rt_anim_controller3d *controller = (rt_anim_controller3d *)obj;
     if (!controller)
@@ -71,6 +82,9 @@ static void controller_finalize(void *obj) {
 ///          is played. Traps on null skeleton or any allocation failure
 ///          (failed palette / layer allocations clean up partial state via
 ///          `controller_finalize` before returning NULL).
+/// @param[in] skeleton Borrowed Skeleton3D handle retained on success.
+/// @return New GC-managed AnimController3D, or `NULL` after a runtime trap for
+///         an invalid skeleton or allocation failure.
 void *rt_anim_controller3d_new(void *skeleton) {
     rt_anim_controller3d *controller;
     rt_skeleton3d *skel = skeleton3d_checked(skeleton);
@@ -129,6 +143,13 @@ void *rt_anim_controller3d_new(void *skeleton) {
 /// @brief Register a named animation state. `name` is the lookup key (used by `_play`,
 /// `_crossfade`, etc); `animation` is an Animation3D handle. If a state with `name` already
 /// exists, returns its existing index without creating a duplicate. Returns -1 on failure.
+/// @param[in,out] obj AnimController3D whose state table to extend.
+/// @param[in] name Nonempty state name; the canonical bounded copy is used for
+///                 storage and lookup.
+/// @param[in] animation Borrowed compatible Animation3D retained for a newly
+///                      inserted state.
+/// @return Existing or newly appended state index, or `-1` for invalid input,
+///         skeleton incompatibility, an empty name, or allocation failure.
 int64_t rt_anim_controller3d_add_state(void *obj, rt_string name, void *animation) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     rt_animation3d *anim = animation3d_checked(animation);
@@ -170,6 +191,13 @@ int64_t rt_anim_controller3d_add_state(void *obj, rt_string name, void *animatio
 /// @brief Register a directional transition with a default blend time. When `_play` is later
 /// called with `to_state` while in `from_state`, this blend time is used automatically. If the
 /// transition already exists, its blend time is updated. Returns 1 on success.
+/// @param[in,out] obj AnimController3D whose transition table to edit.
+/// @param[in] from_state Registered source-state name.
+/// @param[in] to_state Registered destination-state name.
+/// @param[in] blend_seconds Requested duration; negative and non-finite values
+///                          normalize to zero through the finite float clamp.
+/// @return `1` when inserted or updated; `0` for an invalid controller,
+///         unknown state, or allocation failure.
 int8_t rt_anim_controller3d_add_transition(void *obj,
                                            rt_string from_state,
                                            rt_string to_state,
@@ -210,6 +238,10 @@ int8_t rt_anim_controller3d_add_transition(void *obj,
 /// @brief Play a state on the base layer. If a transition was registered between the current
 /// state and `state_name`, its blend time is used; otherwise the switch is instantaneous.
 /// Returns 1 if the state exists, 0 if not.
+/// @param[in,out] obj AnimController3D whose base layer to start.
+/// @param[in] state_name Registered destination-state name.
+/// @return `1` when the state was applied; `0` for an invalid controller,
+///         unknown state, or unavailable layer player or clip.
 int8_t rt_anim_controller3d_play(void *obj, rt_string state_name) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     int32_t state_index;
@@ -231,6 +263,12 @@ int8_t rt_anim_controller3d_play(void *obj, rt_string state_name) {
 
 /// @brief Cross-fade to `state_name` over `blend_seconds`, regardless of any registered default
 /// transition. Use this for one-off blends with custom timing.
+/// @param[in,out] obj AnimController3D whose base layer to start.
+/// @param[in] state_name Registered destination-state name.
+/// @param[in] blend_seconds Requested blend duration; invalid or negative
+///                          values become an immediate switch.
+/// @return `1` when the state was applied; `0` for an invalid controller,
+///         unknown state, or unavailable layer player or clip.
 int8_t rt_anim_controller3d_crossfade(void *obj, rt_string state_name, double blend_seconds) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     int32_t state_index;
@@ -245,6 +283,7 @@ int8_t rt_anim_controller3d_crossfade(void *obj, rt_string state_name, double bl
 
 /// @brief Stop playback on every layer (base + overlays). Does not clear the current_state
 /// indices — calling `_play` again resumes from the same animation. Resets transition timers.
+/// @param[in,out] obj AnimController3D to stop; invalid handles are ignored.
 void rt_anim_controller3d_stop(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     if (!controller)
@@ -263,6 +302,13 @@ void rt_anim_controller3d_stop(void *obj) {
 
 /// @brief Apply the controller animation-LOD rate gate: accumulate @p delta_time and, when the
 ///        rate is set, either skip this frame (return 0) or consume whole steps into delta_time.
+/// @param[in,out] controller Controller holding the LOD rate and accumulated
+///                           remainder.
+/// @param[in,out] delta_time On entry, the requested positive step; on an
+///                           accepted throttled update, the whole accumulated
+///                           interval duration to evaluate.
+/// @return `1` when this call should evaluate animation, or `0` while waiting
+///         for the next LOD interval.
 static int controller_apply_animation_lod(rt_anim_controller3d *controller, double *delta_time) {
     if (!isfinite(controller->animation_lod_accum) || controller->animation_lod_accum < 0.0)
         controller->animation_lod_accum = 0.0;
@@ -298,6 +344,15 @@ static int controller_apply_animation_lod(rt_anim_controller3d *controller, doub
 
 /// @brief Advance every animation layer player by @p delta_time, fire clip events, and step
 ///        active transitions; reports the base-layer (layer 0) timing for root motion below.
+/// @param[in,out] controller Controller whose valid layer players to advance.
+/// @param[in] delta_time Accepted controller time step in seconds.
+/// @param[in] state_count Sanitized upper bound for state indexes.
+/// @param[out] out_base_state Active base state, or `-1`.
+/// @param[out] out_base_prev_time Base-player time before the step.
+/// @param[out] out_base_elapsed_time Signed clip time traversed after applying
+///                                    playback speed.
+/// @param[out] out_base_duration Active base clip duration, or zero.
+/// @param[out] out_base_looping Whether the active base state loops.
 static void controller_advance_layers(rt_anim_controller3d *controller, double delta_time,
                                       int32_t state_count, int32_t *out_base_state,
                                       double *out_base_prev_time, double *out_base_elapsed_time,
@@ -353,6 +408,8 @@ static void controller_advance_layers(rt_anim_controller3d *controller, double d
 /// time-stamped events crossing the previous→current playback window, advances transition
 /// blends, then composites the layered final bone palette. Also accumulates root-motion bone
 /// translation deltas for `_consume_root_motion`. No-op for negative dt or missing skeleton.
+/// @param[in,out] obj AnimController3D to advance.
+/// @param[in] delta_time Nonnegative finite elapsed time in seconds.
 void rt_anim_controller3d_update(void *obj, double delta_time) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     double before_x;
@@ -484,6 +541,9 @@ void rt_anim_controller3d_update(void *obj, double delta_time) {
 }
 
 /// @brief Name of the state currently playing on the base layer (empty string if none/missing).
+/// @param[in] obj AnimController3D to inspect.
+/// @return Owned runtime-string copy of the current state name, or the empty
+///         singleton when no valid base state is selected.
 rt_string rt_anim_controller3d_get_current_state(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     int32_t state_index;
@@ -497,6 +557,9 @@ rt_string rt_anim_controller3d_get_current_state(void *obj) {
 
 /// @brief Name of the state on the base layer immediately before the current one. Useful during
 /// transitions to know what the controller is fading *from*. Empty if no prior state.
+/// @param[in] obj AnimController3D to inspect.
+/// @return Owned runtime-string copy of the prior state name, or the empty
+///         singleton when no valid previous state is recorded.
 rt_string rt_anim_controller3d_get_previous_state(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     int32_t state_index;
@@ -509,18 +572,25 @@ rt_string rt_anim_controller3d_get_previous_state(void *obj) {
 }
 
 /// @brief Returns 1 if the base layer is mid-blend between two states.
+/// @param[in] obj AnimController3D to inspect.
+/// @return `1` while the base layer is transitioning; otherwise `0`.
 int8_t rt_anim_controller3d_get_is_transitioning(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     return controller && controller->layers[0].transitioning ? 1 : 0;
 }
 
 /// @brief Number of states currently registered with the controller.
+/// @param[in] obj AnimController3D to inspect.
+/// @return Sanitized registered-state count, or zero for an invalid handle.
 int64_t rt_anim_controller3d_get_state_count(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     return controller ? controller_safe_state_count(controller) : 0;
 }
 
 /// @brief Current base-layer playback time in seconds.
+/// @param[in] obj AnimController3D to inspect.
+/// @return Active base player's time, or `0.0` when no valid base state is
+///         selected.
 double rt_anim_controller3d_get_state_time(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     anim_controller3d_layer_t *layer;
@@ -534,6 +604,10 @@ double rt_anim_controller3d_get_state_time(void *obj) {
 }
 
 /// @brief True if the named state is the active, playing base-layer state.
+/// @param[in] obj AnimController3D to inspect.
+/// @param[in] state_name Registered state name to compare.
+/// @return `1` only when the name resolves to the current base state and the
+///         underlying player is running; otherwise `0`.
 int8_t rt_anim_controller3d_is_state_playing(void *obj, rt_string state_name) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     anim_controller3d_layer_t *layer;
@@ -553,6 +627,10 @@ int8_t rt_anim_controller3d_is_state_playing(void *obj, rt_string state_name) {
 /// @brief C-internal fast path of rt_anim_controller3d_is_state_playing for callers
 ///   that hold a plain C string (avoids a transient rt_string allocation per query;
 ///   used by the per-frame combat window check).
+/// @param[in] obj AnimController3D to inspect.
+/// @param[in] state_name Borrowed NUL-terminated state name.
+/// @return `1` only when the name resolves to the current base state and the
+///         underlying player is running; otherwise `0`.
 int8_t rt_anim_controller3d_is_state_playing_cstr(void *obj, const char *state_name) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     anim_controller3d_layer_t *layer;
@@ -571,6 +649,10 @@ int8_t rt_anim_controller3d_is_state_playing_cstr(void *obj, const char *state_n
 
 /// @brief Override the playback speed multiplier for a state. Applied immediately to any
 /// layer currently playing that state. Negative speeds are accepted (reverse playback).
+/// @param[in,out] obj AnimController3D containing the state.
+/// @param[in] state_name Registered state to update.
+/// @param[in] speed New multiplier; non-finite input becomes `1.0` and finite
+///                  input is safely narrowed to float.
 void rt_anim_controller3d_set_state_speed(void *obj, rt_string state_name, double speed) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     int32_t state_index;
@@ -591,6 +673,9 @@ void rt_anim_controller3d_set_state_speed(void *obj, rt_string state_name, doubl
 
 /// @brief Override whether a state loops (1) or plays once (0). Applied immediately to any
 /// layer currently playing that state via the player's loop_override hook.
+/// @param[in,out] obj AnimController3D containing the state.
+/// @param[in] state_name Registered state to update.
+/// @param[in] loop Zero for one-shot playback; nonzero for looping.
 void rt_anim_controller3d_set_state_looping(void *obj, rt_string state_name, int8_t loop) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     int32_t state_index;
@@ -612,6 +697,11 @@ void rt_anim_controller3d_set_state_looping(void *obj, rt_string state_name, int
 /// @brief Configure deterministic animation update-rate LOD.
 /// @details Positive `distance` and `rate_hz` enable throttling; elapsed time is accumulated
 /// and applied in batches at `rate_hz`. Non-positive or non-finite inputs disable the throttle.
+/// @param[in,out] obj AnimController3D to configure.
+/// @param[in] distance Positive caller-provided distance metric, capped to the
+///                     controller safety limit.
+/// @param[in] rate_hz Positive evaluation frequency, capped to the controller
+///                    safety limit.
 void rt_anim_controller3d_set_animation_lod(void *obj, double distance, double rate_hz) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     if (!controller)
@@ -635,6 +725,10 @@ void rt_anim_controller3d_set_animation_lod(void *obj, double distance, double r
 /// bind-pose local transform (they still follow animated ancestors but add no local animation).
 /// @details A non-positive @p max_bones disables it. Callers enable this for distant characters so
 /// distal detail (fingers, toes — high bone indices in the parents-first ordering) costs nothing.
+/// @param[in,out] obj AnimController3D to configure.
+/// @param[in] max_bones Number of leading bones to animate, nonpositive to
+///                      disable, or a large positive value that saturates to
+///                      `INT32_MAX`.
 void rt_anim_controller3d_set_bone_lod(void *obj, int64_t max_bones) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     if (!controller)
@@ -648,6 +742,11 @@ void rt_anim_controller3d_set_bone_lod(void *obj, int64_t max_bones) {
 }
 
 /// @brief Use a BlendTree3D as the base pose source. Passing NULL clears it.
+/// @param[in,out] obj AnimController3D to configure.
+/// @param[in] blend_tree Borrowed BlendTree3D with the controller's exact
+///                       skeleton and bone count, or `NULL` to detach.
+/// @return `1` when the tree was attached or cleared; `0` for an invalid
+///         controller, wrong class, or incompatible blend output.
 int8_t rt_anim_controller3d_set_blend_tree(void *obj, void *blend_tree) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     if (!controller)
@@ -679,6 +778,11 @@ int8_t rt_anim_controller3d_set_blend_tree(void *obj, void *blend_tree) {
 }
 
 /// @brief Attach an IKSolver3D to the final controller pose; NULL clears it.
+/// @param[in,out] obj AnimController3D to configure.
+/// @param[in] ik_solver Borrowed IKSolver3D bound to the controller's exact
+///                      skeleton, or `NULL` to detach.
+/// @return `1` when the solver was attached or cleared; `0` for an invalid
+///         controller, wrong class, or mismatched skeleton.
 int8_t rt_anim_controller3d_set_ik_solver(void *obj, void *ik_solver) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     void *solver_skeleton;
@@ -706,6 +810,12 @@ int8_t rt_anim_controller3d_set_ik_solver(void *obj, void *ik_solver) {
 /// @brief Register a time-stamped event on a state. When `_update` advances playback past
 /// `time_seconds`, `event_name` is enqueued for `_poll_event`. Useful for footstep sounds,
 /// hit-frame triggers, attack windows. Multiple events per state are allowed.
+/// @param[in,out] obj AnimController3D whose event schedule to extend.
+/// @param[in] state_name Registered state timeline.
+/// @param[in] time_seconds Requested event time; negatives clamp to zero,
+///                         values past a positive clip duration clamp to its
+///                         end, and non-finite values are rejected.
+/// @param[in] event_name Nonempty runtime string copied into bounded storage.
 void rt_anim_controller3d_add_event(void *obj,
                                     rt_string state_name,
                                     double time_seconds,
@@ -749,6 +859,9 @@ void rt_anim_controller3d_add_event(void *obj,
 
 /// @brief Pop the next pending event name from the queue (FIFO). Returns empty string when
 /// the queue is exhausted. Caller typically polls in a loop after each `_update` to drain.
+/// @param[in,out] obj AnimController3D whose event queue to drain.
+/// @return Owned runtime-string copy of the oldest queued name, or the empty
+///         singleton for an invalid controller or empty queue.
 rt_string rt_anim_controller3d_poll_event(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     const char *name;
@@ -767,6 +880,10 @@ rt_string rt_anim_controller3d_poll_event(void *obj) {
 /// @brief Set which bone supplies root motion (typically the hip/pelvis). Translation deltas
 /// from this bone each frame are accumulated for `_consume_root_motion` so the game can move
 /// the character via the animation rather than fighting with it. Resets the accumulated delta.
+/// @param[in,out] obj AnimController3D to configure.
+/// @param[in] bone_index Existing zero-based bone index, or `-1` to disable.
+///                       Other invalid values leave the current setting
+///                       unchanged.
 void rt_anim_controller3d_set_root_motion_bone(void *obj, int64_t bone_index) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     if (!controller || !controller->skeleton)
@@ -790,6 +907,9 @@ void rt_anim_controller3d_set_root_motion_bone(void *obj, int64_t bone_index) {
 
 /// @brief Read (without clearing) the accumulated root-motion translation delta as a Vec3.
 /// Use `_consume_root_motion` instead when you want to move the character and reset.
+/// @param[in,out] obj AnimController3D to inspect; corrupt non-finite lanes are
+///                    sanitized to zero.
+/// @return New Vec3 snapshot, or a new zero Vec3 for an invalid controller.
 void *rt_anim_controller3d_get_root_motion_delta(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     if (!controller)
@@ -802,6 +922,9 @@ void *rt_anim_controller3d_get_root_motion_delta(void *obj) {
 
 /// @brief Atomically read and reset the accumulated root-motion delta. Returns the Vec3 the
 /// character should be moved by this frame to follow the animation's hip translation.
+/// @param[in,out] obj AnimController3D whose translation accumulator to drain.
+/// @return New Vec3 containing the pre-reset delta, or a new zero Vec3 for an
+///         invalid controller.
 void *rt_anim_controller3d_consume_root_motion(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     void *delta;
@@ -824,6 +947,9 @@ void *rt_anim_controller3d_consume_root_motion(void *obj) {
 ///          resets the accumulator to identity so the next frame starts
 ///          fresh. Animation systems that drive character heading from
 ///          root motion call this each frame after `_update`.
+/// @param[in,out] obj AnimController3D whose rotation accumulator to drain.
+/// @return New normalized Quat containing the pre-reset rotation, or a new
+///         identity Quat for an invalid controller.
 void *rt_anim_controller3d_consume_root_motion_rotation(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     void *rotation;
@@ -841,6 +967,9 @@ void *rt_anim_controller3d_consume_root_motion_rotation(void *obj) {
 /// @brief Set the blend weight of an overlay layer (clamped to [0, 1]). Layer 0 is the base
 /// and is always full weight; setting it has no effect. Higher overlays compose additively
 /// over the base, masked to their bone subset.
+/// @param[in,out] obj AnimController3D to configure.
+/// @param[in] layer_index Zero-based layer index.
+/// @param[in] weight Requested contribution; non-finite input becomes zero.
 void rt_anim_controller3d_set_layer_weight(void *obj, int64_t layer_index, double weight) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     if (!controller || layer_index < 0 || layer_index >= RT_ANIM_CONTROLLER3D_MAX_LAYERS)
@@ -862,6 +991,10 @@ void rt_anim_controller3d_set_layer_weight(void *obj, int64_t layer_index, doubl
 /// @brief Set which bones an overlay layer affects. The layer composites only on `root_bone`
 /// and its descendants in the skeleton hierarchy (typical use: arms-only upper-body overlay).
 /// Layer 0 always covers the full skeleton.
+/// @param[in,out] obj AnimController3D to configure.
+/// @param[in] layer_index Zero-based layer index.
+/// @param[in] root_bone Skeleton subtree root, or `-1` for a full-skeleton
+///                      mask. Invalid roots also rebuild as full-skeleton.
 void rt_anim_controller3d_set_layer_mask(void *obj, int64_t layer_index, int64_t root_bone) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     int32_t bone_count;
@@ -885,8 +1018,13 @@ void rt_anim_controller3d_set_layer_mask(void *obj, int64_t layer_index, int64_t
     controller_rebuild_layer_mask(controller, (int32_t)layer_index);
 }
 
-/// @brief Play a state on a specific overlay layer (layer_index ≥ 1). No transition blend.
+/// @brief Play a state on a specific layer with no transition blend.
 /// Returns 1 on success, 0 if `layer_index` is invalid or `state_name` doesn't exist.
+/// @param[in,out] obj AnimController3D to play.
+/// @param[in] layer_index Zero-based layer index.
+/// @param[in] state_name Registered state name.
+/// @return `1` when replace-mode playback starts; `0` for invalid input or an
+///         unavailable player or clip.
 int8_t rt_anim_controller3d_play_layer(void *obj, int64_t layer_index, rt_string state_name) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     int32_t state_index;
@@ -902,6 +1040,11 @@ int8_t rt_anim_controller3d_play_layer(void *obj, int64_t layer_index, rt_string
 /// @brief Play a state on a layer as a true additive delta from the bind pose.
 /// @details Unlike `PlayLayer`, which replaces toward the overlay pose, this composes
 /// `(overlay - bind_pose) * layer_weight` onto the current base pose for masked bones.
+/// @param[in,out] obj AnimController3D to play.
+/// @param[in] layer_index Overlay layer index in the range 1 through 3.
+/// @param[in] state_name Registered state name.
+/// @return `1` when additive playback starts; `0` for the base or another
+///         invalid layer, an unknown state, or unavailable player or clip.
 int8_t rt_anim_controller3d_play_layer_additive(void *obj,
                                                 int64_t layer_index,
                                                 rt_string state_name) {
@@ -916,8 +1059,16 @@ int8_t rt_anim_controller3d_play_layer_additive(void *obj,
     return controller_set_layer_state(controller, (int32_t)layer_index, state_index, 0.0);
 }
 
-/// @brief Cross-fade an overlay layer to `state_name` over `blend_seconds`. Mirrors `_crossfade`
-/// but targets a specific layer, leaving the base unaffected.
+/// @brief Cross-fade a specific layer to `state_name` over `blend_seconds`.
+/// @details Mirrors `_crossfade` but selects the layer explicitly; layer zero
+///          targets the base and higher indexes target overlays.
+/// @param[in,out] obj AnimController3D to play.
+/// @param[in] layer_index Zero-based layer index.
+/// @param[in] state_name Registered destination-state name.
+/// @param[in] blend_seconds Requested duration; negative and non-finite
+///                          values become an immediate switch.
+/// @return `1` when replace-mode playback starts; `0` for invalid input or an
+///         unavailable player or clip.
 int8_t rt_anim_controller3d_crossfade_layer(void *obj,
                                             int64_t layer_index,
                                             rt_string state_name,
@@ -934,6 +1085,13 @@ int8_t rt_anim_controller3d_crossfade_layer(void *obj,
 }
 
 /// @brief Cross-fade an overlay layer as a true additive bind-pose delta.
+/// @param[in,out] obj AnimController3D to play.
+/// @param[in] layer_index Overlay layer index in the range 1 through 3.
+/// @param[in] state_name Registered destination-state name.
+/// @param[in] blend_seconds Requested duration; negative and non-finite
+///                          values become an immediate switch.
+/// @return `1` when additive playback starts; `0` for the base or another
+///         invalid layer, an unknown state, or unavailable player or clip.
 int8_t rt_anim_controller3d_crossfade_layer_additive(void *obj,
                                                      int64_t layer_index,
                                                      rt_string state_name,
@@ -951,6 +1109,10 @@ int8_t rt_anim_controller3d_crossfade_layer_additive(void *obj,
 
 /// @brief Stop playback on a specific overlay layer. Layer 0 (base) keeps its current_state but
 /// pauses; overlay layers (≥ 1) are also cleared so they no longer composite onto the base.
+/// @details Cancels any transition and restores replace mode without changing
+///          the configured layer weight.
+/// @param[in,out] obj AnimController3D to modify.
+/// @param[in] layer_index Zero-based layer index.
 void rt_anim_controller3d_stop_layer(void *obj, int64_t layer_index) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     anim_controller3d_layer_t *layer;
@@ -973,6 +1135,10 @@ void rt_anim_controller3d_stop_layer(void *obj, int64_t layer_index) {
 ///          object. Returns NULL on missing controller / palette / out-of-
 ///          range bone. The matrix reflects the composited result of all
 ///          layers as of the most recent `_update`.
+/// @param[in] obj AnimController3D to inspect.
+/// @param[in] bone_index Zero-based skeleton bone index.
+/// @return New Mat4 snapshot of the model-space global transform, or `NULL`
+///         when the controller, skeleton, pose, or index is invalid.
 void *rt_anim_controller3d_get_bone_matrix(void *obj, int64_t bone_index) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     rt_skeleton3d *skeleton = controller_skeleton_ref(controller);
@@ -1007,6 +1173,13 @@ void *rt_anim_controller3d_get_bone_matrix(void *obj, int64_t bone_index) {
 ///          skinned model's root — callers compose with the owning node's world
 ///          transform for world-space sockets. Returns 1 on success, 0 when the
 ///          controller/skeleton/pose is missing or the bone index is invalid.
+/// @param[in] obj AnimController3D to inspect.
+/// @param[in] bone_index Zero-based skeleton bone index.
+/// @param[out] out_pos Writable array of at least three doubles; initialized
+///                     to zero before validation when non-null.
+/// @param[out] out_quat Writable array of at least four doubles; initialized
+///                      to identity before validation when non-null.
+/// @return `1` when both outputs receive a valid pose; otherwise `0`.
 int rt_anim_controller3d_get_bone_pose(void *obj,
                                        int64_t bone_index,
                                        double *out_pos,
@@ -1034,12 +1207,20 @@ int rt_anim_controller3d_get_bone_pose(void *obj,
 }
 
 /// @brief Borrow the Skeleton3D handle backing this controller.
+/// @param[in] obj AnimController3D to inspect.
+/// @return Borrowed Skeleton3D handle, or `NULL` when the controller or stored
+///         class reference is invalid.
 void *rt_anim_controller3d_get_skeleton(void *obj) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     return controller_skeleton_ref(controller);
 }
 
 /// @brief 4x4 row-major affine inverse (rotation/scale block + translation row).
+/// @details A non-finite or near-singular upper-left determinant produces an
+///          identity output instead of propagating unstable values.
+/// @param[in] m Borrowed source array of 16 floats.
+/// @param[out] out Writable destination array of 16 floats; may not overlap
+///                 @p m.
 static void controller_mat4f_affine_inverse(const float *m, float *out) {
     /* Invert the upper-left 3x3 via cofactors, then the translation row. */
     double a00 = m[0], a01 = m[1], a02 = m[2];
@@ -1085,6 +1266,11 @@ static void controller_mat4f_affine_inverse(const float *m, float *out) {
 ///        globals after evaluation, propagate the pose delta to unmasked
 ///        descendants, and refresh the skinning palette for changed bones.
 ///        Runs between the animation update and scene sync; see Ragdoll3D.
+/// @param[in,out] obj AnimController3D whose evaluated globals and palette to
+///                    update.
+/// @param[in] mask Borrowed array of one selection byte per skeleton bone.
+/// @param[in] globals Borrowed array of `bone_count * 16` replacement
+///                    model-space matrix floats.
 void rt_anim_controller3d_apply_pose_override(void *obj,
                                               const int8_t *mask,
                                               const float *globals) {
@@ -1145,6 +1331,9 @@ void rt_anim_controller3d_apply_pose_override(void *obj,
 ///          buffer — it remains valid until the next `_update` overwrites
 ///          it or the controller is finalised. `bone_count` is filled with
 ///          the palette length in bones (not floats).
+/// @param[in] obj AnimController3D to inspect.
+/// @param[out] bone_count Optional output initialized to zero, then set to the
+///                        number of matrices on success.
 /// @return Pointer to `bone_count * 16` floats, or NULL on missing data.
 const float *rt_anim_controller3d_get_final_palette_data(void *obj, int32_t *bone_count) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
@@ -1164,6 +1353,11 @@ const float *rt_anim_controller3d_get_final_palette_data(void *obj, int32_t *bon
 ///          pixel velocity. Returns NULL until at least one `_update` has
 ///          completed (the prev-palette is populated by snapshotting
 ///          before the per-layer player update).
+/// @param[in] obj AnimController3D to inspect.
+/// @param[out] bone_count Optional output initialized to zero, then set to the
+///                        number of matrices on success.
+/// @return Borrowed pointer to `*bone_count * 16` floats, or `NULL` until a
+///         previous-frame snapshot exists or when controller data is invalid.
 const float *rt_anim_controller3d_get_previous_palette_data(void *obj, int32_t *bone_count) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     rt_skeleton3d *skeleton = controller_skeleton_ref(controller);

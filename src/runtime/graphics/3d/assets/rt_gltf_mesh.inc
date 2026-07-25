@@ -4,8 +4,26 @@
 // standalone translation unit) Purpose: glTF mesh import (preloaded and JSON paths)
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_mesh.inc
+ * @brief Implements glTF primitive decoding, skin-influence handling, and mesh table assembly.
+ * @details Included by `rt_gltf.c`, this fragment imports worker-predecoded POD primitives,
+ *          ordinary accessor-backed primitives, oversized-skeleton partitions, and Draco
+ *          payloads. It validates material UV requirements, sanitizes vertex attributes, emits
+ *          triangles for supported primitive modes, preserves morph and material-variant
+ *          mappings, and grows asset tables when one source primitive expands into multiple
+ *          runtime meshes.
+ */
+
 /// @brief Append one imported vertex to @p mesh during glTF import, taking position, normal,
 ///   UV0/UV1, color, and tangent (any pointer may be NULL to use that attribute's default).
+/// @param mesh Mesh with preallocated vertex storage.
+/// @param pos Three-component position.
+/// @param nrm Three-component normal.
+/// @param uv0 Primary two-component texture coordinates.
+/// @param uv1 Secondary two-component texture coordinates.
+/// @param color Four-component vertex color.
+/// @param tangent Four-component tangent and handedness.
 /// @return 1 on success, 0 if the mesh vertex storage cannot grow.
 static int gltf_mesh_append_import_vertex(rt_mesh3d *mesh,
                                           const float *pos,
@@ -41,33 +59,64 @@ static int gltf_mesh_append_import_vertex(rt_mesh3d *mesh,
     return 1;
 }
 
+/// @brief Resolved and validated accessor views for one non-Draco primitive.
 typedef struct {
+    /// Required vertex-position accessor.
     gltf_accessor_view_t pos;
+    /// Optional normal accessor.
     gltf_accessor_view_t norm;
+    /// Optional primary texture-coordinate accessor.
     gltf_accessor_view_t uv0;
+    /// Optional secondary texture-coordinate accessor.
     gltf_accessor_view_t uv1;
+    /// Optional vertex-color accessor.
     gltf_accessor_view_t color;
+    /// Optional tangent accessor.
     gltf_accessor_view_t tangent;
+    /// Optional first joint-index set.
     gltf_accessor_view_t joints;
+    /// Optional first joint-weight set.
     gltf_accessor_view_t weights;
+    /// Optional second joint-index set.
     gltf_accessor_view_t joints1;
+    /// Optional second joint-weight set.
     gltf_accessor_view_t weights1;
+    /// Optional primitive index accessor.
     gltf_accessor_view_t idx;
+    /// Whether @ref norm is present and usable.
     int has_normals;
+    /// Whether @ref uv0 is present and usable.
     int has_uv0;
+    /// Whether @ref uv1 is present and usable.
     int has_uv1;
+    /// Whether @ref color is present and usable.
     int has_colors;
+    /// Whether @ref tangent is present and usable.
     int has_tangents;
+    /// Whether the first joint-index accessor resolved.
     int has_joints;
+    /// Whether the first joint-weight accessor resolved.
     int has_weights;
+    /// Whether the second joint-index accessor resolved.
     int has_joints1;
+    /// Whether the second joint-weight accessor resolved.
     int has_weights1;
+    /// Whether @ref idx is present and usable.
     int has_indices;
+    /// Whether the first joint/weight pair forms a valid skin stream.
     int has_skin0;
+    /// Whether the second joint/weight pair forms a valid skin stream.
     int has_skin1;
+    /// Conservative number of triangles expected from the source draw mode.
     int32_t triangle_estimate;
 } gltf_mesh_primitive_views_t;
 
+/// @brief Resolve a primitive's material or lazily install the shared default PBR material.
+/// @param asset Asset owning the material table.
+/// @param material_idx Requested glTF material index.
+/// @param material_capacity Allocated number of material slots.
+/// @param default_material_io In/out cached default material handle.
+/// @return Borrowed resolved material, or NULL when no valid material can be constructed.
 static void *gltf_mesh_resolve_primitive_material(rt_gltf_asset *asset,
                                                   int64_t material_idx,
                                                   int32_t material_capacity,
@@ -210,6 +259,17 @@ fail:
 
 /**
  * @brief Consume and commit a worker-decoded primitive after validating authored UV requirements.
+ * @param asset Asset receiving the decoded runtime mesh.
+ * @param preload_bundle Bundle containing packed mesh and optional morph dependencies.
+ * @param mesh_json_index Source glTF mesh index.
+ * @param primitive_index Primitive index within the source mesh.
+ * @param prim Primitive JSON object used for variant and UV validation.
+ * @param material_index Source base-material index.
+ * @param material_infos Per-material authored texture metadata.
+ * @param primitive_material Borrowed material assigned to the committed primitive.
+ * @param primitive_materials Parallel per-runtime-mesh material table.
+ * @param load_failed_io Optional transaction failure flag.
+ * @param mesh_idx_io In/out next runtime mesh slot.
  * @return 1 when a decoded mesh was committed, 0 when no matching preload entry exists, and -1
  *         when a decoded entry was consumed but rejected by UV/material validation.
  */
@@ -259,6 +319,10 @@ static int gltf_mesh_take_preloaded_primitive(rt_gltf_asset *asset,
     return 1;
 }
 
+/// @brief Validate pairing, shape, payload, and length of a primitive's skin accessors.
+/// @param views Mutable primitive-view set whose resolved skin streams are inspected.
+/// @param vertex_count Number of positions that every present skin stream must cover.
+/// @return Non-zero when JOINTS/WEIGHTS pairs are absent or fully valid.
 static int gltf_mesh_validate_skin_views(gltf_mesh_primitive_views_t *views, int32_t vertex_count) {
     if (!views)
         return 0;
@@ -279,6 +343,16 @@ static int gltf_mesh_validate_skin_views(gltf_mesh_primitive_views_t *views, int
     return 1;
 }
 
+/// @brief Resolve and validate all accessors and draw-count metadata for one ordinary primitive.
+/// @param root glTF JSON root.
+/// @param buffers Materialized glTF buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param attrs Primitive attribute semantic map.
+/// @param prim Primitive JSON object.
+/// @param mode glTF primitive topology mode.
+/// @param views Destination view set, cleared before resolution.
+/// @param load_failed_io Optional hard-failure flag raised for invalid required data.
+/// @return Non-zero when positions, optional streams, skin pairs, and triangle count are usable.
 static int gltf_mesh_read_primitive_views(void *root,
                                           gltf_buffer_t *buffers,
                                           int32_t buf_count,
@@ -375,19 +449,33 @@ static int gltf_mesh_read_primitive_views(void *root,
     return 1;
 }
 
+/// @brief Decoded, sanitized vertex attributes before committing them to runtime storage.
 typedef struct {
+    /// Position vector.
     float pos[3];
+    /// Normal vector.
     float nrm[3];
+    /// Primary texture coordinates.
     float uv[2];
+    /// Secondary texture coordinates.
     float uv1[2];
+    /// RGBA vertex color.
     float color[4];
+    /// XYZW tangent with handedness in W.
     float tangent[4];
+    /// First four skin weights.
     float weights[4];
+    /// First four joint indices.
     uint32_t joints[4];
+    /// Optional second set of four skin weights.
     float weights1[4];
+    /// Optional second set of four joint indices.
     uint32_t joints1[4];
 } gltf_mesh_import_vertex_t;
 
+/// @brief Initialize an import vertex with glTF defaults for missing attributes.
+/// @param vertex Destination vertex set to zero position/UV/skin, white color, and positive
+///               tangent handedness.
 static void gltf_mesh_import_vertex_init(gltf_mesh_import_vertex_t *vertex) {
     static const gltf_mesh_import_vertex_t zero_vertex = {0};
     *vertex = zero_vertex;
@@ -398,6 +486,10 @@ static void gltf_mesh_import_vertex_init(gltf_mesh_import_vertex_t *vertex) {
     vertex->tangent[3] = 1.0f;
 }
 
+/// @brief Verify every decoded floating-point component required by a primitive is finite.
+/// @param views Primitive view flags controlling which skin sets are inspected.
+/// @param vertex Decoded import vertex.
+/// @return Non-zero when position, display attributes, and present skin weights are all finite.
 static int gltf_mesh_import_vertex_is_finite(const gltf_mesh_primitive_views_t *views,
                                              const gltf_mesh_import_vertex_t *vertex) {
     return gltf_f32_array_is_finite(vertex->pos, 3) && gltf_f32_array_is_finite(vertex->nrm, 3) &&
@@ -408,6 +500,12 @@ static int gltf_mesh_import_vertex_is_finite(const gltf_mesh_primitive_views_t *
            (!views->has_skin1 || gltf_f32_array_is_finite(vertex->weights1, 4));
 }
 
+/// @brief Merge two four-influence skin sets into the strongest valid four influences.
+/// @param vertex Import vertex updated in place.
+/// @param has_primary_skin Non-zero when the first influence set should participate.
+/// @param truncated_io Optional flag raised when meaningful influences are discarded.
+/// @param out_of_range_io Optional flag raised for weighted joints outside @p joint_limit.
+/// @param joint_limit Exclusive maximum accepted joint index.
 static void gltf_mesh_merge_extra_joint_influences(gltf_mesh_import_vertex_t *vertex,
                                                    int has_primary_skin,
                                                    int *truncated_io,
@@ -438,6 +536,10 @@ static void gltf_mesh_merge_extra_joint_influences(gltf_mesh_import_vertex_t *ve
     memcpy(vertex->weights, merged_weights, sizeof(vertex->weights));
 }
 
+/// @brief Remove weighted primary influences whose joint indices exceed a runtime limit.
+/// @param vertex Import vertex updated in place.
+/// @param out_of_range_io Optional flag raised when a meaningful influence is removed.
+/// @param joint_limit Exclusive maximum accepted joint index.
 static void gltf_mesh_clip_joint_influences(gltf_mesh_import_vertex_t *vertex,
                                             int *out_of_range_io,
                                             uint32_t joint_limit) {
@@ -451,6 +553,15 @@ static void gltf_mesh_clip_joint_influences(gltf_mesh_import_vertex_t *vertex,
     }
 }
 
+/// @brief Decode and sanitize one logical vertex from resolved primitive accessors.
+/// @param views Resolved primitive attribute views.
+/// @param vertex_index Logical accessor element index.
+/// @param vertex Destination import vertex.
+/// @param invalid_authored_normals_io Optional flag raised for degenerate authored normals.
+/// @param invalid_authored_tangents_io Optional flag raised for invalid authored tangents.
+/// @param skin_stats_io Optional accumulated skin truncation/range statistics.
+/// @param joint_limit Exclusive accepted joint-index limit.
+/// @return Non-zero when all required decoded floating-point data is finite.
 static int gltf_mesh_read_import_vertex(const gltf_mesh_primitive_views_t *views,
                                         int32_t vertex_index,
                                         gltf_mesh_import_vertex_t *vertex,
@@ -531,6 +642,12 @@ static int gltf_mesh_read_import_vertex(const gltf_mesh_primitive_views_t *views
     return 1;
 }
 
+/// @brief Store a vertex's four primary skin influences on a mesh.
+/// @details Updates the mesh bone count to include every referenced in-range joint
+///          whose normalized weight is significant.
+/// @param[in,out] mesh Destination mesh receiving the vertex skin data.
+/// @param vertex_index Zero-based destination vertex index.
+/// @param[in] vertex Imported vertex containing joint indices and weights.
 static void gltf_mesh_apply_vertex_skin(rt_mesh3d *mesh,
                                         int32_t vertex_index,
                                         const gltf_mesh_import_vertex_t *vertex) {
@@ -555,6 +672,11 @@ static void gltf_mesh_apply_vertex_skin(rt_mesh3d *mesh,
 /// @brief Distribute up to eight influences across the vertex record (strongest
 ///        four) and the mesh's extra-influence side stream (next four), with the
 ///        combined weight set normalized to sum 1.
+/// @param[in,out] mesh Destination mesh receiving primary and extra influences.
+/// @param vertex_index Zero-based destination vertex index.
+/// @param[in] vertex Imported vertex containing both four-influence source sets.
+/// @param[in,out] skin_stats_io Optional counters updated when influences are
+///                              truncated or reference out-of-range joints.
 static void gltf_mesh_apply_vertex_skin8(rt_mesh3d *mesh,
                                          int32_t vertex_index,
                                          const gltf_mesh_import_vertex_t *vertex,
@@ -663,6 +785,16 @@ static void gltf_mesh_apply_vertex_skin8(rt_mesh3d *mesh,
     }
 }
 
+/// @brief Decode and append every vertex described by a primitive's accessor views.
+/// @details Imports geometry attributes and applies either four- or eight-influence
+///          skinning data according to the active load options and available streams.
+/// @param[in,out] mesh Destination mesh whose geometry batch is already open.
+/// @param[in] views Validated accessor views and semantic-presence flags.
+/// @param[in,out] invalid_authored_normals_io Optional flag raised for invalid normals.
+/// @param[in,out] invalid_authored_tangents_io Optional flag raised for invalid tangents.
+/// @param[in,out] skin_stats_io Optional accumulated skin import statistics.
+/// @return Non-zero if every vertex was decoded and appended; zero on invalid
+///         floating-point data or mesh-storage failure.
 static int gltf_mesh_import_vertices(rt_mesh3d *mesh,
                                      const gltf_mesh_primitive_views_t *views,
                                      int *invalid_authored_normals_io,
@@ -689,6 +821,25 @@ static int gltf_mesh_import_vertices(rt_mesh3d *mesh,
     return 1;
 }
 
+/// @brief Finish a conventionally decoded primitive after its vertices are imported.
+/// @details Emits topology, closes the geometry batch, regenerates invalid or absent
+///          derived attributes when appropriate, and imports morph targets.
+/// @param[in] asset Asset providing material bounds and active material objects.
+/// @param[in] root Parsed glTF document root used by morph-target import.
+/// @param[in] buffers Resolved glTF buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param[in] mesh_json Parsed parent mesh object.
+/// @param[in] prim Parsed primitive object.
+/// @param[in,out] mesh Destination mesh whose geometry batch is open.
+/// @param mode glTF primitive topology mode.
+/// @param[in] views Validated primitive accessor views.
+/// @param material_idx Primitive material index, or a negative value when absent.
+/// @param[in] primitive_material Resolved runtime material, if any.
+/// @param invalid_authored_normals Non-zero when authored normals must be regenerated.
+/// @param invalid_authored_tangents Non-zero when authored tangents must be regenerated.
+/// @param[out] load_failed_io Optional flag raised on a hard mesh-storage failure.
+/// @return Non-zero when valid indices produced geometry; zero when the primitive
+///         must be discarded or a hard failure occurred.
 static int gltf_mesh_finalize_imported_primitive(rt_gltf_asset *asset,
                                                  void *root,
                                                  gltf_buffer_t *buffers,
@@ -734,20 +885,32 @@ static int gltf_mesh_finalize_imported_primitive(rt_gltf_asset *asset,
     return 1;
 }
 
+/// @brief Shared state used while expanding glTF mesh primitives into asset mesh slots.
 typedef struct {
+    /// Asset receiving decoded mesh objects and mesh-count updates.
     rt_gltf_asset *asset;
+    /// Per-material UV and feature metadata used during primitive validation.
     const gltf_material_info_t *material_infos;
+    /// Parsed glTF document root.
     void *root;
+    /// Resolved buffer table addressed by accessor and extension data.
     gltf_buffer_t *buffers;
+    /// Number of entries in @ref buffers.
     int buf_count;
+    /// Optional asynchronously decoded primitive bundle.
     rt_gltf_preload_bundle *preload_bundle;
+    /// Number of material slots accepted by the primitive material resolver.
     int material_capacity;
+    /// Per-output-mesh resolved material table.
     void **primitive_materials;
+    /// Per-output-mesh KHR_materials_variants mapping table.
     int32_t **primitive_variant_mappings;
+    /// Address of the lazily created fallback material storage.
     void **default_material_io;
+    /// Optional flag raised when a hard import failure occurs.
     int *load_failed_io;
-    /* Current size of the per-mesh-slot tables above; grows past the pre-counted
-     * primitive total when oversized skins partition into extra sub-meshes. */
+    /// Current capacity of the per-mesh-slot tables; may grow when oversized
+    /// skins partition into additional sub-meshes.
     int primitive_table_capacity;
 } gltf_mesh_load_context_t;
 
@@ -755,6 +918,10 @@ typedef struct {
 ///        @p extra additional meshes beyond the current asset->mesh_count.
 /// @details Partitioned skins are the only path that outgrows the pre-counted
 ///          primitive total, so this stays a no-op for ordinary assets.
+/// @param[in,out] ctx Mesh-load context owning the arrays that may be reallocated.
+/// @param extra Number of additional mesh slots required.
+/// @return Non-zero when the current or expanded capacity is sufficient; zero on
+///         integer overflow or allocation failure.
 static int gltf_mesh_grow_output_tables(gltf_mesh_load_context_t *ctx, int extra) {
     rt_gltf_asset *asset = ctx->asset;
     int needed;
@@ -800,6 +967,8 @@ static int gltf_mesh_grow_output_tables(gltf_mesh_load_context_t *ctx, int extra
 
 /// @brief Parse a primitive's `extensions.KHR_materials_variants.mappings` into a
 ///        variant-indexed material-index table (-1 = variant unmapped for this primitive).
+/// @param[in] asset Asset providing the variant and material table bounds.
+/// @param[in] prim Parsed glTF primitive object.
 /// @return Malloc-owned table sized asset->variant_name_count, or NULL when the asset has
 ///         no variants, the primitive has no usable mappings, or on allocation failure.
 static int32_t *gltf_parse_primitive_variant_mapping(const rt_gltf_asset *asset, void *prim) {
@@ -838,6 +1007,9 @@ static int32_t *gltf_parse_primitive_variant_mapping(const rt_gltf_asset *asset,
 }
 
 /// @brief Parse and record the variant mapping for the primitive stored at @p mesh_slot.
+/// @param[in,out] ctx Mesh-load context owning the variant side table.
+/// @param[in] prim Parsed glTF primitive object.
+/// @param mesh_slot Zero-based output mesh slot to receive the owned mapping table.
 static void gltf_mesh_store_primitive_variant_mapping(gltf_mesh_load_context_t *ctx,
                                                       void *prim,
                                                       int mesh_slot) {
@@ -852,6 +1024,12 @@ static void gltf_mesh_store_primitive_variant_mapping(gltf_mesh_load_context_t *
 /// total size. This deliberate pre-count trades a cheap O(meshes) walk of jarr_len() for avoiding
 /// per-primitive reallocs and fragmentation during the far more expensive decode pass — the count
 /// cost is negligible relative to vertex/index decoding, so the two-pass structure is intentional.
+/// @param[in] meshes_arr Parsed glTF `meshes` array.
+/// @param mesh_json_count Number of mesh objects to inspect.
+/// @param[out] out_total_prims Receives the sum of all primitive-array lengths.
+/// @param[out] load_failed_io Optional flag raised if the sum exceeds signed
+///                            32-bit storage limits.
+/// @return Non-zero when the exact primitive count was produced; zero on overflow.
 static int gltf_mesh_count_total_primitives(void *meshes_arr,
                                             int mesh_json_count,
                                             int *out_total_prims,
@@ -872,6 +1050,18 @@ static int gltf_mesh_count_total_primitives(void *meshes_arr,
     return 1;
 }
 
+/// @brief Allocate the mesh-range and per-primitive output tables for mesh import.
+/// @details All returned tables are zero-initialized. On failure, every allocation
+///          made here is released and the asset mesh table is reset.
+/// @param[in,out] asset Asset whose mesh pointer table is allocated.
+/// @param mesh_json_count Number of glTF mesh objects requiring range entries.
+/// @param total_prims Pre-counted total number of glTF primitives.
+/// @param[out] out_mesh_prim_start Receives the per-glTF-mesh first output slot table.
+/// @param[out] out_mesh_prim_count Receives the per-glTF-mesh output count table.
+/// @param[out] out_primitive_materials Receives the per-output-mesh material table.
+/// @param[out] out_primitive_variant_mappings Receives the per-output-mesh variant tables.
+/// @param[out] load_failed_io Optional flag raised on allocation failure.
+/// @return Non-zero when every output table was allocated; zero otherwise.
 static int gltf_mesh_alloc_output_tables(rt_gltf_asset *asset,
                                          int mesh_json_count,
                                          int total_prims,
@@ -907,6 +1097,15 @@ static int gltf_mesh_alloc_output_tables(rt_gltf_asset *asset,
     return 1;
 }
 
+/// @brief Decode and append a primitive using `KHR_draco_mesh_compression`.
+/// @param[in,out] ctx Shared mesh-load state and output tables.
+/// @param[in] mesh_json Parsed parent mesh object.
+/// @param[in] prim Parsed primitive object.
+/// @param[in] draco_ext Parsed `KHR_draco_mesh_compression` extension object.
+/// @param mesh_json_index Zero-based parent mesh index used in diagnostics.
+/// @param primitive_index Zero-based primitive index used in diagnostics.
+/// @param[in] prim_material Resolved runtime material for the primitive.
+/// @param[in,out] mesh_idx_io Next free asset mesh slot, advanced on success.
 static void gltf_draco_import_primitive(gltf_mesh_load_context_t *ctx,
                                         void *mesh_json,
                                         void *prim,
@@ -918,6 +1117,9 @@ static void gltf_draco_import_primitive(gltf_mesh_load_context_t *ctx,
 
 /// @brief Highest joint index carrying meaningful weight across a primitive's
 ///        JOINTS_0/JOINTS_1 accessors (-1 when the primitive is unskinned).
+/// @param[in] views Primitive accessor views containing any skin streams.
+/// @return Highest joint index with a finite, non-negligible weight, or -1 when
+///         no meaningful skin influence is present.
 static int32_t gltf_mesh_scan_max_joint(const gltf_mesh_primitive_views_t *views) {
     int32_t max_joint = -1;
     if (!views->has_skin0 && !views->has_skin1)
@@ -950,6 +1152,10 @@ static int32_t gltf_mesh_scan_max_joint(const gltf_mesh_primitive_views_t *views
 ///          the document declares a skin large enough to own those joints —
 ///          out-of-range garbage (joints past every skin) keeps the historical
 ///          clip-and-warn behavior instead of manufacturing phantom palettes.
+/// @param[in] root Parsed glTF document root containing the skin declarations.
+/// @param[in] views Primitive accessor views containing any joint streams.
+/// @return Non-zero when the primitive should be divided into bone-palette
+///         sub-meshes; zero when normal import or clipping should be used.
 static int gltf_mesh_primitive_needs_partition(void *root,
                                                const gltf_mesh_primitive_views_t *views) {
     int32_t max_joint = gltf_mesh_scan_max_joint(views);
@@ -973,6 +1179,16 @@ static int gltf_mesh_primitive_needs_partition(void *root,
 ///          bucket-local and whose `bone_map` translates palette slots back to
 ///          skeleton bone indices at draw time. Morph targets cannot survive the
 ///          vertex reordering and are skipped with a warning.
+/// @param[in,out] ctx Shared mesh-load state and growable output tables.
+/// @param[in] prim Parsed primitive object.
+/// @param[in] views Validated source accessor views.
+/// @param mesh_json_index Zero-based parent mesh index used in diagnostics.
+/// @param primitive_index Zero-based primitive index used in diagnostics.
+/// @param mode glTF triangle topology mode.
+/// @param material_idx Primitive material index, or a negative value when absent.
+/// @param[in] prim_material Resolved runtime material for each emitted sub-mesh.
+/// @param[in,out] mesh_idx_io Next free asset mesh slot, advanced for each
+///                            successfully emitted partition.
 static void gltf_mesh_import_partitioned_primitive(gltf_mesh_load_context_t *ctx,
                                                    void *prim,
                                                    const gltf_mesh_primitive_views_t *views,
@@ -1267,6 +1483,16 @@ fail:
         *ctx->load_failed_io = 1;
 }
 
+/// @brief Import one glTF primitive into one or more runtime mesh slots.
+/// @details Selects the Draco, preloaded, partitioned-skin, or conventional accessor
+///          path; validates required UV streams; records materials and variant
+///          mappings; and advances the output slot only for emitted meshes.
+/// @param[in,out] ctx Shared mesh-load state and output tables.
+/// @param[in] mesh_json Parsed parent mesh object.
+/// @param[in] prim Parsed primitive object.
+/// @param mesh_json_index Zero-based parent mesh index used for preloads and diagnostics.
+/// @param primitive_index Zero-based primitive index used for preloads and diagnostics.
+/// @param[in,out] mesh_idx_io Next free asset mesh slot, advanced for emitted meshes.
 static void gltf_mesh_import_primitive(gltf_mesh_load_context_t *ctx,
                                        void *mesh_json,
                                        void *prim,
@@ -1417,6 +1643,16 @@ static void gltf_mesh_import_primitive(gltf_mesh_load_context_t *ctx,
     gltf_mesh_store_primitive_variant_mapping(ctx, prim, *mesh_idx_io - 1);
 }
 
+/// @brief Import every primitive belonging to one parsed glTF mesh object.
+/// @details Records the contiguous output-mesh range produced for the source mesh;
+///          a single source primitive may contribute multiple slots when skin
+///          partitioning is required.
+/// @param[in,out] ctx Shared mesh-load state and output tables.
+/// @param[in] meshes_arr Parsed glTF `meshes` array.
+/// @param mesh_json_index Zero-based mesh object to import.
+/// @param[out] mesh_prim_start Optional per-source-mesh first-slot table.
+/// @param[out] mesh_prim_count Optional per-source-mesh emitted-count table.
+/// @param[in,out] mesh_idx_io Next free output slot, advanced by imported primitives.
 static void gltf_mesh_import_mesh_primitives(gltf_mesh_load_context_t *ctx,
                                              void *meshes_arr,
                                              int mesh_json_index,
@@ -1444,6 +1680,8 @@ static void gltf_mesh_import_mesh_primitives(gltf_mesh_load_context_t *ctx,
 ///          rejects NORMALS attributes whose declared components != 3, so this
 ///          normally equals att->components; the explicit branch keeps the reader
 ///          memory-safe even if that invariant is ever relaxed.
+/// @param[in] att Decoded Draco attribute descriptor.
+/// @return Number of output scalar elements stored for each attribute value.
 static size_t gltf_draco_attribute_out_stride(const draco_attribute *att) {
     return (att->decoder_type == DRACO_SEQ_NORMALS) ? 3u : (size_t)att->components;
 }
@@ -1451,6 +1689,11 @@ static size_t gltf_draco_attribute_out_stride(const draco_attribute *att) {
 /// @brief Read one float component from a decoded Draco attribute (handles both the
 ///        dequantized float and integer storage forms; integers are normalized when
 ///        the attribute was declared normalized).
+/// @param[in] att Decoded attribute containing floating-point or integer output.
+/// @param value Zero-based decoded attribute value index.
+/// @param component Zero-based component within the selected value.
+/// @return Component converted to floating point, including integer normalization
+///         when requested; zero when the attribute has no decoded storage.
 static float gltf_draco_attribute_float(const draco_attribute *att, uint32_t value, int component) {
     size_t index = (size_t)value * gltf_draco_attribute_out_stride(att) + (size_t)component;
     if (att->out_floats)
@@ -1478,6 +1721,14 @@ static float gltf_draco_attribute_float(const draco_attribute *att, uint32_t val
 ///          TEXCOORD_1/COLOR_0/JOINTS_0/WEIGHTS_0 are optional). Unsupported
 ///          encodings (point clouds) and corrupt payloads set load_failed with a
 ///          named diagnostic.
+/// @param[in,out] ctx Shared mesh-load state, source buffers, and output tables.
+/// @param[in] mesh_json Parsed parent mesh object used for morph-target import.
+/// @param[in] prim Parsed primitive object.
+/// @param[in] draco_ext Parsed `KHR_draco_mesh_compression` extension object.
+/// @param mesh_json_index Zero-based parent mesh index used in diagnostics.
+/// @param primitive_index Zero-based primitive index used in diagnostics.
+/// @param[in] prim_material Resolved runtime material for the decoded mesh.
+/// @param[in,out] mesh_idx_io Next free asset mesh slot, advanced on success.
 static void gltf_draco_import_primitive(gltf_mesh_load_context_t *ctx,
                                         void *mesh_json,
                                         void *prim,
@@ -1695,8 +1946,23 @@ fail:
 ///        Extracted post-asset phase of rt_gltf_load_impl. Malformed primitives set
 ///        load_failed_io so corrupt assets do not render as partial/empty scenes.
 /// @note out_mesh_prim_start/out_mesh_prim_count map a glTF mesh index to its
-///       owning asset->meshes range; out_primitive_materials parallels
-///       asset->meshes. All three are heap arrays owned by the caller's cleanup.
+///       owning asset->meshes range; the material and variant-mapping tables
+///       parallel asset->meshes. All returned arrays are owned by caller cleanup.
+/// @param[in,out] asset Asset receiving the decoded runtime meshes.
+/// @param[in] root Parsed glTF document root.
+/// @param[in] buffers Resolved glTF buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param[in,out] preload_bundle Optional bundle of asynchronously decoded primitives.
+/// @param[in] material_infos Per-material UV and feature metadata.
+/// @param[out] out_mesh_prim_start Receives the owned per-source-mesh first-slot table.
+/// @param[out] out_mesh_prim_count Receives the owned per-source-mesh emitted-count table.
+/// @param[out] out_primitive_materials Receives the owned per-output-mesh material table.
+/// @param[out] out_primitive_variant_mappings Receives the owned per-output-mesh
+///                                             variant-mapping pointer table.
+/// @param[out] out_primitive_variant_mapping_count Receives the allocated capacity
+///                                                  of the variant-mapping table.
+/// @param[in,out] load_failed_io Optional flag raised when malformed data, overflow,
+///                               or allocation failure prevents a complete import.
 static void gltf_load_meshes(rt_gltf_asset *asset,
                              void *root,
                              gltf_buffer_t *buffers,

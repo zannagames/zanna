@@ -5,12 +5,27 @@
 // path/URI resolution
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_import.inc
+ * @brief Implements glTF scene-resource import, preload consumption, and dependency resolution.
+ * @details Included by `rt_gltf.c`, this fragment converts staged mesh and morph payloads into
+ *          runtime objects, sanitizes transforms, clones scene hierarchies, imports cameras and
+ *          punctual lights, attaches morph targets, and resolves external buffer or image URIs
+ *          through preload bundles, the asset manager, or bounded filesystem reads. Ownership
+ *          transfers are explicit so partial failures can release all temporary state safely.
+ */
+
 /// @brief Unpack a primitive's preloaded "VGMT" morph-target POD blob and attach it to @p mesh_obj.
 /// @details Looks up the morph dependency by mesh/primitive key, validates the header (magic,
 ///          version, matching vertex count) and every record/name/payload offset against the blob
 ///          length, then rebuilds an rt_morphtarget3d — adding each named shape with its weight and
 ///          per-vertex position/normal/tangent deltas (only the flagged channels). Missing morph
 ///          blobs are allowed; malformed present blobs fail the caller's asset load.
+/// @param preload_bundle Bundle from which the primitive's morph dependency is consumed.
+/// @param mesh_index Source glTF mesh index used to construct the dependency key.
+/// @param primitive_index Primitive index within the source mesh.
+/// @param mesh_obj Runtime mesh receiving the reconstructed morph target.
+/// @param vertex_count Expected vertex count shared by the mesh and every morph channel.
 /// @return 1 when the morph dependency is absent or fully attached; 0 when a present dependency is
 ///         corrupt or cannot be applied.
 static int gltf_preload_take_decoded_morph(rt_gltf_preload_bundle *preload_bundle,
@@ -167,6 +182,10 @@ malformed:
 ///          arrays directly into a fresh mesh's internals (a fast path that bypasses per-vertex
 ///          appends), attaches any morph targets, and returns the primitive's flags via @p
 ///          out_flags.
+/// @param preload_bundle Bundle from which the primitive dependency is consumed.
+/// @param mesh_index Source glTF mesh index used in the dependency key.
+/// @param primitive_index Primitive index within the source mesh.
+/// @param out_flags Optional destination for the validated packed-mesh feature flags.
 /// @return New Mesh3D handle, or NULL if the blob is missing or malformed.
 static void *gltf_preload_take_decoded_mesh(rt_gltf_preload_bundle *preload_bundle,
                                             int mesh_index,
@@ -289,6 +308,9 @@ malformed:
 /// @brief Return @p value if it is finite, otherwise return @p fallback.
 /// @details Protects downstream arithmetic from NaN and ±Inf values that can appear
 ///   in glTF fields parsed from malformed JSON numbers.
+/// @param value Candidate numeric value.
+/// @param fallback Replacement used for NaN or either infinity.
+/// @return @p value when finite; otherwise @p fallback.
 static double gltf_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
@@ -297,6 +319,11 @@ static double gltf_finite_or(double value, double fallback) {
 /// @details Combines `gltf_finite_or` with a bounds clamp in one call. Used for material
 ///   colour components, emissive strength, metallic/roughness factors, and spot-light angles
 ///   where both NaN/Inf rejection and range enforcement are required.
+/// @param value Candidate numeric value.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @param fallback Finite replacement applied before clamping.
+/// @return Sanitized value in the inclusive interval [@p lo, @p hi].
 static double gltf_clamp_double(double value, double lo, double hi, double fallback) {
     value = gltf_finite_or(value, fallback);
     if (value < lo)
@@ -307,6 +334,10 @@ static double gltf_clamp_double(double value, double lo, double hi, double fallb
 }
 
 /// @brief Normalize @p v, or replace it with @p fallback when it is degenerate.
+/// @param v Mutable three-component vector.
+/// @param fx Fallback X component.
+/// @param fy Fallback Y component.
+/// @param fz Fallback Z component.
 static void gltf_normalize_vec3_or(double *v, double fx, double fy, double fz) {
     double len;
     if (!v)
@@ -328,6 +359,7 @@ static void gltf_normalize_vec3_or(double *v, double fx, double fy, double fz) {
 
 /// @brief Sanitize a quaternion in place: replace non-finite components (defaulting w to 1),
 ///   then normalize; falls back to identity (0,0,0,1) when the length is near zero.
+/// @param q Mutable XYZW quaternion; may be NULL.
 static void gltf_normalize_quat_or_identity(double *q) {
     double len;
     if (!q)
@@ -353,6 +385,9 @@ static void gltf_normalize_quat_or_identity(double *q) {
 /// @brief Sanitize a TRS triple in place: non-finite position components become 0, the
 ///   quaternion is normalized to identity-on-degenerate, and non-finite scale components
 ///   become 1. NULL outputs are skipped.
+/// @param pos Optional mutable XYZ position.
+/// @param quat Optional mutable XYZW rotation quaternion.
+/// @param scale Optional mutable XYZ scale.
 static void gltf_sanitize_trs(double *pos, double *quat, double *scale) {
     if (pos) {
         pos[0] = gltf_finite_or(pos[0], 0.0);
@@ -371,6 +406,10 @@ static void gltf_sanitize_trs(double *pos, double *quat, double *scale) {
 /// @details Combines `jarr_len` bounds-check, `rt_seq_get`, and `jvalue_num` into a single call
 ///   for safely reading glTF array fields like `"color"` and `"translation"` that may have
 ///   fewer than the expected number of elements.
+/// @param arr JSON array to read.
+/// @param index Zero-based element index.
+/// @param fallback Value returned for a missing or non-numeric element.
+/// @return Parsed numeric value or @p fallback.
 static double gltf_arr_num(void *arr, int64_t index, double fallback) {
     if (!arr || index < 0 || index >= jarr_len(arr))
         return fallback;
@@ -378,6 +417,9 @@ static double gltf_arr_num(void *arr, int64_t index, double fallback) {
 }
 
 /// @brief Duplicate @p value, or @p fallback when @p value is NULL/empty (traps on alloc failure).
+/// @param value Preferred source string.
+/// @param fallback Alternate source used when @p value is absent or empty.
+/// @return Heap-allocated NUL-terminated copy.
 static char *gltf_strdup_or(const char *value, const char *fallback) {
     const char *src = (value && value[0] != '\0') ? value : fallback;
     size_t len;
@@ -401,6 +443,9 @@ static char *gltf_strdup_or(const char *value, const char *fallback) {
 /// @brief Append a newly-created Camera3D to the asset-owned active-scene camera list.
 /// @details Takes ownership of @p camera on success. On allocation failure the caller still owns
 ///   the camera and should release it.
+/// @param asset Asset whose legacy camera list is extended.
+/// @param camera Retained camera handle transferred on success.
+/// @return Non-zero on success or a null-argument no-op; zero after a growth failure.
 static int gltf_append_camera(rt_gltf_asset *asset, void *camera) {
     void **grown;
     int32_t next_capacity;
@@ -430,6 +475,9 @@ static int gltf_append_camera(rt_gltf_asset *asset, void *camera) {
 /// @brief Append a Camera3D to one scene's camera list, growing it as needed (takes ownership).
 /// @details Per-scene analogue of gltf_append_camera. Returns 1 on success (or no-op for NULL
 ///          args); returns 0 and traps on overflow or allocation failure.
+/// @param scene Scene record whose camera array is extended.
+/// @param camera Retained camera handle transferred on success.
+/// @return Non-zero on success or a null-argument no-op; zero after a growth failure.
 static int gltf_append_scene_camera(gltf_scene_info_t *scene, void *camera) {
     void **grown;
     int32_t next_capacity;
@@ -460,6 +508,10 @@ static int gltf_append_scene_camera(gltf_scene_info_t *scene, void *camera) {
 /// @details Counts the root's descendants for node_count and synthesizes a name ("default" for
 ///          the first scene, else "scene_N") when @p name is empty. Returns 0 and traps on overflow
 ///          or allocation failure; the root is borrowed (the asset references it, not copies it).
+/// @param asset Asset whose immutable scene list is extended.
+/// @param root Borrowed scene root node stored in the new record.
+/// @param name Optional source scene name.
+/// @return Non-zero after the scene record and owned name are installed.
 static int gltf_append_scene(rt_gltf_asset *asset, void *root, const char *name) {
     gltf_scene_info_t *grown;
     gltf_scene_info_t *scene;
@@ -506,6 +558,8 @@ static int gltf_append_scene(rt_gltf_asset *asset, void *root, const char *name)
 /// @details Copies the local TRS, AABB, and bounding sphere, and shares (retains) the mesh,
 ///          material, light, and name handles. Marks world transform dirty. Children are not
 ///          copied — gltf_clone_scene_node walks the hierarchy using this as the per-node step.
+/// @param src Source scene node whose local state and attachments are copied.
+/// @return Newly retained shallow clone, or NULL on allocation or material-variant copy failure.
 static rt_scene_node3d *gltf_clone_scene_node_shallow(const rt_scene_node3d *src) {
     rt_scene_node3d *dst;
     if (!src)
@@ -554,8 +608,11 @@ static rt_scene_node3d *gltf_clone_scene_node_shallow(const rt_scene_node3d *src
 /// @brief One explicit-stack frame for the iterative scene-node clone: the source/dest node
 ///        pair and the index of the next child still to be cloned.
 typedef struct {
+    /// Borrowed source node currently being traversed.
     const rt_scene_node3d *src;
+    /// Corresponding destination clone.
     rt_scene_node3d *dst;
+    /// Index of the next source child to clone.
     int32_t next_child;
 } gltf_clone_frame_t;
 
@@ -563,6 +620,8 @@ typedef struct {
 /// @details Uses an explicit growable stack rather than recursion, so arbitrarily deep glTF
 ///          hierarchies cannot overflow the C call stack. On any allocation failure it releases
 ///          the partially-built clone and traps. Returns the cloned root (NULL on failure).
+/// @param src Root of the source hierarchy to clone.
+/// @return Newly retained cloned root, or NULL on allocation or child-attachment failure.
 static rt_scene_node3d *gltf_clone_scene_node(const rt_scene_node3d *src) {
     rt_scene_node3d *root;
     gltf_clone_frame_t *stack;
@@ -632,6 +691,8 @@ static rt_scene_node3d *gltf_clone_scene_node(const rt_scene_node3d *src) {
 /// @details glTF perspective `yfov` is radians; Zanna stores vertical FOV in degrees. glTF
 ///   orthographic `xmag`/`ymag` are view half-extents, matching Camera3D.NewOrtho's half-height
 ///   size parameter and aspect ratio.
+/// @param camera_json One glTF `cameras` array entry.
+/// @return Newly retained perspective or orthographic camera, or NULL for an invalid type.
 static void *gltf_make_camera(void *camera_json) {
     static const double pi = 3.14159265358979323846;
     const char *type = jstr(camera_json, "type");
@@ -673,6 +734,8 @@ static void *gltf_make_camera(void *camera_json) {
 /// @brief Apply a glTF camera node's world transform to a standalone Camera3D object.
 /// @details glTF cameras look down local -Z with +Y as up. SceneNode3D matrices are row-major,
 ///   so the local -Z and +Y axes are read from the third and second rotation columns.
+/// @param camera Runtime camera whose eye, target, and up vector are updated.
+/// @param node Imported scene node carrying the camera's world transform.
 static void gltf_apply_camera_node_transform(void *camera, rt_scene_node3d *node) {
     void *world_obj;
     double m[16];
@@ -709,6 +772,11 @@ static void gltf_apply_camera_node_transform(void *camera, rt_scene_node3d *node
 }
 
 /// @brief Mark @p root_idx and its descendants as members of the active scene.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param node_count Number of entries in @p nodes_arr and @p active_nodes.
+/// @param root_idx Root node index from which traversal begins.
+/// @param active_nodes Mutable byte flags indexed by glTF node.
+/// @return Non-zero when the iterative traversal completes without allocation overflow.
 static int gltf_mark_active_node_subtree(void *nodes_arr,
                                          int32_t node_count,
                                          int32_t root_idx,
@@ -761,6 +829,12 @@ static int gltf_mark_active_node_subtree(void *nodes_arr,
 }
 
 /// @brief Create Camera3D objects for camera nodes that are reachable from one immutable scene.
+/// @param scene Scene record receiving cameras and node attachments.
+/// @param root glTF JSON root containing camera definitions.
+/// @param nodes_arr glTF JSON `nodes` array.
+/// @param node_count Number of node slots covered by the scene maps.
+/// @param active_nodes Membership flags for this scene.
+/// @return Non-zero when all reachable camera nodes are resolved and installed.
 static int gltf_import_scene_cameras(gltf_scene_info_t *scene,
                                      void *root,
                                      void *nodes_arr,
@@ -846,6 +920,8 @@ done:
 /// @details Back-compat shim: retains scene 0's root as the asset's scene_root, copies its node
 ///          count, and re-registers its cameras on the asset so older single-scene accessors keep
 ///          working. Returns 0 and releases the camera on append failure.
+/// @param asset Asset whose legacy fields are populated from its first scene.
+/// @return Non-zero on success or when the asset has no scene; zero on camera-list growth failure.
 static int gltf_install_active_scene_compat(rt_gltf_asset *asset) {
     gltf_scene_info_t *scene;
     if (!asset || asset->scene_count <= 0)
@@ -964,6 +1040,9 @@ static void *gltf_new_punctual_light(void *light_json) {
 /// @details Walks `root.extensions.KHR_lights_punctual.lights`, calls `gltf_new_punctual_light`
 ///          for each entry, and writes the resulting pointer array and count to the output params.
 ///          On failure or missing extension both outputs are left at NULL/0.
+/// @param root glTF JSON root.
+/// @param out_lights Receives a heap-allocated array of retained light handles.
+/// @param out_count Receives the number of array slots, including any null entries.
 static void gltf_parse_punctual_lights(void *root, void ***out_lights, int32_t *out_count) {
     void *extensions;
     void *punctual;
@@ -996,6 +1075,11 @@ static void gltf_parse_punctual_lights(void *root, void ***out_lights, int32_t *
 /// @details If no name is present (missing extras, out-of-range index, or empty string),
 ///          fills @p fallback with `"target_N"` and returns it so the caller always
 ///          gets a non-NULL, non-empty string.
+/// @param mesh_json glTF mesh object containing optional target-name extras.
+/// @param target_index Morph-target index to name.
+/// @param fallback Writable buffer for the generated name.
+/// @param fallback_cap Capacity of @p fallback including its terminator.
+/// @return Borrowed JSON string when available; otherwise @p fallback.
 static const char *gltf_target_name(void *mesh_json,
                                     int32_t target_index,
                                     char *fallback,
@@ -1023,6 +1107,13 @@ static const char *gltf_target_name(void *mesh_json,
 ///          entry, reads POSITION / NORMAL / TANGENT accessor deltas, and registers them as
 ///          named shapes. Initial weights come from the mesh-level `weights` array when present.
 ///          The morph target is attached to @p mesh_obj via `rt_mesh3d_set_morph_targets`.
+/// @param root glTF JSON root used for accessor lookup.
+/// @param buffers Materialized glTF buffers.
+/// @param buf_count Number of entries in @p buffers.
+/// @param mesh_json Parent mesh object supplying names and default weights.
+/// @param prim Primitive JSON object containing the target accessors.
+/// @param mesh_obj Runtime mesh receiving the morph-target object.
+/// @param vertex_count Number of vertex slots in the runtime mesh.
 static void gltf_import_primitive_morph_targets(void *root,
                                                 gltf_buffer_t *buffers,
                                                 int buf_count,
@@ -1121,6 +1212,8 @@ static void gltf_import_primitive_morph_targets(void *root,
 /// @details Iterates up to `min(shape_count, weights_arr length)` entries and calls
 ///          `rt_morphtarget3d_set_weight` for each. No-op when the mesh has no morph targets
 ///          or when @p weights_arr is NULL.
+/// @param mesh_obj Runtime mesh whose attached morph target is updated.
+/// @param weights_arr JSON node-level weights array.
 static void gltf_apply_node_morph_weights(void *mesh_obj, void *weights_arr) {
     rt_mesh3d *mesh = (rt_mesh3d *)mesh_obj;
     int64_t shape_count;
@@ -1146,6 +1239,8 @@ static void gltf_apply_node_morph_weights(void *mesh_obj, void *weights_arr) {
 /// External buffers and textures in glTF are referenced via paths
 /// relative to the .gltf file itself; this prepends the document's
 /// directory so the loader can open them.
+/// @param ch Candidate ASCII hexadecimal digit.
+/// @return Numeric value from zero through fifteen, or -1 when invalid.
 static int gltf_hex_digit(char ch) {
     if (ch >= '0' && ch <= '9')
         return ch - '0';
@@ -1161,6 +1256,10 @@ static int gltf_hex_digit(char ch) {
 ///          or `?` (query), and NUL-terminates @p out. Rejects malformed escapes and any control
 ///          character (< 0x20, including NUL) or DEL (0x7F), whether literal or percent-decoded.
 ///          Does not handle scheme prefixes (file://, http://) — caller rejects those after decode.
+/// @param uri NUL-terminated URI path to decode.
+/// @param out Destination buffer for the decoded path.
+/// @param out_cap Capacity of @p out including its terminator.
+/// @return Non-zero when a non-empty safe path was written.
 static int gltf_decode_uri_path(const char *uri, char *out, size_t out_cap) {
     size_t oi = 0;
     if (!out || out_cap == 0)
@@ -1199,6 +1298,7 @@ static int gltf_decode_uri_path(const char *uri, char *out, size_t out_cap) {
 /// @details The decoded path is still bounded by `GLTF_MAX_URI_PATH_BYTES`, rejects raw or
 ///          percent-decoded control characters, and strips query/fragment suffixes just like
 ///          `gltf_decode_uri_path`.
+/// @param uri NUL-terminated URI path to decode.
 /// @return Malloc-owned decoded path, or NULL on malformed/empty/overlong input.
 static char *gltf_decode_uri_path_alloc(const char *uri) {
     size_t uri_len;
@@ -1227,6 +1327,8 @@ static char *gltf_decode_uri_path_alloc(const char *uri) {
 /// @details Decodes the URI, normalizes safe `.` path segments, rejects absolute paths, URI
 ///          schemes, `..` traversal, decoded NULs, and overlong results, then prepends the
 ///          directory component of @p base_path. Both `/` and `\` separators are recognised.
+/// @param base_path Filesystem or asset path of the root glTF document.
+/// @param uri Relative dependency URI from the document.
 /// @return Malloc-owned resolved path, or NULL when the URI is unsafe, malformed, or too long.
 static char *gltf_resolve_relative_path_alloc(const char *base_path, const char *uri) {
     char *decoded_uri;
@@ -1285,12 +1387,17 @@ static char *gltf_resolve_relative_path_alloc(const char *base_path, const char 
 }
 
 /// @brief True if @p path uses the `asset://` scheme (a packed/mounted asset URI).
+/// @param path Path string to classify.
+/// @return Non-zero when @p path begins with the exact `asset://` prefix.
 static int gltf_is_asset_uri(const char *path) {
     return path && strncmp(path, "asset://", 8) == 0;
 }
 
 /// @brief Read an entire file into a freshly malloc'd buffer (caller frees), capping at
 ///   256 MiB; returns NULL and zeroes @p out_size on any error.
+/// @param filepath UTF-8 filesystem path to open.
+/// @param out_size Optional destination for the complete byte count; cleared before reading.
+/// @return Heap-allocated file bytes, or NULL for I/O, size, or allocation failure.
 static uint8_t *gltf_read_file_bytes(const char *filepath, size_t *out_size) {
     if (out_size)
         *out_size = 0;
@@ -1330,6 +1437,11 @@ static uint8_t *gltf_read_file_bytes(const char *filepath, size_t *out_size) {
 
 /// @brief Load the root .gltf/.glb bytes: when @p load_assets, try the asset manager
 ///   first (and stop there for `asset://` URIs), otherwise fall back to the filesystem.
+/// @param path Runtime string passed to the asset manager.
+/// @param filepath UTF-8 path used for scheme checks and filesystem fallback.
+/// @param load_assets Non-zero to consult the asset manager first.
+/// @param out_size Optional destination for the loaded byte count.
+/// @return Heap-allocated root bytes, or NULL when neither source can provide them.
 static uint8_t *gltf_load_root_bytes(rt_string path,
                                      const char *filepath,
                                      int load_assets,
@@ -1347,6 +1459,12 @@ static uint8_t *gltf_load_root_bytes(rt_string path,
 
 /// @brief Load an external dependency's bytes (asset manager when @p load_assets, else
 ///   filesystem), failing if fewer than @p required_len bytes are available.
+/// @param resource_path Resolved dependency key or filesystem path.
+/// @param load_assets Non-zero to consult the asset manager before filesystem fallback.
+/// @param required_len Minimum acceptable payload length.
+/// @param preload_bundle Optional bundle from which staged bytes are consumed first.
+/// @param out_size Optional destination for the complete loaded byte count.
+/// @return Owned dependency bytes meeting @p required_len, or NULL on absence or failure.
 static uint8_t *gltf_load_dependency_bytes(const char *resource_path,
                                            int load_assets,
                                            size_t required_len,
@@ -1386,6 +1504,9 @@ done:
 /// @brief Take a preloaded image for @p key as a Pixels object, decoding from RGBA if needed.
 /// @details Prefers an already-finished IMAGE_PIXELS dependency; otherwise consumes the staged
 ///          IMAGE_RGBA blob and builds Pixels from it. Returns NULL if neither is present.
+/// @param preload_bundle Bundle containing decoded image dependencies.
+/// @param key Exact dependency key to consume.
+/// @return Transferred Pixels or source-preserving texture object, or NULL when unavailable.
 static void *gltf_preload_take_decoded_image(rt_gltf_preload_bundle *preload_bundle,
                                              const char *key) {
     uint8_t *rgba_blob;
@@ -1414,6 +1535,10 @@ static void *gltf_preload_take_decoded_image(rt_gltf_preload_bundle *preload_bun
 
 /// @brief Load and decode an external image dependency into a Pixels object: asset
 ///   manager (decoded by type) when @p load_assets, otherwise rt_pixels_load from disk.
+/// @param resource_path Resolved image dependency key or filesystem path.
+/// @param load_assets Non-zero to consult the asset manager before filesystem fallback.
+/// @param preload_bundle Optional bundle supplying staged encoded or decoded image data.
+/// @return Newly retained decoded Pixels or texture object, or NULL after all sources fail.
 static void *gltf_load_dependency_image(const char *resource_path,
                                         int load_assets,
                                         rt_gltf_preload_bundle *preload_bundle) {
@@ -1480,6 +1605,9 @@ static void *gltf_load_dependency_image(const char *resource_path,
 }
 
 /// @brief Write a NUL-terminated error message into the caller's buffer (no-op if buffer absent).
+/// @param error Optional destination buffer.
+/// @param error_cap Capacity of @p error including its terminator.
+/// @param message Message to copy, or NULL for the default preload failure text.
 static void gltf_preload_set_error(char *error, size_t error_cap, const char *message) {
     if (error && error_cap > 0) {
         snprintf(error, error_cap, "%s", message ? message : "failed to stage glTF preload");

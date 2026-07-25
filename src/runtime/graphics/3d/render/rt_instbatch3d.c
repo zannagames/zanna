@@ -28,6 +28,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements retained multi-transform InstanceBatch3D rendering.
+/// @details Batches preserve double-precision authoritative transforms, maintain
+///   sanitized float mirrors and motion history, repair private state, perform
+///   per-instance frustum culling, and queue stable instanced submissions.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_instbatch3d.h"
@@ -84,6 +90,9 @@ typedef struct {
 ///   SIZE_MAX so both signed-integer and size_t overflow are prevented.  Returns 1
 ///   on success and writes the new capacity into *out_capacity; returns 0 if the
 ///   current capacity is already too large to double safely.
+/// @param current Current matrix-slot capacity; nonpositive values select the initial capacity.
+/// @param out_capacity Output receiving the proposed positive capacity.
+/// @return Nonzero when a safe capacity was written; zero for a null output or overflow.
 static int instbatch_next_capacity(int32_t current, int32_t *out_capacity) {
     if (!out_capacity)
         return 0;
@@ -104,18 +113,28 @@ static int instbatch_next_capacity(int32_t current, int32_t *out_capacity) {
 /// @details Used as a NaN/Inf fallback value when sanitizing incoming Mat4
 ///   transforms — replacing bad floats with the identity element preserves the
 ///   matrix structure and avoids propagating undefined GPU state.
+/// @param row Zero-based matrix row.
+/// @param col Zero-based matrix column.
+/// @return `1.0` on the diagonal and `0.0` elsewhere.
 static float instbatch_identity_at(int row, int col) {
     return row == col ? 1.0f : 0.0f;
 }
 
 /// @brief True if `value` is finite and within ±INSTBATCH3D_FLOAT_ABS_MAX (safe to narrow to
 /// float).
+/// @param value Candidate double-precision matrix element.
+/// @return Nonzero when conversion to finite `float` cannot overflow.
 static int instbatch_value_fits_float(double value) {
     return isfinite(value) && value >= -INSTBATCH3D_FLOAT_ABS_MAX &&
            value <= INSTBATCH3D_FLOAT_ABS_MAX;
 }
 
 /// @brief Sanitize a matrix element before storing/submitting it as instance state.
+/// @param value Candidate element.
+/// @param row Element row used to select an identity fallback.
+/// @param col Element column used to select an identity fallback.
+/// @return Finite float clamped to the supported world range, or the matching
+///   identity element when narrowing is unsafe.
 static float instbatch_sanitize_matrix_value(double value, int row, int col) {
     if (!instbatch_value_fits_float(value))
         return instbatch_identity_at(row, col);
@@ -132,6 +151,10 @@ static float instbatch_sanitize_matrix_value(double value, int row, int col) {
 ///   identity element for their row/column. Finite values inside float range
 ///   but outside the supported world bound are clamped so large translations
 ///   remain usable without poisoning raster state.
+/// @param value Candidate element.
+/// @param row Element row used to select an identity fallback.
+/// @param col Element column used to select an identity fallback.
+/// @return Sanitized finite double suitable for authoritative storage.
 static double instbatch_sanitize_matrix_value64(double value, int row, int col) {
     if (!instbatch_value_fits_float(value))
         return (double)instbatch_identity_at(row, col);
@@ -143,11 +166,15 @@ static double instbatch_sanitize_matrix_value64(double value, int row, int col) 
 }
 
 /// @brief True if `transform` is a live Mat4 runtime instance of the expected size.
+/// @param transform Candidate runtime object handle.
+/// @return Nonzero when the object has the Mat4 class and implementation size.
 static int instbatch_mat4_valid(void *transform) {
     return transform && rt_obj_is_instance(transform, RT_MAT4_CLASS_ID, sizeof(mat4_impl));
 }
 
 /// @brief Copy a Mat4 object into a double[16] slot, preserving precision until submission.
+/// @param dst Output array of sixteen doubles; `NULL` is ignored.
+/// @param transform Borrowed validated Mat4 receiver read element-by-element.
 static void instbatch_copy_mat4_sanitized64(double *dst, void *transform) {
     if (!dst)
         return;
@@ -160,6 +187,8 @@ static void instbatch_copy_mat4_sanitized64(double *dst, void *transform) {
 }
 
 /// @brief Narrow one authoritative double matrix slot into its float submit mirror.
+/// @param dst Output array of sixteen floats.
+/// @param src Input array of sixteen authoritative doubles.
 static void instbatch_copy_matrix64_to_float(float *dst, const double *src) {
     if (!dst || !src)
         return;
@@ -168,6 +197,7 @@ static void instbatch_copy_matrix64_to_float(float *dst, const double *src) {
 }
 
 /// @brief Replace invalid/extreme floats in a stored matrix slot with bounded values.
+/// @param slot In/out array of sixteen float matrix elements; `NULL` is ignored.
 static void instbatch_sanitize_matrix_slot(float *slot) {
     if (!slot)
         return;
@@ -176,6 +206,9 @@ static void instbatch_sanitize_matrix_slot(float *slot) {
 }
 
 /// @brief Repair all active matrix slots before motion snapshots or backend submission.
+/// @details Regenerates live float mirrors from authoritative doubles when
+///   available and sanitizes current/previous motion snapshots in place.
+/// @param b Batch whose active matrix ranges are repaired; `NULL` is ignored.
 static void instbatch_sanitize_active_matrices(rt_instbatch3d *b) {
     if (!b)
         return;
@@ -198,6 +231,10 @@ static void instbatch_sanitize_active_matrices(rt_instbatch3d *b) {
 ///   stride math so callers don't repeat it across the file, and folds in
 ///   the null / negative-index guards that the motion-snapshot path
 ///   depends on.
+/// @param dst Destination flat matrix array.
+/// @param dst_idx Nonnegative destination matrix index.
+/// @param src Source flat matrix array; may alias @p dst.
+/// @param src_idx Nonnegative source matrix index.
 static void instbatch_copy_matrix_slot(float *dst,
                                        int32_t dst_idx,
                                        const float *src,
@@ -278,11 +315,14 @@ static int instbatch_matrix64_to_canvas_frame(const rt_canvas3d *c, const double
 /// @details Paired helper for the batch's mesh / material slots — the
 ///   instance-batch owns refs to these, so finalize must release them. Idempotent on
 ///   already-null slots so a partially-initialized batch can be torn down safely.
+/// @param slot Address of an owned runtime-reference slot.
 static void instbatch_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Release a retained Mesh3D slot only when it still points at Mesh3D.
+/// @param slot Address of a possibly owned mesh slot. A stale non-null value is
+///   cleared without attempting reference-count release.
 static void instbatch_release_mesh_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -294,6 +334,8 @@ static void instbatch_release_mesh_slot(void **slot) {
 }
 
 /// @brief Release a retained Material3D slot only when it still points at Material3D.
+/// @param slot Address of a possibly owned material slot. A stale non-null value
+///   is cleared without attempting reference-count release.
 static void instbatch_release_material_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -305,6 +347,8 @@ static void instbatch_release_material_slot(void **slot) {
 }
 
 /// @brief Release and clear corrupted private resource slots.
+/// @param b Batch whose retained mesh and material handles are repaired;
+///   `NULL` is ignored.
 static void instbatch_repair_resource_handles(rt_instbatch3d *b) {
     if (!b)
         return;
@@ -315,6 +359,13 @@ static void instbatch_repair_resource_handles(rt_instbatch3d *b) {
 }
 
 /// @brief Repair count/buffer invariants before mutating or drawing a batch.
+/// @details Reconstructs a missing authoritative double mirror when legacy float
+///   buffers are intact. Otherwise it discards inconsistent arrays and creates
+///   a fresh empty initial-capacity set. Counts are clamped to live capacities,
+///   and motion-history flags are normalized.
+/// @param b Batch to repair in place.
+/// @return Nonzero when four coherent primary matrix buffers are available;
+///   zero for null input or reconstruction/allocation failure.
 static int instbatch_repair_state(rt_instbatch3d *b) {
     if (!b)
         return 0;
@@ -383,6 +434,10 @@ static int instbatch_repair_state(rt_instbatch3d *b) {
 ///   doesn't accidentally hide every instance. The matrix is promoted to
 ///   double precision for the transform because the AABB refit can amplify
 ///   rounding at large world coordinates.
+/// @param frustum Borrowed camera frustum; `NULL` disables rejection.
+/// @param mesh_min Three-element local-space minimum AABB corner.
+/// @param mesh_max Three-element local-space maximum AABB corner.
+/// @param model_matrix Sixteen-element row-major instance transform.
 /// @return 1 if the instance's world AABB is on-screen or intersecting, 0 if
 ///   definitively outside the frustum.
 static int instbatch_instance_visible(const vgfx3d_frustum_t *frustum,
@@ -411,6 +466,7 @@ static int instbatch_instance_visible(const vgfx3d_frustum_t *frustum,
 ///   are plain heap allocations with no downstream refs to release. Counters are zeroed post-free
 ///   so a lingering post-finalize read sees an empty batch rather than
 ///   capacity-matches-missing-buffer.
+/// @param obj InstanceBatch3D payload being finalized; `NULL` is ignored.
 static void instbatch_finalizer(void *obj) {
     rt_instbatch3d *b = (rt_instbatch3d *)obj;
     if (!b)
@@ -487,8 +543,12 @@ void *rt_instbatch3d_new(void *mesh, void *material) {
 }
 
 /// @brief Add an instance with the given transform (grows array if full).
-/// @details Copies the Mat4 (double) into the float[16] transform buffer.
-///          The array uses geometric growth to amortize allocation cost.
+/// @details Copies and sanitizes the Mat4 into authoritative double storage and
+///   its float submit mirror. All four parallel arrays grow transactionally and
+///   geometrically; allocation or overflow failure reports a trap without
+///   incrementing the instance count.
+/// @param obj InstanceBatch3D receiver; invalid handles are ignored.
+/// @param transform Valid Mat4 to copy; ownership remains with the caller.
 void rt_instbatch3d_add(void *obj, void *transform) {
     rt_instbatch3d *b =
         (rt_instbatch3d *)rt_g3d_checked_or_null(obj, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
@@ -547,6 +607,11 @@ void rt_instbatch3d_add(void *obj, void *transform) {
 }
 
 /// @brief Remove an instance by index (swap-removes with last for O(1) time).
+/// @details Moves the final authoritative/live transform into the removed slot
+///   and repairs current/previous snapshot counts so motion arrays retain
+///   positional correspondence. Ordering is not preserved.
+/// @param obj InstanceBatch3D receiver; invalid handles are ignored.
+/// @param index Zero-based instance index; out-of-range values are ignored.
 void rt_instbatch3d_remove(void *obj, int64_t index) {
     rt_instbatch3d *b =
         (rt_instbatch3d *)rt_g3d_checked_or_null(obj, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
@@ -586,6 +651,9 @@ void rt_instbatch3d_remove(void *obj, int64_t index) {
 }
 
 /// @brief Update the transform of an existing instance at the given index.
+/// @param obj InstanceBatch3D receiver; invalid handles are ignored.
+/// @param index Zero-based instance index; out-of-range values are ignored.
+/// @param transform Valid Mat4 copied into authoritative and float mirror storage.
 void rt_instbatch3d_set(void *obj, int64_t index, void *transform) {
     rt_instbatch3d *b =
         (rt_instbatch3d *)rt_g3d_checked_or_null(obj, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
@@ -603,6 +671,9 @@ void rt_instbatch3d_set(void *obj, int64_t index, void *transform) {
 }
 
 /// @brief Remove all instances from the batch, resetting count to zero.
+/// @details Retains allocated matrix capacity for reuse and discards all current
+///   and previous motion-history counts.
+/// @param obj InstanceBatch3D receiver; invalid handles are ignored.
 void rt_instbatch3d_clear(void *obj) {
     rt_instbatch3d *b =
         (rt_instbatch3d *)rt_g3d_checked_or_null(obj, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
@@ -616,6 +687,9 @@ void rt_instbatch3d_clear(void *obj) {
 }
 
 /// @brief Get the current number of instances in the batch.
+/// @param obj InstanceBatch3D receiver.
+/// @return Repaired nonnegative instance count, or zero for an invalid or
+///   unrecoverable batch.
 int64_t rt_instbatch3d_count(void *obj) {
     rt_instbatch3d *b =
         (rt_instbatch3d *)rt_g3d_checked_or_null(obj, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
@@ -625,6 +699,8 @@ int64_t rt_instbatch3d_count(void *obj) {
 }
 
 /// @brief Internal bridge: borrow the batch's retained mesh (NULL for invalid handles).
+/// @param batch InstanceBatch3D receiver.
+/// @return Borrowed live Mesh3D handle, or `NULL`; the caller must not release it.
 void *rt_instbatch3d_borrow_mesh(void *batch) {
     rt_instbatch3d *b =
         (rt_instbatch3d *)rt_g3d_checked_or_null(batch, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
@@ -632,6 +708,8 @@ void *rt_instbatch3d_borrow_mesh(void *batch) {
 }
 
 /// @brief Internal bridge: borrow the batch's retained material (NULL for invalid handles).
+/// @param batch InstanceBatch3D receiver.
+/// @return Borrowed live Material3D handle, or `NULL`; the caller must not release it.
 void *rt_instbatch3d_borrow_material(void *batch) {
     rt_instbatch3d *b =
         (rt_instbatch3d *)rt_g3d_checked_or_null(batch, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
@@ -639,6 +717,14 @@ void *rt_instbatch3d_borrow_material(void *batch) {
 }
 
 /// @brief Internal bridge: borrow the batch's float transform array (N * 16, sanitized).
+/// @details Repairs batch state and regenerates/sanitizes active float mirrors
+///   before exposing them. The pointer remains batch-owned and can be invalidated
+///   by later mutation, growth, repair, or finalization.
+/// @param batch InstanceBatch3D receiver.
+/// @param out_count Optional output initialized to zero and set to the matrix
+///   count on success.
+/// @return Borrowed contiguous `count * 16` float array, or `NULL` for invalid,
+///   empty, or unrecoverable state.
 const float *rt_instbatch3d_borrow_transforms(void *batch, int32_t *out_count) {
     rt_instbatch3d *b =
         (rt_instbatch3d *)rt_g3d_checked_or_null(batch, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
@@ -652,8 +738,15 @@ const float *rt_instbatch3d_borrow_transforms(void *batch, int32_t *out_count) {
     return b->transforms;
 }
 
-/// @brief Draw all visible instances. Falls back to N individual draw calls
-/// since the software backend doesn't have a native instanced path.
+/// @brief Queue all visible instances for the active Canvas3D frame.
+/// @details Validates batch resources, refreshes mesh bounds, converts
+///   camera-relative double matrices when required, otherwise advances
+///   once-per-frame motion history and conservatively frustum-culls individual
+///   AABBs. Partial-cull scratch allocation failure falls back to the complete
+///   batch, while representation/primary allocation failures report a trap.
+///   Backend-native versus software fallback submission is selected downstream.
+/// @param canvas_obj Canvas3D receiver or supported stack-wrapper handle with an active frame.
+/// @param batch_obj InstanceBatch3D receiver borrowed for queue construction.
 void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas_obj);
     rt_instbatch3d *b =

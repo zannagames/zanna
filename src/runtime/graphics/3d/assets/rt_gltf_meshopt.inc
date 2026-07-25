@@ -12,6 +12,15 @@
 //   - Decoded output is exactly byteStride * count bytes, matching the parent bufferView.
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_meshopt.inc
+ * @brief Implements clean-room decoding for `EXT_meshopt_compression` buffer views.
+ * @details This `rt_gltf.c` fragment decodes attribute, triangle, and index bitstreams;
+ *          applies octahedral, quaternion, and exponential reconstruction filters; validates
+ *          extension configuration and byte ranges; and owns the decoded shadow buffers used
+ *          in place of compressed glTF buffer views.
+ */
+
 #define GLTF_MESHOPT_MODE_ATTRIBUTES 0
 #define GLTF_MESHOPT_MODE_TRIANGLES 1
 #define GLTF_MESHOPT_MODE_INDICES 2
@@ -22,12 +31,17 @@
 #define GLTF_MESHOPT_FILTER_EXPONENTIAL 3
 
 /// @brief Decode the byte-level zigzag scheme used by the attribute codec.
+/// @param v Encoded unsigned byte.
+/// @return Decoded two's-complement delta represented as an unsigned byte.
 static uint8_t gltf_meshopt_unzigzag8(uint8_t v) {
     return (uint8_t)((v & 1u) ? ~(v >> 1) : (v >> 1));
 }
 
 /// @brief Read one varint-7 (unsigned LEB128) value, capped at 32 bits / 5 bytes.
-/// @return 1 on success, 0 when the stream ends or the value is over-long.
+/// @param[in,out] cursor Address of the next encoded byte; advanced for consumed bytes.
+/// @param[in] end One-past-the-end pointer for the encoded region.
+/// @param[out] out Receives the decoded 32-bit value on success.
+/// @return Non-zero on success; zero when the stream ends early or the value is overlong.
 static int gltf_meshopt_read_leb128(const uint8_t **cursor, const uint8_t *end, uint32_t *out) {
     uint32_t value = 0;
     int shift = 0;
@@ -47,7 +61,12 @@ static int gltf_meshopt_read_leb128(const uint8_t **cursor, const uint8_t *end, 
 }
 
 /// @brief Write one decoded index to the output stream (16- or 32-bit little-endian).
-/// @return 0 when a 32-bit index cannot be represented in a 16-bit output stream.
+/// @param[out] dst Beginning of the decoded index stream.
+/// @param element Zero-based output index element.
+/// @param stride Output element width, either two or four bytes.
+/// @param value Decoded unsigned index value.
+/// @return Non-zero on success; zero when @p value cannot be represented by a
+///         two-byte output element.
 static int gltf_meshopt_write_index(uint8_t *dst, size_t element, size_t stride, uint32_t value) {
     uint8_t *out = dst + element * stride;
     if (stride == 2u) {
@@ -71,6 +90,13 @@ static int gltf_meshopt_write_index(uint8_t *dst, size_t element, size_t stride,
 ///          headers (0 = all zero, 1 = 2-bit sentinel, 2 = 4-bit sentinel, 3 = raw
 ///          bytes); a tail block stores the baseline element verbatim, padded to
 ///          32 bytes. Deltas are zigzag-encoded byte differences with wrap-around.
+/// @param[out] dst Output buffer providing at least `count * stride` bytes.
+/// @param count Number of attribute elements to decode.
+/// @param stride Byte width of each interleaved output element.
+/// @param[in] src Compressed attribute bitstream.
+/// @param src_len Number of readable bytes at @p src.
+/// @return Non-zero when the complete stream is valid and decoded; zero on invalid
+///         configuration, header, or truncated group data.
 static int gltf_meshopt_decode_attributes(
     uint8_t *dst, size_t count, size_t stride, const uint8_t *src, size_t src_len) {
     size_t tail = stride < 32u ? 32u : stride;
@@ -165,6 +191,10 @@ static int gltf_meshopt_decode_attributes(
 }
 
 /// @brief Decode one explicitly-encoded index: zigzag varint delta applied to `last`.
+/// @param[in,out] data Address of the next varint byte, advanced on success.
+/// @param[in] data_end One-past-the-end pointer for the varint region.
+/// @param[in,out] last Previous explicit index, replaced by the decoded index.
+/// @return Non-zero on success; zero when the varint is truncated or overlong.
 static int gltf_meshopt_decode_explicit_index(const uint8_t **data,
                                               const uint8_t *data_end,
                                               uint32_t *last) {
@@ -183,6 +213,13 @@ static int gltf_meshopt_decode_explicit_index(const uint8_t **data,
 ///          `codeaux` lookup table as the tail. Decoder state: `next` high-watermark,
 ///          `last` index, 16-entry edge FIFO and vertex FIFO (reads use pre-push state;
 ///          index 0 is the most recently pushed entry).
+/// @param[out] dst Output index buffer providing at least `count * stride` bytes.
+/// @param count Number of output indices; must be divisible by three.
+/// @param stride Output index width, either two or four bytes.
+/// @param[in] src Compressed triangle bitstream.
+/// @param src_len Number of readable bytes at @p src.
+/// @return Non-zero when all triangle codes and auxiliary data decode exactly;
+///         zero on invalid input, truncation, or output-width overflow.
 static int gltf_meshopt_decode_triangles(
     uint8_t *dst, size_t count, size_t stride, const uint8_t *src, size_t src_len) {
     size_t triangle_count = count / 3u;
@@ -319,6 +356,13 @@ static int gltf_meshopt_decode_triangles(
 /// @details Spec structure: header byte 0xd1; one varint-7 value per index whose LSB
 ///          selects one of two baselines and whose remaining bits carry a zigzag delta;
 ///          a 4-byte reserved tail.
+/// @param[out] dst Output index buffer providing at least `count * stride` bytes.
+/// @param count Number of indices to decode.
+/// @param stride Output index width, either two or four bytes.
+/// @param[in] src Compressed index bitstream.
+/// @param src_len Number of readable bytes at @p src.
+/// @return Non-zero when every index is decoded and representable; zero on an
+///         invalid header, truncated varint, or output-width overflow.
 static int gltf_meshopt_decode_indices(
     uint8_t *dst, size_t count, size_t stride, const uint8_t *src, size_t src_len) {
     const uint8_t *data;
@@ -346,17 +390,24 @@ static int gltf_meshopt_decode_indices(
 }
 
 /// @brief Read a signed 16-bit little-endian component.
+/// @param[in] p Address of two readable little-endian bytes.
+/// @return Reconstructed signed 16-bit value.
 static int16_t gltf_meshopt_read_i16(const uint8_t *p) {
     return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
 /// @brief Write a signed 16-bit little-endian component.
+/// @param[out] p Address of two writable bytes.
+/// @param v Signed value to encode.
 static void gltf_meshopt_write_i16(uint8_t *p, int16_t v) {
     p[0] = (uint8_t)((uint16_t)v & 0xFFu);
     p[1] = (uint8_t)(((uint16_t)v >> 8) & 0xFFu);
 }
 
 /// @brief Round-to-nearest quantization of a [-1, 1] float into an N-bit signed integer.
+/// @param value Normalized floating-point component to quantize.
+/// @param intn_max Positive maximum of the destination signed integer representation.
+/// @return Quantized integer using symmetric half-away-from-zero rounding.
 static long gltf_meshopt_round_norm(double value, double intn_max) {
     double scaled = value * intn_max;
     return (long)(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
@@ -367,6 +418,10 @@ static long gltf_meshopt_round_norm(double value, double intn_max) {
 ///          component encodes 1.0 as a K-bit signed-normalized integer, the fourth is
 ///          passed through verbatim. Decoding folds the negative hemisphere, then
 ///          renormalizes and quantizes to INT8/INT16 max per the spec.
+/// @param[in,out] data Decoded attribute buffer transformed in place.
+/// @param count Number of vector elements in @p data.
+/// @param stride Element width: four bytes for 8-bit components or eight bytes
+///               for 16-bit components.
 static void gltf_meshopt_filter_octahedral(uint8_t *data, size_t count, size_t stride) {
     int wide = stride == 8u;
     for (size_t i = 0; i < count; i++) {
@@ -417,6 +472,9 @@ static void gltf_meshopt_filter_octahedral(uint8_t *data, size_t count, size_t s
 /// @details Three stored components are scaled by sqrt(2); the fourth encodes 1.0 in its
 ///          upper bits and the omitted (largest, always positive) component index in the
 ///          low 2 bits. Output components are written in cyclic order per the spec.
+/// @param[in,out] data Decoded attribute buffer transformed in place.
+/// @param count Number of quaternion elements in @p data.
+/// @param stride Element width; only the required eight-byte representation is processed.
 static void gltf_meshopt_filter_quaternion(uint8_t *data, size_t count, size_t stride) {
     if (stride != 8u)
         return;
@@ -454,8 +512,11 @@ static void gltf_meshopt_filter_quaternion(uint8_t *data, size_t count, size_t s
 
 /// @brief Filter 3 (EXPONENTIAL): rebuild float32 values from exponent/mantissa words.
 /// @details Each 32-bit little-endian word carries a signed 8-bit exponent in the top
-///          byte and a signed 24-bit mantissa; the result is 2^e * m written back as a
-///          little-endian float32.
+///          byte and a signed 24-bit mantissa; the result is the mantissa times two
+///          raised to that exponent, written back as a little-endian float32.
+/// @param[in,out] data Decoded attribute bytes transformed in place.
+/// @param count Number of elements in @p data.
+/// @param stride Byte width of each element; the total byte count must be word-aligned.
 static void gltf_meshopt_filter_exponential(uint8_t *data, size_t count, size_t stride) {
     size_t words = (count * stride) / 4u;
     for (size_t i = 0; i < words; i++) {
@@ -486,6 +547,8 @@ static void gltf_meshopt_filter_exponential(uint8_t *data, size_t count, size_t 
 }
 
 /// @brief Map the JSON `mode` string to a codec id (-1 when unknown).
+/// @param[in] mode Extension mode name, or `NULL`.
+/// @return One of the `GLTF_MESHOPT_MODE_*` identifiers, or -1 for an unsupported name.
 static int gltf_meshopt_mode_from_string(const char *mode) {
     if (!mode)
         return -1;
@@ -499,6 +562,8 @@ static int gltf_meshopt_mode_from_string(const char *mode) {
 }
 
 /// @brief Map the JSON `filter` string to a filter id (-1 when unknown).
+/// @param[in] filter Extension filter name, or `NULL` to select `NONE`.
+/// @return One of the `GLTF_MESHOPT_FILTER_*` identifiers, or -1 for an unsupported name.
 static int gltf_meshopt_filter_from_string(const char *filter) {
     if (!filter || strcmp(filter, "NONE") == 0)
         return GLTF_MESHOPT_FILTER_NONE;
@@ -512,7 +577,11 @@ static int gltf_meshopt_filter_from_string(const char *filter) {
 }
 
 /// @brief Validate one extension object per the JSON-schema constraints in the spec.
-/// @return 1 when the (mode, filter, stride, count) combination is legal.
+/// @param mode Parsed meshopt codec identifier.
+/// @param filter Parsed meshopt post-decode filter identifier.
+/// @param stride Declared decoded byte stride.
+/// @param count Declared decoded element count.
+/// @return Non-zero when the mode, filter, stride, and count combination is legal.
 static int gltf_meshopt_view_config_valid(int mode, int filter, size_t stride, int64_t count) {
     if (count <= 0 || stride == 0)
         return 0;
@@ -537,6 +606,8 @@ static int gltf_meshopt_view_config_valid(int mode, int filter, size_t stride, i
 }
 
 /// @brief Free every decoded shadow buffer and reset the table.
+/// @param[in,out] table Table whose owned view buffers and arrays are released;
+///                      `NULL` is accepted.
 static void gltf_meshopt_table_free(gltf_meshopt_table_t *table) {
     if (!table)
         return;
@@ -550,6 +621,9 @@ static void gltf_meshopt_table_free(gltf_meshopt_table_t *table) {
 }
 
 /// @brief Detect whether the document lists EXT_meshopt_compression in its extension arrays.
+/// @param[in] root Parsed glTF document root.
+/// @return Non-zero when either `extensionsUsed` or `extensionsRequired` names
+///         `EXT_meshopt_compression`; zero otherwise.
 static int gltf_document_lists_meshopt(void *root) {
     static const char *arrays[2] = {"extensionsUsed", "extensionsRequired"};
     for (int a = 0; a < 2; a++) {
@@ -570,7 +644,13 @@ static int gltf_document_lists_meshopt(void *root) {
 ///          view's byteLength equals byteStride * count), decodes the compressed bytes
 ///          into an owned buffer, and applies the post-decompression filter. Any
 ///          malformed view fails the load with a named CORRUPT diagnostic.
-/// @return 1 on success (including "no compressed views"), 0 on failure.
+/// @param[in] root Parsed glTF document root.
+/// @param[in] buffers Materialized source buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param[out] table Destination shadow-buffer table, reset before decoding and
+///                   owning all successful decoded allocations.
+/// @return Non-zero on success, including when no compressed views exist; zero
+///         on allocation failure or malformed extension data.
 static int gltf_meshopt_decode_views(void *root,
                                      gltf_buffer_t *buffers,
                                      int buf_count,

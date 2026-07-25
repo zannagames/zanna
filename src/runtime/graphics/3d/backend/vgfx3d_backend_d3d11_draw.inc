@@ -16,6 +16,16 @@
 // Links: vgfx3d_backend_d3d11.c, vgfx3d_backend_d3d11_context.inc
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements D3D11 draw-state packing, binding, and submission.
+///
+/// This fragment resolves render targets and samplers, packs object/scene/
+/// material/light constants, uploads animation and clustered-light resources,
+/// binds temporary or cached textures, and issues validated ordinary or
+/// instanced draw calls. Every failure path detaches and releases draw-local
+/// resources without disturbing context-owned caches.
+///
+/// @note Included by `vgfx3d_backend_d3d11.c`; not a standalone translation unit.
 
 #define D3D11_MATERIAL_EMISSIVE_INTENSITY_MAX VGFX3D_D3D11_POSTFX_SCALAR_MAX
 #define D3D11_MATERIAL_EMISSIVE_COLOR_MAX VGFX3D_D3D11_POSTFX_SCALAR_MAX
@@ -26,6 +36,7 @@
 /// Combines `OMSetRenderTargets` (color RTVs + depth DSV) with a
 /// matching `RSSetViewports`. Called whenever the active target
 /// changes.
+/// @param[in,out] ctx Backend context holding the tracked target set and viewport extent.
 static void d3d11_bind_render_targets(d3d11_context_t *ctx) {
     D3D11_VIEWPORT viewport;
 
@@ -54,6 +65,7 @@ static void d3d11_bind_render_targets(d3d11_context_t *ctx) {
 ///   - OVERLAY mode → overlay color (with fallback to scene/swapchain).
 ///   - default (SWAPCHAIN) → backbuffer + main depth.
 /// Then pushes everything into the pipeline via `bind_render_targets`.
+/// @param[in,out] ctx Backend context whose concrete current target set is selected and bound.
 static void d3d11_select_current_targets(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -112,6 +124,7 @@ static void d3d11_select_current_targets(d3d11_context_t *ctx) {
 ///
 /// Used during present / postfx composition where we always want to
 /// write to the swapchain regardless of the active target kind.
+/// @param[in,out] ctx Backend context whose backbuffer is force-selected and bound.
 static void d3d11_bind_swapchain_target(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -131,6 +144,9 @@ static void d3d11_bind_swapchain_target(d3d11_context_t *ctx) {
 /// clears the motion-vector target to (0.5, 0.5, 0, 1) — the encoded
 /// "no motion" sentinel. The `load_existing_*` flags let callers
 /// preserve the contents (used by additive overlay passes).
+/// @param[in,out] ctx Backend context holding the current RTV/DSV set.
+/// @param[in] load_existing_color Nonzero to preserve all current color targets.
+/// @param[in] load_existing_depth Nonzero to preserve the current depth target.
 static void d3d11_clear_current_targets(d3d11_context_t *ctx,
                                         int8_t load_existing_color,
                                         int8_t load_existing_depth) {
@@ -166,6 +182,8 @@ static void d3d11_clear_current_targets(d3d11_context_t *ctx,
 /// Slot 0: linear/wrap (diffuse/normal/specular textures).
 /// Slot 1: comparison sampler for shadow PCF.
 /// Slot 2: linear/clamp (skybox + post-processing).
+/// @param[in] mode RT_MATERIAL3D_TEXTURE_WRAP_* value.
+/// @return Internal address-mode table index: 0 repeat, 1 clamp, or 2 mirrored repeat.
 static int d3d11_sampler_wrap_index(int32_t mode) {
     if (mode == RT_MATERIAL3D_TEXTURE_WRAP_CLAMP_TO_EDGE)
         return 1;
@@ -177,6 +195,8 @@ static int d3d11_sampler_wrap_index(int32_t mode) {
 /// @brief Map a Zanna wrap-mode index (returned by d3d11_wrap_mode_index) to the
 ///        corresponding D3D11_TEXTURE_ADDRESS_MODE enum value.
 /// @details index 1 → CLAMP, index 2 → MIRROR, any other value → WRAP (default repeat).
+/// @param[in] index Internal address-mode table index.
+/// @return Corresponding D3D11 texture-address enumeration.
 static D3D11_TEXTURE_ADDRESS_MODE d3d11_sampler_address_mode(int index) {
     if (index == 1)
         return D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -186,9 +206,9 @@ static D3D11_TEXTURE_ADDRESS_MODE d3d11_sampler_address_mode(int index) {
 }
 
 /// @brief Pack independent nearest/linear min, mag, and three-state mip axes into a cache index.
-/// @param min_filter Sanitized minification filter.
-/// @param mag_filter Sanitized magnification filter.
-/// @param mip_filter Sanitized mip-selection filter.
+/// @param[in] min_filter Sanitized minification filter.
+/// @param[in] mag_filter Sanitized magnification filter.
+/// @param[in] mip_filter Sanitized mip-selection filter.
 /// @return Stable index in `[0, 12)`.
 static int d3d11_sampler_filter_index(int32_t min_filter, int32_t mag_filter, int32_t mip_filter) {
     int min_index = min_filter == RT_MATERIAL3D_TEXTURE_FILTER_NEAREST ? 1 : 0;
@@ -202,9 +222,9 @@ static int d3d11_sampler_filter_index(int32_t min_filter, int32_t mag_filter, in
 /// @brief Map independent material sampler axes to the exact D3D11 filter enum.
 /// @details `NONE` uses the point-mip tuple with `MaxLOD=0` supplied by the caller, preserving the
 /// independent min/mag axes without allowing a lower mip to participate.
-/// @param min_filter Sanitized minification filter.
-/// @param mag_filter Sanitized magnification filter.
-/// @param mip_filter Sanitized mip-selection filter.
+/// @param[in] min_filter Sanitized minification filter.
+/// @param[in] mag_filter Sanitized magnification filter.
+/// @param[in] mip_filter Sanitized mip-selection filter.
 /// @return One non-comparison `D3D11_FILTER` tuple.
 static D3D11_FILTER d3d11_sampler_filter_mode(int32_t min_filter,
                                               int32_t mag_filter,
@@ -231,6 +251,10 @@ static D3D11_FILTER d3d11_sampler_filter_mode(int32_t min_filter,
 ///          in `ctx->material_samplers[wrap_s][wrap_t][filter][anisotropy]` when available.
 ///          Otherwise creates a new `ID3D11SamplerState` and caches it. Falls back to
 ///          `ctx->linear_wrap_sampler` on creation failure or null cmd.
+/// @param[in,out] ctx Backend context owning the sampler cache.
+/// @param[in] cmd Draw command supplying resolved sampler axes.
+/// @param[in] slot Material texture slot, or an out-of-range value for legacy defaults.
+/// @return Borrowed cached/material sampler, fallback sampler, or NULL without a context.
 static ID3D11SamplerState *d3d11_get_material_sampler(d3d11_context_t *ctx,
                                                       const vgfx3d_draw_cmd_t *cmd,
                                                       int32_t slot) {
@@ -312,6 +336,8 @@ static ID3D11SamplerState *d3d11_get_material_sampler(d3d11_context_t *ctx,
 ///   textures), slots 3–7 = normal, specular, emissive, metallic-roughness, AO.
 ///   Each per-material sampler is created lazily (or retrieved from a cache) by
 ///   `d3d11_get_material_sampler`, so NULL entries are skipped rather than bound.
+/// @param[in,out] ctx Backend context and immediate pipeline state.
+/// @param[in] cmd Draw command providing per-slot sampler configuration.
 static void d3d11_bind_common_state(d3d11_context_t *ctx, const vgfx3d_draw_cmd_t *cmd) {
     ID3D11SamplerState *material_samplers[8] = {NULL};
     if (!ctx)
@@ -349,6 +375,8 @@ static void d3d11_bind_common_state(d3d11_context_t *ctx, const vgfx3d_draw_cmd_
 /// Computes the normal matrix, sets up skinning / morph / instance
 /// flags, and packs morph weights into float4 lanes (HLSL doesn't have
 /// scalar arrays in cbuffers, so we manually pack 4 weights per vec4).
+/// @param[in] cmd Resolved draw command.
+/// @param[out] object_data Zeroed, sanitized per-object constant-buffer payload.
 static void d3d11_prepare_object_data(const vgfx3d_draw_cmd_t *cmd, d3d_per_object_t *object_data) {
     int morph_count = 0;
 
@@ -398,6 +426,12 @@ static void d3d11_prepare_object_data(const vgfx3d_draw_cmd_t *cmd, d3d_per_obje
 /// `lights` parameter is unused at this layer — light data goes into
 /// the dedicated PerLights cbuffer via `prepare_light_data`. This
 /// struct holds the everything-else scene constants.
+/// @param[in] ctx Backend context containing current camera, fog, IBL, and shadows.
+/// @param[in] cmd Draw command containing light revision and optional cluster table.
+/// @param[in] lights Resolved light array used to validate @p light_count.
+/// @param[in] light_count Number of entries in @p lights.
+/// @param[in] ambient Optional RGB ambient-light vector.
+/// @param[out] scene_data Zeroed, sanitized per-scene constant-buffer payload.
 static void d3d11_prepare_scene_data(d3d11_context_t *ctx,
                                      const vgfx3d_draw_cmd_t *cmd,
                                      const vgfx3d_light_params_t *lights,
@@ -495,6 +529,7 @@ static void d3d11_prepare_scene_data(d3d11_context_t *ctx,
 ///   R32 typeless family). t16 is unbound first so the copy destination is not
 ///   simultaneously bound for reading. Blend draws then Load() the snapshot for
 ///   soft-particle fade.
+/// @param[in,out] ctx_ptr Opaque D3D11 backend context owning the snapshot.
 static void d3d11_resolve_opaque_targets(void *ctx_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     ID3D11Texture2D *depth;
@@ -578,6 +613,11 @@ static void d3d11_resolve_opaque_targets(void *ctx_ptr) {
 /// @brief Upload one CPU froxel table into the cluster cbuffers (no-op when the
 ///        draw carries none; clusterGlobalCount = -1 keeps the shader on the
 ///        flat loop). u16 arrays are little-endian, matching the uint4 lanes.
+/// @param[in,out] ctx Backend context owning cluster constant buffers.
+/// @param[in] table Candidate CPU-binned cluster table.
+/// @param[in] expected_revision Light-snapshot revision required for use.
+/// @param[in] light_count Number of lights addressable by table indices.
+/// @return S_OK for an absent/unusable table or complete upload, otherwise an update HRESULT.
 static HRESULT d3d11_upload_cluster_table(d3d11_context_t *ctx,
                                           const vgfx3d_cluster_table_t *table,
                                           uint32_t expected_revision,
@@ -596,6 +636,11 @@ static HRESULT d3d11_upload_cluster_table(d3d11_context_t *ctx,
 
 /// @brief Resolve whether a draw uses IBL environment lighting, producing the
 ///   prefiltered chain's lod-base and effective max-lod for the env sampler.
+/// @param[in] ctx Backend context containing current IBL and cubemap-cache state.
+/// @param[in] cmd Draw command containing the environment CubeMap3D.
+/// @param[out] out_lod_base First resident prefiltered mip level.
+/// @param[out] out_max_lod Maximum sampler LOD relative to @p out_lod_base.
+/// @return 1 when a complete matching IBL payload is resident, otherwise 0.
 static int d3d11_cmd_ibl_draw(d3d11_context_t *ctx,
                               const vgfx3d_draw_cmd_t *cmd,
                               float *out_lod_base,
@@ -648,6 +693,19 @@ static int d3d11_cmd_ibl_draw(d3d11_context_t *ctx,
 /// PBR scalars (metallic, roughness, AO, emissive intensity), normal-
 /// scale, alpha-cutoff, custom params, and the boolean flags telling
 /// the shader which texture slots are populated.
+/// @param[in] cmd Resolved material and draw command.
+/// @param[in] has_texture Nonzero when base-color SRV resolution succeeded.
+/// @param[in] has_normal_map Nonzero when normal-map SRV resolution succeeded.
+/// @param[in] has_specular_map Nonzero when specular-map SRV resolution succeeded.
+/// @param[in] has_emissive_map Nonzero when emissive-map SRV resolution succeeded.
+/// @param[in] has_env_map Nonzero when an environment cubemap SRV is bound.
+/// @param[in] has_splat Nonzero when terrain splat resources are complete.
+/// @param[in] has_metallic_roughness_map Nonzero when the combined PBR-map SRV is bound.
+/// @param[in] has_ao_map Nonzero when the ambient-occlusion SRV is bound.
+/// @param[in] ibl_draw Nonzero when the environment is a resident prefiltered IBL chain.
+/// @param[in] ibl_env_lod_base First resident prefiltered environment level.
+/// @param[in] ibl_env_max_lod Maximum usable environment sampler LOD.
+/// @param[out] material_data Zeroed, sanitized per-material constant-buffer payload.
 static void d3d11_prepare_material_data(const vgfx3d_draw_cmd_t *cmd,
                                         int has_texture,
                                         int has_normal_map,
@@ -776,6 +834,10 @@ static void d3d11_prepare_material_data(const vgfx3d_draw_cmd_t *cmd,
 /// is dropped silently (the shader's array is fixed-size). Shadow indices are
 /// sanitized against the contiguous advertised shadow-slot range so a stale or
 /// sparse light cannot sample an unbound shadow SRV.
+/// @param[in] lights Resolved Canvas3D light array.
+/// @param[in] light_count Number of available entries in @p lights.
+/// @param[in] advertised_shadow_count Number of complete shadow slots exposed to shaders.
+/// @param[out] light_data Destination array of VGFX3D_MAX_LIGHTS packed elements.
 static void d3d11_prepare_light_data(const vgfx3d_light_params_t *lights,
                                      int32_t light_count,
                                      int32_t advertised_shadow_count,
@@ -848,6 +910,10 @@ static void d3d11_prepare_light_data(const vgfx3d_light_params_t *lights,
 /// `(morph_key, morph_revision)` so static morph targets aren't
 /// re-uploaded each frame. Returns 1 if the SRVs are bound, 0 if
 /// the draw should fall back to no-morph.
+/// @param[in,out] ctx Backend context owning animation buffers and caches.
+/// @param[in] cmd Draw command containing optional skinning and morph payloads.
+/// @param[in,out] object_data Per-object flags adjusted to match resources that upload.
+/// @return 1 when morph SRVs are ready, or 0 when morphing is absent or unavailable.
 static int d3d11_prepare_anim_resources(d3d11_context_t *ctx,
                                         const vgfx3d_draw_cmd_t *cmd,
                                         d3d_per_object_t *object_data) {
@@ -1033,6 +1099,11 @@ static int d3d11_prepare_anim_resources(d3d11_context_t *ctx,
 /// (alpha blending = no depth write), blend mode, primitive topology,
 /// the right input layout (instanced vs. non), main shaders, all four
 /// cbuffers, sampler states, and morph SRVs.
+/// @param[in,out] ctx Backend context and immediate pipeline state.
+/// @param[in] cmd Draw command selecting blend, depth, and compact layout state.
+/// @param[in] wireframe Nonzero for wireframe rasterization.
+/// @param[in] backface_cull Nonzero for back-face culling.
+/// @param[in] instanced Nonzero to select an instanced or particle vertex shader/layout.
 static void d3d11_bind_main_pipeline(d3d11_context_t *ctx,
                                      const vgfx3d_draw_cmd_t *cmd,
                                      int8_t wireframe,
@@ -1105,6 +1176,7 @@ static void d3d11_bind_main_pipeline(d3d11_context_t *ctx,
 ///
 /// Necessary before binding the same resource as an RTV next frame —
 /// D3D11 forbids a texture being bound as both SRV and RTV simultaneously.
+/// @param[in,out] ctx Backend context whose draw resource slots are cleared.
 static void d3d11_unbind_draw_resources(d3d11_context_t *ctx) {
     ID3D11ShaderResourceView *null_vs[2] = {NULL, NULL};
     /* Main draws use t17 for the shadow atlas and t18 for the BRDF LUT. Leaving those
@@ -1117,6 +1189,8 @@ static void d3d11_unbind_draw_resources(d3d11_context_t *ctx) {
 }
 
 /// @brief Pack inverse-projection + inverse-view-rotation data for the skybox shader.
+/// @param[in] ctx Backend context containing current camera matrices and forward vector.
+/// @param[out] skybox_data Sanitized skybox constant-buffer payload.
 static void d3d11_prepare_skybox_data(d3d11_context_t *ctx, d3d_skybox_cb_t *skybox_data) {
     static const float forward_fallback[3] = {0.0f, 0.0f, -1.0f};
     float safe_projection[16];
@@ -1149,6 +1223,9 @@ static void d3d11_prepare_skybox_data(d3d11_context_t *ctx, d3d_skybox_cb_t *sky
 /// bloom thresholds, tonemap mode/exposure, FXAA, color grading,
 /// vignette, SSAO, depth-of-field, motion blur. NULL snapshot means
 /// "post-FX disabled" (most fields stay at their zero defaults).
+/// @param[in] ctx Backend context containing current camera/history matrices.
+/// @param[in] snapshot Optional resolved post-processing settings.
+/// @param[out] postfx_data Zeroed D3D11 post-processing constant-buffer payload.
 static void d3d11_prepare_postfx_data(d3d11_context_t *ctx,
                                       const vgfx3d_postfx_snapshot_t *snapshot,
                                       d3d_postfx_cb_t *postfx_data) {
@@ -1229,6 +1306,10 @@ static void d3d11_prepare_postfx_data(d3d11_context_t *ctx,
 /// 8=splat-control, 9-12=splat layers, 13=env cube, 14=metallic-rough,
 /// 15=AO. Unbound slots get NULL so the shader's `has*` flags can
 /// gate sampling. Returns whether splat sampling was actually enabled.
+/// @param[in,out] ctx Backend context owning caches and immediate pipeline state.
+/// @param[in] cmd Draw command containing texture assets and Pixels fallbacks.
+/// @param[out] resources Resolution record owning any temporary SRVs.
+/// @return 1 when inputs are valid and the resource set was bound, otherwise 0.
 static int d3d11_bind_draw_resources(d3d11_context_t *ctx,
                                      const vgfx3d_draw_cmd_t *cmd,
                                      d3d_draw_resources_t *resources) {
@@ -1356,6 +1437,7 @@ static int d3d11_bind_draw_resources(d3d11_context_t *ctx,
 ///
 /// Called at end of each draw to clean up resources that didn't fit in
 /// the texture/cubemap caches. Cached resources are no-ops here.
+/// @param[in,out] resources Draw resource record whose temporary COM objects are released.
 static void d3d11_release_temporary_resources(d3d_draw_resources_t *resources) {
     if (!resources)
         return;
@@ -1370,6 +1452,14 @@ static void d3d11_release_temporary_resources(d3d_draw_resources_t *resources) {
 /// cbuffers, prep skinning + morph buffers, bind textures + samplers,
 /// bind pipeline state, get VB/IB (cached or dynamic), set them on
 /// the IA, issue `DrawIndexed`, then release any temp resources.
+/// @param[in,out] ctx_ptr Opaque D3D11 backend context.
+/// @param[in] win Platform window handle, unused by the synchronous D3D11 draw path.
+/// @param[in] cmd Borrowed draw command sanitized before packing.
+/// @param[in] lights Borrowed light snapshot.
+/// @param[in] light_count Number of entries in @p lights.
+/// @param[in] ambient Optional RGB ambient vector.
+/// @param[in] wireframe Nonzero for wireframe rasterization.
+/// @param[in] backface_cull Nonzero for back-face culling.
 static void d3d11_submit_draw(void *ctx_ptr,
                               vgfx_window_t win,
                               const vgfx3d_draw_cmd_t *cmd,
@@ -1513,6 +1603,16 @@ static void d3d11_submit_draw(void *ctx_ptr,
 /// vertex buffer, and bind that buffer to slot 1 alongside the mesh
 /// VB at slot 0. The instanced input layout reads instance attributes
 /// from slot 1 with `D3D11_INPUT_PER_INSTANCE_DATA`.
+/// @param[in,out] ctx_ptr Opaque D3D11 backend context.
+/// @param[in] win Platform window handle, unused by the synchronous D3D11 draw path.
+/// @param[in] cmd Borrowed shared draw command.
+/// @param[in] instance_matrices Row-major model transform per ordinary instance.
+/// @param[in] instance_count Number of ordinary or particle instances.
+/// @param[in] lights Borrowed light snapshot.
+/// @param[in] light_count Number of entries in @p lights.
+/// @param[in] ambient Optional RGB ambient vector.
+/// @param[in] wireframe Nonzero for wireframe rasterization.
+/// @param[in] backface_cull Nonzero for back-face culling.
 static void d3d11_submit_draw_instanced(void *ctx_ptr,
                                         vgfx_window_t win,
                                         const vgfx3d_draw_cmd_t *cmd,

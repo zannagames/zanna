@@ -4,11 +4,25 @@
 // rt_physics3d_collision.c; not a standalone translation unit) Purpose: Physics3D contact
 // generation, OBB SAT, and manifold helpers
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_physics3d_collision_contacts.inc
+ * @brief Implements contact geometry, manifold expansion, pair identity, and collision filtering.
+ *
+ * This fragment provides primitive distance helpers, query and body-pair
+ * filters, bounded manifold construction for capsules, boxes, OBBs, meshes,
+ * and heightfields, frame-contact aggregation, hash-based contact lookup, and
+ * representative support-point reconstruction.
+ */
+
 /// @brief Build a stack-allocated dummy sphere body for transient queries.
 ///
 /// Used so that overlap / shapecast routines can reuse the body-vs-body
 /// collision functions without needing to register a permanent body.
 /// Only fields the collision routines read are populated.
+/// @param out Caller-provided Body3D storage initialized as a transient sphere.
+/// @param center Three-component world-space sphere center.
+/// @param radius Sphere radius used by collision routines.
 static void make_temp_sphere(rt_body3d *out, const double *center, double radius) {
     rt_body3d zero = {0};
     *out = zero;
@@ -25,6 +39,9 @@ static void make_temp_sphere(rt_body3d *out, const double *center, double radius
 ///
 /// Capsules are authored along local Y with the body position at the center.
 /// The body orientation rotates that local axis before collision tests use it.
+/// @param b Capsule Body3D whose center, height, radius, and orientation are read.
+/// @param a Three-component output receiving the negative-axis endpoint.
+/// @param c Three-component output receiving the positive-axis endpoint.
 void capsule_axis_endpoints(const rt_body3d *b, double *a, double *c) {
     double half_axis = fmax(b->height * 0.5 - b->radius, 0.0);
     double local_axis[3] = {0.0, half_axis, 0.0};
@@ -216,6 +233,9 @@ static void closest_point_segment_to_aabb(
 /// @brief Project a point onto the capsule's axis segment.
 ///
 /// Used as the first step in capsule-vs-anything distance computations.
+/// @param cap Capsule Body3D defining the oriented axis segment.
+/// @param point Three-component world-space query point.
+/// @param closest Three-component output receiving the closest axis point.
 static void closest_point_capsule_axis_to_point(const rt_body3d *cap,
                                                 const double *point,
                                                 double *closest) {
@@ -227,6 +247,10 @@ static void closest_point_capsule_axis_to_point(const rt_body3d *cap,
 /// @brief Find the closest point pair on two capsule axes.
 ///
 /// Handles arbitrary capsule orientations by solving segment-vs-segment.
+/// @param a First capsule Body3D.
+/// @param b Second capsule Body3D.
+/// @param closest_a Three-component output on @p a's axis.
+/// @param closest_b Three-component output on @p b's axis.
 static void closest_points_capsule_axes(const rt_body3d *a,
                                         const rt_body3d *b,
                                         double *closest_a,
@@ -240,6 +264,9 @@ static void closest_points_capsule_axes(const rt_body3d *a,
 /// @brief Find the point on a capsule's axis closest to a box.
 ///
 /// Used as the first step of capsule-vs-AABB collision.
+/// @param cap Capsule Body3D defining the source segment.
+/// @param box Box Body3D whose world AABB is queried.
+/// @param closest_axis Three-component output receiving the closest segment point.
 static void closest_point_capsule_axis_to_aabb(const rt_body3d *cap,
                                                const rt_body3d *box,
                                                double *closest_axis) {
@@ -255,6 +282,9 @@ static void closest_point_capsule_axis_to_aabb(const rt_body3d *cap,
 /// (`bodies_can_collide`); queries are unidirectional, so we just check
 /// the body's layer against the query's mask. A zero mask matches nothing,
 /// which keeps `LayerMask.None()` consistent across high-level queries.
+/// @param body Candidate Body3D whose collision layer is tested.
+/// @param mask Query collision-layer mask.
+/// @return One when the body's layer intersects @p mask, otherwise zero.
 int query_mask_matches_body(const rt_body3d *body, int64_t mask) {
     if (!body)
         return 0;
@@ -268,6 +298,11 @@ int query_mask_matches_body(const rt_body3d *body, int64_t mask) {
 /// SAT on the axis-aligned axes. Returns true if neither axis fully
 /// separates the two boxes. This is the broad-phase primitive — the
 /// narrow-phase shape tests run only on pairs that pass this check.
+/// @param amn First AABB minimum corner.
+/// @param amx First AABB maximum corner.
+/// @param bmn Second AABB minimum corner.
+/// @param bmx Second AABB maximum corner.
+/// @return One when the closed AABBs overlap, otherwise zero.
 int aabb_overlap_raw(const double *amn, const double *amx, const double *bmn, const double *bmx) {
     return !(amn[0] > bmx[0] || amx[0] < bmn[0] || amn[1] > bmx[1] || amx[1] < bmn[1] ||
              amn[2] > bmx[2] || amx[2] < bmn[2]);
@@ -278,6 +313,11 @@ int aabb_overlap_raw(const double *amn, const double *amx, const double *bmn, co
 /// Used by CCD to make a single AABB that bounds an entire integration
 /// step's motion. If this swept box doesn't overlap a candidate body's
 /// AABB, the bodies cannot collide during the step.
+/// @param start_min Initial AABB minimum corner.
+/// @param start_max Initial AABB maximum corner.
+/// @param delta Three-component translation applied during the step.
+/// @param swept_min Output receiving the union AABB minimum corner.
+/// @param swept_max Output receiving the union AABB maximum corner.
 void swept_aabb_from_points(const double *start_min,
                             const double *start_max,
                             const double *delta,
@@ -295,6 +335,8 @@ void swept_aabb_from_points(const double *start_min,
 
 /// @brief Bytewise contact copy. Used to snapshot frame-N contacts for
 ///        the frame-N+1 enter/stay/exit event diff.
+/// @param dst Destination contact record.
+/// @param src Source contact record.
 void contact_snapshot_copy(rt_contact3d *dst, const rt_contact3d *src) {
     if (!dst || !src)
         return;
@@ -303,6 +345,8 @@ void contact_snapshot_copy(rt_contact3d *dst, const rt_contact3d *src) {
 
 /// @brief Whether the body's orientation quaternion is (within 1e-9) the identity.
 /// @details Lets axis-aligned collision paths skip rotation math for un-rotated bodies.
+/// @param body Body3D whose orientation is tested.
+/// @return One when the quaternion is approximately identity, otherwise zero.
 static int body3d_orientation_is_identity(const rt_body3d *body) {
     if (!body)
         return 0;
@@ -311,6 +355,11 @@ static int body3d_orientation_is_identity(const rt_body3d *body) {
 }
 
 /// @brief Write a manifold point (position, normal, separation) at @p index (bounds-checked).
+/// @param contact Contact record whose inline manifold is modified.
+/// @param index Zero-based manifold slot.
+/// @param point Three-component world-space contact point.
+/// @param normal Three-component A-to-B contact normal.
+/// @param separation Signed contact separation.
 static void contact3d_set_manifold_point(rt_contact3d *contact,
                                          int32_t index,
                                          const double *point,
@@ -324,6 +373,9 @@ static void contact3d_set_manifold_point(rt_contact3d *contact,
 }
 
 /// @brief Whether @p point already appears in the manifold (within 1e-6 distance) — a dedup guard.
+/// @param contact Contact record whose current manifold is searched.
+/// @param point Three-component candidate world-space point.
+/// @return One when the point is invalid or already represented, otherwise zero.
 static int contact3d_point_exists(const rt_contact3d *contact, const double *point) {
     if (!contact || !point)
         return 1;
@@ -338,6 +390,10 @@ static int contact3d_point_exists(const rt_contact3d *contact, const double *poi
 }
 
 /// @brief Reset the contact manifold to a single point (position, normal, separation).
+/// @param contact Contact record to initialize.
+/// @param point Three-component world-space contact point.
+/// @param normal Three-component A-to-B contact normal.
+/// @param separation Signed contact separation.
 void contact3d_init_single_point(rt_contact3d *contact,
                                  const double *point,
                                  const double *normal,
@@ -349,6 +405,10 @@ void contact3d_init_single_point(rt_contact3d *contact,
 }
 
 /// @brief Add a manifold point if it is finite, non-duplicate, and the manifold isn't full.
+/// @param contact Contact record whose bounded manifold may grow.
+/// @param point Three-component world-space candidate point.
+/// @param normal Three-component A-to-B contact normal.
+/// @param separation Signed contact separation.
 void contact3d_try_add_manifold_point(rt_contact3d *contact,
                                       const double *point,
                                       const double *normal,
@@ -371,6 +431,9 @@ void contact3d_try_add_manifold_point(rt_contact3d *contact,
 ///          gives the solver a stable two-point patch. Fires only when the capsule
 ///          axis is roughly perpendicular to the contact normal — end-standing
 ///          capsules keep their correct single point.
+/// @param contact Single-point contact record to expand when appropriate.
+/// @param a First Body3D in the contact pair.
+/// @param b Second Body3D in the contact pair.
 void contact3d_expand_capsule_manifold(rt_contact3d *contact,
                                        const rt_body3d *a,
                                        const rt_body3d *b) {
@@ -415,6 +478,9 @@ void contact3d_expand_capsule_manifold(rt_contact3d *contact,
 /// @brief Promote a single-point box/box contact to a multi-point manifold over the AABB overlap.
 /// @details Samples the corners of the two bodies' overlapping AABB region as extra contact points,
 ///          giving the solver a stable contact patch (resting boxes don't wobble on one point).
+/// @param contact Contact record to expand.
+/// @param a First axis-aligned box Body3D.
+/// @param b Second axis-aligned box Body3D.
 void contact3d_expand_aabb_manifold(rt_contact3d *contact, const rt_body3d *a, const rt_body3d *b) {
     double a_min[3];
     double a_max[3];
@@ -479,6 +545,9 @@ typedef struct {
 
 /// @brief Build an oriented-bounding-box description (center, world axes, scaled half-extents)
 ///        from a box collider and its world pose.
+/// @param collider Box Collider3D handle to describe.
+/// @param pose World pose applied to the collider.
+/// @param out Output receiving the complete oriented box.
 /// @return 1 if @p collider is a box and the resulting center/extents are finite; 0 otherwise.
 static int ph3d_make_obb_box(void *collider, const rt_collider_pose *pose, ph3d_obb_box *out) {
     if (!collider || !pose || !out || rt_collider3d_get_type(collider) != RT_COLLIDER3D_TYPE_BOX)
@@ -492,6 +561,8 @@ static int ph3d_make_obb_box(void *collider, const rt_collider_pose *pose, ph3d_
 /// @brief Pick the box local axis whose face normal is most aligned with @p target_normal.
 /// @details Scans the three local axes and selects the one with the largest |dot| against
 ///          @p target_normal; the sign chooses which of the two opposing faces points toward it.
+/// @param box Oriented box whose face axes are inspected.
+/// @param target_normal Three-component world direction used for alignment.
 /// @param axis_out Receives the chosen axis index (0..2).
 /// @param sign_out Receives +1/-1 selecting the positive/negative face along that axis.
 /// @param alignment_out Receives the alignment magnitude (|dot|, in [0,1]).
@@ -525,6 +596,7 @@ static int ph3d_obb_best_face_axis(const ph3d_obb_box *box,
 }
 
 /// @brief Compute the four world-space corner vertices of one OBB face.
+/// @param box Oriented box defining the face.
 /// @param face_axis Axis (0..2) whose face is selected.
 /// @param face_sign +1/-1 picking the positive/negative face along @p face_axis.
 /// @param vertices Output filled with the face's four corners (wound around the face).
@@ -552,6 +624,12 @@ static void ph3d_obb_face_vertices(const ph3d_obb_box *box,
 /// @details Keeps the part of the polygon satisfying `dot(point - origin, axis) <= limit`,
 ///          inserting intersection points wherever an edge crosses the plane. Output is capped
 ///          at PH3D_OBB_CLIP_MAX_POINTS.
+/// @param in_points Input polygon vertices.
+/// @param in_count Number of valid input vertices.
+/// @param origin Point defining the clipping frame.
+/// @param axis Outward half-space axis.
+/// @param limit Maximum accepted projection from @p origin along @p axis.
+/// @param out_points Output buffer receiving the clipped polygon.
 /// @return Number of vertices written to @p out_points.
 static int ph3d_clip_poly_to_extent(const double in_points[PH3D_OBB_CLIP_MAX_POINTS][3],
                                     int in_count,
@@ -603,6 +681,10 @@ static int ph3d_clip_poly_to_extent(const double in_points[PH3D_OBB_CLIP_MAX_POI
 }
 
 /// @brief Return 1 if @p candidate already appears in the first @p count entries of @p indices.
+/// @param indices Candidate-index array to search.
+/// @param count Number of valid entries in @p indices.
+/// @param candidate Candidate index to find.
+/// @return One when the candidate is already selected, otherwise zero.
 static int ph3d_obb_candidate_exists(const int *indices, int count, int candidate) {
     for (int i = 0; i < count; ++i) {
         if (indices[i] == candidate)
@@ -616,6 +698,14 @@ static int ph3d_obb_candidate_exists(const int *indices, int count, int candidat
 ///          @p quadrant (each of the four quadrants favors a different (±u, ±v) corner), appending
 ///          the winning, not-yet-chosen index to @p indices. Used to reduce an over-full candidate
 ///          set to a well-spread PH3D_MAX_MANIFOLD_POINTS manifold.
+/// @param candidates Contact candidates to score.
+/// @param candidate_count Number of valid candidate records.
+/// @param ref_box Reference OBB providing tangent axes.
+/// @param ref_axis Reference face-normal axis index.
+/// @param ref_face_center Three-component reference face center.
+/// @param quadrant Tangent-space quadrant to extremize.
+/// @param indices Output array of selected candidate indices.
+/// @param index_count In/out count of selected indices.
 static void ph3d_obb_select_candidate(const ph3d_obb_contact_candidate *candidates,
                                       int candidate_count,
                                       const ph3d_obb_box *ref_box,
@@ -670,6 +760,11 @@ static void ph3d_obb_select_candidate(const ph3d_obb_contact_candidate *candidat
 ///          than PH3D_MAX_MANIFOLD_POINTS survive they are reduced to a spread set via
 ///          ph3d_obb_select_candidate. On too-poor face alignment or fewer than two surviving
 ///          points it restores the saved single-point @p contact and reports failure.
+/// @param contact Single-point contact record to expand.
+/// @param a_leaf First box leaf Collider3D.
+/// @param a_pose World pose of @p a_leaf.
+/// @param b_leaf Second box leaf Collider3D.
+/// @param b_pose World pose of @p b_leaf.
 /// @return 1 if a multi-point manifold was produced; 0 to keep the original single-point contact.
 int contact3d_expand_obb_manifold(rt_contact3d *contact,
                                   void *a_leaf,
@@ -846,6 +941,9 @@ int contact3d_expand_obb_manifold(rt_contact3d *contact,
 /// @brief Deterministic orthonormal tangent basis for a unit plane normal.
 /// @details Mirrors the solver's ph3d_contact_tangents construction so spread
 ///   selection over a contact plane is stable frame to frame.
+/// @param n Three-component unit plane normal.
+/// @param t1 Three-component output receiving the first unit tangent.
+/// @param t2 Three-component output receiving the second unit tangent.
 static void contact3d_plane_tangents(const double *n, double *t1, double *t2) {
     if (fabs(n[0]) >= 0.57735) {
         vec3_set(t1, n[1], -n[0], 0.0);
@@ -868,6 +966,10 @@ typedef struct {
 
 /// @brief Append a support-plane candidate, keeping the deepest
 ///   PH3D_SUPPORT_PLANE_MAX_CANDIDATES when the buffer saturates.
+/// @param candidates Fixed-capacity candidate buffer.
+/// @param count In/out number of valid candidates.
+/// @param point Three-component world-space support point.
+/// @param distance Signed oriented distance from the contact plane.
 static void ph3d_support_plane_push(ph3d_support_plane_candidate *candidates,
                                     int32_t *count,
                                     const double *point,
@@ -903,6 +1005,11 @@ static void ph3d_support_plane_push(ph3d_support_plane_candidate *candidates,
 ///   feature-scaled tolerance of the deepest one, spread-selecting up to
 ///   PH3D_MAX_MANIFOLD_POINTS well-separated points. Per-point separations grow with
 ///   the vertex's height above the deepest support so the solver loads them softly.
+/// @param contact Single-point surface contact to expand.
+/// @param a_leaf First leaf Collider3D.
+/// @param a_pose World pose of @p a_leaf.
+/// @param b_leaf Second leaf Collider3D.
+/// @param b_pose World pose of @p b_leaf.
 /// @return 1 when the manifold gained points, 0 to keep the single-point contact.
 int contact3d_expand_surface_support_manifold(rt_contact3d *contact,
                                               void *a_leaf,
@@ -1108,6 +1215,9 @@ int contact3d_expand_surface_support_manifold(rt_contact3d *contact,
 ///
 /// The collider check matters for compound bodies — same body pair but
 /// different child colliders is a different contact.
+/// @param a First contact record to compare.
+/// @param b Second contact record to compare.
+/// @return One when both records identify the same unordered body/leaf pair, otherwise zero.
 int contact_pair_equals(const rt_contact3d *a, const rt_contact3d *b) {
     if (!a || !b)
         return 0;
@@ -1119,12 +1229,17 @@ int contact_pair_equals(const rt_contact3d *a, const rt_contact3d *b) {
 
 /// @brief Fold `value` into running hash `key` (golden-ratio mix, à la Boost hash_combine);
 ///   never returns 0 so the result can serve as a non-empty-slot marker.
+/// @param key Running non-cryptographic hash state.
+/// @param value Pointer-sized value to combine.
+/// @return Mixed nonzero hash state.
 static uintptr_t contact_pair_hash_mix(uintptr_t key, uintptr_t value) {
     key ^= value + (uintptr_t)0x9e3779b97f4a7c15ull + (key << 6) + (key >> 2);
     return key ? key : (uintptr_t)1u;
 }
 
 /// @brief Hash a contact's identity (both body and both collider pointers) into one key.
+/// @param contact Contact record whose unordered pair identity is hashed.
+/// @return Nonzero pointer-sized hash invariant to pair order.
 static uintptr_t contact_pair_hash_value(const rt_contact3d *contact) {
     uintptr_t body_a = (uintptr_t)contact->body_a;
     uintptr_t body_b = (uintptr_t)contact->body_b;
@@ -1148,6 +1263,9 @@ static uintptr_t contact_pair_hash_value(const rt_contact3d *contact) {
 
 /// @brief Append a contact to the per-frame aggregate, replacing an existing
 ///        same-pair record so the latest substep's geometry is exposed.
+/// @param w World3D whose frame-wide contact aggregate is updated.
+/// @param contact Contact snapshot to append or replace.
+/// @return One on success, otherwise zero after marking the step failed.
 int world3d_append_frame_contact_unique(rt_world3d *w, const rt_contact3d *contact) {
     int32_t next_count;
     if (!w || !contact)
@@ -1168,6 +1286,8 @@ int world3d_append_frame_contact_unique(rt_world3d *w, const rt_contact3d *conta
 }
 
 /// @brief Publish the frame-wide contact aggregate as the public contact list.
+/// @param w World3D whose aggregate is copied into public contact storage.
+/// @return One on success, otherwise zero after marking the step failed.
 int world3d_publish_frame_contacts(rt_world3d *w) {
     if (!w)
         return 0;
@@ -1183,6 +1303,9 @@ int world3d_publish_frame_contacts(rt_world3d *w) {
 
 /// @brief Choose a power-of-two table capacity above 2×`count` (kept sparse to bound
 ///   probe lengths); returns 0 on overflow or non-positive count.
+/// @param count Positive number of contacts to store.
+/// @param out_capacity Output receiving the selected power-of-two slot count.
+/// @return One when a safe capacity was calculated, otherwise zero.
 static int contact_pair_table_capacity(int32_t count, int32_t *out_capacity) {
     int32_t cap = 16;
     if (!out_capacity || count <= 0)
@@ -1201,6 +1324,10 @@ static int contact_pair_table_capacity(int32_t count, int32_t *out_capacity) {
 }
 
 /// @brief Insert every contact into a zeroed linear-probe table of @p capacity slots.
+/// @param table Caller-provided zeroed hash table.
+/// @param capacity Power-of-two number of table slots.
+/// @param contacts Contiguous contact records to index.
+/// @param count Number of records in @p contacts.
 static void contact_pair_table_fill(contact_pair_hash_entry *table,
                                     int32_t capacity,
                                     const rt_contact3d *contacts,
@@ -1222,6 +1349,10 @@ static void contact_pair_table_fill(contact_pair_hash_entry *table,
 /// @brief Build an open-addressing (linear-probe) hash set over `count` contacts so
 ///   membership can be tested in O(1); returns the table (caller frees) and its
 ///   capacity via @p out_capacity, or NULL on allocation failure.
+/// @param contacts Contiguous contact records to index.
+/// @param count Positive number of contact records.
+/// @param out_capacity Output receiving the allocated table capacity.
+/// @return Newly allocated hash table owned by the caller, or NULL on failure.
 contact_pair_hash_entry *contact_pair_table_build(const rt_contact3d *contacts,
                                                   int32_t count,
                                                   int32_t *out_capacity) {
@@ -1243,6 +1374,12 @@ contact_pair_hash_entry *contact_pair_table_build(const rt_contact3d *contacts,
 /// @details Used on the per-substep warm-start path and the per-step event diff,
 ///   where a malloc/free per call would churn the allocator. The returned table
 ///   is only valid until the slot's next acquire; callers must NOT free it.
+/// @param w World3D providing step-scratch storage.
+/// @param scratch_slot Scratch arena slot to acquire.
+/// @param contacts Contiguous contact records to index.
+/// @param count Positive number of contact records.
+/// @param out_capacity Output receiving the scratch table capacity.
+/// @return Borrowed scratch-backed hash table, or NULL on failure.
 contact_pair_hash_entry *contact_pair_table_build_scratch(rt_world3d *w,
                                                           int32_t scratch_slot,
                                                           const rt_contact3d *contacts,
@@ -1265,6 +1402,10 @@ contact_pair_hash_entry *contact_pair_table_build_scratch(rt_world3d *w,
 
 /// @brief True if `needle`'s contact pair is present in the linear-probe table built by
 ///   contact_pair_table_build; stops at the first empty slot (open-addressing absence).
+/// @param table Contact-pair hash table to search.
+/// @param capacity Power-of-two number of table slots.
+/// @param needle Contact record whose pair identity is queried.
+/// @return One when the pair is present, otherwise zero.
 int contact_pair_table_contains(const contact_pair_hash_entry *table,
                                 int32_t capacity,
                                 const rt_contact3d *needle) {
@@ -1287,6 +1428,10 @@ int contact_pair_table_contains(const contact_pair_hash_entry *table,
 /// @brief Return the stored contact whose (body_a,body_b,collider_a,collider_b) pair matches
 ///   @p needle, or NULL if absent. With one manifold per pair the match is unique, so this
 ///   returns the same contact a linear scan would — used to O(1) warm-start the solver.
+/// @param table Contact-pair hash table to search.
+/// @param capacity Power-of-two number of table slots.
+/// @param needle Contact record whose pair identity is queried.
+/// @return Borrowed matching contact record, or NULL when absent.
 const rt_contact3d *contact_pair_table_find(const contact_pair_hash_entry *table,
                                             int32_t capacity,
                                             const rt_contact3d *needle) {
@@ -1313,6 +1458,10 @@ const rt_contact3d *contact_pair_table_find(const contact_pair_hash_entry *table
 /// (pick the child whose support has the largest dot with `direction`);
 /// AABB-based fallback for unrecognized shapes. Used by contact-point
 /// reconstruction after narrow-phase collision detection.
+/// @param collider Collider3D handle whose support is evaluated.
+/// @param pose World pose applied to @p collider.
+/// @param direction Three-component world direction.
+/// @param out_point Three-component output receiving the farthest world point.
 static void collider_support_point(void *collider,
                                    const rt_collider_pose *pose,
                                    const double *direction,
@@ -1458,6 +1607,12 @@ static void collider_support_point(void *collider,
 /// static boxes (floors, walls) a support point along an axis-aligned normal
 /// can land on a far corner when the other normal components are zero, which
 /// creates bogus torque in the contact solver.
+/// @param a_leaf First leaf Collider3D.
+/// @param a_pose World pose of @p a_leaf.
+/// @param b_leaf Second leaf Collider3D.
+/// @param b_pose World pose of @p b_leaf.
+/// @param normal Three-component A-to-B contact normal.
+/// @param point_out Three-component output receiving the representative midpoint.
 static void compute_contact_point_from_leafs(void *a_leaf,
                                              const rt_collider_pose *a_pose,
                                              void *b_leaf,
@@ -1522,6 +1677,11 @@ static void compute_contact_point_from_leafs(void *a_leaf,
     point_out[2] = (point_a[2] + point_b[2]) * 0.5;
 }
 
+/// @brief Estimate a representative contact point from two bodies' overlapping world AABBs.
+/// @param a First Body3D, establishing the normal origin.
+/// @param b Second Body3D, toward which @p normal points.
+/// @param normal Three-component A-to-B contact normal.
+/// @param point_out Three-component output receiving the face-aware overlap midpoint.
 static void compute_contact_point_from_body_aabbs(const rt_body3d *a,
                                                   const rt_body3d *b,
                                                   const double *normal,
@@ -1566,6 +1726,9 @@ static void compute_contact_point_from_body_aabbs(const rt_body3d *a,
 /// preserves intuitive behavior: e.g., players (layer P, mask=P|E) and
 /// enemies (layer E, mask=P|E) collide; bullets (layer B, mask=E) hit
 /// enemies but not players.
+/// @param a First Body3D to filter.
+/// @param b Second Body3D to filter.
+/// @return One when each body's mask accepts the other's layer, otherwise zero.
 int bodies_can_collide(const rt_body3d *a, const rt_body3d *b) {
     if (!a || !b)
         return 0;

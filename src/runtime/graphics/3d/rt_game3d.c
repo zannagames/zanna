@@ -33,6 +33,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the Game3D world loop, shared helpers, input snapshots, and render orchestration.
+/// @details This translation unit provides cross-platform model-cache synchronization, callback
+///   validation, retained-reference utilities, floating-origin and simulation coordination,
+///   debugging, frame presentation, deterministic run modes, and hitch telemetry. Specialized
+///   Game3D subsystems are implemented in neighboring source and include fragments.
+
 #include "rt_game3d.h"
 #include "rt_platform_feature.h"
 
@@ -172,6 +179,10 @@ static CRITICAL_SECTION g_game3d_model_cache_lock;
 static CONDITION_VARIABLE g_game3d_model_cache_cv;
 
 /// @brief One-time initializer (run via InitOnceExecuteOnce) for the cache critical section.
+/// @param once Windows one-time initialization token supplied by the operating system.
+/// @param parameter Optional initialization parameter; unused.
+/// @param context Optional context output address; unused.
+/// @return `TRUE` after initializing the critical section and condition variable.
 static BOOL CALLBACK game3d_model_cache_init_once(PINIT_ONCE once,
                                                   PVOID parameter,
                                                   PVOID *context) {
@@ -194,6 +205,9 @@ static void game3d_model_cache_unlock(void) {
     LeaveCriticalSection(&g_game3d_model_cache_lock);
 }
 
+/// @brief Wait on the Windows model-cache condition variable while atomically releasing the lock.
+/// @param timeout_ms Maximum wait in milliseconds; zero is normalized to one millisecond.
+/// @return 1 when awakened before timeout, or 0 on timeout or wait failure.
 static int game3d_model_cache_wait_locked_ms(uint32_t timeout_ms) {
     BOOL ok = SleepConditionVariableCS(&g_game3d_model_cache_cv,
                                        &g_game3d_model_cache_lock,
@@ -214,6 +228,7 @@ static int g_game3d_model_cache_cv_ready = 0;
 static int g_game3d_model_cache_cv_uses_monotonic = 0;
 #endif
 
+/// @brief Initialize the POSIX model-cache condition variable and its preferred clock once.
 static void game3d_model_cache_init_once(void) {
     pthread_condattr_t attr;
     int cv_ready = 0;
@@ -241,6 +256,9 @@ static void game3d_model_cache_unlock(void) {
     pthread_mutex_unlock(&g_game3d_model_cache_lock);
 }
 
+/// @brief Wait on the POSIX model-cache condition variable while atomically releasing the mutex.
+/// @param timeout_ms Maximum relative wait in milliseconds; zero is normalized to one millisecond.
+/// @return 1 when signaled before the deadline, or 0 when unavailable, timed out, or failed.
 static int game3d_model_cache_wait_locked_ms(uint32_t timeout_ms) {
     struct timespec deadline;
     uint32_t wait_ms = timeout_ms == 0u ? 1u : timeout_ms;
@@ -327,6 +345,11 @@ static int game3d_parse_linux_maps_hex_address(const char **cursor, uintptr_t *o
 /// @details Linux exposes process mappings as hex address ranges followed by permission flags. On
 ///          success it returns non-zero and writes the executable range into @p out_start/@p
 ///          out_end so the caller can cache it for later callbacks.
+/// @param line Null-terminated `/proc/self/maps` line.
+/// @param needle Callback address to locate.
+/// @param[out] out_start Optional destination for the executable mapping's inclusive start.
+/// @param[out] out_end Optional destination for the executable mapping's exclusive end.
+/// @return 1 when @p needle lies in the parsed executable mapping, or 0 otherwise.
 static int game3d_linux_maps_line_contains_executable_callback(const char *line,
                                                                uintptr_t needle,
                                                                uintptr_t *out_start,
@@ -365,6 +388,8 @@ static int game3d_linux_maps_line_contains_executable_callback(const char *line,
 ///   mis-passed managed object would otherwise be jumped into as code; this guard
 ///   rejects GC payloads and, where the platform exposes mapping metadata, verifies
 ///   that the target page is executable. NULL is treated as "native" (no-op).
+/// @param callback Candidate raw callback address.
+/// @return 1 for `NULL` or a verified executable native address, or 0 otherwise.
 static int game3d_callback_pointer_is_native(void *callback) {
     if (!callback)
         return 1;
@@ -424,6 +449,9 @@ static int game3d_callback_pointer_is_native(void *callback) {
 
 /// @brief Validate and cast a raw pointer to an update callback, trapping with
 ///   `diagnostic` if the pointer is non-native; returns NULL for a NULL callback.
+/// @param callback Candidate raw update-function address.
+/// @param diagnostic Trap message used when @p callback is not executable native code.
+/// @return The validated callback, or `NULL` for absent or rejected input.
 static rt_game3d_update_fn game3d_update_callback_checked(void *callback, const char *diagnostic) {
     if (!callback)
         return NULL;
@@ -436,6 +464,9 @@ static rt_game3d_update_fn game3d_update_callback_checked(void *callback, const 
 
 /// @brief Validate and cast a raw pointer to an overlay callback, trapping with
 ///   `diagnostic` if the pointer is non-native; returns NULL for a NULL callback.
+/// @param callback Candidate raw overlay-function address.
+/// @param diagnostic Trap message used when @p callback is not executable native code.
+/// @return The validated callback, or `NULL` for absent or rejected input.
 static rt_game3d_overlay_fn game3d_overlay_callback_checked(void *callback,
                                                             const char *diagnostic) {
     if (!callback)
@@ -448,6 +479,8 @@ static rt_game3d_overlay_fn game3d_overlay_callback_checked(void *callback,
 }
 
 /// @brief Clamp a requested worker-thread count to the valid range [1, RT_GAME3D_MAX_WORKERS].
+/// @param worker_count Requested worker count.
+/// @return The count constrained to the supported inclusive range.
 static int64_t game3d_clamp_worker_count(int64_t worker_count) {
     if (worker_count < 1)
         return 1;
@@ -457,11 +490,14 @@ static int64_t game3d_clamp_worker_count(int64_t worker_count) {
 }
 
 /// @brief Default worker-thread count derived from the platform's parallelism, clamped to range.
+/// @return The platform-derived worker count constrained to the Game3D range.
 static int64_t game3d_default_worker_count(void) {
     return game3d_clamp_worker_count(rt_parallel_default_workers());
 }
 
 /// @brief Return non-zero when the world's Canvas3D is currently inside a frame.
+/// @param canvas_obj Candidate Canvas3D handle.
+/// @return 1 when a valid graphics canvas has an active frame, or 0 otherwise.
 static int game3d_canvas_in_frame(void *canvas_obj) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     rt_canvas3d *canvas = rt_canvas3d_checked_or_stack(canvas_obj);
@@ -473,6 +509,7 @@ static int game3d_canvas_in_frame(void *canvas_obj) {
 }
 
 /// @brief Drop Canvas3D temporal caches after world-space state changes.
+/// @param canvas_obj Candidate Canvas3D whose motion and occlusion history is invalidated.
 static void game3d_canvas_clear_temporal_state(void *canvas_obj) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     rt_canvas3d *canvas = rt_canvas3d_checked_or_stack(canvas_obj);
@@ -487,6 +524,8 @@ static void game3d_canvas_clear_temporal_state(void *canvas_obj) {
 }
 
 /// @brief Return the current number of shadow maps produced for debug overlay text.
+/// @param canvas_obj Candidate Canvas3D handle.
+/// @return The current shadow-map count, or zero when graphics or the canvas is unavailable.
 static int64_t game3d_canvas_shadow_count(void *canvas_obj) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     rt_canvas3d *canvas = rt_canvas3d_checked_or_stack(canvas_obj);
@@ -498,6 +537,8 @@ static int64_t game3d_canvas_shadow_count(void *canvas_obj) {
 }
 
 /// @brief Return the active shadow-map resolution for debug overlay text.
+/// @param canvas_obj Candidate Canvas3D handle.
+/// @return The active resolution, or zero when graphics or the canvas is unavailable.
 static int64_t game3d_canvas_shadow_resolution(void *canvas_obj) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     rt_canvas3d *canvas = rt_canvas3d_checked_or_stack(canvas_obj);
@@ -509,6 +550,8 @@ static int64_t game3d_canvas_shadow_resolution(void *canvas_obj) {
 }
 
 /// @brief Enable camera-relative Canvas3D uploads when the graphics backend is present.
+/// @param canvas_obj Canvas3D whose upload mode is updated.
+/// @param enabled Non-zero to enable camera-relative uploads, or zero to disable them.
 static void game3d_canvas_set_camera_relative_upload(void *canvas_obj, int8_t enabled) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     rt_canvas3d_set_camera_relative_upload(canvas_obj, enabled);
@@ -519,6 +562,8 @@ static void game3d_canvas_set_camera_relative_upload(void *canvas_obj, int8_t en
 }
 
 /// @brief Synchronize camera render aspect when the private camera runtime is available.
+/// @param camera_obj Camera3D receiving the render aspect.
+/// @param aspect Finite positive viewport aspect supplied by the caller.
 static void game3d_camera_sync_render_aspect(void *camera_obj, double aspect) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     rt_camera3d_sync_render_aspect(camera_obj, aspect);
@@ -529,6 +574,10 @@ static void game3d_camera_sync_render_aspect(void *camera_obj, double aspect) {
 }
 
 /// @brief Restore the canvas input/clock settings temporarily replaced by runFrames.
+/// @param canvas_obj Canvas3D whose deterministic-run overrides are restored.
+/// @param input_source Previously configured input source.
+/// @param clock_source Previously configured clock source.
+/// @param synthetic_dt_us Previously configured synthetic delta time in microseconds.
 static void game3d_world_restore_run_frames_canvas(void *canvas_obj,
                                                    int32_t input_source,
                                                    int32_t clock_source,
@@ -542,6 +591,7 @@ static void game3d_world_restore_run_frames_canvas(void *canvas_obj,
 
 /// @brief Release the object held in `*slot`, free it if its refcount hits zero,
 ///   and clear the slot to NULL. Safe on NULL slot or empty slot.
+/// @param[in,out] slot Address of an owned runtime reference to consume and clear.
 void game3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
@@ -549,6 +599,8 @@ void game3d_release_ref(void **slot) {
 /// @brief Retain `value` then release the previous occupant of `*slot` and store it.
 /// @details Retain-before-release order makes self-assignment safe; no-ops when the
 ///   slot already holds `value`. Keeps owned-slot refcounts balanced.
+/// @param[in,out] slot Address of the owned reference to replace.
+/// @param value New optional runtime object; retained before the prior value is released.
 void game3d_assign_ref(void **slot, void *value) {
     if (!slot || *slot == value)
         return;
@@ -561,6 +613,8 @@ void game3d_assign_ref(void **slot, void *value) {
 /// @details Matching slots are owned retained references. Wrong-class private state is treated as a
 ///          borrowed corruption sentinel and cleared without releasing so tests and defensive
 ///          repair paths never drop a handle they did not retain.
+/// @param[in,out] slot Address of the typed owned reference to consume.
+/// @param class_id Expected Graphics3D runtime class identifier.
 void game3d_release_typed_ref(void **slot, int64_t class_id) {
     if (!slot || !*slot)
         return;
@@ -572,6 +626,9 @@ void game3d_release_typed_ref(void **slot, int64_t class_id) {
 }
 
 /// @brief Retain a typed value, release the previous typed occupant, and store it.
+/// @param[in,out] slot Address of the typed owned reference to replace.
+/// @param value Optional replacement object; ignored when its class does not match.
+/// @param class_id Required Graphics3D runtime class identifier.
 void game3d_assign_typed_ref(void **slot, void *value, int64_t class_id) {
     if (!slot || *slot == value)
         return;
@@ -584,8 +641,9 @@ void game3d_assign_typed_ref(void **slot, void *value, int64_t class_id) {
 
 /// @brief Reinterpret a task function pointer as a void* for storage in the job system.
 /// @details Isolates the (technically implementation-defined) function-to-object pointer cast to
-/// one
-///          documented spot.
+///          one documented spot.
+/// @param fn Task callback to encode for the job system.
+/// @return The callback bits represented as an object pointer of equal size.
 static void *game3d_task_fnptr(void (*fn)(void *)) {
     void *ptr;
     _Static_assert(sizeof(ptr) == sizeof(fn),
@@ -595,6 +653,7 @@ static void *game3d_task_fnptr(void (*fn)(void *)) {
 }
 
 /// @brief Release the world's parallel job/worker pool and clear its handle.
+/// @param world World whose owned pool is shut down and released.
 static void game3d_world_release_job_pool(rt_game3d_world *world) {
     if (!world || !world->job_pool)
         return;
@@ -605,6 +664,7 @@ static void game3d_world_release_job_pool(rt_game3d_world *world) {
 }
 
 /// @brief Lazily create the world's job pool sized to its worker count.
+/// @param world World whose pool must match its configured worker count.
 /// @return 1 if a usable pool exists, 0 on allocation failure.
 static int game3d_world_ensure_job_pool(rt_game3d_world *world) {
     if (!world || world->worker_count <= 1)
@@ -625,6 +685,8 @@ static int game3d_world_ensure_job_pool(rt_game3d_world *world) {
 }
 
 /// @brief Entity count clamped to the allocated registry capacity.
+/// @param world World whose entity registry metadata is inspected.
+/// @return The non-negative count capped by allocated capacity, or zero for invalid storage.
 static int32_t game3d_world_safe_entity_count(const rt_game3d_world *world) {
     if (!world || !world->entities || world->entity_capacity <= 0 || world->entity_count <= 0)
         return 0;
@@ -634,6 +696,8 @@ static int32_t game3d_world_safe_entity_count(const rt_game3d_world *world) {
 }
 
 /// @brief Clamp a mutable world registry count back to its allocated entity array.
+/// @param world World whose mutable count is normalized.
+/// @return The repaired non-negative entity count.
 static int32_t game3d_world_repair_entity_count(rt_game3d_world *world) {
     int32_t safe_count = game3d_world_safe_entity_count(world);
     if (world)
@@ -642,21 +706,32 @@ static int32_t game3d_world_repair_entity_count(rt_game3d_world *world) {
 }
 
 /// @brief True if `layer` is a single power-of-two bit (a valid individual layer).
+/// @param layer Candidate layer bit.
+/// @return 1 for a positive single-bit value, or 0 otherwise.
 int8_t game3d_valid_layer(int64_t layer) {
     return layer > 0 && (layer & (layer - 1)) == 0 ? 1 : 0;
 }
 
 /// @brief Coerce user mask bitfields; any negative input means "all layers".
+/// @param bits User-supplied layer mask.
+/// @return @p bits when non-negative, otherwise an all-bits-set mask.
 static int64_t game3d_sanitize_mask_bits(int64_t bits) {
     return bits < 0 ? ~(int64_t)0 : bits;
 }
 
 /// @brief Return `value` when finite, else `fallback`. Scalar boundary sanitizer.
+/// @param value Candidate floating-point value.
+/// @param fallback Replacement for NaN or infinity.
+/// @return @p value when finite, otherwise @p fallback.
 double game3d_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Return a finite value clamped to +/- abs_max, or fallback when invalid.
+/// @param value Candidate signed value.
+/// @param fallback Replacement for non-finite input or a non-positive bound.
+/// @param abs_max Maximum permitted absolute magnitude.
+/// @return A finite value within the symmetric bound.
 double game3d_clamp_abs_or(double value, double fallback, double abs_max) {
     fallback = game3d_finite_or(fallback, 0.0);
     abs_max = fabs(game3d_finite_or(abs_max, 0.0));
@@ -671,11 +746,16 @@ double game3d_clamp_abs_or(double value, double fallback, double abs_max) {
 }
 
 /// @brief Sanitize world coordinates before they enter scene, physics, or camera math.
+/// @param value Candidate coordinate.
+/// @param fallback Replacement for non-finite input.
+/// @return A finite coordinate within `RT_GAME3D_COORD_ABS_MAX`.
 double game3d_clamp_coord_or(double value, double fallback) {
     return game3d_clamp_abs_or(value, fallback, RT_GAME3D_COORD_ABS_MAX);
 }
 
 /// @brief Sanitize scale lanes: finite, non-zero, and capped to a stable range.
+/// @param value Candidate signed scale.
+/// @return A finite non-zero scale within the supported absolute range.
 double game3d_scale_or_unit(double value) {
     value = game3d_clamp_abs_or(value, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     return fabs(value) <= 1e-12 ? 1.0 : value;
@@ -683,6 +763,8 @@ double game3d_scale_or_unit(double value) {
 
 /// @brief Sanitize a frame delta: non-finite/≤0 becomes the default, large spikes are
 ///   capped at RT_GAME3D_MAX_DT so a stall cannot tunnel physics or fling the camera.
+/// @param dt Candidate frame delta in seconds.
+/// @return A positive finite delta no greater than `RT_GAME3D_MAX_DT`.
 double game3d_clamp_dt(double dt) {
     dt = game3d_finite_or(dt, RT_GAME3D_DEFAULT_DT);
     if (dt <= 0.0)
@@ -693,6 +775,9 @@ double game3d_clamp_dt(double dt) {
 }
 
 /// @brief Return `value` if finite and ≥ 0, else `fallback`. For non-negative knobs.
+/// @param value Candidate non-negative value.
+/// @param fallback Replacement for non-finite or negative input.
+/// @return The sanitized non-negative value.
 double game3d_nonnegative_or(double value, double fallback) {
     fallback = game3d_finite_or(fallback, 0.0);
     value = game3d_finite_or(value, fallback);
@@ -700,6 +785,10 @@ double game3d_nonnegative_or(double value, double fallback) {
 }
 
 /// @brief Return a non-negative finite value capped at max_value; invalid/negative uses fallback.
+/// @param value Candidate non-negative value.
+/// @param fallback Replacement for non-finite or negative input.
+/// @param max_value Optional positive upper bound; non-positive disables upper clamping.
+/// @return The sanitized value after optional upper clamping.
 double game3d_nonnegative_clamped_or(double value, double fallback, double max_value) {
     value = game3d_nonnegative_or(value, fallback);
     max_value = game3d_nonnegative_or(max_value, 0.0);
@@ -708,6 +797,8 @@ double game3d_nonnegative_clamped_or(double value, double fallback, double max_v
 
 /// @brief Sanitize a floating-origin rebase distance, substituting the default for non-positive
 /// input.
+/// @param meters Requested rebase threshold in world units.
+/// @return A finite threshold no smaller than `RT_GAME3D_MIN_REBASE_THRESHOLD`.
 static double game3d_rebase_threshold_or_default(double meters) {
     meters = game3d_finite_or(meters, RT_GAME3D_DEFAULT_REBASE_THRESHOLD);
     if (meters < RT_GAME3D_MIN_REBASE_THRESHOLD)
@@ -716,6 +807,8 @@ static double game3d_rebase_threshold_or_default(double meters) {
 }
 
 /// @brief Translate a physics body's position by the floating-origin rebase @p delta.
+/// @param body Candidate Body3D handle.
+/// @param delta Three-element world-space displacement subtracted from the body position.
 static void game3d_shift_body_position(void *body, const double delta[3]) {
     if (!rt_g3d_has_class(body, RT_G3D_BODY3D_CLASS_ID) || !delta)
         return;
@@ -728,6 +821,8 @@ static void game3d_shift_body_position(void *body, const double delta[3]) {
 }
 
 /// @brief Shift a world's particle/decal effects by the floating-origin rebase @p delta.
+/// @param effects_obj Candidate Game3D effects collection.
+/// @param delta Three-element world-space displacement applied to supported effects.
 static void game3d_effects_rebase_origin(void *effects_obj, const double delta[3]) {
     rt_game3d_effects *effects =
         (rt_game3d_effects *)rt_g3d_checked_or_null(effects_obj, RT_G3D_GAME3D_EFFECTS_CLASS_ID);
@@ -758,6 +853,8 @@ static void game3d_effects_rebase_origin(void *effects_obj, const double delta[3
 ///   This helper updates the stream's persisted local-space metadata so future
 ///   load/unload distance tests and terrain draw positions stay in the same
 ///   coordinate frame after the world origin moves.
+/// @param stream World-stream state whose centers are shifted.
+/// @param delta Three-element world-space displacement subtracted from stream metadata.
 static void game3d_world_stream_rebase_origin(rt_game3d_world_stream *stream,
                                               const double delta[3]) {
     if (!stream || !delta)
@@ -797,6 +894,7 @@ static void game3d_world_stream_rebase_origin(rt_game3d_world_stream *stream,
 }
 
 /// @brief Mark that the world must reach a safe boundary (e.g. end of step) before its next rebase.
+/// @param world World whose canvas frame state is validated.
 static void game3d_world_require_rebase_boundary(rt_game3d_world *world) {
     if (!world || !world->canvas)
         return;
@@ -804,11 +902,17 @@ static void game3d_world_require_rebase_boundary(rt_game3d_world *world) {
         rt_trap("Game3D.World3D.rebaseOrigin: must be called between frames");
 }
 
-/// @brief Apply a floating-origin shift of @p delta across all of the world's subsystems.
-/// @details Translates bodies, scene nodes, effects, the camera, and cached origins together so the
-///          recenter is invisible to gameplay while restoring float precision near the camera.
+/// @brief Forward declaration for clearing entity interpolation endpoints after discontinuities.
+/// @param world World whose entity pose snapshots are invalidated.
 static void game3d_world_invalidate_interpolation_poses(rt_game3d_world *world);
 
+/// @brief Apply a floating-origin shift of @p delta across all of the world's subsystems.
+/// @details Translates bodies, scene nodes, effects, streaming metadata, the camera, audio state,
+///   and cached origins together so the recenter is invisible to gameplay while restoring float
+///   precision near the camera.
+/// @param world World whose local coordinate system is recentered.
+/// @param delta Three-element local displacement added to the accumulated world origin and
+///   subtracted from resident local-space state.
 static void game3d_world_apply_origin_rebase(rt_game3d_world *world, const double delta[3]) {
     if (!world || !delta)
         return;
@@ -904,8 +1008,9 @@ static void game3d_world_apply_origin_rebase(rt_game3d_world *world, const doubl
 
 /// @brief Recenter the world's origin if the camera has drifted past the rebase threshold.
 /// @details Computes the camera offset, and when it exceeds the threshold (and a boundary is
-/// reached)
-///          applies an origin rebase by that delta so coordinates stay within float-precise range.
+///          reached) applies an origin rebase by that delta so coordinates stay within
+///          float-precise range.
+/// @param world World whose floating-origin policy and camera position are evaluated.
 static void game3d_world_rebase_if_needed(rt_game3d_world *world) {
     void *camera = NULL;
     if (!world || !world->floating_origin)
@@ -934,6 +1039,9 @@ static void game3d_world_rebase_if_needed(rt_game3d_world *world) {
 }
 
 /// @brief Normalize a 3D input axis so combined directions do not move faster.
+/// @param[in,out] x Optional x component normalized in place.
+/// @param[in,out] y Optional y component normalized in place.
+/// @param[in,out] z Optional z component normalized in place.
 void game3d_normalize_axis3(double *x, double *y, double *z) {
     double vx = game3d_finite_or(x ? *x : 0.0, 0.0);
     double vy = game3d_finite_or(y ? *y : 0.0, 0.0);
@@ -963,6 +1071,10 @@ void game3d_normalize_axis3(double *x, double *y, double *z) {
 }
 
 /// @brief Clamp `value` into [lo, hi]; non-finite input falls back to `lo`.
+/// @param value Candidate value.
+/// @param lo First bound.
+/// @param hi Second bound; exchanged with @p lo when out of order.
+/// @return The finite value constrained to the normalized interval.
 double game3d_clamp(double value, double lo, double hi) {
     if (!isfinite(lo))
         lo = 0.0;
@@ -982,6 +1094,10 @@ double game3d_clamp(double value, double lo, double hi) {
 }
 
 /// @brief Clamp an integer `value` into [lo, hi].
+/// @param value Candidate integer.
+/// @param lo First bound.
+/// @param hi Second bound; exchanged with @p lo when out of order.
+/// @return The integer constrained to the normalized interval.
 int64_t game3d_clamp_i64(int64_t value, int64_t lo, int64_t hi) {
     if (hi < lo) {
         int64_t tmp = lo;
@@ -998,6 +1114,10 @@ int64_t game3d_clamp_i64(int64_t value, int64_t lo, int64_t hi) {
 /// @brief Read a Vec3 into `out[3]` with per-lane NaN/Inf scrubbed and finite extremes
 ///   capped to the Game3D coordinate range; traps `method` and returns 0 when `vec` is not
 ///   a Vec3, otherwise returns 1.
+/// @param vec Candidate Vec3 runtime object.
+/// @param[out] out Required three-element destination, cleared on wrong-class input.
+/// @param method Optional trap message for invalid @p vec.
+/// @return 1 when a sanitized Vec3 was read, or 0 for invalid input.
 int8_t game3d_read_vec3(void *vec, double *out, const char *method) {
     if (!out)
         return 0;
@@ -1017,6 +1137,12 @@ int8_t game3d_read_vec3(void *vec, double *out, const char *method) {
 
 /// @brief Compute a doubled int32 capacity for an array while guarding integer
 ///   and byte-size overflow before the caller reaches realloc().
+/// @param current Current non-negative element capacity.
+/// @param needed Required non-negative element count.
+/// @param initial Positive starting capacity when @p current is zero.
+/// @param elem_size Non-zero size of one element in bytes.
+/// @param[out] out_capacity Destination for the current or grown capacity.
+/// @return 1 when a representable capacity was computed, or 0 for invalid input or overflow.
 static int game3d_compute_capacity(
     int32_t current, int32_t needed, int32_t initial, size_t elem_size, int32_t *out_capacity) {
     int32_t capacity;
@@ -1043,6 +1169,7 @@ static int game3d_compute_capacity(
 /// @brief Normalize the audio source array's count/capacity invariants (clamp a
 ///   negative capacity to zero, reset the count when the backing array is absent,
 ///   and bound the live count by the capacity). Defensive; returns void.
+/// @param audio Audio registry whose source storage is compacted and normalized.
 void game3d_audio_repair_sources(rt_game3d_audio *audio) {
     if (!audio)
         return;
@@ -1074,6 +1201,10 @@ void game3d_audio_repair_sources(rt_game3d_audio *audio) {
 
 /// @brief Ensure the audio source array can hold `needed` entries, doubling capacity
 ///   as needed; traps and returns 0 on allocation failure, else 1.
+/// @param audio Audio registry owning the source array.
+/// @param needed Required number of source slots.
+/// @return 1 when sufficient capacity exists, or 0 after trapping on overflow or allocation
+///   failure.
 int game3d_audio_reserve_sources(rt_game3d_audio *audio, int32_t needed) {
     int32_t new_capacity;
     if (!audio)
@@ -1097,6 +1228,8 @@ int game3d_audio_reserve_sources(rt_game3d_audio *audio, int32_t needed) {
 }
 
 /// @brief Retain `source` and append it to the audio subsystem's tracked source list.
+/// @param audio Audio registry receiving the retained source.
+/// @param source SoundSource3D to append when not already tracked.
 void game3d_audio_track_source(rt_game3d_audio *audio, void *source) {
     if (!audio || !source)
         return;
@@ -1119,6 +1252,7 @@ void game3d_audio_track_source(rt_game3d_audio *audio, void *source) {
 }
 
 /// @brief Drop stopped/finished sources from the audio subsystem's retained list.
+/// @param audio Audio registry whose non-playing sources are released and compacted.
 void game3d_audio_prune_sources(rt_game3d_audio *audio) {
     int32_t write = 0;
     int32_t kept;
@@ -1143,6 +1277,7 @@ void game3d_audio_prune_sources(rt_game3d_audio *audio) {
 /// @brief Normalize and compact the effect-item array: clamp count/capacity
 ///   invariants, drop items whose object is no longer a valid particle/decal,
 ///   and clamp each survivor's lifetime/age into range. Defensive; returns void.
+/// @param effects Effect registry to normalize and compact.
 void game3d_effects_repair(rt_game3d_effects *effects) {
     if (!effects)
         return;
@@ -1194,6 +1329,10 @@ void game3d_effects_repair(rt_game3d_effects *effects) {
 
 /// @brief Ensure the effect-item array can hold `needed` entries, doubling capacity
 ///   as needed; traps and returns 0 on allocation failure, else 1.
+/// @param effects Effect registry owning the item array.
+/// @param needed Required number of effect slots.
+/// @return 1 when sufficient capacity exists, or 0 after trapping on overflow or allocation
+///   failure.
 int game3d_effects_reserve(rt_game3d_effects *effects, int32_t needed) {
     int32_t new_capacity;
     if (!effects)
@@ -1219,6 +1358,7 @@ int game3d_effects_reserve(rt_game3d_effects *effects, int32_t needed) {
 
 /// @brief Tear down one effect item: stop a particle system if present, release the
 ///   wrapped object reference, and zero the slot for reuse.
+/// @param item Effect slot whose owned object and metadata are consumed.
 void game3d_effect_release_item(rt_game3d_effect_item *item) {
     if (!item)
         return;
@@ -1237,6 +1377,9 @@ void game3d_effect_release_item(rt_game3d_effect_item *item) {
 }
 
 /// @brief Return `value` if finite and strictly positive, else `fallback`.
+/// @param value Candidate positive value.
+/// @param fallback Replacement for non-finite or non-positive input.
+/// @return A finite strictly positive value.
 double game3d_positive_or(double value, double fallback) {
     fallback = game3d_finite_or(fallback, 1.0);
     if (fallback <= 0.0)
@@ -1246,6 +1389,10 @@ double game3d_positive_or(double value, double fallback) {
 }
 
 /// @brief Return a positive finite value capped at max_value; invalid/non-positive uses fallback.
+/// @param value Candidate positive value.
+/// @param fallback Replacement for non-finite or non-positive input.
+/// @param max_value Positive upper bound, sanitized relative to the selected value.
+/// @return The sanitized positive value capped at the upper bound.
 double game3d_positive_clamped_or(double value, double fallback, double max_value) {
     value = game3d_positive_or(value, fallback);
     max_value = game3d_positive_or(max_value, value);
@@ -1254,6 +1401,10 @@ double game3d_positive_clamped_or(double value, double fallback, double max_valu
 
 /// @brief Normalize the (x, z) ground-plane vector in place; degenerate or near-zero
 ///   length inputs fall back to (fallback_x, fallback_z). Used for movement headings.
+/// @param[in,out] x Optional x component normalized in place.
+/// @param[in,out] z Optional z component normalized in place.
+/// @param fallback_x Fallback x component for a degenerate vector.
+/// @param fallback_z Fallback z component for a degenerate vector.
 void game3d_normalize_xz(double *x, double *z, double fallback_x, double fallback_z) {
     fallback_x = game3d_finite_or(fallback_x, 0.0);
     fallback_z = game3d_finite_or(fallback_z, 0.0);
@@ -1281,6 +1432,8 @@ void game3d_normalize_xz(double *x, double *z, double fallback_x, double fallbac
 
 /// @brief Allocate a LayerMask handle initialized to the given (sanitized) bitfield;
 ///   traps on allocation failure.
+/// @param bits Initial mask bits; negative input selects all layers.
+/// @return A new GC-managed LayerMask, or `NULL` after trapping on allocation failure.
 void *game3d_layermask_new_bits(int64_t bits) {
     rt_game3d_layermask *mask = (rt_game3d_layermask *)rt_obj_new_i64(
         RT_G3D_GAME3D_LAYERMASK_CLASS_ID, (int64_t)sizeof(*mask));
@@ -1299,6 +1452,9 @@ void *game3d_layermask_new_bits(int64_t bits) {
 //=========================================================================
 
 /// @brief Is `key` held this frame? Snapshot-aware, else live keyboard state.
+/// @param input Optional Game3D input snapshot.
+/// @param key Runtime key code.
+/// @return 1 when held, or 0 otherwise.
 int8_t game3d_input_key_down(const rt_game3d_input *input, int64_t key) {
     if (input && input->has_snapshot && key > 0 && key < ZANNA_KEY_MAX)
         return input->key_down[key] ? 1 : 0;
@@ -1306,6 +1462,9 @@ int8_t game3d_input_key_down(const rt_game3d_input *input, int64_t key) {
 }
 
 /// @brief Did `key` transition to down this frame? Snapshot-aware, else live.
+/// @param input Optional Game3D input snapshot.
+/// @param key Runtime key code.
+/// @return 1 when pressed this frame, or 0 otherwise.
 int8_t game3d_input_key_pressed(const rt_game3d_input *input, int64_t key) {
     if (input && input->has_snapshot && key > 0 && key < ZANNA_KEY_MAX)
         return input->key_pressed[key] ? 1 : 0;
@@ -1313,6 +1472,9 @@ int8_t game3d_input_key_pressed(const rt_game3d_input *input, int64_t key) {
 }
 
 /// @brief Did `key` transition to up this frame? Snapshot-aware, else live.
+/// @param input Optional Game3D input snapshot.
+/// @param key Runtime key code.
+/// @return 1 when released this frame, or 0 otherwise.
 int8_t game3d_input_key_released(const rt_game3d_input *input, int64_t key) {
     if (input && input->has_snapshot && key > 0 && key < ZANNA_KEY_MAX)
         return input->key_released[key] ? 1 : 0;
@@ -1320,6 +1482,9 @@ int8_t game3d_input_key_released(const rt_game3d_input *input, int64_t key) {
 }
 
 /// @brief Is mouse `button` held this frame? Snapshot-aware, else live mouse state.
+/// @param input Optional Game3D input snapshot.
+/// @param button Runtime mouse-button index.
+/// @return 1 when held, or 0 otherwise.
 int8_t game3d_input_mouse_down(const rt_game3d_input *input, int64_t button) {
     if (input && input->has_snapshot && button >= 0 && button < ZANNA_MOUSE_BUTTON_MAX)
         return input->mouse_down[button] ? 1 : 0;
@@ -1327,6 +1492,9 @@ int8_t game3d_input_mouse_down(const rt_game3d_input *input, int64_t button) {
 }
 
 /// @brief Did mouse `button` transition to down this frame? Snapshot-aware, else live.
+/// @param input Optional Game3D input snapshot.
+/// @param button Runtime mouse-button index.
+/// @return 1 when pressed this frame, or 0 otherwise.
 int8_t game3d_input_mouse_pressed_snapshot(const rt_game3d_input *input, int64_t button) {
     if (input && input->has_snapshot && button >= 0 && button < ZANNA_MOUSE_BUTTON_MAX)
         return input->mouse_pressed[button] ? 1 : 0;
@@ -1334,41 +1502,55 @@ int8_t game3d_input_mouse_pressed_snapshot(const rt_game3d_input *input, int64_t
 }
 
 /// @brief This frame's mouse X delta. Snapshot-aware, else live mouse delta.
+/// @param input Optional Game3D input snapshot.
+/// @return Integer horizontal mouse displacement for the frame.
 int64_t game3d_input_mouse_dx(const rt_game3d_input *input) {
     return input && input->has_snapshot ? input->mouse_dx : rt_mouse_delta_x();
 }
 
 /// @brief This frame's mouse Y delta. Snapshot-aware, else live mouse delta.
+/// @param input Optional Game3D input snapshot.
+/// @return Integer vertical mouse displacement for the frame.
 int64_t game3d_input_mouse_dy(const rt_game3d_input *input) {
     return input && input->has_snapshot ? input->mouse_dy : rt_mouse_delta_y();
 }
 
 /// @brief Sub-pixel mouse X delta (relative mouse mode). Snapshot-aware, else live.
+/// @param input Optional Game3D input snapshot.
+/// @return Fractional horizontal mouse displacement for the frame.
 double game3d_input_mouse_fdx(const rt_game3d_input *input) {
     return input && input->has_snapshot ? input->mouse_fdx : rt_mouse_delta_xf();
 }
 
 /// @brief Sub-pixel mouse Y delta (relative mouse mode). Snapshot-aware, else live.
+/// @param input Optional Game3D input snapshot.
+/// @return Fractional vertical mouse displacement for the frame.
 double game3d_input_mouse_fdy(const rt_game3d_input *input) {
     return input && input->has_snapshot ? input->mouse_fdy : rt_mouse_delta_yf();
 }
 
 /// @brief This frame's mouse wheel Y. Snapshot-aware, else live wheel value.
+/// @param input Optional Game3D input snapshot.
+/// @return Fractional vertical wheel displacement for the frame.
 double game3d_input_wheel_y_snapshot(const rt_game3d_input *input) {
     return input && input->has_snapshot ? input->wheel_y : rt_mouse_wheel_yf();
 }
 
 /// @brief Create an empty layer mask (no bits set). See header.
+/// @return A new GC-managed zero-bit LayerMask.
 void *rt_game3d_layermask_none(void) {
     return game3d_layermask_new_bits(0);
 }
 
 /// @brief Create a layer mask with all bits set. See header.
+/// @return A new GC-managed all-layers LayerMask.
 void *rt_game3d_layermask_all(void) {
     return game3d_layermask_new_bits(~(int64_t)0);
 }
 
 /// @brief Create a mask holding exactly `layer`; traps if it is not a single bit.
+/// @param layer Positive single-bit layer value.
+/// @return A new GC-managed LayerMask containing @p layer.
 void *rt_game3d_layermask_of(int64_t layer) {
     if (!game3d_valid_layer(layer))
         rt_trap("Game3D.LayerMask.Of: layer must be a single positive bit");
@@ -1376,6 +1558,8 @@ void *rt_game3d_layermask_of(int64_t layer) {
 }
 
 /// @brief Get the raw bitfield backing the mask (0 on invalid handle after trap).
+/// @param obj Candidate LayerMask handle.
+/// @return The stored mask bits, or zero after invalid-handle diagnostics.
 int64_t rt_game3d_layermask_get_bits(void *obj) {
     rt_game3d_layermask *mask =
         game3d_layermask_checked(obj, "Game3D.LayerMask.get_Bits: invalid mask");
@@ -1383,6 +1567,8 @@ int64_t rt_game3d_layermask_get_bits(void *obj) {
 }
 
 /// @brief Overwrite the mask bitfield with a sanitized copy of `bits`.
+/// @param obj LayerMask to mutate.
+/// @param bits Replacement bits; negative input selects all layers.
 void rt_game3d_layermask_set_bits(void *obj, int64_t bits) {
     rt_game3d_layermask *mask =
         game3d_layermask_checked(obj, "Game3D.LayerMask.set_Bits: invalid mask");
@@ -1392,6 +1578,9 @@ void rt_game3d_layermask_set_bits(void *obj, int64_t bits) {
 
 /// @brief OR `layer` into the mask and return the same handle (fluent); traps on a
 ///   non-single-bit layer.
+/// @param obj LayerMask to mutate.
+/// @param layer Positive single-bit layer value to include.
+/// @return The same borrowed handle supplied in @p obj.
 void *rt_game3d_layermask_include(void *obj, int64_t layer) {
     rt_game3d_layermask *mask =
         game3d_layermask_checked(obj, "Game3D.LayerMask.include: invalid mask");
@@ -1403,6 +1592,9 @@ void *rt_game3d_layermask_include(void *obj, int64_t layer) {
 }
 
 /// @brief True if the mask contains `layer`; returns 0 for an invalid layer bit.
+/// @param obj LayerMask to query.
+/// @param layer Positive single-bit layer value.
+/// @return 1 when the bit is present, or 0 for absent or invalid input.
 int8_t rt_game3d_layermask_includes(void *obj, int64_t layer) {
     rt_game3d_layermask *mask =
         game3d_layermask_checked(obj, "Game3D.LayerMask.includes: invalid mask");
@@ -1413,6 +1605,10 @@ int8_t rt_game3d_layermask_includes(void *obj, int64_t layer) {
 
 /// @brief Ensure an entity's child array can hold `need` entries, doubling capacity as
 ///   needed; returns 0 on allocation failure, else 1.
+/// @param entity Entity owning the child-reference array.
+/// @param need Required number of child slots.
+/// @return 1 when sufficient capacity exists, or 0 for invalid input, overflow, or allocation
+///   failure.
 int game3d_entity_grow_children(rt_game3d_entity *entity, int32_t need) {
     int32_t new_cap;
     if (!entity)
@@ -1434,12 +1630,21 @@ int game3d_entity_grow_children(rt_game3d_entity *entity, int32_t need) {
     return 1;
 }
 
+/// @brief Forward declaration for registering an entity hierarchy with a world and scene.
+/// @param world Destination world.
+/// @param entity Root entity of the hierarchy.
+/// @param attach_to_scene Non-zero to attach root scene nodes to the world's scene.
+/// @param[in,out] next_id Optional next entity identifier advanced during registration.
+/// @return Non-zero on success, or zero on registration failure.
 int game3d_world_spawn_entity_tree(rt_game3d_world *world,
                                    rt_game3d_entity *entity,
                                    int attach_to_scene,
                                    int64_t *next_id);
 
 /// @brief True when `ancestor` is already on `entity`'s parent chain.
+/// @param entity Entity whose ancestry is traversed.
+/// @param ancestor Candidate ancestor pointer.
+/// @return 1 when found before the defensive depth bound, or 0 otherwise.
 int game3d_entity_has_ancestor(rt_game3d_entity *entity, rt_game3d_entity *ancestor) {
     int32_t depth = 0;
     for (rt_game3d_entity *cursor = entity; cursor && depth < 65536; cursor = cursor->parent) {
@@ -1451,6 +1656,9 @@ int game3d_entity_has_ancestor(rt_game3d_entity *entity, rt_game3d_entity *ances
 }
 
 /// @brief Find a direct child index, or -1 when absent.
+/// @param parent Parent entity whose child array is searched.
+/// @param child Candidate direct child.
+/// @return Zero-based child index, or -1 when invalid or absent.
 int32_t game3d_entity_find_child_index(rt_game3d_entity *parent, rt_game3d_entity *child) {
     int32_t child_count;
     if (!parent || !child)
@@ -1466,6 +1674,7 @@ int32_t game3d_entity_find_child_index(rt_game3d_entity *parent, rt_game3d_entit
 /// @brief Remove a child from its Game3D parent list and scene-node parent.
 /// @details The caller should hold its own retain if it needs `child` to
 ///          survive this unlink.
+/// @param child Entity to detach from its current parent.
 void game3d_entity_detach_from_parent(rt_game3d_entity *child) {
     rt_game3d_entity *parent;
     int32_t index;
@@ -1492,6 +1701,10 @@ void game3d_entity_detach_from_parent(rt_game3d_entity *child) {
 }
 
 /// @brief Store the world's background clear color, each channel clamped to [0, 1].
+/// @param world World whose clear color is updated.
+/// @param r Red channel.
+/// @param g Green channel.
+/// @param b Blue channel.
 void game3d_world_set_clear_color(rt_game3d_world *world, double r, double g, double b) {
     if (!world)
         return;
@@ -1502,6 +1715,8 @@ void game3d_world_set_clear_color(rt_game3d_world *world, double r, double g, do
 
 /// @brief Replace the world's post-FX stack, updating both the effect registry's owned
 ///   reference and the canvas binding.
+/// @param world World whose effect registry and canvas are updated.
+/// @param postfx Optional PostFX3D chain to retain and bind.
 void game3d_world_assign_postfx(rt_game3d_world *world, void *postfx) {
     if (!world || !world->canvas)
         return;
@@ -1512,6 +1727,9 @@ void game3d_world_assign_postfx(rt_game3d_world *world, void *postfx) {
 }
 
 /// @brief Bind a light into the given canvas light slot (no-op on NULL light).
+/// @param world World providing the target canvas.
+/// @param slot Canvas light-slot index.
+/// @param light Light3D object to bind.
 void game3d_world_install_light(rt_game3d_world *world, int64_t slot, void *light) {
     if (!world || !world->canvas || !light)
         return;
@@ -1531,16 +1749,21 @@ void game3d_world_install_light(rt_game3d_world *world, int64_t slot, void *ligh
 // clang-format on
 
 /// @brief Set the physics gravity vector. See header.
+/// @param obj World3D whose physics world is updated.
+/// @param x Gravity x component.
+/// @param y Gravity y component.
+/// @param z Gravity z component.
 void rt_game3d_world_set_gravity(void *obj, double x, double y, double z) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.setGravity: invalid world");
     if (world && world->physics)
         rt_world3d_set_gravity(world->physics, x, y, z);
 }
 
-/// @brief Begin a frame: poll the window, refresh input, advance timing/frame counters,
-///   and sync the camera aspect; returns 0 when the window should close. See header.
 /// @brief Decay the hit-stop latch by REAL dt and return the effective time
 ///   scale for this frame: 0 while paused or in hit-stop, else timeScale.
+/// @param world World whose pause, hit-stop, and time-scale state is updated.
+/// @param real_dt Unscaled real-time delta in seconds.
+/// @return The effective non-negative time multiplier, or zero while frozen.
 static double game3d_world_effective_scale_tick(rt_game3d_world *world, double real_dt) {
     if (!world)
         return 1.0;
@@ -1565,6 +1788,7 @@ static double game3d_world_effective_scale_tick(rt_game3d_world *world, double r
 /// @brief Frozen-time frame (pause / hit-stop): pure re-render. Drains async
 ///   asset commits and runs the camera late update with dt 0 so resize/aspect
 ///   stays live; animation, physics, effects, and audio sync are all skipped.
+/// @param world Paused or hit-stopped world to service without simulation advancement.
 static void game3d_world_paused_frame(rt_game3d_world *world) {
     if (!world)
         return;
@@ -1572,6 +1796,9 @@ static void game3d_world_paused_frame(rt_game3d_world *world) {
     game3d_world_late_update_controller(world, 0.0);
 }
 
+/// @brief Poll the canvas, capture input, advance frame clocks, and synchronize camera aspect.
+/// @param obj World3D to tick.
+/// @return 1 while the world remains live for another frame, or 0 when invalid or closing.
 int8_t rt_game3d_world_tick(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.tick: invalid world");
     if (!world || !world->canvas)
@@ -1602,12 +1829,6 @@ int8_t rt_game3d_world_tick(void *obj) {
     return 1;
 }
 
-/// @brief Run one fixed simulation step: physics, animations, controllers, transform sync, and
-/// events.
-/// @details The core per-tick update that advances all world subsystems by a fixed delta and fires
-/// the
-///          resulting collision/trigger callbacks; called (possibly multiple times) from the world
-///          step.
 /// @brief Despawn-safe sweep over the entity registry: run @p tick exactly once
 ///   per entity present during the sweep.
 /// @details The registry compacts with swap-remove, so a despawn during a tick
@@ -1618,6 +1839,9 @@ int8_t rt_game3d_world_tick(void *obj) {
 ///   ticked slot is revisited immediately, and catch-up passes repeat until a
 ///   full scan ticks nothing new. Entities spawned mid-sweep join the tail
 ///   unstamped and tick in the same sweep (matching the old semantics).
+/// @param world World whose mutable entity registry is swept.
+/// @param dt Simulation delta forwarded to each callback.
+/// @param tick Non-null per-entity callback.
 static void game3d_world_sweep_entities(rt_game3d_world *world,
                                         double dt,
                                         void (*tick)(rt_game3d_world *, rt_game3d_entity *,
@@ -1665,6 +1889,9 @@ static void game3d_world_sweep_entities(rt_game3d_world *world,
 }
 
 /// @brief Sweep callback: tick one entity's Behavior3D.
+/// @param world Owning world; unused by this callback.
+/// @param entity Live entity whose optional behavior is updated.
+/// @param dt Simulation delta in seconds.
 static void game3d_sweep_tick_behavior(rt_game3d_world *world,
                                        rt_game3d_entity *entity,
                                        double dt) {
@@ -1674,6 +1901,9 @@ static void game3d_sweep_tick_behavior(rt_game3d_world *world,
 }
 
 /// @brief Sweep callback: tick one entity's perception + behavior tree.
+/// @param world Owning world providing AI context.
+/// @param entity Live entity whose perception or behavior tree is updated.
+/// @param dt Simulation delta in seconds.
 static void game3d_sweep_tick_ai(rt_game3d_world *world, rt_game3d_entity *entity, double dt) {
     if (entity->perception || entity->btree)
         game3d_ai_tick(world, entity, dt);
@@ -1681,6 +1911,9 @@ static void game3d_sweep_tick_ai(rt_game3d_world *world, rt_game3d_entity *entit
 
 /// @brief Sweep callback: footsteps then interactor for one entity, preserving
 ///   the per-entity ordering of the old fused loop.
+/// @param world Owning world providing subsystem context.
+/// @param entity Live entity whose footsteps and interactor are updated.
+/// @param dt Simulation delta in seconds.
 static void game3d_sweep_tick_footsteps_interactor(rt_game3d_world *world,
                                                    rt_game3d_entity *entity,
                                                    double dt) {
@@ -1695,6 +1928,8 @@ static void game3d_sweep_tick_footsteps_interactor(rt_game3d_world *world,
 /// @details Runs before animations/physics/binding sync so behavior writes land
 ///          in the same simulation step. Uses the stamped registry sweep so
 ///          despawns during a tick can neither skip nor double-tick survivors.
+/// @param world World whose behavior components are updated.
+/// @param dt Simulation delta in seconds.
 static void game3d_world_update_behaviors(rt_game3d_world *world, double dt) {
     game3d_world_sweep_entities(world, dt, game3d_sweep_tick_behavior);
 }
@@ -1702,6 +1937,7 @@ static void game3d_world_update_behaviors(rt_game3d_world *world, double dt) {
 /// @brief Capture every spawned entity's node pose before a simulation step.
 /// @details The captured pose becomes the interpolation "from" endpoint; the post-step
 ///   node pose is the "to" endpoint. Skipped entirely unless render interpolation is on.
+/// @param world World whose live spawned entity poses are captured.
 static void game3d_world_capture_interpolation_poses(rt_game3d_world *world) {
     int32_t count;
     if (!world || !world->render_interpolation)
@@ -1726,6 +1962,7 @@ static void game3d_world_capture_interpolation_poses(rt_game3d_world *world) {
 /// @brief Drop all captured interpolation endpoints (call after floating-origin rebases).
 /// @details A rebase shifts every node by the new origin; lerping from a pre-rebase pose
 ///   would sweep entities across the whole rebase delta for one frame.
+/// @param world World whose captured entity endpoints are invalidated.
 static void game3d_world_invalidate_interpolation_poses(rt_game3d_world *world) {
     int32_t count;
     if (!world)
@@ -1738,6 +1975,7 @@ static void game3d_world_invalidate_interpolation_poses(rt_game3d_world *world) 
 }
 
 /// @brief Blend spawned entity node poses between fixed steps for this render.
+/// @param world World whose entities may receive temporary interpolated poses.
 /// @return 1 when at least one pose was blended (caller must restore after drawing).
 static int game3d_world_apply_render_interpolation(rt_game3d_world *world) {
     double alpha;
@@ -1799,6 +2037,7 @@ static int game3d_world_apply_render_interpolation(rt_game3d_world *world) {
 }
 
 /// @brief Restore authoritative sim poses after an interpolated render.
+/// @param world World whose temporarily blended nodes are restored.
 static void game3d_world_restore_render_interpolation(rt_game3d_world *world) {
     int32_t count;
     if (!world)
@@ -1822,6 +2061,8 @@ static void game3d_world_restore_render_interpolation(rt_game3d_world *world) {
 /// @brief Advance every spawned entity's active/blending ragdoll: powered drive,
 ///   palette write-back, and node root-follow. Runs after the physics step and
 ///   before scene sync so skinning consumes the ragdoll pose this frame.
+/// @param world World whose entity ragdolls are advanced.
+/// @param dt Simulation delta in seconds.
 static void game3d_world_step_ragdolls(rt_game3d_world *world, double dt) {
     if (!world)
         return;
@@ -1836,6 +2077,11 @@ static void game3d_world_step_ragdolls(rt_game3d_world *world, double dt) {
     }
 }
 
+/// @brief Run one fixed simulation step across AI, controllers, animation, physics, bindings,
+///   audio, effects, camera, and floating-origin maintenance.
+/// @param world World whose subsystems advance in deterministic authored order.
+/// @param step_sec Requested fixed-step duration in seconds, sanitized before use.
+/// @param advance_time_counters Non-zero to advance the world's elapsed-time and frame counters.
 static void game3d_world_step_simulation_impl(rt_game3d_world *world,
                                               double step_sec,
                                               int8_t advance_time_counters) {
@@ -1892,6 +2138,8 @@ static void game3d_world_step_simulation_impl(rt_game3d_world *world,
 /// @brief Advance one simulation step by `step_sec`: camera-controller update, animator
 ///   update, physics step, scene/audio binding sync, effect update, then the camera
 ///   late-update. See header.
+/// @param obj World3D to advance.
+/// @param step_sec Requested unscaled step duration in seconds.
 void rt_game3d_world_step_simulation(void *obj, double step_sec) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.stepSimulation: invalid world");
@@ -1914,6 +2162,7 @@ void rt_game3d_world_step_simulation(void *obj, double step_sec) {
 
 /// @brief Draw a yellow wireframe AABB around each spawned entity's collider for the
 ///   physics debug overlay.
+/// @param world World providing entities and the debug canvas.
 static void game3d_world_debug_draw_physics(rt_game3d_world *world) {
     if (!world || !world->canvas)
         return;
@@ -1938,6 +2187,11 @@ static void game3d_world_debug_draw_physics(rt_game3d_world *world) {
 }
 
 /// @brief Draw a C-string as overlay text at (x, y) in the given color.
+/// @param world World providing the overlay canvas.
+/// @param x Horizontal overlay coordinate in pixels.
+/// @param y Vertical overlay coordinate in pixels.
+/// @param text Null-terminated UTF-8 text copied into a temporary runtime string.
+/// @param color Packed overlay color.
 static void game3d_world_debug_text(
     rt_game3d_world *world, int64_t x, int64_t y, const char *text, int64_t color) {
     if (!world || !world->canvas || !text)
@@ -1959,6 +2213,11 @@ static void game3d_world_debug_textf(
 
 /// @brief printf-style overlay text helper: format into a fixed 192-byte buffer (always
 ///   NUL-terminated) and draw it via game3d_world_debug_text.
+/// @param world World providing the overlay canvas.
+/// @param x Horizontal overlay coordinate in pixels.
+/// @param y Vertical overlay coordinate in pixels.
+/// @param color Packed overlay color.
+/// @param fmt Non-null printf-compatible format string followed by its arguments.
 static void game3d_world_debug_textf(
     rt_game3d_world *world, int64_t x, int64_t y, int64_t color, const char *fmt, ...) {
     char buf[192];
@@ -1975,6 +2234,8 @@ static void game3d_world_debug_textf(
 #undef RT_GAME3D_PRINTF
 
 /// @brief Map a quality preset id to its lowercase display name (defaults to "balanced").
+/// @param quality Quality preset identifier.
+/// @return Static lowercase text for performance, balanced, or cinematic.
 static const char *game3d_quality_name(int64_t quality) {
     switch (quality) {
         case RT_GAME3D_QUALITY_PERFORMANCE:
@@ -1989,6 +2250,7 @@ static const char *game3d_quality_name(int64_t quality) {
 
 /// @brief Render the 2D debug HUD when enabled: backend/FPS, quality/fallback, node/cull/body
 ///   counts, effective clip planes, shadow/occlusion diagnostics, and optional camera/caps blocks.
+/// @param world World whose diagnostic state is rendered.
 static void game3d_world_draw_debug_overlay(rt_game3d_world *world) {
     if (!world || !world->canvas || !world->debug_overlay_enabled)
         return;
@@ -2110,6 +2372,9 @@ static void game3d_world_draw_debug_overlay(rt_game3d_world *world) {
 }
 
 /// @brief Return true when two far-plane values are close enough to treat as unchanged.
+/// @param a First far-plane value.
+/// @param b Second far-plane value.
+/// @return 1 when both are finite and differ by at most a scale-relative tolerance.
 static int game3d_camera_far_almost_equal(double a, double b) {
     double scale = fmax(fmax(fabs(a), fabs(b)), 1.0);
     return isfinite(a) && isfinite(b) && fabs(a - b) <= scale * 1e-9;
@@ -2118,6 +2383,7 @@ static int game3d_camera_far_almost_equal(double a, double b) {
 /// @brief Restore a camera far plane previously overridden for stream terrain.
 /// @details If user code changed the far plane while the stream override was active, that value is
 ///          treated as the new user-authored far plane rather than forcing an older snapshot back.
+/// @param world World whose active stream-camera override is removed.
 static void game3d_world_restore_stream_camera_far(rt_game3d_world *world) {
     double current_far;
     double user_far;
@@ -2142,6 +2408,7 @@ static void game3d_world_restore_stream_camera_far(rt_game3d_world *world) {
 ///          clipped before Terrain3D or Canvas3D culling can keep them. This helper remembers the
 ///          user's far plane, applies `max(user_far, stream_horizon)`, and lowers/restores it when
 ///          possible.
+/// @param world World whose camera and stream terrain horizon are synchronized.
 static void game3d_world_sync_camera_far_for_stream(rt_game3d_world *world) {
     rt_game3d_world_stream *stream;
     double desired_far;
@@ -2201,6 +2468,7 @@ static void game3d_world_sync_camera_far_for_stream(rt_game3d_world *world) {
 /// @brief Shared begin-frame body: clear the back buffer to the world's clear color,
 ///   enable camera-relative upload for floating-origin worlds, and open the 3D pass
 ///   with the active camera.
+/// @param world World providing the canvas, camera, clear color, and floating-origin policy.
 /// @return Non-zero if the canvas frame opened successfully (canvas valid and in-frame).
 static int game3d_world_begin_frame_impl(rt_game3d_world *world) {
     if (!world || !world->canvas || !world->camera)
@@ -2215,6 +2483,7 @@ static int game3d_world_begin_frame_impl(rt_game3d_world *world) {
 
 /// @brief Clear the back buffer to the world's clear color and open the 3D pass with the
 ///   active camera. See header.
+/// @param obj World3D whose frame is opened.
 void rt_game3d_world_begin_frame(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.beginFrame: invalid world");
     (void)game3d_world_begin_frame_impl(world);
@@ -2223,6 +2492,7 @@ void rt_game3d_world_begin_frame(void *obj) {
 /// @brief Draw every resident streamed terrain tile through the world's canvas,
 ///   positioning each tile from its center and per-axis scale. No-op when the world has
 ///   no stream or the terrain manifest is not loaded.
+/// @param world World providing the stream and destination canvas.
 static void game3d_world_draw_stream_terrain(rt_game3d_world *world) {
     rt_game3d_world_stream *stream;
     if (!world || !world->canvas || !world->stream)
@@ -2252,6 +2522,7 @@ static void game3d_world_draw_stream_terrain(rt_game3d_world *world) {
 
 /// @brief Draw the scene graph and any resident stream terrain through the active camera.
 /// See header.
+/// @param obj World3D whose scene and terrain are submitted.
 void rt_game3d_world_draw_scene(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.drawScene: invalid world");
     if (world && world->scene && world->canvas && world->camera) {
@@ -2261,6 +2532,7 @@ void rt_game3d_world_draw_scene(void *obj) {
 }
 
 /// @brief Draw registered effects plus any enabled debug axis/physics gizmos. See header.
+/// @param obj World3D whose effect registry and debug visuals are submitted.
 void rt_game3d_world_draw_effects(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.drawEffects: invalid world");
     if (!world || !world->canvas)
@@ -2274,6 +2546,7 @@ void rt_game3d_world_draw_effects(void *obj) {
 }
 
 /// @brief End the 3D pass and render the debug HUD overlay. See header.
+/// @param obj World3D whose canvas pass is closed.
 void rt_game3d_world_end_scene(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.endScene: invalid world");
     if (world && world->canvas) {
@@ -2284,6 +2557,8 @@ void rt_game3d_world_end_scene(void *obj) {
 
 /// @brief Run a native 2D overlay callback inside a fresh overlay pass; traps if the
 ///   callback pointer is not a native function. See header.
+/// @param obj World3D providing the overlay canvas.
+/// @param overlay Optional native overlay callback address.
 void rt_game3d_world_draw_overlay(void *obj, void *overlay) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.drawOverlay: invalid world");
     rt_game3d_overlay_fn fn = game3d_overlay_callback_checked(
@@ -2300,6 +2575,9 @@ void rt_game3d_world_draw_overlay(void *obj, void *overlay) {
 }
 
 /// @brief Capture the finalized frame as a Pixels image (NULL if invalid). See header.
+/// @param obj World3D whose canvas is captured.
+/// @return A new Pixels screenshot of the finalized frame, or `NULL` for invalid input or capture
+///   failure.
 void *rt_game3d_world_capture_final_frame(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.captureFinalFrame: invalid world");
@@ -2309,6 +2587,7 @@ void *rt_game3d_world_capture_final_frame(void *obj) {
 }
 
 /// @brief Present the finished frame to the window (flip buffers). See header.
+/// @param obj World3D whose canvas buffers are presented.
 void rt_game3d_world_present(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.present: invalid world");
     if (world && world->canvas)
@@ -2317,6 +2596,8 @@ void rt_game3d_world_present(void *obj) {
 
 /// @brief Run the 2D overlay pass for a frame: open the canvas overlay layer,
 ///   invoke the native overlay callback `fn` (if any), then close the layer.
+/// @param world World providing the overlay canvas.
+/// @param fn Optional already-validated native overlay callback.
 static void game3d_world_draw_overlay_fn(rt_game3d_world *world, rt_game3d_overlay_fn fn) {
     if (!world || !world->canvas)
         return;
@@ -2328,6 +2609,8 @@ static void game3d_world_draw_overlay_fn(rt_game3d_world *world, rt_game3d_overl
 
 /// @brief Render one complete frame: begin → draw scene → draw effects → end scene →
 ///   optional overlay → present. Shared by all run-loop variants.
+/// @param world Live world to render.
+/// @param overlay_fn Optional already-validated native overlay callback.
 static void game3d_world_render_once(rt_game3d_world *world, rt_game3d_overlay_fn overlay_fn) {
     int interpolated;
     if (!world || world->destroyed || !world->canvas)
@@ -2351,12 +2634,16 @@ static void game3d_world_render_once(rt_game3d_world *world, rt_game3d_overlay_f
 
 /// @brief Whether a world handle is non-NULL and not currently being torn down (safe to operate
 /// on).
+/// @param world Candidate world pointer.
+/// @return 1 when the world is not destroyed and still has a canvas, or 0 otherwise.
 static int game3d_world_is_live(const rt_game3d_world *world) {
     return world && !world->destroyed && world->canvas;
 }
 
 /// @brief Run the blocking variable-timestep game loop until the window closes, calling
 ///   the native `update` callback once per frame before stepping and rendering. See header.
+/// @param obj World3D retained for the duration of the loop.
+/// @param update Optional native update callback receiving scaled frame delta.
 void rt_game3d_world_run(void *obj, void *update) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.run: invalid world");
     rt_game3d_update_fn fn = game3d_update_callback_checked(
@@ -2384,6 +2671,9 @@ void rt_game3d_world_run(void *obj, void *update) {
 
 /// @brief Variable-timestep loop with an extra native 2D overlay callback drawn each
 ///   frame. See header.
+/// @param obj World3D retained for the duration of the loop.
+/// @param update Optional native update callback receiving scaled frame delta.
+/// @param overlay Optional native callback invoked inside the overlay pass.
 void rt_game3d_world_run_with_overlay(void *obj, void *update, void *overlay) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.runWithOverlay: invalid world");
@@ -2415,6 +2705,13 @@ void rt_game3d_world_run_with_overlay(void *obj, void *update, void *overlay) {
 /// @brief Fixed-timestep game loop: accumulate real frame time and run `update` + a
 ///   physics step in fixed `step_sec` increments, rendering once per displayed frame
 ///   (with an optional overlay). Decouples simulation rate from frame rate.
+/// @param obj World3D retained for the duration of the loop.
+/// @param step_sec Requested fixed simulation step in seconds.
+/// @param update Optional native fixed-update callback.
+/// @param overlay Optional native overlay callback.
+/// @param invalid_world_message Diagnostic used when @p obj is not a live World3D.
+/// @param update_callback_message Diagnostic used when @p update is not native code.
+/// @param overlay_callback_message Diagnostic used when @p overlay is not native code.
 static void game3d_world_run_fixed_impl(void *obj,
                                         double step_sec,
                                         void *update,
@@ -2467,6 +2764,9 @@ static void game3d_world_run_fixed_impl(void *obj,
 }
 
 /// @brief Fixed-timestep loop with no overlay. See header.
+/// @param obj World3D retained for the duration of the loop.
+/// @param step_sec Requested fixed simulation step in seconds.
+/// @param update Optional native fixed-update callback.
 void rt_game3d_world_run_fixed(void *obj, double step_sec, void *update) {
     game3d_world_run_fixed_impl(
         obj,
@@ -2483,6 +2783,10 @@ void rt_game3d_world_run_fixed(void *obj, double step_sec, void *update) {
 }
 
 /// @brief Fixed-timestep loop with an extra native overlay callback. See header.
+/// @param obj World3D retained for the duration of the loop.
+/// @param step_sec Requested fixed simulation step in seconds.
+/// @param update Optional native fixed-update callback.
+/// @param overlay Optional native callback invoked inside the overlay pass.
 void rt_game3d_world_run_fixed_with_overlay(void *obj,
                                             double step_sec,
                                             void *update,
@@ -2503,6 +2807,10 @@ void rt_game3d_world_run_fixed_with_overlay(void *obj,
 
 /// @brief Deterministically run a fixed number of frames at a fixed step, driving the
 ///   canvas from synthetic input/clock sources for reproducible tests/recordings. See header.
+/// @param obj World3D retained for the duration of the bounded run.
+/// @param frame_count Non-negative maximum number of synthetic frames.
+/// @param step_sec Requested fixed synthetic delta in seconds.
+/// @param update Optional native update callback receiving the scaled delta.
 void rt_game3d_world_run_frames(void *obj, int64_t frame_count, double step_sec, void *update) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.runFrames: invalid world");
     rt_game3d_update_fn fn = game3d_update_callback_checked(
@@ -2599,6 +2907,9 @@ void rt_game3d_world_run_frames(void *obj, int64_t frame_count, double step_sec,
 
 /// @brief Run a fixed number of frames with no update callback (pure simulation/render).
 ///   See header.
+/// @param obj World3D to run deterministically.
+/// @param frame_count Non-negative maximum number of synthetic frames.
+/// @param step_sec Requested fixed synthetic delta in seconds.
 void rt_game3d_world_run_frames_only(void *obj, int64_t frame_count, double step_sec) {
     rt_game3d_world_run_frames(obj, frame_count, step_sec, NULL);
 }
@@ -2608,6 +2919,9 @@ void rt_game3d_world_run_frames_only(void *obj, int64_t frame_count, double step
  *=========================================================================*/
 
 /// @brief Append one hitch entry, overwriting the oldest once the ring fills.
+/// @param world World owning the hitch ring.
+/// @param source Hitch-source constant identifying the attributed subsystem.
+/// @param ms Measured wall-clock duration in milliseconds.
 static void game3d_world_push_hitch(rt_game3d_world *world, int64_t source, double ms) {
     int32_t slot;
     if (world->hitch_count < RT_GAME3D_MAX_HITCHES) {
@@ -2625,6 +2939,8 @@ static void game3d_world_push_hitch(rt_game3d_world *world, int64_t source, doub
 /// @brief Post-step hook: log stream-commit stalls and over-threshold frames.
 /// @details A stream commit inside a slow frame logs once as StreamCommit;
 ///   FrameTotal fires only when no attributed source was logged this step.
+/// @param world World whose telemetry ring and stream attribution state are updated.
+/// @param step_wall_ms Total wall-clock step duration in milliseconds.
 void game3d_world_note_hitches(struct rt_game3d_world *world, double step_wall_ms) {
     int attributed = 0;
     if (!world)
@@ -2644,6 +2960,8 @@ void game3d_world_note_hitches(struct rt_game3d_world *world, double step_wall_m
 }
 
 /// @brief Set the FrameTotal hitch threshold in milliseconds (default 25).
+/// @param obj World3D whose telemetry threshold is changed.
+/// @param ms Non-negative finite threshold in milliseconds.
 void rt_game3d_world_set_hitch_threshold(void *obj, double ms) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.SetHitchThresholdMs: invalid world");
@@ -2652,12 +2970,17 @@ void rt_game3d_world_set_hitch_threshold(void *obj, double ms) {
 }
 
 /// @brief Number of buffered hitch entries (ring caps at 256).
+/// @param obj World3D whose hitch ring is queried.
+/// @return The current buffered entry count, or zero for an invalid world.
 int64_t rt_game3d_world_hitch_count(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.HitchCount: invalid world");
     return world ? world->hitch_count : 0;
 }
 
 /// @brief Chronological hitch entry accessor helpers (0 = oldest buffered).
+/// @param world World owning the hitch ring.
+/// @param index Zero-based chronological index.
+/// @return A borrowed pointer to the entry, or `NULL` when out of range.
 static const rt_game3d_hitch_entry *game3d_world_hitch_at(rt_game3d_world *world, int64_t index) {
     if (!world || index < 0 || index >= world->hitch_count)
         return NULL;
@@ -2665,6 +2988,9 @@ static const rt_game3d_hitch_entry *game3d_world_hitch_at(rt_game3d_world *world
 }
 
 /// @brief World frame of hitch @p index (-1 out of range).
+/// @param obj World3D whose hitch ring is queried.
+/// @param index Zero-based chronological index.
+/// @return Recorded world frame, or -1 when out of range.
 int64_t rt_game3d_world_hitch_frame(void *obj, int64_t index) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.HitchFrame: invalid world");
     const rt_game3d_hitch_entry *entry = world ? game3d_world_hitch_at(world, index) : NULL;
@@ -2672,6 +2998,9 @@ int64_t rt_game3d_world_hitch_frame(void *obj, int64_t index) {
 }
 
 /// @brief HitchSource constant of hitch @p index (-1 out of range).
+/// @param obj World3D whose hitch ring is queried.
+/// @param index Zero-based chronological index.
+/// @return Recorded hitch-source identifier, or -1 when out of range.
 int64_t rt_game3d_world_hitch_source(void *obj, int64_t index) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.HitchSource: invalid world");
     const rt_game3d_hitch_entry *entry = world ? game3d_world_hitch_at(world, index) : NULL;
@@ -2679,6 +3008,9 @@ int64_t rt_game3d_world_hitch_source(void *obj, int64_t index) {
 }
 
 /// @brief Milliseconds of hitch @p index (0 out of range).
+/// @param obj World3D whose hitch ring is queried.
+/// @param index Zero-based chronological index.
+/// @return Recorded duration in milliseconds, or zero when out of range.
 double rt_game3d_world_hitch_ms(void *obj, int64_t index) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.HitchMs: invalid world");
     const rt_game3d_hitch_entry *entry = world ? game3d_world_hitch_at(world, index) : NULL;
@@ -2686,6 +3018,7 @@ double rt_game3d_world_hitch_ms(void *obj, int64_t index) {
 }
 
 /// @brief Clear the hitch ring.
+/// @param obj World3D whose buffered telemetry is discarded.
 void rt_game3d_world_clear_hitches(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.ClearHitches: invalid world");

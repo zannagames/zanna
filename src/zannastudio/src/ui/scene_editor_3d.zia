@@ -184,7 +184,7 @@ final GIZMO_RING_INVALID_DISTANCE: Number = 1000000000.0;
 final GIZMO_PLANE_INNER_FRACTION: Number = 0.25;
 final GIZMO_PLANE_OUTER_FRACTION: Number = 0.55;
 final COMPACT_SCENE_3D_WIDTH: Number = 700.0;
-final HIERARCHY_PANE_MIN_WIDTH: Number = 1000.0;
+final HIERARCHY_PANE_MIN_WIDTH: Number = 820.0;
 final VIEWPORT_CLEAR_RED: Number = 0.08627450980392157;
 final VIEWPORT_CLEAR_GREEN: Number = 0.10196078431372549;
 final VIEWPORT_CLEAR_BLUE: Number = 0.13333333333333333;
@@ -768,6 +768,8 @@ class SceneEditor3D {
     expose GUI.Checkbox collidersCheck;
     expose GUI.Checkbox routesCheck;
     expose GUI.Checkbox statsCheck;
+    expose GUI.Checkbox editorLightCheck;
+    expose Boolean editorLightAssist;
     expose GUI.Spinner snapMoveSpinner;
     expose GUI.Spinner snapRotateSpinner;
     expose GUI.Spinner snapScaleSpinner;
@@ -1059,6 +1061,8 @@ class SceneEditor3D {
         collidersCheck = null;
         routesCheck = null;
         statsCheck = null;
+        editorLightCheck = null;
+        editorLightAssist = true;
         snapMoveSpinner = null;
         snapRotateSpinner = null;
         snapScaleSpinner = null;
@@ -1269,6 +1273,12 @@ class SceneEditor3D {
         statsCheck.SetTooltip(
             "Append visible/culled node counts to the view status");
         statsCheck.SetChecked(false);
+        editorLightCheck = GUI.Checkbox.New(viewOptionsRow, "Editor light");
+        editorLightCheck.SetTooltip(
+            "Boost viewport ambient so authored content stays visible when "
+            + "scene lights are dim or game-driven; never affects VSCN or "
+            + "the camera preview");
+        editorLightCheck.SetChecked(true);
         GUI.Label.New(viewOptionsRow, "Snap move");
         snapMoveSpinner = AddSnapSpinner(
             0.001, 1000.0, 0.1, 0.5, "Move snap increment");
@@ -1489,8 +1499,12 @@ class SceneEditor3D {
             instanceGroup,
             "Select a prefab instance node to manage its reference.");
         instanceSummary.SetWordWrap(true);
-        var instanceRow = GUI.HBox.New();
-        instanceRow.SetSpacing(4.0);
+        // Wrapping row: four buttons exceed a narrow inspector pane's width.
+        var instanceRow = GUI.Flex.New();
+        instanceRow.SetDirection(GUI.FlexDirection.Row);
+        instanceRow.SetWrap(GUI.FlexWrap.Wrap);
+        instanceRow.SetAlign(GUI.Align.Center);
+        instanceRow.SetGap(4.0);
         instanceGroup.AddChild(instanceRow);
         openPrefabSourceButton =
             GUI.Button.New(instanceRow, "Open Source");
@@ -1513,11 +1527,20 @@ class SceneEditor3D {
             bakeGroup,
             "Deterministic CPU bake over the live scene (ADR 0188).");
         bakeStatus.SetWordWrap(true);
-        var bakeSettingsRow = GUI.HBox.New();
-        bakeSettingsRow.SetSpacing(4.0);
+        // Wrapping row: three labeled spinners exceed narrow inspector panes.
+        var bakeSettingsRow = GUI.Flex.New();
+        bakeSettingsRow.SetDirection(GUI.FlexDirection.Row);
+        bakeSettingsRow.SetWrap(GUI.FlexWrap.Wrap);
+        bakeSettingsRow.SetAlign(GUI.Align.Center);
+        bakeSettingsRow.SetGap(4.0);
         bakeGroup.AddChild(bakeSettingsRow);
-        GUI.Label.New(bakeSettingsRow, "Texels/u");
-        bakeTexelsSpinner = GUI.Spinner.New(bakeSettingsRow);
+        // Each labeled spinner lives in its own pair box so wrapping keeps
+        // the label beside its control instead of splitting them across lines.
+        var texelsPair = GUI.HBox.New();
+        texelsPair.SetSpacing(4.0);
+        bakeSettingsRow.AddChild(texelsPair);
+        GUI.Label.New(texelsPair, "Texels/u");
+        bakeTexelsSpinner = GUI.Spinner.New(texelsPair);
         bakeTexelsSpinner.SetRange(
             scene_bake_3d.MIN_TEXELS, scene_bake_3d.MAX_TEXELS);
         bakeTexelsSpinner.SetStep(0.5);
@@ -1525,16 +1548,22 @@ class SceneEditor3D {
         bakeTexelsSpinner.SetValue(scene_bake_3d.DEFAULT_TEXELS);
         bakeTexelsSpinner.SetPreferredSize(72.0, 0.0);
         bakeTexelsSpinner.SetAccessibleName("Bake texels per unit");
-        GUI.Label.New(bakeSettingsRow, "Samples");
-        bakeSamplesSpinner = GUI.Spinner.New(bakeSettingsRow);
+        var samplesPair = GUI.HBox.New();
+        samplesPair.SetSpacing(4.0);
+        bakeSettingsRow.AddChild(samplesPair);
+        GUI.Label.New(samplesPair, "Samples");
+        bakeSamplesSpinner = GUI.Spinner.New(samplesPair);
         bakeSamplesSpinner.SetRange(1.0, 1024.0);
         bakeSamplesSpinner.SetStep(16.0);
         bakeSamplesSpinner.SetDecimals(0);
         bakeSamplesSpinner.SetValue(64.0);
         bakeSamplesSpinner.SetPreferredSize(72.0, 0.0);
         bakeSamplesSpinner.SetAccessibleName("Bake samples per texel");
-        GUI.Label.New(bakeSettingsRow, "Bounces");
-        bakeBouncesSpinner = GUI.Spinner.New(bakeSettingsRow);
+        var bouncesPair = GUI.HBox.New();
+        bouncesPair.SetSpacing(4.0);
+        bakeSettingsRow.AddChild(bouncesPair);
+        GUI.Label.New(bouncesPair, "Bounces");
+        bakeBouncesSpinner = GUI.Spinner.New(bouncesPair);
         bakeBouncesSpinner.SetRange(0.0, 8.0);
         bakeBouncesSpinner.SetStep(1.0);
         bakeBouncesSpinner.SetDecimals(0);
@@ -1549,8 +1578,11 @@ class SceneEditor3D {
         bakeSkyPicker.SetFlex(1.0);
         bakeSkyPicker.SetAlphaEnabled(false);
         bakeSkyPicker.SetAccessibleName("Bake sky color");
-        var bakeActionRow = GUI.HBox.New();
-        bakeActionRow.SetSpacing(4.0);
+        var bakeActionRow = GUI.Flex.New();
+        bakeActionRow.SetDirection(GUI.FlexDirection.Row);
+        bakeActionRow.SetWrap(GUI.FlexWrap.Wrap);
+        bakeActionRow.SetAlign(GUI.Align.Center);
+        bakeActionRow.SetGap(4.0);
         bakeGroup.AddChild(bakeActionRow);
         bakeButton = GUI.Button.New(bakeActionRow, "Bake");
         bakeButton.SetTooltip(
@@ -1572,22 +1604,33 @@ class SceneEditor3D {
             "Author probes.* bounds on the selected node; games load "
             + "the .vlpg sidecar.");
         probeStatus.SetWordWrap(true);
-        var probeMinRow = GUI.HBox.New();
-        probeMinRow.SetSpacing(4.0);
+        // Wrapping rows: labeled spinner triplets and the action trio exceed
+        // narrow inspector panes.
+        var probeMinRow = GUI.Flex.New();
+        probeMinRow.SetDirection(GUI.FlexDirection.Row);
+        probeMinRow.SetWrap(GUI.FlexWrap.Wrap);
+        probeMinRow.SetAlign(GUI.Align.Center);
+        probeMinRow.SetGap(4.0);
         probeGroup.AddChild(probeMinRow);
         GUI.Label.New(probeMinRow, "Min");
         probeMinXSpinner = AddProbeSpinner(probeMinRow, "min X", -8.0);
         probeMinYSpinner = AddProbeSpinner(probeMinRow, "min Y", 0.0);
         probeMinZSpinner = AddProbeSpinner(probeMinRow, "min Z", -8.0);
-        var probeMaxRow = GUI.HBox.New();
-        probeMaxRow.SetSpacing(4.0);
+        var probeMaxRow = GUI.Flex.New();
+        probeMaxRow.SetDirection(GUI.FlexDirection.Row);
+        probeMaxRow.SetWrap(GUI.FlexWrap.Wrap);
+        probeMaxRow.SetAlign(GUI.Align.Center);
+        probeMaxRow.SetGap(4.0);
         probeGroup.AddChild(probeMaxRow);
         GUI.Label.New(probeMaxRow, "Max");
         probeMaxXSpinner = AddProbeSpinner(probeMaxRow, "max X", 8.0);
         probeMaxYSpinner = AddProbeSpinner(probeMaxRow, "max Y", 4.0);
         probeMaxZSpinner = AddProbeSpinner(probeMaxRow, "max Z", 8.0);
-        var probeActionRow = GUI.HBox.New();
-        probeActionRow.SetSpacing(4.0);
+        var probeActionRow = GUI.Flex.New();
+        probeActionRow.SetDirection(GUI.FlexDirection.Row);
+        probeActionRow.SetWrap(GUI.FlexWrap.Wrap);
+        probeActionRow.SetAlign(GUI.Align.Center);
+        probeActionRow.SetGap(4.0);
         probeGroup.AddChild(probeActionRow);
         GUI.Label.New(probeActionRow, "Spacing");
         probeSpacingSpinner =
@@ -1600,19 +1643,29 @@ class SceneEditor3D {
             "Remove every probes.* key while keeping the node");
 
         envGroup = GUI.GroupBox.New(inspector, "Environment");
-        var envSkyRow = GUI.HBox.New();
-        envSkyRow.SetSpacing(4.0);
+        // Wrapping row: the Browse button drops below the input on narrow
+        // panes instead of pushing the row past the inspector width.
+        var envSkyRow = GUI.Flex.New();
+        envSkyRow.SetDirection(GUI.FlexDirection.Row);
+        envSkyRow.SetWrap(GUI.FlexWrap.Wrap);
+        envSkyRow.SetAlign(GUI.Align.Center);
+        envSkyRow.SetGap(4.0);
         envGroup.AddChild(envSkyRow);
         GUI.Label.New(envSkyRow, "Skybox");
         envSkyboxInput = GUI.TextInput.New(envSkyRow);
         envSkyboxInput.SetFlex(1.0);
+        envSkyboxInput.SetPreferredSize(120.0, 0.0);
         envSkyboxInput.SetPlaceholder("panorama asset (relative)");
         envSkyboxInput.SetAccessibleName("Environment skybox asset");
         envBrowseButton = GUI.Button.New(envSkyRow, "Browse...");
         envBrowseButton.SetTooltip(
             "Choose a skybox panorama from the workspace index");
-        var envIblRow = GUI.HBox.New();
-        envIblRow.SetSpacing(4.0);
+        // Wrapping row: checkbox plus labeled spinner exceeds narrow panes.
+        var envIblRow = GUI.Flex.New();
+        envIblRow.SetDirection(GUI.FlexDirection.Row);
+        envIblRow.SetWrap(GUI.FlexWrap.Wrap);
+        envIblRow.SetAlign(GUI.Align.Center);
+        envIblRow.SetGap(4.0);
         envGroup.AddChild(envIblRow);
         envIblCheck = GUI.Checkbox.New(envIblRow, "Image-based lighting");
         envIblCheck.SetChecked(false);
@@ -2407,12 +2460,17 @@ class SceneEditor3D {
             }
         }
         if width <= 0.0 { return; }
+        var widthChanged = width != lastHostWidth;
         lastHostWidth = width;
         var nextCompact = UsesCompactLayout(width);
         if nextCompact != compactLayout {
             compactLayout = nextCompact;
             ApplyResponsiveChrome();
             renderDirty = true;
+        } else if widthChanged {
+            // Wide-mode toolbar height reservations depend on the lane
+            // width bracket, so re-apply chrome on width changes too.
+            ApplyResponsiveChrome();
         }
         ApplyInspectorLayout();
     }
@@ -2443,8 +2501,19 @@ class SceneEditor3D {
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
         } else {
-            toolbar.SetPreferredSize(0.0, 0.0);
-            viewToolbar.SetPreferredSize(0.0, 0.0);
+            // Flex measurement cannot infer wrapped cross-axis height before
+            // its parent assigns a width, so reserve the observed wrapped-row
+            // heights on lanes where these toolbars wrap even in wide mode.
+            if lastHostWidth > 0.0 and lastHostWidth < 1150.0 {
+                toolbar.SetPreferredSize(0.0, 76.0);
+                viewToolbar.SetPreferredSize(0.0, 110.0);
+            } else if lastHostWidth > 0.0 and lastHostWidth < 1500.0 {
+                toolbar.SetPreferredSize(0.0, 76.0);
+                viewToolbar.SetPreferredSize(0.0, 76.0);
+            } else {
+                toolbar.SetPreferredSize(0.0, 0.0);
+                viewToolbar.SetPreferredSize(0.0, 0.0);
+            }
             newSceneButton.SetText("New");
             importAssetButton.SetText("Import Asset...");
             addEmptyButton.SetText("+ Empty");
@@ -4690,7 +4759,7 @@ class SceneEditor3D {
     }
 
     /// @brief Small bounded probe-bounds spinner builder.
-    hide func AddProbeSpinner(parent: GUI.HBox,
+    hide func AddProbeSpinner(parent: GUI.Flex,
                               label: String,
                               value: Number) -> GUI.Spinner {
         var spinner = GUI.Spinner.New(parent);
@@ -5750,6 +5819,9 @@ class SceneEditor3D {
         spinner.SetDecimals(3);
         spinner.SetValue(value);
         spinner.SetPreferredSize(72.0, 0.0);
+        // Flex lets the X/Y/Z triplet share the inspector width instead of
+        // overflowing the pane when the inspector is narrow.
+        spinner.SetFlex(1.0);
         return spinner;
     }
 
@@ -5762,6 +5834,7 @@ class SceneEditor3D {
         spinner.SetDecimals(2);
         spinner.SetValue(0.0);
         spinner.SetPreferredSize(76.0, 0.0);
+        spinner.SetFlex(1.0);
         return spinner;
     }
 
@@ -7944,6 +8017,12 @@ class SceneEditor3D {
         // as a user resolving the Visible or Static state onto the selection.
         visibleRevision = visibleCheck.GetRevision();
         staticRevision = staticCheck.GetRevision();
+        // Scope storms reflow the whole inspector column; force a complete
+        // re-measure/arrange/repaint so no child keeps partial-pass geometry.
+        if inspectorScroll != null {
+            inspectorScroll.InvalidateLayout();
+            inspectorScroll.InvalidatePaint();
+        }
     }
 
     /// @brief Choose the Object or Scene inspector tab (workspace-only).
@@ -9081,6 +9160,10 @@ class SceneEditor3D {
             showStats = statsCheck.IsChecked();
             renderDirty = true;
             CaptureWorkspaceState();
+        }
+        if editorLightCheck.WasChanged() {
+            editorLightAssist = editorLightCheck.IsChecked();
+            renderDirty = true;
         }
         var snapChanged = false;
         if snapMoveSpinner.WasChanged() {
@@ -10613,6 +10696,15 @@ class SceneEditor3D {
         viewportRenderCanvas.Wireframe =
             viewportMode == VIEWPORT_MODE_WIREFRAME;
         ApplyEnvironmentToCanvas(viewportRenderCanvas);
+        // Editor light assist: many authored scenes drive their real lighting
+        // from gameplay metadata, leaving Light3D components dim, so shaded
+        // content would render near-black. A boosted viewport ambient keeps
+        // authoring possible; the camera preview inset stays game-faithful.
+        if editorLightAssist {
+            viewportRenderCanvas.SetAmbient(0.55, 0.55, 0.58);
+        } else {
+            viewportRenderCanvas.SetAmbient(0.05, 0.05, 0.06);
+        }
         viewportRenderCanvas.Clear(
             VIEWPORT_CLEAR_RED,
             VIEWPORT_CLEAR_GREEN,

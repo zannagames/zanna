@@ -4,6 +4,18 @@
 // rt_textureasset3d.c; not a standalone translation unit) Purpose: TextureAsset3D BC3/BC7/ETC2/ASTC
 // software decoders and compressed fallback
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements dependency-free software fallbacks for block-compressed 3D textures.
+///
+/// This implementation fragment supplies reference decoders for BC1, BC3, BC4,
+/// BC5, BC7, ETC2 RGBA8/EAC, and the ASTC LDR void-extent form. It also provides
+/// the validated block-grid walkers that turn supported compressed mip levels
+/// into runtime-owned RGBA8 Pixels objects when a graphics backend cannot upload
+/// the native format.
+///
+/// @note This file is included by `rt_textureasset3d.c` and is not a standalone
+///       translation unit.
+
 /// @brief Write an RGBA texel directly into a freshly allocated Pixels fallback.
 ///
 /// Compressed texture fallback decode already clips block overhang to the image
@@ -11,6 +23,10 @@
 /// storage avoids per-texel public-handle validation and avoids bumping the
 /// content generation thousands of times during one decode; callers touch the
 /// image once after the complete fallback is populated.
+/// @param[in,out] pixels Destination Pixels implementation whose storage receives the texel.
+/// @param[in] x Zero-based destination column.
+/// @param[in] y Zero-based destination row.
+/// @param[in] rgba Packed RGBA8 value in the runtime's canonical channel order.
 static void textureasset3d_write_fallback_rgba(rt_pixels_impl *pixels,
                                                uint32_t x,
                                                uint32_t y,
@@ -23,17 +39,24 @@ static void textureasset3d_write_fallback_rgba(rt_pixels_impl *pixels,
 /* --- BC3 (DXT5) software reference decode. Produces an RGBA8 Pixels fallback so BC3-compressed
  *     textures render on backends that cannot upload BC3 natively (R-TEX-001). --- */
 /// @brief Expand a 5-bit color component to 8 bits by bit replication (BC1/BC3 R and B endpoints).
+/// @param[in] v Unsigned component value whose low five bits contain the encoded value.
+/// @return The component expanded to the full 0-255 range.
 static uint8_t textureasset3d_expand5(uint32_t v) {
     return (uint8_t)((v << 3) | (v >> 2));
 }
 
 /// @brief Expand a 6-bit color component to 8 bits by bit replication (BC1/BC3 green endpoints).
+/// @param[in] v Unsigned component value whose low six bits contain the encoded value.
+/// @return The component expanded to the full 0-255 range.
 static uint8_t textureasset3d_expand6(uint32_t v) {
     return (uint8_t)((v << 2) | (v >> 4));
 }
 
 /// @brief Decode one 16-byte BC3 (DXT5) block into 16 row-major RGBA texels (@p out_rgba is 64
 ///   bytes). Non-static so the unit test can verify the decode against known blocks.
+/// @param[in] b Pointer to a complete 16-byte BC3 block.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @note No output is written when either pointer is NULL.
 void rt_textureasset3d_decode_bc3_block(const uint8_t *b, uint8_t *out_rgba) {
     uint8_t a[8];
     uint8_t a0, a1;
@@ -89,6 +112,13 @@ void rt_textureasset3d_decode_bc3_block(const uint8_t *b, uint8_t *out_rgba) {
 /// @details Iterates 4x4 blocks, decodes each via rt_textureasset3d_decode_bc3_block, and
 ///          writes only the texels inside the image (edge blocks may overhang). Bounds- and
 ///          budget-checked. Returns NULL on overflow, oversize, or allocation failure.
+/// @param[in] data Base address of the complete compressed texture payload.
+/// @param[in] size Number of readable bytes in @p data.
+/// @param[in] width Width of the requested mip level in texels.
+/// @param[in] height Height of the requested mip level in texels.
+/// @param[in] offset Byte offset of the mip level within @p data.
+/// @param[in] length Declared byte length of the mip level.
+/// @return A newly allocated RGBA8 Pixels object, or NULL when validation or allocation fails.
 static void *textureasset3d_decode_bc3_fallback(const uint8_t *data,
                                                 size_t size,
                                                 uint32_t width,
@@ -137,7 +167,13 @@ static void *textureasset3d_decode_bc3_fallback(const uint8_t *data,
     return pixels;
 }
 
-/// @brief Decode all mips of a BC3 texture into a Pixels array (NULL if any mip fails).
+/// @brief Decode all mips of a BC3 texture into a Pixels array.
+/// @param[in] data Base address of the complete compressed texture payload.
+/// @param[in] size Number of readable bytes in @p data.
+/// @param[in] mips Array describing the source range and dimensions of each mip level.
+/// @param[in] mip_count Number of entries in @p mips.
+/// @return A newly allocated array of @p mip_count Pixels objects, or NULL if any mip fails.
+/// @ownership The caller owns the returned array and every Pixels reference it contains.
 static void **textureasset3d_decode_bc3_mips(const uint8_t *data,
                                              size_t size,
                                              const textureasset3d_mip *mips,
@@ -174,17 +210,33 @@ static const uint8_t BC7_W2[4] = {0, 21, 43, 64};
 static const uint8_t BC7_W3[8] = {0, 9, 18, 27, 37, 46, 55, 64};
 static const uint8_t BC7_W4[16] = {0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64};
 
+/// @brief Bit-layout metadata for one of the eight defined BC7 modes.
+///
+/// Counts and widths are stored as bytes because every value is small and the
+/// table is immutable. The decoder uses these fields to derive endpoint and
+/// index offsets instead of maintaining eight separate bitstream parsers.
 typedef struct {
+    /// Number of independently interpolated endpoint subsets in the mode.
     uint8_t subset_count;
+    /// Number of partition-selector bits following the unary mode prefix.
     uint8_t partition_bits;
+    /// Number of channel-rotation selector bits.
     uint8_t rotation_bits;
+    /// Number of bits selecting which index stream controls color versus alpha.
     uint8_t index_selection_bits;
+    /// Stored bit width of each red, green, and blue endpoint component.
     uint8_t color_bits;
+    /// Stored bit width of each alpha endpoint component, or zero for opaque modes.
     uint8_t alpha_bits;
+    /// Number of per-endpoint precision bits appended during endpoint expansion.
     uint8_t endpoint_pbits;
+    /// Number of precision bits shared by both endpoints in each subset.
     uint8_t shared_pbits;
+    /// Nominal bit width of each primary interpolation index.
     uint8_t primary_index_bits;
+    /// Total encoded bits occupied by all primary indices after anchor-bit omission.
     uint8_t primary_index_total_bits;
+    /// Nominal bit width of each secondary interpolation index, or zero if absent.
     uint8_t secondary_index_bits;
 } bc7_mode_info;
 
@@ -352,6 +404,10 @@ static const uint8_t BC7_ANCHOR3B[64] = {
 };
 
 /// @brief Read `n` bits at a fixed bit offset, LSB-first within each byte.
+/// @param[in] b Pointer to the 16-byte BC7 block.
+/// @param[in] offset Zero-based starting bit offset.
+/// @param[in] n Number of bits to read; the result must fit in 32 bits.
+/// @return The requested bits right-aligned as an unsigned integer.
 static uint32_t bc7_get_bits_at(const uint8_t *b, int offset, int n) {
     uint32_t v = 0;
     for (int i = 0; i < n; i++)
@@ -360,6 +416,9 @@ static uint32_t bc7_get_bits_at(const uint8_t *b, int offset, int n) {
 }
 
 /// @brief Expand a `bits`-bit endpoint component to 8 bits by bit replication.
+/// @param[in] v Right-aligned quantized endpoint component.
+/// @param[in] bits Number of significant bits in @p v.
+/// @return The endpoint component expanded to eight bits.
 static uint8_t bc7_unq(uint32_t v, int bits) {
     if (bits >= 8)
         return (uint8_t)v;
@@ -367,11 +426,17 @@ static uint8_t bc7_unq(uint32_t v, int bits) {
 }
 
 /// @brief Interpolate two endpoints by weight `w` (out of 64) with rounding: lerp(e0, e1, w/64).
+/// @param[in] e0 Endpoint selected when @p w is zero.
+/// @param[in] e1 Endpoint selected when @p w is 64.
+/// @param[in] w BC7 interpolation weight in the inclusive range 0-64.
+/// @return The rounded eight-bit interpolated component.
 static uint8_t bc7_interp(uint8_t e0, uint8_t e1, uint8_t w) {
     return (uint8_t)(((uint32_t)e0 * (64u - w) + (uint32_t)e1 * w + 32u) >> 6);
 }
 
 /// @brief Modes 4/5 may swap the alpha channel with one color channel after decode.
+/// @param[in] rot BC7 rotation selector: zero for none, or 1-3 for R, G, or B.
+/// @param[in,out] px Four-byte RGBA texel modified in place.
 static void bc7_apply_rotation(uint32_t rot, uint8_t *px) {
     uint8_t t;
     if (rot == 1) {
@@ -390,6 +455,8 @@ static void bc7_apply_rotation(uint32_t rot, uint8_t *px) {
 }
 
 /// @brief The BC7 mode is the index of the first set bit in byte 0 (LSB-first); 8 = invalid.
+/// @param[in] b Pointer to the 16-byte BC7 block.
+/// @return A mode number in the range 0-7, or 8 for the reserved all-zero prefix.
 static int bc7_block_mode(const uint8_t *b) {
     int mode = 0;
     while (mode < 8 && !((b[0] >> mode) & 1u))
@@ -398,56 +465,92 @@ static int bc7_block_mode(const uint8_t *b) {
 }
 
 /// @brief Endpoint color-value count for a block: two endpoints per subset.
+/// @param[in] info Metadata for the selected BC7 mode.
+/// @return Twice the mode's subset count.
 static int bc7_num_colors(const bc7_mode_info *info) {
     return (int)info->subset_count * 2;
 }
 
 /// @brief Bit offset of the first color-endpoint field, past the mode/partition/rotation/
 ///   index-selection header bits.
+/// @param[in] mode Selected BC7 mode number.
+/// @param[in] info Metadata for @p mode.
+/// @return Zero-based bit offset of the first red endpoint component.
 static int bc7_endpoint_base(int mode, const bc7_mode_info *info) {
     return mode + 1 + (int)info->partition_bits + (int)info->rotation_bits +
            (int)info->index_selection_bits;
 }
 
 /// @brief Bit offset of endpoint `endpoint`'s red component (all reds are packed first).
+/// @param[in] mode Selected BC7 mode number.
+/// @param[in] info Metadata for @p mode.
+/// @param[in] endpoint Flattened endpoint index across all subsets.
+/// @return Zero-based bit offset of the endpoint's red component.
 static int bc7_red_offset(int mode, const bc7_mode_info *info, int endpoint) {
     return bc7_endpoint_base(mode, info) + (int)info->color_bits * endpoint;
 }
 
 /// @brief Bit offset of endpoint `endpoint`'s green component (greens follow all reds).
+/// @param[in] mode Selected BC7 mode number.
+/// @param[in] info Metadata for @p mode.
+/// @param[in] endpoint Flattened endpoint index across all subsets.
+/// @return Zero-based bit offset of the endpoint's green component.
 static int bc7_green_offset(int mode, const bc7_mode_info *info, int endpoint) {
     return bc7_red_offset(mode, info, bc7_num_colors(info)) + (int)info->color_bits * endpoint;
 }
 
 /// @brief Bit offset of endpoint `endpoint`'s blue component (blues follow all greens).
+/// @param[in] mode Selected BC7 mode number.
+/// @param[in] info Metadata for @p mode.
+/// @param[in] endpoint Flattened endpoint index across all subsets.
+/// @return Zero-based bit offset of the endpoint's blue component.
 static int bc7_blue_offset(int mode, const bc7_mode_info *info, int endpoint) {
     return bc7_green_offset(mode, info, bc7_num_colors(info)) + (int)info->color_bits * endpoint;
 }
 
 /// @brief Bit offset of endpoint `endpoint`'s alpha component (alphas follow all blues).
+/// @param[in] mode Selected BC7 mode number.
+/// @param[in] info Metadata for @p mode.
+/// @param[in] endpoint Flattened endpoint index across all subsets.
+/// @return Zero-based bit offset of the endpoint's alpha component.
 static int bc7_alpha_offset(int mode, const bc7_mode_info *info, int endpoint) {
     return bc7_blue_offset(mode, info, bc7_num_colors(info)) + (int)info->alpha_bits * endpoint;
 }
 
 /// @brief Bit offset of per-endpoint p-bit `endpoint` (p-bits follow the alpha endpoints).
+/// @param[in] mode Selected BC7 mode number.
+/// @param[in] info Metadata for @p mode.
+/// @param[in] endpoint Flattened endpoint index across all subsets.
+/// @return Zero-based bit offset of the endpoint precision bit.
 static int bc7_endpoint_pbit_offset(int mode, const bc7_mode_info *info, int endpoint) {
     return bc7_alpha_offset(mode, info, bc7_num_colors(info)) +
            (int)info->endpoint_pbits * endpoint;
 }
 
 /// @brief Bit offset of shared (per-subset) p-bit `subset`, used by modes with shared p-bits.
+/// @param[in] mode Selected BC7 mode number.
+/// @param[in] info Metadata for @p mode.
+/// @param[in] subset Zero-based endpoint subset index.
+/// @return Zero-based bit offset of the subset's shared precision bit.
 static int bc7_shared_pbit_offset(int mode, const bc7_mode_info *info, int subset) {
     return bc7_endpoint_pbit_offset(mode, info, bc7_num_colors(info)) +
            (int)info->shared_pbits * subset;
 }
 
 /// @brief Bit offset where per-texel index data begins, past all endpoint and p-bit fields.
+/// @param[in] mode Selected BC7 mode number.
+/// @param[in] info Metadata for @p mode.
+/// @return Zero-based bit offset of the primary interpolation-index stream.
 static int bc7_index_base(int mode, const bc7_mode_info *info) {
     return bc7_shared_pbit_offset(mode, info, 2);
 }
 
 /// @brief Subset (partition region) that `texel` belongs to, read from the 2-/3-subset
 ///   partition tables; 0 for single-subset modes.
+/// @param[in] info Metadata for the selected BC7 mode.
+/// @param[in] partition Partition pattern index encoded by the block.
+/// @param[in] texel Row-major texel index in the 4-by-4 block.
+/// @return The zero-based subset containing @p texel.
 static int bc7_subset_index(const bc7_mode_info *info, int partition, int texel) {
     if (info->subset_count == 2)
         return BC7_PARTITION2[partition][texel];
@@ -458,6 +561,10 @@ static int bc7_subset_index(const bc7_mode_info *info, int partition, int texel)
 
 /// @brief Texel position of subset `subset`'s anchor index (the index whose high bit is
 ///   implicitly 0); 0 for subset 0.
+/// @param[in] info Metadata for the selected BC7 mode.
+/// @param[in] partition Partition pattern index encoded by the block.
+/// @param[in] subset Zero-based subset whose anchor is requested.
+/// @return The row-major texel index used as the subset's anchor.
 static int bc7_anchor_index(const bc7_mode_info *info, int partition, int subset) {
     if (subset == 1)
         return info->subset_count == 2 ? BC7_ANCHOR2[partition] : BC7_ANCHOR3A[partition];
@@ -469,6 +576,14 @@ static int bc7_anchor_index(const bc7_mode_info *info, int partition, int subset
 /// @brief Read texel `anchor`'s color index: selects the primary or secondary index set per the
 ///   block's index-selection bit / color rotation, drops the implicit MSB for anchor texels,
 ///   advances *bit_offset past the bits read, and reports the index bit-width in *out_bits.
+/// @param[in] b Pointer to the 16-byte BC7 block.
+/// @param[in] mode Selected BC7 mode number.
+/// @param[in] info Metadata for @p mode.
+/// @param[in] anchor Nonzero when this texel omits the index's most-significant bit.
+/// @param[in] color_channel Nonzero to select the RGB index stream; zero selects alpha.
+/// @param[in,out] bit_offset Cursor within the selected index stream, advanced by consumed bits.
+/// @param[out] out_bits Optional destination for the nominal index width before anchor omission.
+/// @return The decoded interpolation index for the current texel.
 static uint32_t bc7_index_value(const uint8_t *b,
                                 int mode,
                                 const bc7_mode_info *info,
@@ -492,6 +607,9 @@ static uint32_t bc7_index_value(const uint8_t *b,
 }
 
 /// @brief Interpolation weight (out of 64) for a 2-, 3-, or 4-bit BC7 index.
+/// @param[in] index Quantized interpolation index.
+/// @param[in] bits Nominal index width; expected to be 2, 3, or 4.
+/// @return The corresponding BC7 interpolation weight in the range 0-64.
 static uint8_t bc7_index_weight(uint32_t index, int bits) {
     if (bits == 2)
         return BC7_W2[index & 3u];
@@ -503,6 +621,9 @@ static uint8_t bc7_index_weight(uint32_t index, int bits) {
 /// @brief Decode one 16-byte BC7 block into 16 row-major RGBA texels (@p out_rgba is 64 bytes).
 ///   Handles modes 0-7, including partitioned modes. Non-static so the unit test can verify
 ///   against constructed blocks.
+/// @param[in] b Pointer to a complete 16-byte BC7 block.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @return 1 when a defined mode was decoded, or 0 for NULL arguments or a reserved mode prefix.
 int rt_textureasset3d_decode_bc7_block(const uint8_t *b, uint8_t *out_rgba) {
     int mode;
     if (!b || !out_rgba)
@@ -597,6 +718,13 @@ int rt_textureasset3d_decode_bc7_block(const uint8_t *b, uint8_t *out_rgba) {
 /// @details Returns NULL only for this mip when a block uses an unsupported/reserved BC7 mode or
 ///          the payload is malformed. Other mips may still keep decoded fallbacks while the native
 ///          compressed payload remains available for backend upload.
+/// @param[in] data Base address of the complete compressed texture payload.
+/// @param[in] size Number of readable bytes in @p data.
+/// @param[in] width Width of the requested mip level in texels.
+/// @param[in] height Height of the requested mip level in texels.
+/// @param[in] offset Byte offset of the mip level within @p data.
+/// @param[in] length Declared byte length of the mip level.
+/// @return A newly allocated RGBA8 Pixels object, or NULL if the level cannot be decoded.
 static void *textureasset3d_decode_bc7_fallback(const uint8_t *data,
                                                 size_t size,
                                                 uint32_t width,
@@ -657,6 +785,12 @@ static void *textureasset3d_decode_bc7_fallback(const uint8_t *data,
 /// @brief Decode all supported BC7 mips into a Pixels array, allowing per-mip misses.
 /// @details The returned array has one slot per mip. Unsupported/reserved blocks leave only that
 ///          slot NULL instead of discarding fallbacks already decoded for other levels.
+/// @param[in] data Base address of the complete compressed texture payload.
+/// @param[in] size Number of readable bytes in @p data.
+/// @param[in] mips Array describing the source range and dimensions of each mip level.
+/// @param[in] mip_count Number of entries in @p mips.
+/// @return A newly allocated, partially populated Pixels array, or NULL if no mip can be decoded.
+/// @ownership The caller owns the returned array and each non-NULL Pixels reference it contains.
 static void **textureasset3d_decode_bc7_mips(const uint8_t *data,
                                              size_t size,
                                              const textureasset3d_mip *mips,
@@ -682,11 +816,15 @@ static void **textureasset3d_decode_bc7_mips(const uint8_t *data,
 }
 
 /// @brief Expand a 4-bit value to 8 bits by bit replication (v<<4 | v).
+/// @param[in] v Unsigned component value whose low four bits contain the encoded value.
+/// @return The component expanded to the full 0-255 range.
 static uint8_t textureasset3d_expand4(uint32_t v) {
     return (uint8_t)((v << 4) | v);
 }
 
 /// @brief Clamp a signed integer to the unsigned 8-bit range [0, 255].
+/// @param[in] v Signed component value to clamp.
+/// @return Zero for negative input, 255 above range, or @p v otherwise.
 static uint8_t textureasset3d_clamp_u8(int v) {
     if (v < 0)
         return 0;
@@ -696,11 +834,15 @@ static uint8_t textureasset3d_clamp_u8(int v) {
 }
 
 /// @brief Sign-extend a 3-bit two's-complement value to a host int.
+/// @param[in] v Unsigned value whose low three bits contain the encoded delta.
+/// @return The corresponding signed value in the inclusive range -4 through 3.
 static int textureasset3d_sign3(uint32_t v) {
     return (v & 4u) ? (int)v - 8 : (int)v;
 }
 
 /// @brief Requantize a 16-bit unorm to 8-bit with round-to-nearest.
+/// @param[in] v Unsigned normalized component in the inclusive range 0-65535.
+/// @return The nearest representable eight-bit normalized component.
 static uint8_t textureasset3d_unorm16_to_u8(uint32_t v) {
     return (uint8_t)((v * 255u + 32767u) / 65535u);
 }
@@ -736,6 +878,8 @@ static const int16_t ETC2_COLOR_MODIFIERS[8][4] = {
 };
 
 /// @brief Read a 48-bit big-endian unsigned integer from the first 6 bytes of `p`.
+/// @param[in] p Pointer to at least six readable bytes.
+/// @return The six bytes interpreted as a right-aligned big-endian integer.
 static uint64_t textureasset3d_read_u48be(const uint8_t *p) {
     uint64_t v = 0;
     for (int i = 0; i < 6; i++)
@@ -745,6 +889,10 @@ static uint64_t textureasset3d_read_u48be(const uint8_t *p) {
 
 /// @brief Two-bit pixel index for texel (x, y) of an ETC2 color block, gathered from the MSB and
 ///   LSB index bit-planes packed in bytes 4-7.
+/// @param[in] c Pointer to the eight-byte ETC2 color sub-block.
+/// @param[in] x Zero-based texel column in the 4-by-4 block.
+/// @param[in] y Zero-based texel row in the 4-by-4 block.
+/// @return The two-bit modifier-table index for the selected texel.
 static int etc2_color_index(const uint8_t *c, int x, int y) {
     int bit = x * 4 + y;
     uint16_t msb = ((uint16_t)c[4] << 8) | (uint16_t)c[5];
@@ -756,6 +904,9 @@ static int etc2_color_index(const uint8_t *c, int x, int y) {
 /// @details Supports the ETC2 individual and differential color modes plus EAC alpha. T/H/planar
 ///          color modes return 0 so the texture can remain native-only rather than partially
 ///          decode.
+/// @param[in] b Pointer to a complete 16-byte ETC2 RGBA8/EAC block.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @return 1 for a supported individual or differential color mode, otherwise 0.
 int rt_textureasset3d_decode_etc2_rgba8_block(const uint8_t *b, uint8_t *out_rgba) {
     uint8_t alpha[16];
     uint64_t alpha_bits;
@@ -825,6 +976,11 @@ int rt_textureasset3d_decode_etc2_rgba8_block(const uint8_t *b, uint8_t *out_rgb
 /// @brief Decode one ASTC LDR 2D void-extent block into a row-major RGBA texel block.
 /// @details Non-void ASTC is left native-only; the software fallback covers constant-color ASTC
 ///          fixtures and the required LDR void-extent baseline without adding an ASTC dependency.
+/// @param[in] b Pointer to a complete 16-byte ASTC block.
+/// @param[in] block_width Footprint width in texels, from 1 through 12.
+/// @param[in] block_height Footprint height in texels, from 1 through 12.
+/// @param[out] out_rgba Destination for @p block_width times @p block_height RGBA texels.
+/// @return 1 when an LDR 2D void-extent block was decoded, otherwise 0.
 int rt_textureasset3d_decode_astc_ldr_block(const uint8_t *b,
                                             int32_t block_width,
                                             int32_t block_height,
@@ -853,6 +1009,12 @@ int rt_textureasset3d_decode_astc_ldr_block(const uint8_t *b,
     return 1;
 }
 
+/// @brief Uniform callback signature used by the generic compressed-image walker.
+/// @param[in] block Pointer to one complete encoded block.
+/// @param[in] block_width Block footprint width in texels.
+/// @param[in] block_height Block footprint height in texels.
+/// @param[out] out_rgba Destination for the block's row-major RGBA8 texels.
+/// @return Nonzero when the block was decoded completely; zero if its encoding is unsupported.
 typedef int (*textureasset3d_block_decode_fn)(const uint8_t *block,
                                               int32_t block_width,
                                               int32_t block_height,
@@ -860,6 +1022,11 @@ typedef int (*textureasset3d_block_decode_fn)(const uint8_t *block,
 
 /// @brief Block-decode adapter for ETC2 RGBA8: ignores the (fixed 4×4) block dimensions and
 ///   forwards to the ETC2 block decoder, matching the generic block-decode function pointer.
+/// @param[in] block Pointer to a complete 16-byte ETC2 RGBA8/EAC block.
+/// @param[in] block_width Ignored fixed footprint width supplied by the generic walker.
+/// @param[in] block_height Ignored fixed footprint height supplied by the generic walker.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @return The success status reported by rt_textureasset3d_decode_etc2_rgba8_block().
 static int textureasset3d_decode_etc2_block_adapter(const uint8_t *block,
                                                     int32_t block_width,
                                                     int32_t block_height,
@@ -871,6 +1038,11 @@ static int textureasset3d_decode_etc2_block_adapter(const uint8_t *block,
 
 /// @brief Block-decode adapter for ASTC LDR: forwards the block dimensions to the ASTC
 ///   decoder, matching the generic block-decode function pointer.
+/// @param[in] block Pointer to a complete 16-byte ASTC block.
+/// @param[in] block_width ASTC block footprint width in texels.
+/// @param[in] block_height ASTC block footprint height in texels.
+/// @param[out] out_rgba Destination for the block's row-major RGBA8 texels.
+/// @return The success status reported by rt_textureasset3d_decode_astc_ldr_block().
 static int textureasset3d_decode_astc_block_adapter(const uint8_t *block,
                                                     int32_t block_width,
                                                     int32_t block_height,
@@ -881,6 +1053,14 @@ static int textureasset3d_decode_astc_block_adapter(const uint8_t *block,
 /// @brief Compute the total byte size and block-grid dimensions of a block-compressed image
 ///   from its pixel and block dimensions, with overflow checks. Outputs are written through
 ///   @p out_needed / @p out_blocks_x / @p out_blocks_y.
+/// @param[in] width Image width in texels.
+/// @param[in] height Image height in texels.
+/// @param[in] block_width Encoded block footprint width in texels.
+/// @param[in] block_height Encoded block footprint height in texels.
+/// @param[in] block_bytes Encoded byte size of one block.
+/// @param[out] out_needed Optional destination for the complete encoded byte count.
+/// @param[out] out_blocks_x Optional destination for the horizontal block count.
+/// @param[out] out_blocks_y Optional destination for the vertical block count.
 /// @return 1 on success, 0 for zero/negative parameters or on overflow.
 static int textureasset3d_compressed_block_bytes(uint32_t width,
                                                  uint32_t height,
@@ -921,6 +1101,17 @@ static int textureasset3d_compressed_block_bytes(uint32_t width,
 /// @brief CPU-decode one block-compressed mip level into a new RGBA Pixels object by walking
 ///   its block grid with @p decode and writing each 4×4 (or @p block_width×@p block_height)
 ///   tile. Traps with @p alloc_error on allocation failure.
+/// @param[in] data Base address of the complete compressed texture payload.
+/// @param[in] size Number of readable bytes in @p data.
+/// @param[in] width Width of the requested mip level in texels.
+/// @param[in] height Height of the requested mip level in texels.
+/// @param[in] offset Byte offset of the mip level within @p data.
+/// @param[in] length Declared byte length of the mip level.
+/// @param[in] block_width Encoded block footprint width in texels.
+/// @param[in] block_height Encoded block footprint height in texels.
+/// @param[in] block_bytes Encoded byte size of one block.
+/// @param[in] decode Format-specific block decoder invoked for validation and output.
+/// @param[in] alloc_error Optional trap message used if Pixels allocation fails.
 /// @return The decoded Pixels object, or NULL on bad input / out-of-range level data.
 static void *textureasset3d_decode_compressed_fallback(const uint8_t *data,
                                                        size_t size,
@@ -994,7 +1185,17 @@ static void *textureasset3d_decode_compressed_fallback(const uint8_t *data,
 /// @brief Decode every mip level of a block-compressed texture into a newly allocated array
 ///   of Pixels objects (one per level) via textureasset3d_decode_compressed_fallback,
 ///   releasing all on any failure.
+/// @param[in] data Base address of the complete compressed texture payload.
+/// @param[in] size Number of readable bytes in @p data.
+/// @param[in] mips Array describing the source range and dimensions of each mip level.
+/// @param[in] mip_count Number of entries in @p mips.
+/// @param[in] block_width Encoded block footprint width in texels.
+/// @param[in] block_height Encoded block footprint height in texels.
+/// @param[in] block_bytes Encoded byte size of one block.
+/// @param[in] decode Format-specific block decoder passed to the generic mip walker.
+/// @param[in] alloc_error Optional trap message used if Pixels allocation fails.
 /// @return The Pixels array (caller owns), or NULL on bad input or a decode failure.
+/// @ownership The caller owns the returned array and every Pixels reference it contains.
 static void **textureasset3d_decode_compressed_mips(const uint8_t *data,
                                                     size_t size,
                                                     const textureasset3d_mip *mips,
@@ -1035,6 +1236,9 @@ static void **textureasset3d_decode_compressed_mips(const uint8_t *data,
 ///   bytes). Handles both the opaque 4-colour mode (c0 > c1) and the 3-colour +
 ///   1-bit-transparent mode (c0 <= c1). Non-static so the unit test can verify the decode
 ///   against known blocks.
+/// @param[in] b Pointer to a complete eight-byte BC1 block.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @note No output is written when either pointer is NULL.
 void rt_textureasset3d_decode_bc1_block(const uint8_t *b, uint8_t *out_rgba) {
     uint32_t c0, c1, cbits;
     uint8_t cr[4], cg[4], cb[4], ca[4];
@@ -1079,6 +1283,8 @@ void rt_textureasset3d_decode_bc1_block(const uint8_t *b, uint8_t *out_rgba) {
 /// @details Shared kernel for BC4 (R channel) and BC5 (R + G channels): two endpoint
 ///   bytes followed by 16 x 3-bit indices, with the 8-point ramp when e0 > e1 and the
 ///   6-point ramp plus literal 0/255 otherwise.
+/// @param[in] b Pointer to a complete eight-byte BC4 channel block.
+/// @param[out] out_values Destination buffer for 16 row-major channel values.
 static void textureasset3d_decode_bc4_channel(const uint8_t *b, uint8_t *out_values) {
     uint8_t v[8];
     uint8_t v0 = b[0];
@@ -1106,6 +1312,9 @@ static void textureasset3d_decode_bc4_channel(const uint8_t *b, uint8_t *out_val
 /// @details The decoded channel replicates into R/G/B with opaque alpha, which renders
 ///   grayscale on the software path while native uploads keep the true R-only format.
 ///   Non-static so the unit test can verify the decode against known blocks.
+/// @param[in] b Pointer to a complete eight-byte BC4 block.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @note No output is written when either pointer is NULL.
 void rt_textureasset3d_decode_bc4_block(const uint8_t *b, uint8_t *out_rgba) {
     uint8_t r[16];
     if (!b || !out_rgba)
@@ -1124,6 +1333,9 @@ void rt_textureasset3d_decode_bc4_block(const uint8_t *b, uint8_t *out_rgba) {
 ///   two-channel normal maps); B is fixed at 255 and alpha opaque. Shaders that need a
 ///   reconstructed Z derive it from R/G. Non-static so the unit test can verify the
 ///   decode against known blocks.
+/// @param[in] b Pointer to a complete 16-byte BC5 block.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @note No output is written when either pointer is NULL.
 void rt_textureasset3d_decode_bc5_block(const uint8_t *b, uint8_t *out_rgba) {
     uint8_t r[16];
     uint8_t g[16];
@@ -1140,6 +1352,11 @@ void rt_textureasset3d_decode_bc5_block(const uint8_t *b, uint8_t *out_rgba) {
 }
 
 /// @brief Block-decode adapter for BC1, matching the generic block-decode function pointer.
+/// @param[in] block Pointer to a complete eight-byte BC1 block.
+/// @param[in] block_width Ignored fixed footprint width supplied by the generic walker.
+/// @param[in] block_height Ignored fixed footprint height supplied by the generic walker.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @return 1 after dispatching to the infallible BC1 block decoder.
 static int textureasset3d_decode_bc1_block_adapter(const uint8_t *block,
                                                    int32_t block_width,
                                                    int32_t block_height,
@@ -1151,6 +1368,11 @@ static int textureasset3d_decode_bc1_block_adapter(const uint8_t *block,
 }
 
 /// @brief Block-decode adapter for BC4, matching the generic block-decode function pointer.
+/// @param[in] block Pointer to a complete eight-byte BC4 block.
+/// @param[in] block_width Ignored fixed footprint width supplied by the generic walker.
+/// @param[in] block_height Ignored fixed footprint height supplied by the generic walker.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @return 1 after dispatching to the infallible BC4 block decoder.
 static int textureasset3d_decode_bc4_block_adapter(const uint8_t *block,
                                                    int32_t block_width,
                                                    int32_t block_height,
@@ -1162,6 +1384,11 @@ static int textureasset3d_decode_bc4_block_adapter(const uint8_t *block,
 }
 
 /// @brief Block-decode adapter for BC5, matching the generic block-decode function pointer.
+/// @param[in] block Pointer to a complete 16-byte BC5 block.
+/// @param[in] block_width Ignored fixed footprint width supplied by the generic walker.
+/// @param[in] block_height Ignored fixed footprint height supplied by the generic walker.
+/// @param[out] out_rgba Destination buffer for 16 four-byte RGBA texels.
+/// @return 1 after dispatching to the infallible BC5 block decoder.
 static int textureasset3d_decode_bc5_block_adapter(const uint8_t *block,
                                                    int32_t block_width,
                                                    int32_t block_height,

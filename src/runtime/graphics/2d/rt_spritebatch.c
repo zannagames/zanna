@@ -5,34 +5,33 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_spritebatch.c
-// Purpose: Batched sprite renderer for Zanna games. Accumulates a list of
-//   draw commands (sprite + position + optional transform) each frame and
-//   submits them to the Canvas in a single pass. Reduces per-sprite overhead
-//   compared to individual canvas.Blit() calls from Zia, and enables sorting
-//   by depth (Z-order) before submission. Typical use: rendering dozens to
-//   hundreds of sprites per frame (enemies, projectiles, particles).
+// File: src/runtime/graphics/2d/rt_spritebatch.c
+// Purpose: Implements a retained-command 2D Canvas renderer. Between Begin and
+//   End, the batch records Sprite, whole-Pixels, and Pixels-region commands,
+//   optionally orders them by depth, applies batch-wide tint/alpha, renders
+//   them in one native traversal, and releases their retained sources.
 //
 // Key invariants:
-//   - The batch accumulates draw calls until rt_spritebatch_flush() (or the
-//     equivalent of an end-of-frame reset) is called. Commands are stored in
-//     a dynamic array that grows as needed.
-//   - Draw commands contain: Pixels reference, destination x/y, optional
-//     source region (for sprite sheets), and optional Z-order integer.
-//   - If depth-sort is enabled, commands are sorted by Z ascending before
-//     blitting, so lower Z values appear behind higher Z values.
-//   - The batch holds retained references to Pixels objects. All references
-//     are released when the batch is cleared or destroyed.
-//   - After flushing, the command list is cleared (count reset to 0) but the
-//     backing array is NOT freed — it is reused next frame to avoid repeated
-//     allocation. Call rt_spritebatch_destroy() to fully free.
+//   - Commands are accepted only while active, after rt_spritebatch_begin() and
+//     before rt_spritebatch_end(). Begin discards any previously queued work.
+//   - Every accepted command retains its Sprite or Pixels source until the
+//     batch is cleared, ended, begun again, or finalized.
+//   - Depth sorting is ascending and deterministic: equal-depth commands retain
+//     submission order even though the underlying qsort is not stable.
+//   - Sprite commands snapshot position, requested transform, and depth, but
+//     sample the retained Sprite's frame, flips, origin, and visibility at End.
+//   - Tint, alpha, and sort settings are sampled at End and persist across
+//     begin/end cycles until changed or reset.
+//   - End clears commands and retains the backing allocation for reuse. The
+//     runtime finalizer releases both commands and the allocation.
 //
 // Ownership/Lifetime:
-//   - SpriteBatch objects are GC-managed (rt_obj_new_i64). The command array
-//     is freed by the GC finalizer. Any retained Pixels refs are also released.
+//   - Constructors return caller-owned runtime reference-counted objects.
+//   - Command sources are retained by the batch. Transform intermediates are
+//     owned only during End and are released after each draw.
 //
-// Links: src/runtime/graphics/rt_spritebatch.h (public API),
-//        src/runtime/graphics/rt_sprite.h (single-sprite API),
+// Links: src/runtime/graphics/2d/rt_spritebatch.h (public API),
+//        src/runtime/graphics/2d/rt_sprite.h (single-sprite API),
 //        docs/zannalib/game.md (SpriteBatch section)
 //
 //===----------------------------------------------------------------------===//
@@ -72,8 +71,14 @@ static void release_batch_color_temp(void *original, void *candidate) {
         rt_obj_free(candidate);
 }
 
+/// @brief Identifies the source and draw path represented by a queued command.
 typedef enum { BATCH_ITEM_SPRITE, BATCH_ITEM_PIXELS, BATCH_ITEM_REGION } batch_item_type;
 
+/// @brief Snapshot of one queued SpriteBatch draw command.
+/// @details The retained @c source is interpreted according to @c type. Sprite
+///          commands use destination/transform/depth fields, whole-Pixels
+///          commands use destination fields, and region commands use all source
+///          rectangle and transform fields.
 typedef struct {
     batch_item_type type;
     void *source;     // Sprite or Pixels object
@@ -91,6 +96,7 @@ typedef struct {
     int64_t submission_order;
 } batch_item;
 
+/// @brief Private state of one runtime-managed SpriteBatch.
 typedef struct {
     batch_item *items;
     int64_t count;
@@ -102,6 +108,7 @@ typedef struct {
     int64_t next_submission_order;
 } spritebatch_impl;
 
+/// @brief Non-owning dimensions/data view used while applying batch alpha.
 typedef struct {
     int64_t width;
     int64_t height;
@@ -112,6 +119,9 @@ typedef struct {
 /// @details Soft check (no trap) — used by every public SpriteBatch entry
 ///          so that wrong-class handles silently no-op rather than crashing
 ///          mid-frame during a draw burst.
+/// @param batch_ptr Candidate opaque SpriteBatch handle.
+/// @return Validated implementation pointer, or `NULL` for null, undersized, or
+///         wrong-class objects.
 static spritebatch_impl *spritebatch_checked_or_null(void *batch_ptr) {
     if (!batch_ptr ||
         !rt_obj_is_instance(batch_ptr, RT_SPRITEBATCH_CLASS_ID, sizeof(spritebatch_impl)))
@@ -120,6 +130,7 @@ static spritebatch_impl *spritebatch_checked_or_null(void *batch_ptr) {
 }
 
 /// @brief Validate that @p pixels is a live Pixels instance.
+/// @param pixels Candidate opaque Pixels handle.
 /// @return Non-zero if @p pixels is a valid rt_pixels object, 0 otherwise.
 static int8_t spritebatch_pixels_checked(void *pixels) {
     return pixels && rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl));
@@ -127,6 +138,8 @@ static int8_t spritebatch_pixels_checked(void *pixels) {
 
 /// @brief Clamp a scale percentage to a minimum of 1 — prevents division by zero in
 ///        `spritebatch_saturating_scaled_dim` and ensures the sprite remains visible.
+/// @param scale Requested integer percentage.
+/// @return @p scale when positive, otherwise `1`.
 static int64_t spritebatch_normalize_scale(int64_t scale) {
     return scale < 1 ? 1 : scale;
 }
@@ -134,6 +147,8 @@ static int64_t spritebatch_normalize_scale(int64_t scale) {
 /// @brief Sanitize a caller-supplied initial capacity: substitute the default (256)
 ///        for zero-or-negative values, and cap at MAX_BATCH_CAPACITY to prevent a
 ///        single over-sized allocation from exhausting heap memory at construction.
+/// @param capacity Requested command capacity.
+/// @return A capacity in the inclusive range 1 through `MAX_BATCH_CAPACITY`.
 static int64_t spritebatch_initial_capacity(int64_t capacity) {
     if (capacity <= 0)
         return DEFAULT_CAPACITY;
@@ -143,6 +158,8 @@ static int64_t spritebatch_initial_capacity(int64_t capacity) {
 /// @brief Normalize a batch tint color to a color value or the "no tint" sentinel -1.
 /// @details Negative values disable tint. Non-negative values pass through so tagged
 ///   Color.RGBA and raw RGBA alpha reach rt_pixels_tint().
+/// @param color Runtime color representation, or a negative no-tint value.
+/// @return `-1` for a negative input, otherwise @p color unchanged.
 static int64_t spritebatch_normalize_tint(int64_t color) {
     if (color < 0)
         return -1;
@@ -154,6 +171,10 @@ static int64_t spritebatch_normalize_tint(int64_t color) {
 ///   of rounding to 0, so a very small scale never produces a zero-size allocation
 ///   in the subsequent `rt_pixels_scale` call. Long double avoids intermediate
 ///   overflow before the /100 division.
+/// @param value Nonnegative source dimension.
+/// @param scale Integer percentage, normalized to at least 1.
+/// @return Nearest scaled dimension, clamped to at least 1 and saturated to
+///         `INT64_MAX`.
 static int64_t spritebatch_saturating_scaled_dim(int64_t value, int64_t scale) {
     long double scaled =
         ((long double)value * (long double)spritebatch_normalize_scale(scale)) / 100.0L;
@@ -171,6 +192,10 @@ static int64_t spritebatch_saturating_scaled_dim(int64_t value, int64_t scale) {
 /// @brief qsort comparator for batch items: primary key is depth (ascending, painter's
 ///        order), secondary key is submission_order (ascending, preserves insertion order
 ///        for items at equal depth so draws are deterministic regardless of sort stability).
+/// @param a Pointer to the first `batch_item`.
+/// @param b Pointer to the second `batch_item`.
+/// @return A negative value when @p a sorts first, positive when @p b sorts
+///         first, or zero when both keys match.
 static int compare_depth(const void *a, const void *b) {
     const batch_item *ia = (const batch_item *)a;
     const batch_item *ib = (const batch_item *)b;
@@ -188,6 +213,7 @@ static int compare_depth(const void *a, const void *b) {
 /// @brief Release a GC-managed heap payload; skips non-heap pointers (e.g. stack vars).
 /// @details `rt_heap_is_payload` guards against releasing static or stack data that was
 ///   accidentally stored in a batch item's source slot during development.
+/// @param obj Candidate runtime heap payload; null and non-payload pointers are ignored.
 static void spritebatch_release_object(void *obj) {
     if (!obj || !rt_heap_is_payload(obj))
         return;
@@ -198,6 +224,7 @@ static void spritebatch_release_object(void *obj) {
 /// @brief Retain a GC-managed heap payload; skips non-heap pointers.
 /// @details Symmetric with `spritebatch_release_object` — used when `add_item` copies
 ///   an item's source reference into the batch so the batch owns a counted share.
+/// @param obj Candidate runtime heap payload; null and non-payload pointers are ignored.
 static void spritebatch_retain_object(void *obj) {
     if (!obj || !rt_heap_is_payload(obj))
         return;
@@ -210,6 +237,8 @@ static void spritebatch_retain_object(void *obj) {
 ///   guards against releasing when the slot still holds the original (no transform was
 ///   applied) to avoid a double-free. After release the slot is reset to @p original so
 ///   subsequent stages see a consistent starting state.
+/// @param slot Address of the current working Pixels pointer.
+/// @param original Borrowed canonical source that must not be released.
 static void spritebatch_release_temp(void **slot, void *original) {
     if (!slot || !*slot || *slot == original)
         return;
@@ -224,6 +253,9 @@ static void spritebatch_release_temp(void **slot, void *original) {
 ///   into the rotate stage). The old temp is freed only when it's truly a temp (not
 ///   the original source), avoiding spurious releases on the first stage where the
 ///   slot might still hold the original.
+/// @param slot Address of the current working Pixels pointer.
+/// @param replacement New transform result to store.
+/// @param original Borrowed canonical source that must not be released.
 static void spritebatch_replace_temp(void **slot, void *replacement, void *original) {
     if (!slot || !replacement || replacement == *slot)
         return;
@@ -235,6 +267,7 @@ static void spritebatch_replace_temp(void **slot, void *replacement, void *origi
 /// @brief Release the source Pixels object held by a batch item and zero the struct.
 /// @details Zeroing after release ensures that if the item is ever re-used (e.g., from
 ///   a cleared-and-refilled batch) it starts in a clean state with no stale pointers.
+/// @param item Command whose retained source and metadata should be cleared.
 static void spritebatch_release_item(batch_item *item) {
     if (!item)
         return;
@@ -246,6 +279,7 @@ static void spritebatch_release_item(batch_item *item) {
 /// @details Does NOT free or resize the underlying `items` array — capacity is preserved
 ///   so that subsequent `begin/draw/end` cycles can reuse the same allocation. Called
 ///   at the end of every `_end` pass and also by the GC finalizer.
+/// @param batch Batch whose queued commands should be released.
 static void spritebatch_clear_items(spritebatch_impl *batch) {
     if (!batch)
         return;
@@ -260,6 +294,8 @@ static void spritebatch_clear_items(spritebatch_impl *batch) {
 ///   overflow scenarios are checked explicitly so a large `needed` value cannot wrap
 ///   to a small allocation. Returns 0 (and traps) on allocation failure; the existing
 ///   array is left intact so callers can partially recover or drain the current batch.
+/// @param batch Batch whose item array may need to grow.
+/// @param needed Number of additional entries required.
 /// @return 1 if the batch has sufficient capacity, 0 on overflow or allocation failure.
 static int8_t ensure_capacity(spritebatch_impl *batch, int64_t needed) {
     if (!batch || needed < 0)
@@ -303,6 +339,8 @@ static int8_t ensure_capacity(spritebatch_impl *batch, int64_t needed) {
 ///   remain in insertion order after qsort. The source is retained here (not at draw
 ///   time) so the caller can release their own reference immediately after calling
 ///   `add_item` without risk of premature collection.
+/// @param batch Active batch that will own the copied command.
+/// @param item Command template whose source is retained on successful append.
 static void add_item(spritebatch_impl *batch, batch_item *item) {
     if (!ensure_capacity(batch, 1))
         return;
@@ -381,6 +419,11 @@ static void *apply_batch_color(void *pixels, int64_t tint_color, int64_t alpha) 
 ///   into it via `rt_pixels_copy`. Used by `draw_region_item` to isolate the source
 ///   region before applying scale or rotation transforms, which operate on the full
 ///   image and cannot be constrained to a sub-rectangle directly.
+/// @param pixels Borrowed source Pixels object.
+/// @param sx Source rectangle's X coordinate.
+/// @param sy Source rectangle's Y coordinate.
+/// @param sw Positive requested source width.
+/// @param sh Positive requested source height.
 /// @return New Pixels object containing the extracted region, or NULL on failure.
 static void *extract_region_pixels(void *pixels, int64_t sx, int64_t sy, int64_t sw, int64_t sh) {
     if (!pixels || sw <= 0 || sh <= 0)
@@ -408,6 +451,9 @@ static void *extract_region_pixels(void *pixels, int64_t sx, int64_t sy, int64_t
 ///      enlarges the canvas around the centre).
 ///   Each stage uses `spritebatch_replace_temp` / `spritebatch_release_temp` to
 ///   ensure the previous intermediate is freed and the source Pixels is never mutated.
+/// @param batch Batch supplying the tint and alpha sampled at End.
+/// @param canvas Destination Canvas.
+/// @param item Region command containing a retained Pixels source.
 static void draw_region_item(spritebatch_impl *batch, void *canvas, const batch_item *item) {
     if (!item->source)
         return;
@@ -489,6 +535,7 @@ static void draw_region_item(spritebatch_impl *batch, void *canvas, const batch_
 /// @details `spritebatch_clear_items` releases each item's source reference; the
 ///   `items` array itself is freed here because it is a plain heap allocation outside
 ///   the GC pool.
+/// @param obj Candidate SpriteBatch object supplied by the runtime finalizer.
 static void spritebatch_finalize(void *obj) {
     spritebatch_impl *batch = spritebatch_checked_or_null(obj);
     if (!batch)
@@ -501,6 +548,10 @@ static void spritebatch_finalize(void *obj) {
 /// @brief Construct a SpriteBatch with initial command-array capacity. `capacity <= 0` falls
 /// back to 256. The batch starts inactive (no tint, alpha 255, depth-sort off). Use
 /// `_begin` / draw calls / `_end` to submit batched draws to a Canvas in one pass.
+/// @param capacity Requested initial command slots. Nonpositive values select
+///                 256 and values above 1,048,576 are capped.
+/// @return A caller-owned runtime-managed SpriteBatch reference, or `NULL`
+///         after an allocation failure.
 void *rt_spritebatch_new(int64_t capacity) {
     spritebatch_impl *batch = (spritebatch_impl *)rt_obj_new_i64(RT_SPRITEBATCH_CLASS_ID,
                                                                  (int64_t)sizeof(spritebatch_impl));
@@ -540,7 +591,11 @@ void *rt_spritebatch_new(int64_t capacity) {
 // SpriteBatch Operations
 //=============================================================================
 
-/// @brief Begin the spritebatch.
+/// @brief Begin recording a fresh sequence of draw commands.
+/// @details Releases any commands already queued, marks the batch active, and
+///          resets submission numbering. Render settings and capacity persist.
+///          Null or invalid handles are silently ignored.
+/// @param batch_ptr Candidate SpriteBatch handle.
 void rt_spritebatch_begin(void *batch_ptr) {
     if (!batch_ptr)
         return;
@@ -553,7 +608,13 @@ void rt_spritebatch_begin(void *batch_ptr) {
     batch->next_submission_order = 0;
 }
 
-/// @brief End the spritebatch.
+/// @brief Render and clear all queued commands, then leave recording state.
+/// @details An inactive batch is unchanged. A null Canvas discards queued
+///          commands without rendering. When enabled, stable depth ordering is
+///          emulated by sorting on `(depth, submission_order)`. All retained
+///          sources are released after traversal and the backing array is kept.
+/// @param batch_ptr Candidate SpriteBatch handle.
+/// @param canvas Destination Canvas, or `NULL` to discard the active batch.
 void rt_spritebatch_end(void *batch_ptr, void *canvas) {
     if (!batch_ptr)
         return;
@@ -614,12 +675,21 @@ void rt_spritebatch_end(void *batch_ptr, void *canvas) {
     batch->active = 0;
 }
 
-/// @brief Draw the spritebatch.
+/// @brief Queue a Sprite draw at 100% scale and zero rotation.
+/// @param batch_ptr Candidate active SpriteBatch handle.
+/// @param sprite Valid Sprite retained until the batch is cleared.
+/// @param x Destination X coordinate for the Sprite origin.
+/// @param y Destination Y coordinate for the Sprite origin.
 void rt_spritebatch_draw(void *batch_ptr, void *sprite, int64_t x, int64_t y) {
     rt_spritebatch_draw_ex(batch_ptr, sprite, x, y, 100, 100, 0);
 }
 
-/// @brief Draw the scaled of the spritebatch.
+/// @brief Queue a Sprite draw with uniform percentage scale and zero rotation.
+/// @param batch_ptr Candidate active SpriteBatch handle.
+/// @param sprite Valid Sprite retained until the batch is cleared.
+/// @param x Destination X coordinate for the Sprite origin.
+/// @param y Destination Y coordinate for the Sprite origin.
+/// @param scale Horizontal and vertical percentage scale.
 void rt_spritebatch_draw_scaled(
     void *batch_ptr, void *sprite, int64_t x, int64_t y, int64_t scale) {
     rt_spritebatch_draw_ex(batch_ptr, sprite, x, y, scale, scale, 0);
@@ -628,6 +698,16 @@ void rt_spritebatch_draw_scaled(
 /// @brief Append a sprite draw command to the batch with custom scale (×100) and rotation
 /// (degrees). Depth defaults to the sprite's own depth so depth-sort keeps Z-order. Silently
 /// no-ops if the batch is not currently `_begin`/`_end`-bracketed.
+/// @details Position, transform arguments, and current depth are snapshotted.
+///          The retained Sprite's frame, flips, origin, and visibility are read
+///          later by `rt_spritebatch_end()`.
+/// @param batch_ptr Candidate active SpriteBatch handle.
+/// @param sprite Valid Sprite retained until the batch is cleared.
+/// @param x Destination X coordinate for the Sprite origin.
+/// @param y Destination Y coordinate for the Sprite origin.
+/// @param scale_x Horizontal percentage scale.
+/// @param scale_y Vertical percentage scale.
+/// @param rotation Clockwise rotation in degrees.
 void rt_spritebatch_draw_ex(void *batch_ptr,
                             void *sprite,
                             int64_t x,
@@ -657,7 +737,13 @@ void rt_spritebatch_draw_ex(void *batch_ptr,
     add_item(batch, &item);
 }
 
-/// @brief Draw the pixels of the spritebatch.
+/// @brief Queue a whole-Pixels alpha blit with depth zero.
+/// @details The Pixels object is retained until the batch is cleared. Batch tint
+///          and alpha are sampled when End renders the command.
+/// @param batch_ptr Candidate active SpriteBatch handle.
+/// @param pixels Valid Pixels source.
+/// @param x Destination top-left X coordinate.
+/// @param y Destination top-left Y coordinate.
 void rt_spritebatch_draw_pixels(void *batch_ptr, void *pixels, int64_t x, int64_t y) {
     if (!batch_ptr || !spritebatch_pixels_checked(pixels))
         return;
@@ -683,6 +769,14 @@ void rt_spritebatch_draw_pixels(void *batch_ptr, void *pixels, int64_t x, int64_
 
 /// @brief Append a region (sub-rectangle) draw of `pixels` at (dx, dy) with native size and no
 /// rotation. Convenience for drawing one frame from a sprite-sheet without computing transforms.
+/// @param batch_ptr Candidate active SpriteBatch handle.
+/// @param pixels Valid Pixels source retained until the batch is cleared.
+/// @param dx Destination top-left X coordinate.
+/// @param dy Destination top-left Y coordinate.
+/// @param sx Source rectangle's X coordinate.
+/// @param sy Source rectangle's Y coordinate.
+/// @param sw Source rectangle's width.
+/// @param sh Source rectangle's height.
 void rt_spritebatch_draw_region(void *batch_ptr,
                                 void *pixels,
                                 int64_t dx,
@@ -697,6 +791,21 @@ void rt_spritebatch_draw_region(void *batch_ptr,
 /// @brief Full region-draw command: source rect within `pixels`, destination (dx, dy), per-axis
 /// scale (×100), rotation (degrees), and explicit Z `depth`. The depth-sort pass uses `depth`
 /// when enabled — lower values draw first (behind higher).
+/// @details Invalid batches/Pixels and inactive batches are silently ignored.
+///          Scaling is clamped to at least 1%; rotation preserves the unrotated
+///          region center after the transformed allocation expands.
+/// @param batch_ptr Candidate active SpriteBatch handle.
+/// @param pixels Valid Pixels source retained until the batch is cleared.
+/// @param dx Destination top-left X coordinate before rotation recentering.
+/// @param dy Destination top-left Y coordinate before rotation recentering.
+/// @param sx Source rectangle's X coordinate.
+/// @param sy Source rectangle's Y coordinate.
+/// @param sw Source rectangle's width.
+/// @param sh Source rectangle's height.
+/// @param scale_x Horizontal percentage scale.
+/// @param scale_y Vertical percentage scale.
+/// @param rotation Clockwise rotation in degrees.
+/// @param depth Explicit sort key.
 void rt_spritebatch_draw_region_ex(void *batch_ptr,
                                    void *pixels,
                                    int64_t dx,
@@ -739,7 +848,9 @@ void rt_spritebatch_draw_region_ex(void *batch_ptr,
 // SpriteBatch Properties
 //=============================================================================
 
-/// @brief Return the count of elements in the spritebatch.
+/// @brief Get the number of currently queued commands.
+/// @param batch_ptr Candidate SpriteBatch handle.
+/// @return The command count, or `0` for an invalid batch.
 int64_t rt_spritebatch_count(void *batch_ptr) {
     spritebatch_impl *batch = spritebatch_checked_or_null(batch_ptr);
     if (!batch)
@@ -747,7 +858,9 @@ int64_t rt_spritebatch_count(void *batch_ptr) {
     return batch->count;
 }
 
-/// @brief Capacity the spritebatch.
+/// @brief Get the allocated command capacity.
+/// @param batch_ptr Candidate SpriteBatch handle.
+/// @return Number of command slots, or `0` for an invalid batch.
 int64_t rt_spritebatch_capacity(void *batch_ptr) {
     spritebatch_impl *batch = spritebatch_checked_or_null(batch_ptr);
     if (!batch)
@@ -755,7 +868,9 @@ int64_t rt_spritebatch_capacity(void *batch_ptr) {
     return batch->capacity;
 }
 
-/// @brief Is the active of the spritebatch.
+/// @brief Report whether the batch is recording commands.
+/// @param batch_ptr Candidate SpriteBatch handle.
+/// @return `1` after Begin and before a successful active End; otherwise `0`.
 int8_t rt_spritebatch_is_active(void *batch_ptr) {
     spritebatch_impl *batch = spritebatch_checked_or_null(batch_ptr);
     if (!batch)
@@ -767,7 +882,11 @@ int8_t rt_spritebatch_is_active(void *batch_ptr) {
 // SpriteBatch Settings
 //=============================================================================
 
-/// @brief Set the sort by depth of the spritebatch.
+/// @brief Enable or disable ascending depth sorting at End.
+/// @details Equal-depth commands preserve submission order. The setting persists
+///          across begin/end cycles and is sampled when End is called.
+/// @param batch_ptr Candidate SpriteBatch handle.
+/// @param enabled Zero for submission order; nonzero for depth order.
 void rt_spritebatch_set_sort_by_depth(void *batch_ptr, int8_t enabled) {
     spritebatch_impl *batch = spritebatch_checked_or_null(batch_ptr);
     if (!batch)
@@ -775,7 +894,10 @@ void rt_spritebatch_set_sort_by_depth(void *batch_ptr, int8_t enabled) {
     batch->sort_by_depth = enabled ? 1 : 0;
 }
 
-/// @brief Set the tint of the spritebatch.
+/// @brief Set the tint applied to every command at End.
+/// @param batch_ptr Candidate SpriteBatch handle.
+/// @param color Tint accepted by `rt_pixels_tint()`, or any negative value to
+///              disable tint.
 void rt_spritebatch_set_tint(void *batch_ptr, int64_t color) {
     spritebatch_impl *batch = spritebatch_checked_or_null(batch_ptr);
     if (!batch)
@@ -783,7 +905,9 @@ void rt_spritebatch_set_tint(void *batch_ptr, int64_t color) {
     batch->tint_color = spritebatch_normalize_tint(color);
 }
 
-/// @brief Set the alpha of the spritebatch.
+/// @brief Set the global alpha multiplier applied to every command at End.
+/// @param batch_ptr Candidate SpriteBatch handle.
+/// @param alpha Requested value, clamped to the inclusive range 0 through 255.
 void rt_spritebatch_set_alpha(void *batch_ptr, int64_t alpha) {
     spritebatch_impl *batch = spritebatch_checked_or_null(batch_ptr);
     if (!batch)
@@ -795,7 +919,10 @@ void rt_spritebatch_set_alpha(void *batch_ptr, int64_t alpha) {
     batch->alpha = alpha;
 }
 
-/// @brief Reset the settings of the spritebatch.
+/// @brief Restore submission order, no tint, and fully opaque global alpha.
+/// @details Queued commands, capacity, active state, and submission numbering
+///          are unchanged.
+/// @param batch_ptr Candidate SpriteBatch handle.
 void rt_spritebatch_reset_settings(void *batch_ptr) {
     spritebatch_impl *batch = spritebatch_checked_or_null(batch_ptr);
     if (!batch)

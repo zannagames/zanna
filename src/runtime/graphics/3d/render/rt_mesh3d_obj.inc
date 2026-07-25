@@ -3,6 +3,13 @@
 // File: src/runtime/graphics/3d/render/rt_mesh3d_obj.inc  (#included from rt_mesh3d.c; not a
 // standalone translation unit) Purpose: Mesh3D Wavefront OBJ loader and tangent computation
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements Wavefront OBJ parsing, face triangulation, grouping, and mesh tangents.
+/// @details This include fragment is compiled as part of `rt_mesh3d.c`. It converts locale-neutral
+///          OBJ text into deduplicated Mesh3D vertices, preserves material group splits when
+///          requested, fills missing normals, and computes tangent frames for normal mapping.
+
 /*==========================================================================
  * Wavefront OBJ loader (~300 LOC)
  *
@@ -28,6 +35,11 @@ typedef struct {
 } obj_face_vert_t;
 
 /// @brief Parse a signed decimal integer from `*p`, advancing `*p` past it.
+/// @details Empty optional fields at a slash or delimiter resolve to zero without consuming input.
+///          Magnitudes that would exceed `INT64_MAX` are rejected.
+/// @param p Address of the input cursor, updated to the first unconsumed byte.
+/// @param out Receives the parsed integer or zero for an empty optional field.
+/// @return One on success, or zero for malformed input or overflow.
 static int obj_parse_int(const char **p, int64_t *out) {
     const char *s = *p;
     int negative = 0;
@@ -69,6 +81,11 @@ static int obj_parse_int(const char **p, int64_t *out) {
 ///   - `v/vt/vn`   (all three)
 /// 1-based indices in the file (OBJ convention); negative values
 /// reference from the end of the current vertex list.
+/// @param p Address of the face-token cursor, advanced on success.
+/// @param vi Receives the required raw position index.
+/// @param ti Receives the optional raw texture-coordinate index, or zero when absent.
+/// @param ni Receives the optional raw normal index, or zero when absent.
+/// @return One for a syntactically valid nonzero position reference; otherwise zero.
 static int obj_parse_face_vert(const char **p, int64_t *vi, int64_t *ti, int64_t *ni) {
     const char *start = p ? *p : NULL;
     if (!p || !*p || !vi || !ti || !ni)
@@ -97,6 +114,9 @@ static int obj_parse_face_vert(const char **p, int64_t *vi, int64_t *ti, int64_t
 }
 
 /// @brief Parse a locale-independent ASCII double from `*p`, advancing `*p` past it.
+/// @param p Address of a cursor positioned before optional horizontal whitespace and a number.
+/// @param out Receives the finite parsed value.
+/// @return One on success, or zero when the token is malformed or non-finite.
 static int obj_parse_double(const char **p, double *out) {
     const char *end;
     while (**p == ' ' || **p == '\t')
@@ -115,6 +135,10 @@ static int obj_parse_double(const char **p, double *out) {
 ///   growth path.  Guards against INT_MAX/2 overflow on the new-capacity
 ///   integer and against SIZE_MAX overflow on the byte count before calling
 ///   realloc.  Returns 0 on any overflow or allocation failure.
+/// @param array Address of the owned float-array pointer, updated after successful growth.
+/// @param capacity Address of the element capacity, doubled on success.
+/// @param components Number of floats per logical element.
+/// @return One after successful growth, or zero for invalid input, overflow, or allocation failure.
 static int obj_grow_float_array(float **array, int *capacity, int components) {
     if (!array || !capacity || components <= 0)
         return 0;
@@ -151,6 +175,10 @@ typedef struct {
 ///   Knuth's golden-ratio constant and a Boost-style XOR-shift round to distribute low bits.
 ///   Collisions fall back to linear probing in the cache — any well-distributed hash works
 ///   here; this one was picked for speed and stability across platforms.
+/// @param vi Resolved position index.
+/// @param ti Resolved texture-coordinate index, or zero.
+/// @param ni Resolved normal index, or zero.
+/// @return Deterministic 64-bit hash for the complete OBJ vertex tuple.
 static uint64_t obj_hash_index_triplet(int64_t vi, int64_t ti, int64_t ni) {
     uint64_t h = 1469598103934665603ull;
     uint64_t values[3] = {(uint64_t)vi, (uint64_t)ti, (uint64_t)ni};
@@ -166,6 +194,9 @@ static uint64_t obj_hash_index_triplet(int64_t vi, int64_t ti, int64_t ni) {
 ///   slot wrap used by lookup/insert — the initial call sites in `rt_mesh3d_from_obj`
 ///   respect this by passing 1024, and `obj_vertex_cache_grow` doubles. Returns 1 on
 ///   success, 0 if the underlying calloc fails.
+/// @param cache Cache object to initialize.
+/// @param capacity Requested minimum entry capacity, rounded up to a power of two.
+/// @return One on success, or zero for invalid input, overflow, or allocation failure.
 static int obj_vertex_cache_init(obj_vertex_cache_t *cache, size_t capacity) {
     if (!cache)
         return 0;
@@ -192,6 +223,7 @@ static int obj_vertex_cache_init(obj_vertex_cache_t *cache, size_t capacity) {
 }
 
 /// @brief Release the entry array owned by an OBJ vertex cache; safe on an already-empty cache.
+/// @param cache Cache to clear; NULL is ignored.
 static void obj_vertex_cache_free(obj_vertex_cache_t *cache) {
     if (!cache)
         return;
@@ -206,6 +238,8 @@ static void obj_vertex_cache_free(obj_vertex_cache_t *cache) {
 ///   exceed 70 %. Growing early keeps the open-addressing probe chains short so lookup
 ///   stays close to O(1) even when a big OBJ file reuses the same vertex triplets
 ///   thousands of times. Returns 0 if the new allocation fails or capacity would overflow.
+/// @param cache Initialized cache to double and rehash.
+/// @return One on success, or zero for invalid state, overflow, or allocation failure.
 static int obj_vertex_cache_grow(obj_vertex_cache_t *cache) {
     obj_vertex_cache_t grown;
     size_t new_capacity;
@@ -239,6 +273,12 @@ static int obj_vertex_cache_grow(obj_vertex_cache_t *cache) {
 /// @details Returns 1 and writes the cached mesh-vertex index when found, 0 otherwise.
 ///   Probing stops at the first unused slot — matching the invariant maintained by
 ///   `obj_vertex_cache_insert` that entries are contiguous along their probe chain.
+/// @param cache Initialized deduplication cache.
+/// @param vi Resolved position index.
+/// @param ti Resolved texture-coordinate index, or zero.
+/// @param ni Resolved normal index, or zero.
+/// @param out_index Optional destination for the cached Mesh3D vertex index.
+/// @return One when the tuple is present; otherwise zero.
 static int obj_vertex_cache_lookup(
     const obj_vertex_cache_t *cache, int64_t vi, int64_t ti, int64_t ni, uint32_t *out_index) {
     if (!cache || !cache->entries || cache->capacity == 0)
@@ -263,6 +303,12 @@ static int obj_vertex_cache_lookup(
 ///   1 on success, 0 on allocation failure in grow (which propagates upward to fail the
 ///   OBJ import). Duplicate keys never reach this function — callers always do a lookup
 ///   first via `obj_get_or_add_mesh_vertex`.
+/// @param cache Initialized deduplication cache.
+/// @param vi Resolved position index.
+/// @param ti Resolved texture-coordinate index, or zero.
+/// @param ni Resolved normal index, or zero.
+/// @param mesh_index Mesh3D vertex index associated with the tuple.
+/// @return One after insertion, or zero when growth or probing cannot provide a slot.
 static int obj_vertex_cache_insert(
     obj_vertex_cache_t *cache, int64_t vi, int64_t ti, int64_t ni, uint32_t mesh_index) {
     if (!cache || !cache->entries)
@@ -291,6 +337,8 @@ static int obj_vertex_cache_insert(
 }
 
 /// @brief Store the first failing OBJ line number without overwriting an earlier cause.
+/// @param error_line Address of the zero-initialized first-error field; NULL is ignored.
+/// @param line_number One-based source line to record when no earlier line was stored.
 static void obj_record_error_line(uint64_t *error_line, uint64_t line_number) {
     if (error_line && *error_line == 0)
         *error_line = line_number;
@@ -302,6 +350,11 @@ static void obj_record_error_line(uint64_t *error_line, uint64_t line_number) {
 ///   accepted only when `allow_missing` is nonzero (used for optional UV/normal slots;
 ///   position is always required). Writes the resolved positive index into `*out` and
 ///   returns 1 on success, 0 on out-of-range or a missing-but-required zero.
+/// @param raw Raw OBJ index, which may be positive, negative, or zero.
+/// @param count Number of attributes defined at the point of reference.
+/// @param allow_missing Nonzero to accept zero as an absent optional attribute.
+/// @param out Receives a positive one-based absolute index or accepted missing zero.
+/// @return One on success, or zero for invalid destination, missing required data, or range error.
 static int obj_resolve_index(int64_t raw, int count, int allow_missing, int64_t *out) {
     int64_t resolved = raw;
     if (!out)
@@ -328,6 +381,18 @@ static int obj_resolve_index(int64_t raw, int count, int allow_missing, int64_t 
 ///   arrays, appends a new mesh vertex, records the mapping in the cache, and returns
 ///   the new index. Missing normal/UV indices (zero) emit a zeroed attribute — caller
 ///   recomputes normals via `rt_mesh3d_recalc_normals` if the file had none.
+/// @param mesh Destination Mesh3D under construction.
+/// @param cache Deduplication cache mapping resolved OBJ tuples to mesh vertices.
+/// @param positions Packed three-float OBJ position array.
+/// @param cnt_p Number of defined positions.
+/// @param normals Packed three-float OBJ normal array.
+/// @param cnt_n Number of defined normals.
+/// @param texcoords Packed two-float OBJ texture-coordinate array.
+/// @param cnt_t Number of defined texture coordinates.
+/// @param vi Resolved one-based position index.
+/// @param ti Resolved one-based texture-coordinate index, or zero.
+/// @param ni Resolved one-based normal index, or zero.
+/// @param out_index Optional destination for the reused or appended Mesh3D vertex index.
 /// @return 1 on success, 0 on any failure (cache full, vertex-count overflow, or
 ///         `rt_mesh3d_add_vertex` trapped).
 static int obj_get_or_add_mesh_vertex(void *mesh,
@@ -384,6 +449,12 @@ static int obj_get_or_add_mesh_vertex(void *mesh,
 /// formula.
 /// @details Its sign gives the polygon's winding in that projection, which the ear-clip uses to
 ///          orient inside/outside tests.
+/// @param mesh Mesh containing polygon positions.
+/// @param indices Ordered Mesh3D vertex indices around the face.
+/// @param count Number of polygon vertices.
+/// @param ax0 First coordinate axis retained in the projection.
+/// @param ax1 Second coordinate axis retained in the projection.
+/// @return Twice the signed projected polygon area.
 static double obj_projected_area2(
     const rt_mesh3d *mesh, const uint32_t *indices, int count, int ax0, int ax1) {
     double area = 0.0;
@@ -400,6 +471,11 @@ static double obj_projected_area2(
 /// @details Computes the polygon's Newell normal and drops the axis with the largest |normal|
 ///          component, keeping the projection that preserves the most area (avoids edge-on
 ///          degeneracy).
+/// @param mesh Mesh containing polygon positions.
+/// @param indices Ordered Mesh3D vertex indices around the face.
+/// @param count Number of polygon vertices.
+/// @param ax0 Receives the first retained coordinate axis.
+/// @param ax1 Receives the second retained coordinate axis.
 static void obj_choose_projection_axes(
     const rt_mesh3d *mesh, const uint32_t *indices, int count, int *ax0, int *ax1) {
     double normal[3] = {0.0, 0.0, 0.0};
@@ -425,6 +501,13 @@ static void obj_choose_projection_axes(
 
 /// @brief 2D orientation of points (ia, ib, ic) in the (@p ax0, @p ax1) projection.
 /// @details The signed cross product (b-a)×(c-a); >0 is CCW, <0 CW, ~0 collinear.
+/// @param mesh Mesh containing the indexed positions.
+/// @param ia First vertex index.
+/// @param ib Second vertex index.
+/// @param ic Third vertex index.
+/// @param ax0 First projection axis.
+/// @param ax1 Second projection axis.
+/// @return Signed projected two-edge cross product.
 static double obj_orient2(
     const rt_mesh3d *mesh, uint32_t ia, uint32_t ib, uint32_t ic, int ax0, int ax1) {
     double a[3], b[3], c[3];
@@ -444,6 +527,15 @@ static double obj_orient2(
 /// works
 ///          for either orientation); the 1e-12 epsilon excludes on-edge points so ears don't
 ///          overlap.
+/// @param mesh Mesh containing all indexed positions.
+/// @param p Candidate point index.
+/// @param a First triangle vertex index.
+/// @param b Second triangle vertex index.
+/// @param c Third triangle vertex index.
+/// @param ax0 First projection axis.
+/// @param ax1 Second projection axis.
+/// @param winding Positive one for counter-clockwise polygons or negative one for clockwise.
+/// @return Nonzero only when @p p lies strictly inside the projected triangle.
 static int obj_point_in_triangle2(const rt_mesh3d *mesh,
                                   uint32_t p,
                                   uint32_t a,
@@ -465,6 +557,9 @@ static int obj_point_in_triangle2(const rt_mesh3d *mesh,
 /// valid
 ///          ear (a convex corner whose triangle contains no other vertex), emitting one triangle
 ///          each step. A guard counter bounds the loop against degenerate/self-intersecting faces.
+/// @param mesh_obj Destination Mesh3D under construction.
+/// @param mesh_indices Ordered Mesh3D vertex indices for the face.
+/// @param face_count Number of vertices in the face.
 /// @return Non-zero on success; 0 if the face is invalid or a triangle add failed.
 static int obj_triangulate_face(void *mesh_obj, const uint32_t *mesh_indices, int face_count) {
     rt_mesh3d *mesh = (rt_mesh3d *)mesh_obj;
@@ -627,7 +722,7 @@ static int obj_triangulate_face(void *mesh_obj, const uint32_t *mesh_indices, in
 ///
 ///          Allocates two transient float buffers (`tan1`, `tan2`) sized to the
 ///          vertex count; both are freed before returning. No-op on empty meshes.
-/// @param obj Mesh whose `tangent[4]` slot on every vertex gets written in place.
+/// @param m Mesh whose `tangent[4]` slot on every vertex gets written in place; NULL is ignored.
 void rt_mesh3d_calc_tangents_impl(rt_mesh3d *m) {
     if (!m)
         return;
@@ -767,6 +862,7 @@ void rt_mesh3d_calc_tangents_impl(rt_mesh3d *m) {
 /// @brief Recompute per-vertex tangents for the mesh (used by normal/parallax mapping).
 /// @details Validates the handle and delegates to the implementation, which derives tangents from
 ///          positions and UVs and falls back to a normal-derived tangent on degenerate UVs.
+/// @param obj Mesh3D receiver; invalid handles are ignored.
 void rt_mesh3d_calc_tangents(void *obj) {
     rt_mesh3d_calc_tangents_impl(mesh3d_checked(obj));
 }
@@ -781,6 +877,12 @@ void rt_mesh3d_calc_tangents(void *obj) {
 ///   trailing newline if present. Returns 1 for a successful read, 0 on
 ///   end-of-file with no trailing newline, -1 on allocation failure, or -2
 ///   when the line exceeds @p max_bytes.
+/// @param f Open binary stream to read.
+/// @param line Address of the reusable owned line buffer.
+/// @param cap Address of the current buffer capacity, updated after growth.
+/// @param max_bytes Hard maximum buffer/line size including termination space.
+/// @return One for a line, zero for clean EOF, negative one for invalid input or allocation
+///         failure, or negative two when the line exceeds @p max_bytes.
 static int mesh3d_read_text_line(FILE *f, char **line, size_t *cap, size_t max_bytes) {
     size_t len = 0;
     int ch;
@@ -831,6 +933,13 @@ static int mesh3d_read_text_line(FILE *f, char **line, size_t *cap, size_t max_b
 ///   growing the array as needed. Matches the v/vn/vt directive semantics: all
 ///   components are parsed, then range-checked, then stored. Returns 1 on success,
 ///   0 on a parse, overflow, or non-finite-value failure.
+/// @param p Address of the source-line cursor.
+/// @param array Address of the packed float attribute array, updated if it grows.
+/// @param cnt Address of the logical attribute count, incremented on success.
+/// @param cap Address of the logical capacity, updated after growth.
+/// @param components Number of components to parse and store for this directive.
+/// @return One on success, or zero for malformed values, range error, overflow, or allocation
+///         failure.
 static int obj_parse_float_attrib(
     const char **p, float **array, int *cnt, int *cap, int components) {
     if (*cnt >= *cap) {
@@ -857,6 +966,17 @@ static int obj_parse_float_attrib(
 ///   Sets *out_missing_normals when any vertex lacked a normal. Returns 1 to keep
 ///   parsing (including faces skipped for having < 3 vertices), 0 on a fatal
 ///   parse/allocation failure.
+/// @param p Cursor immediately after the OBJ face directive.
+/// @param mesh Destination Mesh3D under construction.
+/// @param vertex_cache Per-mesh OBJ tuple deduplication cache.
+/// @param positions Packed three-float position array.
+/// @param cnt_p Number of defined positions.
+/// @param normals Packed three-float normal array.
+/// @param cnt_n Number of defined normals.
+/// @param texcoords Packed two-float texture-coordinate array.
+/// @param cnt_t Number of defined texture coordinates.
+/// @param out_missing_normals Sticky output set when a face omits a normal index.
+/// @return One when parsing may continue, or zero on a fatal face, allocation, or mesh-build error.
 static int obj_parse_face_line(const char *p,
                                void *mesh,
                                obj_vertex_cache_t *vertex_cache,
@@ -975,6 +1095,22 @@ static int obj_parse_face_line(const char *p,
 /// @brief Parse an opened OBJ stream into `mesh`, accumulating v/vn/vt into the temp
 ///   arrays (grown in place) and emitting de-duplicated faces. Extracted parse loop of
 ///   rt_mesh3d_from_obj; owns the line buffer. Sets *p_parse_failed on malformed input.
+/// @param f Open OBJ stream.
+/// @param mesh Destination Mesh3D under construction.
+/// @param vertex_cache Per-mesh OBJ tuple deduplication cache.
+/// @param p_positions Address of the owned packed position array.
+/// @param p_cnt_p Address of the position count.
+/// @param p_cap_p Address of the position capacity.
+/// @param p_normals Address of the owned packed normal array.
+/// @param p_cnt_n Address of the normal count.
+/// @param p_cap_n Address of the normal capacity.
+/// @param p_texcoords Address of the owned packed texture-coordinate array.
+/// @param p_cnt_t Address of the texture-coordinate count.
+/// @param p_cap_t Address of the texture-coordinate capacity.
+/// @param p_parse_failed Sticky malformed-input or allocation failure output.
+/// @param p_missing_normals Sticky output indicating at least one omitted normal.
+/// @param p_line_too_long Optional sticky output for the line-size limit.
+/// @param p_error_line Optional first-failing one-based line number.
 static void obj_parse_into_mesh(FILE *f,
                                 void *mesh,
                                 obj_vertex_cache_t *vertex_cache,
@@ -1217,6 +1353,8 @@ typedef struct {
 
 /// @brief Free an array of in-progress OBJ group builders: each group's material name, vertex
 ///   cache, and partially built mesh, then the array.
+/// @param groups Owned builder array; NULL is accepted.
+/// @param count Number of initialized entries to release.
 static void obj_group_builders_free(obj_group_builder_t *groups, int32_t count) {
     if (!groups)
         return;
@@ -1233,6 +1371,8 @@ static void obj_group_builders_free(obj_group_builder_t *groups, int32_t count) 
 
 /// @brief Free an array of OBJ mesh groups (each group's material name and Mesh3D) plus the
 ///   array itself. Pairs with rt_mesh3d_from_obj_groups.
+/// @param groups Owned public group array; NULL is accepted.
+/// @param count Number of initialized groups to release.
 void rt_mesh3d_obj_groups_free(rt_mesh3d_obj_group_t *groups, int32_t count) {
     if (!groups)
         return;
@@ -1248,6 +1388,8 @@ void rt_mesh3d_obj_groups_free(rt_mesh3d_obj_group_t *groups, int32_t count) {
 
 /// @brief Copy an OBJ/MTL directive's value with surrounding whitespace trimmed; NULL on
 ///   allocation failure.
+/// @param p Nullable directive-value text.
+/// @return Newly allocated NUL-terminated trimmed value, or NULL on allocation failure.
 static char *obj_copy_directive_value(const char *p) {
     const char *start;
     const char *end;
@@ -1271,6 +1413,8 @@ static char *obj_copy_directive_value(const char *p) {
 }
 
 /// @brief Copy one OBJ directive token, honoring single or double quotes for names with spaces.
+/// @param p Nullable cursor before optional whitespace and a token.
+/// @return Newly allocated token, or NULL for an unterminated quote or allocation failure.
 static char *obj_copy_directive_token(const char *p) {
     const char *start;
     const char *end;
@@ -1315,6 +1459,11 @@ static char *obj_copy_directive_token(const char *p) {
 
 /// @brief Find the OBJ group builder for @p material_name, or create one (with a fresh mesh
 ///   and vertex cache) and append it, growing the array as needed.
+/// @param groups Address of the owned builder-array pointer.
+/// @param count Address of the initialized builder count.
+/// @param capacity Address of the builder-array capacity.
+/// @param material_name Nullable material name used as the group key.
+/// @param out_group Receives the existing or newly initialized builder.
 /// @return 1 with @p out_group set, 0 on allocation failure.
 static int obj_group_find_or_create(obj_group_builder_t **groups,
                                     int32_t *count,
@@ -1369,6 +1518,10 @@ static int obj_group_find_or_create(obj_group_builder_t **groups,
 
 /// @brief Move the finished meshes and material names from the internal @p builders into a
 ///   newly allocated public group array (@p out_groups / @p out_count), transferring ownership.
+/// @param builders Owned internal builder array.
+/// @param builder_count Number of initialized builders to transfer.
+/// @param out_groups Receives the newly allocated public group array.
+/// @param out_count Receives the number of transferred groups.
 /// @return 1 on success, 0 on allocation failure.
 static int obj_groups_transfer(obj_group_builder_t *builders,
                                int32_t builder_count,
@@ -1402,6 +1555,18 @@ static int obj_groups_transfer(obj_group_builder_t *builders,
 ///   vertices, resolves and emits/reuses mesh vertices, then ear-clip
 ///   triangulates. Returns 1 to keep parsing (including < 3-vertex faces, which
 ///   are skipped), 0 on a fatal parse/allocation failure.
+/// @param p Cursor immediately after the OBJ face directive.
+/// @param groups Address of the owned material-group builder array.
+/// @param group_count Address of the initialized group count.
+/// @param group_capacity Address of the group-array capacity.
+/// @param current_material Current `usemtl` name used to select or create the destination group.
+/// @param positions Packed three-float position array.
+/// @param cnt_p Number of defined positions.
+/// @param normals Packed three-float normal array.
+/// @param cnt_n Number of defined normals.
+/// @param texcoords Packed two-float texture-coordinate array.
+/// @param cnt_t Number of defined texture coordinates.
+/// @return One when parsing may continue, or zero on a fatal face, allocation, or mesh-build error.
 static int obj_parse_face_line_grouped(const char *p,
                                        obj_group_builder_t **groups,
                                        int32_t *group_count,
@@ -1512,6 +1677,12 @@ static int obj_parse_face_line_grouped(const char *p,
 ///   groups, recompute or backfill missing normals, and compact survivors to the
 ///   front of `groups`. Returns the surviving group count; sets *p_parse_failed if
 ///   any group's geometry build failed.
+/// @param groups Builder array to finalize and compact in place.
+/// @param group_count Number of initialized builders.
+/// @param cnt_n Total number of OBJ normals, used to detect files without authored normals.
+/// @param p_parse_failed Address of the sticky parse-failure flag.
+/// @return Surviving group count on success, or the original count when failure requires full
+///         cleanup.
 static int32_t obj_finalize_groups(obj_group_builder_t *groups,
                                    int32_t group_count,
                                    int cnt_n,
@@ -1552,6 +1723,9 @@ static int32_t obj_finalize_groups(obj_group_builder_t *groups,
 
 /// @brief Parse the Wavefront OBJ file at @p path into one Mesh3D per material, returned via
 ///   @p out_groups / @p out_count (caller frees with rt_mesh3d_obj_groups_free).
+/// @param path Runtime string naming the OBJ file.
+/// @param out_groups Receives an owned array of material-name and Mesh3D pairs.
+/// @param out_count Receives the number of groups in @p out_groups.
 /// @return 1 on success, 0 on open/parse/allocation failure.
 int rt_mesh3d_from_obj_groups(rt_string path,
                               rt_mesh3d_obj_group_t **out_groups,

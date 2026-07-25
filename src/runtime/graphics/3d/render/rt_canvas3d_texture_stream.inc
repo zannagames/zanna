@@ -26,6 +26,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements draw-driven TextureAsset3D mip-residency streaming for Canvas3D.
+/// @details Per-frame projected-size demand is aggregated by stable asset identity,
+///   then applied on the next frame's first material touch with immediate promotion
+///   and deliberately hysteretic one-level demotion.
+
 /* Consecutive decision frames a lower-resolution demand must hold before one
  * mip level is dropped (~0.5 s at 60 FPS). Promotions are immediate. */
 #define CANVAS3D_TEXTURE_STREAM_DEMOTE_FRAMES 30
@@ -45,6 +51,9 @@ typedef struct {
 } canvas3d_texture_stream_entry_t;
 
 /// @brief Find the table slot for @p identity, or the empty slot to insert into.
+/// @param entries Open-addressed entry array.
+/// @param capacity Positive power-of-two number of slots in @p entries.
+/// @param identity Nonzero stable asset identity to find.
 /// @return Slot pointer, or NULL when the table has no capacity.
 static canvas3d_texture_stream_entry_t *
 canvas3d_texture_stream_slot(canvas3d_texture_stream_entry_t *entries,
@@ -64,6 +73,10 @@ canvas3d_texture_stream_slot(canvas3d_texture_stream_entry_t *entries,
 }
 
 /// @brief Grow the streaming table, dropping entries stale for many frames.
+/// @details Rehashes live identities into a zeroed power-of-two table, retaining
+///   only entries touched or demanded within the configured stale-frame window.
+///   The old table remains owned until replacement allocation succeeds.
+/// @param c Valid canvas owning the table, live count, and current frame serial.
 /// @return 1 on success, 0 when allocation fails (streaming quietly degrades).
 static int canvas3d_texture_stream_grow(rt_canvas3d *c) {
     canvas3d_texture_stream_entry_t *old_entries =
@@ -103,6 +116,11 @@ static int canvas3d_texture_stream_grow(rt_canvas3d *c) {
 }
 
 /// @brief Look up (creating on demand) the streaming entry for @p identity.
+/// @details Creation grows at a three-quarter load threshold, initializes
+///   demand state, and increments the canvas live-entry count.
+/// @param c Canvas owning the streaming table.
+/// @param identity Nonzero stable texture-asset cache identity.
+/// @param create Nonzero to insert a missing entry; zero for lookup only.
 /// @return Entry pointer, or NULL when @p identity is 0 or allocation fails.
 static canvas3d_texture_stream_entry_t *
 canvas3d_texture_stream_entry(rt_canvas3d *c, uint64_t identity, int create) {
@@ -146,6 +164,10 @@ canvas3d_texture_stream_entry(rt_canvas3d *c, uint64_t identity, int create) {
 ///          row's 3-vector norm equals the projection's [1][1] term for both
 ///          perspective and orthographic cameras, independent of any
 ///          camera-relative rebasing applied to model matrices.
+/// @param c Canvas supplying cached camera, projection, and output dimensions.
+/// @param model_matrix Sixteen-element row-major local-to-world matrix.
+/// @param bounds_min Three-element local-space minimum AABB corner.
+/// @param bounds_max Three-element local-space maximum AABB corner.
 /// @return Projected diameter in pixels, or DBL_MAX when it cannot be
 ///         estimated (callers then keep full resolution — the safe default).
 static double canvas3d_texture_stream_projected_px(const rt_canvas3d *c,
@@ -222,6 +244,11 @@ static double canvas3d_texture_stream_projected_px(const rt_canvas3d *c,
 ///          plus the canvas bias, clamped to the asset's mip chain. Assets
 ///          below the streaming minimum dimension or without a mip chain
 ///          always want mip 0.
+/// @param c Canvas supplying the finite-or-fallback streaming bias.
+/// @param asset Borrowed TextureAsset3D native handle queried for dimensions and mip count.
+/// @param projected_px Estimated on-screen diameter in pixels; nonfinite values
+///   conservatively request full resolution.
+/// @return First desired resident mip, clamped from zero through the final mip.
 static int32_t canvas3d_texture_stream_desired_mip(const rt_canvas3d *c,
                                                    void *asset,
                                                    double projected_px) {
@@ -250,6 +277,12 @@ static int32_t canvas3d_texture_stream_desired_mip(const rt_canvas3d *c,
 }
 
 /// @brief First-touch-per-frame decision: apply the last frame's aggregated demand.
+/// @details Each asset is decided at most once per canvas frame. Higher-resolution
+///   demand promotes immediately; lower-resolution demand advances a consecutive
+///   streak and demotes by one level only after the threshold. Draw gaps reset the
+///   streak, and the accumulator is prepared for the current frame after decision.
+/// @param c Canvas containing streaming history and the current frame serial.
+/// @param asset Borrowed TextureAsset3D handle; `NULL` is ignored.
 /// @return 1 when the asset's resident window changed, 0 otherwise.
 static int canvas3d_texture_stream_touch(rt_canvas3d *c, void *asset) {
     canvas3d_texture_stream_entry_t *entry;
@@ -308,6 +341,13 @@ static int canvas3d_texture_stream_touch(rt_canvas3d *c, void *asset) {
 }
 
 /// @brief Record one draw's desired mip for @p asset in this frame's aggregate.
+/// @details Keeps the smallest desired mip observed for the asset because that
+///   represents the highest detail required by any draw. Already-full-resident
+///   assets with full-resolution demand do not create unnecessary table entries.
+/// @param c Canvas owning the per-identity demand table.
+/// @param asset Borrowed TextureAsset3D handle; `NULL` is ignored.
+/// @param projected_px Draw coverage estimate in pixels, or a conservative
+///   full-resolution sentinel.
 static void canvas3d_texture_stream_demand(rt_canvas3d *c, void *asset, double projected_px) {
     canvas3d_texture_stream_entry_t *entry;
     uint64_t identity;
@@ -340,6 +380,9 @@ static void canvas3d_texture_stream_demand(rt_canvas3d *c, void *asset, double p
 /// @brief Apply pending streaming decisions for every TextureAsset3D a material binds.
 /// @details Must run before canvas3d_fill_material_cmd so the draw command's
 ///          residency snapshot captures any window applied this frame.
+/// @param c Canvas whose streaming mode and frame state are inspected.
+/// @param mat Borrowed material whose six supported texture slots are resolved;
+///   null, disabled, and 2D-frame calls are ignored.
 static void canvas3d_texture_stream_touch_material(rt_canvas3d *c, const rt_material3d *mat) {
     if (!c || !c->texture_stream_enabled || c->frame_is_2d || !mat)
         return;
@@ -355,6 +398,12 @@ static void canvas3d_texture_stream_touch_material(rt_canvas3d *c, const rt_mate
 }
 
 /// @brief Record the frame's texel demand for every asset a filled draw command binds.
+/// @param c Canvas owning demand aggregation and cached camera state.
+/// @param cmd Borrowed filled draw command containing model state and native assets.
+/// @param bounds_min Three-element local-space minimum bound; invalid bounds
+///   trigger the conservative full-resolution estimate.
+/// @param bounds_max Three-element local-space maximum bound; invalid bounds
+///   trigger the conservative full-resolution estimate.
 static void canvas3d_texture_stream_record_cmd(rt_canvas3d *c,
                                                const vgfx3d_draw_cmd_t *cmd,
                                                const float *bounds_min,
@@ -376,6 +425,8 @@ static void canvas3d_texture_stream_record_cmd(rt_canvas3d *c,
 /// @details Instanced batches share one command but span many transforms, so
 ///          streaming keeps their textures at full resolution rather than
 ///          risking a visibly soft near instance.
+/// @param c Canvas owning demand aggregation.
+/// @param cmd Borrowed filled instanced draw command and its native asset slots.
 static void canvas3d_texture_stream_record_cmd_full(rt_canvas3d *c,
                                                     const vgfx3d_draw_cmd_t *cmd) {
     if (!c || !c->texture_stream_enabled || c->frame_is_2d || !cmd)
@@ -394,6 +445,9 @@ static void canvas3d_texture_stream_record_cmd_full(rt_canvas3d *c,
 ///          SetResidentMipRange calls at the asset's next draw. Disabling
 ///          stops further window changes but does not restore prior windows;
 ///          call SetResidentMipRange to pin a window afterwards.
+/// @param obj Canvas3D receiver or supported stack-wrapper handle; invalid
+///   receivers are ignored.
+/// @param enabled Nonzero to enable automatic decisions, zero to stop them.
 void rt_canvas3d_set_texture_streaming(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -405,6 +459,9 @@ void rt_canvas3d_set_texture_streaming(void *obj, int8_t enabled) {
 /// @details Applied after the screen-coverage estimate and before clamping to
 ///          the mip chain; fractional values act as a soft threshold shift.
 ///          Non-finite inputs reset the bias to 0. Clamped to [-16, 16].
+/// @param obj Canvas3D receiver or supported stack-wrapper handle; invalid
+///   receivers are ignored.
+/// @param bias Desired mip offset; positive values favor lower resolution.
 void rt_canvas3d_set_texture_streaming_bias(void *obj, double bias) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -419,6 +476,8 @@ void rt_canvas3d_set_texture_streaming_bias(void *obj, double bias) {
 }
 
 /// @brief Lifetime count of resident-window demotions applied by streaming.
+/// @param obj Canvas3D receiver or supported stack-wrapper handle.
+/// @return Saturation-unchecked cumulative demotion count, or zero for an invalid receiver.
 int64_t rt_canvas3d_get_texture_streaming_demotions(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->texture_stream_demotions : 0;

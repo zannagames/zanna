@@ -20,6 +20,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file vgfx3d_skinning.c
+ * @brief Implements defensive CPU linear-blend skinning for Graphics3D vertices.
+ *
+ * Vertices may use four inline influences and four optional side-stream influences. Position
+ * transforms use full affine bone matrices, while normals and tangents use inverse-transpose
+ * matrices and are normalized after blending. Optional grow-only scratch buffers cache per-bone
+ * validity and normal matrices; allocation failure falls back to equivalent per-influence work.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "vgfx3d_skinning.h"
@@ -30,10 +40,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// Maximum accepted individual influence weight before normalization.
 #define VGFX3D_SKIN_WEIGHT_MAX 1000000.0
+/// Number of bone indices representable by the vertex format's eight-bit fields.
 #define VGFX3D_SKIN_INDEX_RANGE 256
 
 /// @brief Release all owned skinning scratch buffers.
+/// @param scratch Mutable caller-owned scratch state; null is a no-op. The structure remains valid
+///                and reset for later reuse.
 void vgfx3d_skinning_scratch_free(vgfx3d_skinning_scratch_t *scratch) {
     if (!scratch)
         return;
@@ -47,6 +61,10 @@ void vgfx3d_skinning_scratch_free(vgfx3d_skinning_scratch_t *scratch) {
 }
 
 /// @brief Ensure @p scratch can hold one validity flag per effective bone.
+/// @param scratch Mutable caller-owned grow-only scratch state.
+/// @param bone_count Positive effective bone count.
+/// @return Pointer to at least @p bone_count writable flags, or null for invalid input or allocation
+///         failure.
 static uint8_t *skin_ensure_bone_valid_scratch(vgfx3d_skinning_scratch_t *scratch,
                                                int32_t bone_count) {
     uint8_t *grown;
@@ -63,6 +81,8 @@ static uint8_t *skin_ensure_bone_valid_scratch(vgfx3d_skinning_scratch_t *scratc
 }
 
 /// @brief Clamp a bone count to the usable skinning range [0, VGFX3D_SKIN_INDEX_RANGE].
+/// @param bone_count Caller-provided palette size.
+/// @return Effective count in `[0, VGFX3D_SKIN_INDEX_RANGE]`.
 static int32_t skin_effective_bone_count(int32_t bone_count) {
     if (bone_count <= 0)
         return 0;
@@ -70,6 +90,10 @@ static int32_t skin_effective_bone_count(int32_t bone_count) {
 }
 
 /// @brief Ensure @p scratch can hold one normal matrix per effective bone.
+/// @param scratch Mutable caller-owned grow-only scratch state.
+/// @param bone_count Positive effective bone count.
+/// @return Pointer to storage for at least `bone_count * 16` floats, or null for invalid input,
+///         overflow, or allocation failure.
 static float *skin_ensure_normal_palette_scratch(vgfx3d_skinning_scratch_t *scratch,
                                                  int32_t bone_count) {
     float *grown;
@@ -90,6 +114,8 @@ static float *skin_ensure_normal_palette_scratch(vgfx3d_skinning_scratch_t *scra
 }
 
 /// @brief True only if all 16 elements of a 4×4 matrix are finite (NULL matrix returns false).
+/// @param m Borrowed 16-element matrix.
+/// @return Non-zero when @p m is non-null and every element is finite.
 static int skin_matrix4_is_finite(const float *m) {
     if (!m)
         return 0;
@@ -101,17 +127,25 @@ static int skin_matrix4_is_finite(const float *m) {
 }
 
 /// @brief True if a 3-vector is non-NULL and all three lanes are finite.
+/// @param v Borrowed three-component double-precision vector.
+/// @return Non-zero when @p v is non-null and all components are finite.
 static int skin_vec3_is_usable(const double v[3]) {
     return v && isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]);
 }
 
 /// @brief Return @p value when finite, else @p fallback.
+/// @param value Preferred value.
+/// @param fallback Replacement returned when @p value is non-finite.
+/// @return @p value when finite, otherwise @p fallback.
 static float skin_finite_float_or(float value, float fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Convert a bone weight to a clamped double, returning 0 for non-finite or negligible
 ///   (≤1e-6) weights so the caller skips them.
+/// @param value Source influence weight.
+/// @return Zero for a skipped influence, otherwise a positive value no greater than
+///         @c VGFX3D_SKIN_WEIGHT_MAX.
 static double skin_weight_or_skip(float value) {
     double w;
     if (!isfinite(value) || value <= 1e-6f)
@@ -122,6 +156,7 @@ static double skin_weight_or_skip(float value) {
 
 /// @brief Finite-guard a skinned vertex in place: scrub position/normal/tangent/UV lanes, clamp
 ///   bone weights to [0, max], and normalize the tangent handedness sign to ±1.
+/// @param v Mutable vertex to sanitize; null is a no-op.
 static void skin_sanitize_vertex(vgfx3d_vertex_t *v) {
     if (!v)
         return;
@@ -148,6 +183,9 @@ static void skin_sanitize_vertex(vgfx3d_vertex_t *v) {
 
 /// @brief Normalize a 3-vector and store it as floats in @p out; returns 0 (leaving @p out
 ///   unset) when the input is unusable or of ~zero length.
+/// @param in Mutable double-precision vector normalized in place.
+/// @param out Caller-owned three-float destination, written only for a usable normalized vector.
+/// @return Non-zero when normalization and finite float conversion succeed, otherwise zero.
 static int skin_store_normalized_vec3(double in[3], float out[3]) {
     double len2;
     double inv_len;
@@ -188,6 +226,7 @@ static int skin_store_normalized_vec3(double in[3], float out[3]) {
 /// @param palette Row-major 4x4 matrix palette laid out as `bone_count` matrices
 ///   stored back-to-back (16 floats per matrix).
 /// @param bone_count Upper bound on valid indices in `palette`.
+/// @param scratch Optional caller-owned grow-only cache for normal matrices and bone-validity flags.
 void vgfx3d_skin_vertices(const vgfx3d_vertex_t *src,
                           vgfx3d_vertex_t *dst,
                           uint32_t vertex_count,
@@ -197,6 +236,19 @@ void vgfx3d_skin_vertices(const vgfx3d_vertex_t *src,
     vgfx3d_skin_vertices_extra(src, dst, vertex_count, palette, bone_count, NULL, scratch);
 }
 
+/// @brief Apply CPU linear-blend skinning with up to eight influences per vertex.
+/// @details The first four influences come from each @p src vertex and the optional @p extra
+///          side stream supplies influences five through eight. Usable weights are normalized by
+///          their accumulated sum; invalid matrices, out-of-range indices, and negligible weights
+///          are skipped. Positions use affine matrices, normals and tangents use normal matrices,
+///          and all other sanitized attributes pass through. In-place operation is supported.
+/// @param src Borrowed source array of @p vertex_count vertices.
+/// @param dst Caller-owned destination array of @p vertex_count vertices; may equal @p src.
+/// @param vertex_count Number of vertices and, when present, side-stream entries to process.
+/// @param palette Borrowed row-major palette containing @p bone_count consecutive 4×4 matrices.
+/// @param bone_count Palette size, clamped to the 256 indices representable by vertex records.
+/// @param extra Optional borrowed array containing four additional influences per vertex.
+/// @param scratch Optional caller-owned grow-only cache for normal matrices and bone-validity flags.
 void vgfx3d_skin_vertices_extra(const vgfx3d_vertex_t *src,
                                 vgfx3d_vertex_t *dst,
                                 uint32_t vertex_count,

@@ -29,6 +29,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic, composable preset behaviors for Game3D entities.
+/// @details Behavior3D stores a fixed flag set and parameters for spin, orbit, sine motion,
+///   targeting, chase, path following, navigation, and lifetime. Presets execute in a stable order
+///   before physics and binding synchronization so same-step consumers observe their mutations.
+
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
 #include "rt_graphics3d_ids.h"
@@ -108,6 +114,9 @@ typedef struct rt_game3d_behavior {
 } rt_game3d_behavior;
 
 /// @brief Class-checked cast to a Behavior3D (traps with @p method on mismatch).
+/// @param obj Candidate Behavior3D handle.
+/// @param method Trap message emitted when @p obj has the wrong runtime class.
+/// @return The validated behavior, or NULL after reporting an invalid handle.
 static rt_game3d_behavior *game3d_behavior_checked(void *obj, const char *method) {
     rt_game3d_behavior *behavior =
         (rt_game3d_behavior *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_BEHAVIOR3D_CLASS_ID);
@@ -117,6 +126,7 @@ static rt_game3d_behavior *game3d_behavior_checked(void *obj, const char *method
 }
 
 /// @brief GC finalizer: release retained collaborator references.
+/// @param obj Behavior3D allocation being finalized.
 static void game3d_behavior_finalize(void *obj) {
     rt_game3d_behavior *behavior = (rt_game3d_behavior *)obj;
     if (!behavior)
@@ -128,6 +138,7 @@ static void game3d_behavior_finalize(void *obj) {
 }
 
 /// @brief Create an empty behavior; add presets with the fluent Add* methods.
+/// @return A new zero-initialized Behavior3D, or NULL when allocation fails.
 void *rt_game3d_behavior_new(void) {
     rt_game3d_behavior *behavior = (rt_game3d_behavior *)rt_obj_new_i64(
         RT_G3D_GAME3D_BEHAVIOR3D_CLASS_ID, (int64_t)sizeof(rt_game3d_behavior));
@@ -144,6 +155,12 @@ void *rt_game3d_behavior_new(void) {
 }
 
 /// @brief Fluent: continuous rotation about an axis at @p deg_per_sec.
+/// @param obj Behavior3D to configure.
+/// @param axis_x X component of the non-zero rotation axis.
+/// @param axis_y Y component of the non-zero rotation axis.
+/// @param axis_z Z component of the non-zero rotation axis.
+/// @param deg_per_sec Signed angular velocity in degrees per second.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_behavior_add_spin(
     void *obj, double axis_x, double axis_y, double axis_z, double deg_per_sec) {
     rt_game3d_behavior *behavior =
@@ -170,6 +187,13 @@ void *rt_game3d_behavior_add_spin(
 }
 
 /// @brief Fluent: circular orbit in the XZ plane around a world-space center.
+/// @param obj Behavior3D to configure.
+/// @param center_x World-space X coordinate of the orbit center.
+/// @param center_y World-space Y coordinate retained throughout the orbit.
+/// @param center_z World-space Z coordinate of the orbit center.
+/// @param radius Non-negative orbit radius in world units.
+/// @param deg_per_sec Signed angular velocity in degrees per second.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_behavior_add_orbit(void *obj,
                                    double center_x,
                                    double center_y,
@@ -196,6 +220,10 @@ void *rt_game3d_behavior_add_orbit(void *obj,
 }
 
 /// @brief Fluent: vertical sine bobbing around the entity's height at attach time.
+/// @param obj Behavior3D to configure.
+/// @param amplitude Signed vertical displacement amplitude in local units.
+/// @param speed Phase advance in radians per second.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_behavior_add_sine_float(void *obj, double amplitude, double speed) {
     rt_game3d_behavior *behavior =
         game3d_behavior_checked(obj, "Game3D.Behavior3D.addSineFloat: invalid behavior");
@@ -214,6 +242,9 @@ void *rt_game3d_behavior_add_sine_float(void *obj, double amplitude, double spee
 }
 
 /// @brief Fluent: yaw the entity so its forward (-Z) axis points at the target entity.
+/// @param obj Behavior3D to configure.
+/// @param target_entity Entity3D whose live world position drives the yaw.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_behavior_add_face_target(void *obj, void *target_entity) {
     rt_game3d_behavior *behavior =
         game3d_behavior_checked(obj, "Game3D.Behavior3D.addFaceTarget: invalid behavior");
@@ -234,6 +265,9 @@ void *rt_game3d_behavior_add_face_target(void *obj, void *target_entity) {
 ///   trap-volume style C fixtures) can exercise cross-entity registry
 ///   compaction while an entity sweep is in flight — the failure mode the
 ///   stamped sweep in game3d_world_sweep_entities guards against.
+/// @param obj Behavior3D to configure.
+/// @param target_entity Entity3D to despawn once on the next behavior update.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_behavior_add_despawn_target_internal(void *obj, void *target_entity) {
     rt_game3d_behavior *behavior =
         game3d_behavior_checked(obj, "Game3D.Behavior3D.addDespawnTarget: invalid behavior");
@@ -252,6 +286,11 @@ void *rt_game3d_behavior_add_despawn_target_internal(void *obj, void *target_ent
 /// @details With a bound NavAgent3D (SetNavAgent) the chase routes through the
 ///   navigation mesh; otherwise the entity steers straight toward the target
 ///   in the XZ plane at @p speed.
+/// @param obj Behavior3D to configure.
+/// @param target_entity Entity3D whose live world position is chased.
+/// @param speed Non-negative movement speed in world units per second.
+/// @param range Non-negative stopping radius around the target.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_behavior_add_chase(void *obj, void *target_entity, double speed, double range) {
     rt_game3d_behavior *behavior =
         game3d_behavior_checked(obj, "Game3D.Behavior3D.addChase: invalid behavior");
@@ -273,6 +312,11 @@ void *rt_game3d_behavior_add_chase(void *obj, void *target_entity, double speed,
 }
 
 /// @brief Fluent: follow a Path3D at constant speed (looping or one-shot).
+/// @param obj Behavior3D to configure.
+/// @param path Path3D retained as the world-space trajectory.
+/// @param speed Non-negative distance advanced per simulation second.
+/// @param loop Non-zero to wrap at the path length; zero to stop at the end.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_behavior_add_follow_path(void *obj, void *path, double speed, int8_t loop) {
     rt_game3d_behavior *behavior =
         game3d_behavior_checked(obj, "Game3D.Behavior3D.addFollowPath: invalid behavior");
@@ -295,6 +339,9 @@ void *rt_game3d_behavior_add_follow_path(void *obj, void *path, double speed, in
 }
 
 /// @brief Fluent: despawn the entity after @p seconds of simulation time.
+/// @param obj Behavior3D to configure.
+/// @param seconds Non-negative simulated lifetime.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_behavior_add_lifetime(void *obj, double seconds) {
     rt_game3d_behavior *behavior =
         game3d_behavior_checked(obj, "Game3D.Behavior3D.addLifetime: invalid behavior");
@@ -310,6 +357,9 @@ void *rt_game3d_behavior_add_lifetime(void *obj, double seconds) {
 }
 
 /// @brief Fluent: route chase movement through a NavAgent3D instead of direct steering.
+/// @param obj Behavior3D to configure.
+/// @param agent NavAgent3D to retain, or NULL to restore direct XZ steering.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_behavior_set_nav_agent(void *obj, void *agent) {
     rt_game3d_behavior *behavior =
         game3d_behavior_checked(obj, "Game3D.Behavior3D.setNavAgent: invalid behavior");
@@ -324,6 +374,9 @@ void *rt_game3d_behavior_set_nav_agent(void *obj, void *agent) {
 }
 
 /// @brief Read the target entity's world position (returns 0 when unavailable).
+/// @param behavior Behavior3D containing the retained target entity.
+/// @param out Three-component output receiving the live world position.
+/// @return 1 when a live target node supplied a position, or 0 otherwise.
 static int behavior_target_world_pos(rt_game3d_behavior *behavior, double out[3]) {
     rt_game3d_entity *target = (rt_game3d_entity *)rt_g3d_checked_or_null(
         behavior->target_entity, RT_G3D_GAME3D_ENTITY_CLASS_ID);
@@ -338,6 +391,9 @@ static int behavior_target_world_pos(rt_game3d_behavior *behavior, double out[3]
 ///   float, spin, face-target. Position-writing presets are exclusive in
 ///   practice (path/chase/orbit all set position; last writer wins in that
 ///   fixed order), while spin/face write rotation only.
+/// @param behavior_obj Behavior3D containing the presets to advance.
+/// @param entity_obj Live Entity3D receiving the resulting transforms or despawn.
+/// @param dt Non-negative finite simulation interval in seconds.
 void rt_game3d_behavior_update(void *behavior_obj, void *entity_obj, double dt) {
     rt_game3d_behavior *behavior = (rt_game3d_behavior *)rt_g3d_checked_or_null(
         behavior_obj, RT_G3D_GAME3D_BEHAVIOR3D_CLASS_ID);

@@ -17,6 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file vgfx3d_backend_d3d11_texture.inc
+/// @brief Implements D3D11 texture, cubemap, and morph-resource caches plus
+///   budgeted upload and shader-resource-view creation paths.
+/// @details Cache entries own their COM resources, retain stable runtime identities,
+///   and publish new generations only after upload completion. In-progress uploads
+///   use white fallback views when rendering may continue safely.
+
 // Texture and cubemap caches — keyed by stable host identity + generation so
 // re-uploaded textures (Pixels.Set) get fresh GPU resources without
 // aliasing allocator-reused addresses to stale uploads.
@@ -32,6 +39,8 @@ static HRESULT d3d11_allocate_cubemap_srv(d3d11_context_t *ctx,
                                           ID3D11ShaderResourceView **out_srv);
 
 /// @brief Return the white 2D fallback SRV and record the fallback bind.
+/// @param[in,out] ctx Context containing the fallback view and diagnostics counters.
+/// @return Borrowed white 2D SRV, or `NULL` when unavailable.
 static ID3D11ShaderResourceView *d3d11_fallback_white_srv(d3d11_context_t *ctx) {
     if (!ctx || !ctx->fallback_white_srv)
         return NULL;
@@ -40,6 +49,8 @@ static ID3D11ShaderResourceView *d3d11_fallback_white_srv(d3d11_context_t *ctx) 
 }
 
 /// @brief Return the white cubemap fallback SRV and record the fallback bind.
+/// @param[in,out] ctx Context containing the fallback view and diagnostics counters.
+/// @return Borrowed white cubemap SRV, or `NULL` when unavailable.
 static ID3D11ShaderResourceView *d3d11_fallback_white_cubemap_srv(d3d11_context_t *ctx) {
     if (!ctx || !ctx->fallback_white_cube_srv)
         return NULL;
@@ -48,6 +59,7 @@ static ID3D11ShaderResourceView *d3d11_fallback_white_cubemap_srv(d3d11_context_
 }
 
 /// @brief Release one 2D-texture cache slot and clear all identity/upload metadata.
+/// @param[in,out] entry Cache entry whose owned COM references and metadata are cleared.
 static void d3d11_release_texture_cache_entry(d3d_tex_cache_entry_t *entry) {
     if (!entry)
         return;
@@ -57,6 +69,8 @@ static void d3d11_release_texture_cache_entry(d3d_tex_cache_entry_t *entry) {
 }
 
 /// @brief Hash an object identity into the direct-mapped texture-cache hint table.
+/// @param[in] key Stable Pixels or TextureAsset3D identity.
+/// @return Hint-table slot in the fixed-capacity range.
 static uint32_t d3d11_texture_cache_hint_slot(const void *key) {
     uintptr_t value = (uintptr_t)key;
     value ^= value >> 7u;
@@ -65,6 +79,9 @@ static uint32_t d3d11_texture_cache_hint_slot(const void *key) {
 }
 
 /// @brief Remember the current array index for a Pixels or TextureAsset3D identity.
+/// @param[in,out] ctx Context containing the hint table.
+/// @param[in] key Stable source identity.
+/// @param[in] index Current cache-array index.
 static void d3d11_texture_cache_remember(d3d11_context_t *ctx, const void *key, int32_t index) {
     if (!ctx || !key || index < 0 || index >= ctx->tex_cache_count)
         return;
@@ -72,6 +89,9 @@ static void d3d11_texture_cache_remember(d3d11_context_t *ctx, const void *key, 
 }
 
 /// @brief Return a validated hinted Pixels entry index, or -1 on collision/staleness.
+/// @param[in] ctx Context containing the cache and hint table.
+/// @param[in] pixels Stable Pixels identity to locate.
+/// @return Matching cache index, or `-1`.
 static int32_t d3d11_texture_cache_hint_pixels(const d3d11_context_t *ctx, const void *pixels) {
     int32_t index;
     if (!ctx || !pixels)
@@ -83,6 +103,9 @@ static int32_t d3d11_texture_cache_hint_pixels(const d3d11_context_t *ctx, const
 }
 
 /// @brief Return a validated hinted native-asset entry index, or -1 on collision/staleness.
+/// @param[in] ctx Context containing the cache and hint table.
+/// @param[in] asset Stable TextureAsset3D identity to locate.
+/// @return Matching cache index, or `-1`.
 static int32_t d3d11_texture_cache_hint_asset(const d3d11_context_t *ctx, const void *asset) {
     int32_t index;
     if (!ctx || !asset)
@@ -94,6 +117,7 @@ static int32_t d3d11_texture_cache_hint_asset(const d3d11_context_t *ctx, const 
 }
 
 /// @brief Rebuild hints after an in-place LRU compaction moved cache entries.
+/// @param[in,out] ctx Context whose hint table is reconstructed from live entries.
 static void d3d11_texture_cache_rebuild_hints(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -107,6 +131,7 @@ static void d3d11_texture_cache_rebuild_hints(d3d11_context_t *ctx) {
 }
 
 /// @brief Release one cubemap cache slot and clear all identity/upload metadata.
+/// @param[in,out] entry Cache entry whose owned COM references and metadata are cleared.
 static void d3d11_release_cubemap_cache_entry(d3d_cubemap_cache_entry_t *entry) {
     if (!entry)
         return;
@@ -116,6 +141,13 @@ static void d3d11_release_cubemap_cache_entry(d3d_cubemap_cache_entry_t *entry) 
 }
 
 /// @brief Release a failed partial 2D upload while remembering the rejected generation.
+/// @param[in,out] entry Cache entry to reset and mark failed.
+/// @param[in] pixels Optional Pixels identity associated with the upload.
+/// @param[in] asset Optional native asset identity associated with the upload.
+/// @param[in] generation Rejected content generation or native cache key.
+/// @param[in] mip_start Native snapshot starting mip.
+/// @param[in] mip_count Native snapshot mip count.
+/// @param[in] frame_serial Frame serial recorded as the entry's last use.
 static void d3d11_mark_texture_upload_failed(d3d_tex_cache_entry_t *entry,
                                              const void *pixels,
                                              void *asset,
@@ -135,6 +167,10 @@ static void d3d11_mark_texture_upload_failed(d3d_tex_cache_entry_t *entry,
 }
 
 /// @brief Release a failed partial cubemap upload while remembering the rejected generation.
+/// @param[in,out] entry Cache entry to reset and mark failed.
+/// @param[in] cubemap Stable cubemap identity associated with the upload.
+/// @param[in] generation Rejected cubemap generation.
+/// @param[in] frame_serial Frame serial recorded as the entry's last use.
 static void d3d11_mark_cubemap_upload_failed(d3d_cubemap_cache_entry_t *entry,
                                              const rt_cubemap3d *cubemap,
                                              uint64_t generation,
@@ -148,6 +184,7 @@ static void d3d11_mark_cubemap_upload_failed(d3d_cubemap_cache_entry_t *entry,
 }
 
 /// @brief Release every entry in the 2D-texture cache (teardown path).
+/// @param[in,out] ctx Context whose cache allocation and hints are cleared.
 static void d3d11_release_texture_cache(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -163,6 +200,7 @@ static void d3d11_release_texture_cache(d3d11_context_t *ctx) {
 }
 
 /// @brief Evict aged 2D texture-cache entries while keeping a resident floor.
+/// @param[in,out] ctx Context whose cache is compacted and hints rebuilt.
 static void d3d11_prune_texture_cache(d3d11_context_t *ctx) {
     int32_t write_index = 0;
     int32_t total_count;
@@ -195,6 +233,7 @@ static void d3d11_prune_texture_cache(d3d11_context_t *ctx) {
 }
 
 /// @brief Release every entry in the cubemap cache (teardown path).
+/// @param[in,out] ctx Context whose cubemap cache allocation is cleared.
 static void d3d11_release_cubemap_cache(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -215,6 +254,7 @@ static void d3d11_release_cubemap_cache(d3d11_context_t *ctx) {
 ///   `count - write_index > MAX_RESIDENT` guard means we never shrink below the
 ///   resident floor even if everything is aged — a scene that hasn't drawn in 10
 ///   seconds still keeps its working set warm for the next frame.
+/// @param[in,out] ctx Context whose cubemap cache is pruned and compacted.
 static void d3d11_prune_cubemap_cache(d3d11_context_t *ctx) {
     int32_t write_index = 0;
     int32_t total_count;
@@ -248,6 +288,9 @@ static void d3d11_prune_cubemap_cache(d3d11_context_t *ctx) {
 /// @brief Grow the texture cache table to hold `needed` entries.
 ///
 /// Geometric growth via the shared `vgfx3d_d3d11_next_capacity` helper.
+/// @param[in,out] ctx Context owning the cache allocation.
+/// @param[in] needed Minimum required entry capacity.
+/// @return One when the cache can hold @p needed entries; otherwise zero.
 static int d3d11_ensure_tex_cache_capacity(d3d11_context_t *ctx, int32_t needed) {
     int32_t new_capacity;
     d3d_tex_cache_entry_t *new_entries;
@@ -275,6 +318,9 @@ static int d3d11_ensure_tex_cache_capacity(d3d11_context_t *ctx, int32_t needed)
 }
 
 /// @brief Grow the cubemap cache table to hold `needed` entries.
+/// @param[in,out] ctx Context owning the cubemap cache allocation.
+/// @param[in] needed Minimum required entry capacity.
+/// @return One when the cache can hold @p needed entries; otherwise zero.
 static int d3d11_ensure_cubemap_cache_capacity(d3d11_context_t *ctx, int32_t needed) {
     int32_t new_capacity;
     d3d_cubemap_cache_entry_t *new_entries;
@@ -305,6 +351,8 @@ static int d3d11_ensure_cubemap_cache_capacity(d3d11_context_t *ctx, int32_t nee
 /// @details Returned as a float because D3D11's `SampleLevel` / `SampleBias` expect
 ///   a float LOD. A 1×1 face has only one mip and thus max-LOD 0. Used to clamp sampler
 ///   LOD ranges and compute prefiltered environment-map roughness lookups.
+/// @param[in] cubemap Runtime cubemap whose face extent determines the chain.
+/// @return Largest zero-based mip level, or zero for invalid and 1x1 cubemaps.
 static float d3d11_cubemap_max_lod(const rt_cubemap3d *cubemap) {
     int32_t face_size;
     int32_t mip_count;
@@ -319,6 +367,7 @@ static float d3d11_cubemap_max_lod(const rt_cubemap3d *cubemap) {
 ///
 /// Each slot holds two `(buffer, srv)` pairs — one for position deltas
 /// and one for normal deltas. Both are released together.
+/// @param[in,out] entry Morph cache entry to release and clear.
 static void d3d11_release_morph_cache_entry(d3d11_morph_cache_entry_t *entry) {
     if (!entry)
         return;
@@ -330,6 +379,7 @@ static void d3d11_release_morph_cache_entry(d3d11_morph_cache_entry_t *entry) {
 }
 
 /// @brief Release every morph-cache slot — called during context teardown.
+/// @param[in,out] ctx Context whose fixed morph cache is cleared.
 static void d3d11_release_morph_cache(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -343,6 +393,7 @@ static void d3d11_release_morph_cache(d3d11_context_t *ctx) {
 /// for the current draw but don't try to keep it around. Marking
 /// `temporary` lets the per-draw cleanup distinguish it from cached
 /// resources (which must NOT be released here).
+/// @param[in,out] entry Temporary-resource holder; cached entries are ignored.
 static void d3d11_release_temp_srv(d3d_temp_srv_t *entry) {
     if (!entry || !entry->temporary)
         return;
@@ -352,6 +403,8 @@ static void d3d11_release_temp_srv(d3d_temp_srv_t *entry) {
 }
 
 /// @brief Add @p bytes to the context's running per-frame texture-upload total (saturating).
+/// @param[in,out] ctx Context containing the upload counter.
+/// @param[in] bytes Completed upload bytes to add.
 static void d3d11_record_texture_upload_bytes(d3d11_context_t *ctx, uint64_t bytes) {
     if (!ctx || bytes == 0)
         return;
@@ -359,6 +412,10 @@ static void d3d11_record_texture_upload_bytes(d3d11_context_t *ctx, uint64_t byt
 }
 
 /// @brief Create a one-draw RGBA8 texture SRV when the persistent cache cannot grow.
+/// @param[in,out] ctx Context used to allocate, upload, and count the resource.
+/// @param[in] pixels Runtime Pixels source to unpack.
+/// @param[out] out_temp Receives the temporary texture, SRV, and ownership marker.
+/// @return Borrowed view from @p out_temp, or `NULL` on failure.
 static ID3D11ShaderResourceView *d3d11_create_temp_texture_srv(d3d11_context_t *ctx,
                                                                const void *pixels,
                                                                d3d_temp_srv_t *out_temp) {
@@ -401,6 +458,10 @@ static ID3D11ShaderResourceView *d3d11_create_temp_texture_srv(d3d11_context_t *
 }
 
 /// @brief Create a one-draw cubemap SRV when the persistent cubemap cache cannot grow.
+/// @param[in,out] ctx Context used to allocate, upload, and count the resource.
+/// @param[in] cubemap Runtime cubemap source to unpack.
+/// @param[out] out_temp Receives the temporary texture, SRV, and ownership marker.
+/// @return Borrowed view from @p out_temp, or `NULL` on failure.
 static ID3D11ShaderResourceView *d3d11_create_temp_cubemap_srv(d3d11_context_t *ctx,
                                                                const rt_cubemap3d *cubemap,
                                                                d3d_temp_srv_t *out_temp) {
@@ -460,6 +521,8 @@ static ID3D11ShaderResourceView *d3d11_create_temp_cubemap_srv(d3d11_context_t *
 }
 
 /// @brief Bytes still to upload for a cached texture entry (native or RGBA streaming path).
+/// @param[in] entry Texture cache entry to inspect.
+/// @return Pending byte estimate, or zero when no upload is active.
 static uint64_t d3d11_texture_pending_bytes(const d3d_tex_cache_entry_t *entry) {
     if (!entry)
         return 0;
@@ -472,6 +535,8 @@ static uint64_t d3d11_texture_pending_bytes(const d3d_tex_cache_entry_t *entry) 
 }
 
 /// @brief Refresh native-upload telemetry while the caller still owns the source asset.
+/// @param[in,out] entry In-progress native cache entry whose estimate is refreshed.
+/// @param[in] asset Borrowed source asset matching the entry.
 static void d3d11_refresh_pending_native_bytes(d3d_tex_cache_entry_t *entry, void *asset) {
     if (!entry)
         return;
@@ -488,6 +553,11 @@ static void d3d11_refresh_pending_native_bytes(d3d_tex_cache_entry_t *entry, voi
 }
 
 /// @brief Measure and validate one cubemap's complete prefiltered IBL payload without decoding it.
+/// @param[in] cubemap Cubemap containing the optional prefiltered IBL chain.
+/// @param[in] face_size Destination cubemap base extent.
+/// @param[out] out_level_base Receives the first destination mip replaced by IBL.
+/// @param[out] out_bytes Receives total decoded RGBA upload bytes.
+/// @return One when the entire IBL layout and payload extents are valid.
 static int d3d11_measure_ibl_upload(const rt_cubemap3d *cubemap,
                                     int32_t face_size,
                                     int32_t *out_level_base,
@@ -536,6 +606,8 @@ static int d3d11_measure_ibl_upload(const rt_cubemap3d *cubemap,
 }
 
 /// @brief Cache pending IBL telemetry while the owning cubemap is known to be alive.
+/// @param[in,out] entry Cubemap cache entry receiving the pending identity and byte count.
+/// @param[in] cubemap Borrowed runtime cubemap matching the entry.
 static void d3d11_refresh_pending_ibl_metadata(d3d_cubemap_cache_entry_t *entry,
                                                const rt_cubemap3d *cubemap) {
     int32_t level_base;
@@ -554,6 +626,8 @@ static void d3d11_refresh_pending_ibl_metadata(d3d_cubemap_cache_entry_t *entry,
 }
 
 /// @brief Bytes still to upload for a cached cubemap entry across base faces and IBL mips.
+/// @param[in] entry Cubemap cache entry to inspect.
+/// @return Saturating total of base-face and pending IBL upload bytes.
 static uint64_t d3d11_cubemap_pending_bytes(const d3d_cubemap_cache_entry_t *entry) {
     uint64_t total;
 
@@ -565,6 +639,8 @@ static uint64_t d3d11_cubemap_pending_bytes(const d3d_cubemap_cache_entry_t *ent
 }
 
 /// @brief Total bytes still pending across all in-progress texture/cubemap uploads (saturating).
+/// @param[in] ctx_ptr Opaque pointer to the D3D11 context.
+/// @return Saturating sum of pending bytes across both caches.
 static uint64_t d3d11_get_texture_upload_pending_bytes(void *ctx_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     uint64_t total = 0;
@@ -587,6 +663,8 @@ static uint64_t d3d11_get_texture_upload_pending_bytes(void *ctx_ptr) {
 }
 
 /// @brief Set the per-frame byte budget that paces streaming texture uploads on this context.
+/// @param[in,out] ctx_ptr Opaque pointer to the D3D11 context.
+/// @param[in] bytes New per-frame upload budget.
 static void d3d11_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     if (ctx)
@@ -595,6 +673,9 @@ static void d3d11_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
 
 /// @brief Whether the device can use @p format as a sampleable 2D texture (CheckFormatSupport
 /// query).
+/// @param[in] ctx Context containing the D3D11 device.
+/// @param[in] format DXGI format to query.
+/// @return One when both Texture2D and shader-sampling support are advertised.
 static int d3d11_format_supports_texture_sampling(d3d11_context_t *ctx, DXGI_FORMAT format) {
     UINT support = 0;
     if (!ctx || !ctx->device)
@@ -607,6 +688,8 @@ static int d3d11_format_supports_texture_sampling(d3d11_context_t *ctx, DXGI_FOR
 
 /// @brief Report which native BC compressed texture formats this device can upload on D3D11,
 /// plus sampler anisotropy support.
+/// @param[in] ctx_ptr Opaque pointer to the D3D11 context.
+/// @return Bitmask of supported native texture and sampler capabilities.
 static int64_t d3d11_get_native_texture_caps(void *ctx_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     int64_t caps = 0;
@@ -626,6 +709,8 @@ static int64_t d3d11_get_native_texture_caps(void *ctx_ptr) {
 }
 
 /// @brief Map a native texture format id to its DXGI format (UNKNOWN when unsupported).
+/// @param[in] format_id Runtime native compressed-format identifier.
+/// @return Corresponding DXGI BC format, or `DXGI_FORMAT_UNKNOWN`.
 static DXGI_FORMAT d3d11_native_texture_format(int32_t format_id) {
     if (format_id == RT_TEXTUREASSET3D_NATIVE_FORMAT_BC7)
         return DXGI_FORMAT_BC7_UNORM;
@@ -642,11 +727,18 @@ static DXGI_FORMAT d3d11_native_texture_format(int32_t format_id) {
 
 /// @brief Bytes per block-row of a native compressed mip (block columns × block byte size).
 /// @details D3D11 texture updates need the source row pitch; this computes it overflow-safely.
+/// @param[in] mip Native mip descriptor.
+/// @return Required block-row byte count, or zero for invalid input or overflow.
 static uint64_t d3d11_native_texture_row_bytes(const vgfx3d_native_texture_mip_t *mip) {
     return vgfx3d_d3d11_native_mip_row_bytes(mip);
 }
 
 /// @brief Validate a draw-time native compressed mip snapshot before creating D3D resources.
+/// @param[in] asset Runtime TextureAsset3D providing the snapshot.
+/// @param[in] mip_start First resident mip requested.
+/// @param[in] mip_count Number of resident mips requested.
+/// @param[out] out_first_mip Optional receiver for the validated first descriptor.
+/// @return One when every snapshot mip forms a valid supported chain.
 static int d3d11_validate_native_texture_snapshot(void *asset,
                                                   int64_t mip_start,
                                                   int64_t mip_count,
@@ -695,6 +787,11 @@ static int d3d11_validate_native_texture_snapshot(void *asset,
 }
 
 /// @brief Create an RGBA8 2D texture and its shader-resource view at the given size.
+/// @param[in] ctx Context containing the D3D11 device.
+/// @param[in] w Base texture width.
+/// @param[in] h Base texture height.
+/// @param[out] out_tex Receives the mipmapped texture.
+/// @param[out] out_srv Receives its full-chain shader-resource view.
 /// @return S_OK with @p out_tex / @p out_srv set, or a failure HRESULT.
 static HRESULT d3d11_allocate_texture_srv(d3d11_context_t *ctx,
                                           int32_t w,
@@ -751,6 +848,11 @@ static HRESULT d3d11_allocate_texture_srv(d3d11_context_t *ctx,
 
 /// @brief Create a native compressed BC-family 2D texture and its shader-resource view for a mip
 /// chain.
+/// @param[in] ctx Context containing the D3D11 device.
+/// @param[in] first_mip Validated descriptor for the first resident mip.
+/// @param[in] mip_count Number of compressed levels to allocate.
+/// @param[out] out_tex Receives the native texture.
+/// @param[out] out_srv Receives its shader-resource view.
 /// @return S_OK with the texture/SRV set, or a failure HRESULT.
 static HRESULT d3d11_allocate_native_texture_srv(d3d11_context_t *ctx,
                                                  const vgfx3d_native_texture_mip_t *first_mip,
@@ -812,6 +914,9 @@ static HRESULT d3d11_allocate_native_texture_srv(d3d11_context_t *ctx,
 }
 
 /// @brief Upload more of an in-progress native compressed texture, bounded by the upload budget.
+/// @param[in,out] ctx Context supplying the device, budget, and upload counter.
+/// @param[in,out] entry Cache entry containing the texture and mip/block-row cursor.
+/// @param[in] asset Borrowed TextureAsset3D source matching the entry.
 /// @return COMPLETE, PENDING, or FAILED for this continuation step.
 static vgfx3d_d3d11_upload_result_t d3d11_continue_native_texture_upload(
     d3d11_context_t *ctx, d3d_tex_cache_entry_t *entry, void *asset) {
@@ -940,6 +1045,13 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_native_texture_upload(
 
 /// @brief Begin uploading a native compressed TextureAsset3D: create the texture and seed the
 /// cursor.
+/// @param[in,out] ctx Context that owns the cache entry and upload accounting.
+/// @param[in,out] entry Cache slot to initialize.
+/// @param[in] asset Borrowed TextureAsset3D source.
+/// @param[in] cache_key Native snapshot generation key to publish on completion.
+/// @param[in] mip_start First resident source mip.
+/// @param[in] mip_count Number of resident source mips.
+/// @return One when allocation succeeds and upload is complete or pending; otherwise zero.
 static int d3d11_start_native_texture_upload(d3d11_context_t *ctx,
                                              d3d_tex_cache_entry_t *entry,
                                              void *asset,
@@ -997,6 +1109,9 @@ static int d3d11_start_native_texture_upload(d3d11_context_t *ctx,
 }
 
 /// @brief Upload more rows of an in-progress RGBA texture, bounded by the upload budget.
+/// @param[in,out] ctx Context supplying the device, budget, and upload counter.
+/// @param[in,out] entry Cache entry containing the texture and next-row cursor.
+/// @param[in] pixels Borrowed Pixels source matching the entry.
 /// @return COMPLETE, PENDING, or FAILED for this continuation step.
 static vgfx3d_d3d11_upload_result_t d3d11_continue_texture_upload(d3d11_context_t *ctx,
                                                                   d3d_tex_cache_entry_t *entry,
@@ -1078,6 +1193,11 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_texture_upload(d3d11_context_
 }
 
 /// @brief Begin uploading an RGBA Pixels texture: allocate the texture/SRV and seed the row cursor.
+/// @param[in,out] ctx Context that owns the cache entry and upload accounting.
+/// @param[in,out] entry Cache slot to initialize.
+/// @param[in] pixels Borrowed Pixels source.
+/// @param[in] cache_key Pixels generation key to publish on completion.
+/// @return One when allocation succeeds and upload is complete or pending; otherwise zero.
 static int d3d11_start_texture_upload(d3d11_context_t *ctx,
                                       d3d_tex_cache_entry_t *entry,
                                       const void *pixels,
@@ -1134,6 +1254,11 @@ static int d3d11_start_texture_upload(d3d11_context_t *ctx,
 ///   1. Hit (pixels_ptr + cache-key match) → return cached SRV.
 ///   2. Pixels match but stale generation → restart upload in that slot.
 ///   3. Miss → create new, append to cache, and return only when upload completes.
+/// @param[in,out] ctx Context containing the texture cache and upload budget.
+/// @param[in] index Known cache slot associated with @p pixels.
+/// @param[in] pixels Borrowed Pixels source identity.
+/// @param[in] cache_key Current Pixels generation key.
+/// @return Resident SRV, white fallback while upload is pending, or `NULL` on failure.
 static ID3D11ShaderResourceView *d3d11_resolve_pixels_cache_entry(d3d11_context_t *ctx,
                                                                   int32_t index,
                                                                   const void *pixels,
@@ -1170,6 +1295,14 @@ static ID3D11ShaderResourceView *d3d11_resolve_pixels_cache_entry(d3d11_context_
     return entry->upload_in_progress ? d3d11_fallback_white_srv(ctx) : entry->srv;
 }
 
+/// @brief Resolve an RGBA Pixels source through the persistent texture cache.
+/// @details Uses the direct-mapped hint before a linear lookup, reuses empty slots,
+///   grows the cache when possible, and falls back to a one-draw resource only when
+///   the upload fits the current budget.
+/// @param[in,out] ctx Context containing the cache, device, and upload budget.
+/// @param[in] pixels Borrowed runtime Pixels source.
+/// @param[out] out_temp Optional receiver for a temporary resource when caching is unavailable.
+/// @return Resident or white fallback SRV, temporary SRV, or `NULL` on failure.
 static ID3D11ShaderResourceView *d3d11_get_or_create_srv(d3d11_context_t *ctx,
                                                          const void *pixels,
                                                          d3d_temp_srv_t *out_temp) {
@@ -1224,6 +1357,13 @@ static ID3D11ShaderResourceView *d3d11_get_or_create_srv(d3d11_context_t *ctx,
 }
 
 /// @brief Resolve a native TextureAsset3D from a known cache slot.
+/// @param[in,out] ctx Context containing the texture cache and upload budget.
+/// @param[in] index Known cache slot associated with @p asset.
+/// @param[in] asset Borrowed TextureAsset3D identity.
+/// @param[in] cache_key Current native snapshot key.
+/// @param[in] mip_start First resident source mip.
+/// @param[in] mip_count Resident source mip count.
+/// @return Resident SRV, white fallback while upload is pending, or `NULL` on failure.
 static ID3D11ShaderResourceView *d3d11_resolve_native_cache_entry(d3d11_context_t *ctx,
                                                                   int32_t index,
                                                                   void *asset,
@@ -1267,6 +1407,11 @@ static ID3D11ShaderResourceView *d3d11_resolve_native_cache_entry(d3d11_context_
 
 /// @brief Get the SRV for a native TextureAsset3D, creating/streaming it on a cache miss.
 /// @details Keyed by the asset's native cache key so residency changes invalidate the entry.
+/// @param[in,out] ctx Context containing the texture cache and upload budget.
+/// @param[in] asset Borrowed TextureAsset3D source.
+/// @param[in] cache_key Native snapshot key, or zero to query the asset.
+/// @param[in] mip_start First resident mip, or negative to query the asset.
+/// @param[in] mip_count Resident mip count, or nonpositive to query the asset.
 /// @return The shader-resource view to bind, or NULL if it cannot be created.
 static ID3D11ShaderResourceView *d3d11_get_or_create_native_srv(
     d3d11_context_t *ctx, void *asset, uint64_t cache_key, int64_t mip_start, int64_t mip_count) {
@@ -1321,6 +1466,13 @@ static ID3D11ShaderResourceView *d3d11_get_or_create_native_srv(
 }
 
 /// @brief Resolve a material's texture to an SRV, preferring native blocks then RGBA Pixels.
+/// @param[in,out] ctx Context containing texture caches and device capabilities.
+/// @param[in] asset Optional native TextureAsset3D source.
+/// @param[in] pixels Optional decoded RGBA Pixels fallback.
+/// @param[in] asset_cache_key Native snapshot key.
+/// @param[in] mip_start First native resident mip.
+/// @param[in] mip_count Native resident mip count.
+/// @param[out] out_temp Optional temporary RGBA resource holder.
 /// @return The shader-resource view to bind, or NULL if neither source is uploadable.
 static ID3D11ShaderResourceView *d3d11_get_or_create_material_srv(d3d11_context_t *ctx,
                                                                   void *asset,
@@ -1341,6 +1493,10 @@ static ID3D11ShaderResourceView *d3d11_get_or_create_material_srv(d3d11_context_
 }
 
 /// @brief Create a cubemap texture (6 faces) and its cube shader-resource view at the given size.
+/// @param[in] ctx Context containing the D3D11 device.
+/// @param[in] face_size Square base face extent.
+/// @param[out] out_tex Receives the six-slice mipmapped texture.
+/// @param[out] out_srv Receives its TextureCube shader-resource view.
 /// @return S_OK with the texture/SRV set, or a failure HRESULT.
 static HRESULT d3d11_allocate_cubemap_srv(d3d11_context_t *ctx,
                                           int32_t face_size,
@@ -1398,6 +1554,10 @@ static HRESULT d3d11_allocate_cubemap_srv(d3d11_context_t *ctx,
 ///   skybox sharp; levels level_base.. are replaced with the prefiltered chain so
 ///   roughness-mapped environment lookups integrate correctly. Idempotent per
 ///   ibl_identity; re-applied after base-face re-uploads.
+/// @param[in,out] ctx Context supplying the device, budget, and upload accounting.
+/// @param[in,out] entry Resident cubemap entry whose tail mips and IBL metadata are updated.
+/// @param[in] cubemap Borrowed runtime cubemap containing the IBL payload.
+/// @return One when the requested IBL identity is already applied or uploads successfully.
 static int d3d11_apply_ibl_mips(d3d11_context_t *ctx,
                                 d3d_cubemap_cache_entry_t *entry,
                                 const rt_cubemap3d *cubemap) {
@@ -1481,6 +1641,9 @@ cleanup:
 }
 
 /// @brief Upload more of an in-progress cubemap (face by face, row band by row band) within budget.
+/// @param[in,out] ctx Context supplying the device, budget, and upload counter.
+/// @param[in,out] entry Cache entry containing the cube texture and face/row cursor.
+/// @param[in] cubemap Borrowed source matching the entry.
 /// @return COMPLETE, PENDING, or FAILED for this continuation step.
 static vgfx3d_d3d11_upload_result_t d3d11_continue_cubemap_upload(d3d11_context_t *ctx,
                                                                   d3d_cubemap_cache_entry_t *entry,
@@ -1580,6 +1743,11 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_cubemap_upload(d3d11_context_
 }
 
 /// @brief Begin uploading a cubemap: create the cube texture/SRV and seed the face/row cursor.
+/// @param[in,out] ctx Context that owns the cache entry and upload accounting.
+/// @param[in,out] entry Cubemap cache slot to initialize.
+/// @param[in] cubemap Borrowed source cubemap.
+/// @param[in] generation Source generation to publish on completion.
+/// @return One when allocation succeeds and upload is complete or pending; otherwise zero.
 static int d3d11_start_cubemap_upload(d3d11_context_t *ctx,
                                       d3d_cubemap_cache_entry_t *entry,
                                       const rt_cubemap3d *cubemap,
@@ -1630,6 +1798,10 @@ static int d3d11_start_cubemap_upload(d3d11_context_t *ctx,
 ///
 /// Same hit/stale/miss flow as the 2D texture cache; returns NULL while a
 /// cubemap is still uploading under the current per-frame budget.
+/// @param[in,out] ctx Context containing the cubemap cache and upload budget.
+/// @param[in] cubemap Borrowed runtime cubemap source.
+/// @param[out] out_temp Optional receiver for a one-draw cubemap resource.
+/// @return Resident or white fallback SRV, temporary SRV, or `NULL` on failure.
 static ID3D11ShaderResourceView *d3d11_get_or_create_cubemap_srv(d3d11_context_t *ctx,
                                                                  const rt_cubemap3d *cubemap,
                                                                  d3d_temp_srv_t *out_temp) {

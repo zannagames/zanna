@@ -15,6 +15,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Game3D spatial audio, listener control, and immersion effects.
+/// @details Sound3D owns tracked positional sources and coordinates camera-follow listening,
+///   attenuation, reverb zones, occlusion probes, dialogue routing, and ambient-bed crossfades.
+///   All world-space effect selection runs deterministically on the game thread.
+
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_audio.h"
@@ -67,6 +73,7 @@
 
 /// @brief GC finalizer for the audio subsystem: release every tracked source plus the
 ///   camera and listener, then free the source array.
+/// @param obj Sound3D allocation being finalized.
 static void game3d_audio_finalize(void *obj) {
     rt_game3d_audio *audio = (rt_game3d_audio *)obj;
     if (!audio)
@@ -91,6 +98,8 @@ static void game3d_audio_finalize(void *obj) {
 
 /// @brief Allocate the audio subsystem with default attenuation/volume and a new
 ///   listener; if `camera` is given, bind and activate the listener to follow it.
+/// @param camera Optional Camera3D to retain as the listener-follow target.
+/// @return A new Sound3D subsystem, or NULL when allocation fails.
 void *game3d_audio_new(void *camera) {
     rt_game3d_audio *audio =
         (rt_game3d_audio *)rt_obj_new_i64(RT_G3D_GAME3D_SOUND_CLASS_ID, (int64_t)sizeof(*audio));
@@ -126,6 +135,8 @@ void *game3d_audio_new(void *camera) {
 }
 
 /// @brief Get the listener (ears) object (NULL if invalid).
+/// @param obj Sound3D subsystem to query.
+/// @return The borrowed validated SoundListener3D handle, or NULL when unavailable.
 void *rt_game3d_audio_get_listener(void *obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.get_Listener: invalid audio");
@@ -133,6 +144,8 @@ void *rt_game3d_audio_get_listener(void *obj) {
 }
 
 /// @brief True if the listener auto-follows the camera.
+/// @param obj Sound3D subsystem to query.
+/// @return 1 when camera-follow is enabled, or 0 when disabled or invalid.
 int8_t rt_game3d_audio_get_listener_follows_camera(void *obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.get_listenerFollowsCamera: invalid audio");
@@ -140,6 +153,8 @@ int8_t rt_game3d_audio_get_listener_follows_camera(void *obj) {
 }
 
 /// @brief Get the attenuation reference (full-volume) distance.
+/// @param obj Sound3D subsystem to query.
+/// @return The sanitized full-volume reference distance, or 0 for an invalid subsystem.
 double rt_game3d_audio_get_ref_distance(void *obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.get_refDistance: invalid audio");
@@ -150,6 +165,8 @@ double rt_game3d_audio_get_ref_distance(void *obj) {
 }
 
 /// @brief Get the attenuation maximum (silence) distance.
+/// @param obj Sound3D subsystem to query.
+/// @return The sanitized maximum distance, never below the reference distance, or 0 if invalid.
 double rt_game3d_audio_get_max_distance(void *obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.get_maxDistance: invalid audio");
@@ -163,12 +180,16 @@ double rt_game3d_audio_get_max_distance(void *obj) {
 }
 
 /// @brief Get the master output volume (0–100).
+/// @param obj Sound3D subsystem to query.
+/// @return The clamped master volume, or 0 for an invalid subsystem.
 int64_t rt_game3d_audio_get_volume(void *obj) {
     rt_game3d_audio *audio = game3d_audio_checked(obj, "Game3D.Sound3D.get_volume: invalid audio");
     return audio ? game3d_clamp_i64(audio->volume, 0, 100) : 0;
 }
 
 /// @brief Count currently active 3D sound sources.
+/// @param obj Sound3D subsystem whose source slots are repaired and counted.
+/// @return The number of valid tracked SoundSource3D handles.
 int64_t rt_game3d_audio_get_source_count(void *obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.get_sourceCount: invalid audio");
@@ -179,6 +200,8 @@ int64_t rt_game3d_audio_get_source_count(void *obj) {
 
 /// @brief Enable/disable the listener following the camera; rebinds or unbinds the
 ///   camera accordingly and reactivates the listener.
+/// @param obj Sound3D subsystem to configure.
+/// @param enabled Non-zero to bind the listener to the retained camera; zero to unbind it.
 void rt_game3d_audio_listener_follow_camera(void *obj, int8_t enabled) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.listenerFollowCamera: invalid audio");
@@ -198,6 +221,10 @@ void rt_game3d_audio_listener_follow_camera(void *obj, int8_t enabled) {
 
 /// @brief Set the listener pose explicitly from Vec3 position/forward/up;
 ///   disables camera-follow. Traps on non-Vec3 args.
+/// @param obj Sound3D subsystem to configure.
+/// @param position Vec3 containing the listener's world-space position.
+/// @param forward Vec3 containing the listener's forward direction.
+/// @param up Vec3 containing the listener's up direction.
 void rt_game3d_audio_set_listener_pose(void *obj, void *position, void *forward, void *up) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.setListenerPose: invalid audio");
@@ -220,6 +247,9 @@ void rt_game3d_audio_set_listener_pose(void *obj, void *position, void *forward,
 
 /// @brief Set the distance-attenuation reference and max radii; non-positive/non-finite
 ///   values fall back to the library defaults.
+/// @param obj Sound3D subsystem and tracked sources to configure.
+/// @param ref_distance Full-volume distance in world units.
+/// @param max_distance Silence distance in world units, raised to @p ref_distance when necessary.
 void rt_game3d_audio_set_attenuation(void *obj, double ref_distance, double max_distance) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.setAttenuation: invalid audio");
@@ -242,6 +272,8 @@ void rt_game3d_audio_set_attenuation(void *obj, double ref_distance, double max_
 }
 
 /// @brief Set the master output volume, clamped to [0, 100].
+/// @param obj Sound3D subsystem to configure.
+/// @param volume Requested integer volume.
 void rt_game3d_audio_set_volume(void *obj, int64_t volume) {
     rt_game3d_audio *audio = game3d_audio_checked(obj, "Game3D.Sound3D.set_volume: invalid audio");
     if (audio)
@@ -249,12 +281,18 @@ void rt_game3d_audio_set_volume(void *obj, int64_t volume) {
 }
 
 /// @brief Load a sound clip from a filesystem path.
+/// @param obj Sound3D subsystem validating the operation.
+/// @param path Runtime string containing the filesystem path.
+/// @return A loaded Sound handle, or NULL on failure.
 void *rt_game3d_audio_load(void *obj, rt_string path) {
     (void)game3d_audio_checked(obj, "Game3D.Sound3D.load: invalid audio");
     return rt_sound_load(path);
 }
 
 /// @brief Load a sound clip from a packed asset path.
+/// @param obj Sound3D subsystem validating the operation.
+/// @param asset_path Runtime string containing the packed-asset path.
+/// @return A loaded Sound handle, or NULL on failure.
 void *rt_game3d_audio_load_asset(void *obj, rt_string asset_path) {
     (void)game3d_audio_checked(obj, "Game3D.Sound3D.loadAsset: invalid audio");
     return rt_sound_load_asset(asset_path);
@@ -262,6 +300,10 @@ void *rt_game3d_audio_load_asset(void *obj, rt_string asset_path) {
 
 /// @brief Play a clip as a one-shot at a fixed world position, applying the subsystem's
 ///   attenuation/volume; tracks and returns the new source. Traps on bad clip/position.
+/// @param obj Sound3D subsystem that owns and configures the source.
+/// @param clip Sound handle to play.
+/// @param position Vec3 containing the fixed world-space source position.
+/// @return A new tracked SoundSource3D handle, or NULL on validation or allocation failure.
 void *rt_game3d_audio_play_at(void *obj, void *clip, void *position) {
     rt_game3d_audio *audio = game3d_audio_checked(obj, "Game3D.Sound3D.playAt: invalid audio");
     if (!audio || !clip)
@@ -290,6 +332,10 @@ void *rt_game3d_audio_play_at(void *obj, void *clip, void *position) {
 
 /// @brief Play a clip attached to an entity so it tracks the entity's node (or its
 ///   position if nodeless); tracks and returns the source. Traps on bad clip/entity.
+/// @param obj Sound3D subsystem that owns and configures the source.
+/// @param clip Sound handle to play.
+/// @param entity_obj Entity3D whose node or world position drives the source.
+/// @return A new tracked SoundSource3D handle, or NULL on validation or allocation failure.
 void *rt_game3d_audio_play_attached(void *obj, void *clip, void *entity_obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.playAttached: invalid audio");
@@ -324,6 +370,9 @@ void *rt_game3d_audio_play_attached(void *obj, void *clip, void *entity_obj) {
 
 /// @brief Play a clip as non-spatial 2D audio at the master volume; returns a positive
 ///   voice id, or 0 on failure. Traps on a bad clip.
+/// @param obj Sound3D subsystem supplying the master volume.
+/// @param clip Sound handle to play.
+/// @return A positive mixer voice identifier, or 0 on failure.
 int64_t rt_game3d_audio_play2d(void *obj, void *clip) {
     rt_game3d_audio *audio = game3d_audio_checked(obj, "Game3D.Sound3D.play2D: invalid audio");
     if (!audio || !clip)
@@ -337,6 +386,7 @@ int64_t rt_game3d_audio_play2d(void *obj, void *clip) {
 }
 
 /// @brief Stop and release every tracked source, resetting the active count to 0.
+/// @param obj Sound3D subsystem whose positional sources are cleared.
 void rt_game3d_audio_clear_sources(void *obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.clearSources: invalid audio");
@@ -395,6 +445,9 @@ typedef struct rt_game3d_ambientbed {
 } rt_game3d_ambientbed;
 
 /// @brief Clamp @p value to [0, 1]; non-finite values keep @p fallback.
+/// @param value Candidate unit-range value.
+/// @param fallback Value returned when @p value is not finite.
+/// @return @p value clamped to the unit interval, or @p fallback.
 static double game3d_unit_clamped_or(double value, double fallback) {
     if (!isfinite(value))
         return fallback;
@@ -404,6 +457,7 @@ static double game3d_unit_clamped_or(double value, double fallback) {
 }
 
 /// @brief GC finalizer for AmbientBed3D: stop live voices, release clips.
+/// @param obj AmbientBed3D allocation being finalized.
 static void game3d_ambientbed_finalize(void *obj) {
     rt_game3d_ambientbed *bed = (rt_game3d_ambientbed *)obj;
     if (!bed)
@@ -418,6 +472,10 @@ static void game3d_ambientbed_finalize(void *obj) {
     game3d_release_ref(&bed->default_clip);
 }
 
+/// @brief Validate and cast an opaque handle to a reverb-zone object.
+/// @param obj Candidate ReverbZone3D handle.
+/// @param method Trap message emitted when @p obj has the wrong runtime class.
+/// @return The validated zone, or NULL after reporting an invalid handle.
 static rt_game3d_reverbzone *game3d_reverbzone_checked(void *obj, const char *method) {
     rt_game3d_reverbzone *zone =
         (rt_game3d_reverbzone *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_REVERBZONE_CLASS_ID);
@@ -426,6 +484,10 @@ static rt_game3d_reverbzone *game3d_reverbzone_checked(void *obj, const char *me
     return zone;
 }
 
+/// @brief Validate and cast an opaque handle to an ambient-bed object.
+/// @param obj Candidate AmbientBed3D handle.
+/// @param method Trap message emitted when @p obj has the wrong runtime class.
+/// @return The validated bed, or NULL after reporting an invalid handle.
 static rt_game3d_ambientbed *game3d_ambientbed_checked(void *obj, const char *method) {
     rt_game3d_ambientbed *bed =
         (rt_game3d_ambientbed *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_AMBIENTBED_CLASS_ID);
@@ -435,12 +497,19 @@ static rt_game3d_ambientbed *game3d_ambientbed_checked(void *obj, const char *me
 }
 
 /// @brief True when @p p lies inside the axis-aligned box [min, max].
+/// @param mn Three-component inclusive minimum corner.
+/// @param mx Three-component inclusive maximum corner.
+/// @param p Three-component point to test.
+/// @return 1 when every point component lies within the corresponding interval.
 static int game3d_aabb_contains(const double mn[3], const double mx[3], const double p[3]) {
     return p[0] >= mn[0] && p[0] <= mx[0] && p[1] >= mn[1] && p[1] <= mx[1] && p[2] >= mn[2] &&
            p[2] <= mx[2];
 }
 
 /// @brief Create a reverb zone from Vec3 min/max corners (auto-sorted per axis).
+/// @param min_obj Vec3 containing one input corner.
+/// @param max_obj Vec3 containing the opposite input corner.
+/// @return A new ReverbZone3D with balanced defaults, or NULL on validation or allocation failure.
 void *rt_game3d_reverbzone_new(void *min_obj, void *max_obj) {
     double mn[3], mx[3];
     if (!game3d_read_vec3(min_obj, mn, "Game3D.ReverbZone3D.New: min must be Vec3") ||
@@ -464,6 +533,11 @@ void *rt_game3d_reverbzone_new(void *min_obj, void *max_obj) {
 }
 
 /// @brief Fluent: set the zone's reverb character (room/damping/wet, 0..1 each).
+/// @param obj ReverbZone3D to configure.
+/// @param room Room-size control clamped to the unit interval.
+/// @param damping High-frequency damping control clamped to the unit interval.
+/// @param wet Wet-signal mix clamped to the unit interval.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_reverbzone_set_reverb(void *obj, double room, double damping, double wet) {
     rt_game3d_reverbzone *zone =
         game3d_reverbzone_checked(obj, "Game3D.ReverbZone3D.WithReverb: invalid zone");
@@ -476,6 +550,8 @@ void *rt_game3d_reverbzone_set_reverb(void *obj, double room, double damping, do
 }
 
 /// @brief Set the zone's overlap priority (higher wins).
+/// @param obj ReverbZone3D to configure.
+/// @param priority Priority used when multiple zones contain the listener.
 void rt_game3d_reverbzone_set_priority(void *obj, int64_t priority) {
     rt_game3d_reverbzone *zone =
         game3d_reverbzone_checked(obj, "Game3D.ReverbZone3D.set_Priority: invalid zone");
@@ -484,6 +560,8 @@ void rt_game3d_reverbzone_set_priority(void *obj, int64_t priority) {
 }
 
 /// @brief Get the zone's overlap priority.
+/// @param obj ReverbZone3D to query.
+/// @return The configured priority, or 0 for an invalid zone.
 int64_t rt_game3d_reverbzone_get_priority(void *obj) {
     rt_game3d_reverbzone *zone =
         game3d_reverbzone_checked(obj, "Game3D.ReverbZone3D.get_Priority: invalid zone");
@@ -493,6 +571,8 @@ int64_t rt_game3d_reverbzone_get_priority(void *obj) {
 /// @brief Register a reverb zone; lazily creates the "g3d_reverb" group + insert.
 /// @details From this point positional playback routes to the reverb group
 ///   (unless SetReverbRouting(false)), so zone wet sweeps affect it.
+/// @param obj Sound3D subsystem that will retain the zone.
+/// @param zone_obj ReverbZone3D to register.
 void rt_game3d_audio_add_reverb_zone(void *obj, void *zone_obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.AddReverbZone: invalid audio");
@@ -527,6 +607,8 @@ void rt_game3d_audio_add_reverb_zone(void *obj, void *zone_obj) {
 }
 
 /// @brief Set the reverb-zone parameter blend time in seconds (default 0.5).
+/// @param obj Sound3D subsystem to configure.
+/// @param seconds Non-negative finite blend duration.
 void rt_game3d_audio_set_reverb_blend(void *obj, double seconds) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.SetReverbBlendSeconds: invalid audio");
@@ -535,6 +617,8 @@ void rt_game3d_audio_set_reverb_blend(void *obj, double seconds) {
 }
 
 /// @brief Current eased reverb wet mix (telemetry; 0 when outside all zones).
+/// @param obj Sound3D subsystem to query.
+/// @return The current wet mix, or 0 outside every zone or for an invalid subsystem.
 double rt_game3d_audio_get_reverb_wet(void *obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.get_ReverbWet: invalid audio");
@@ -542,6 +626,8 @@ double rt_game3d_audio_get_reverb_wet(void *obj) {
 }
 
 /// @brief Route future positional playback to the zone-reverb group (default on).
+/// @param obj Sound3D subsystem to configure.
+/// @param enabled Non-zero to route new positional sources through reverb; zero to bypass it.
 void rt_game3d_audio_set_reverb_routing(void *obj, int8_t enabled) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.SetReverbRouting: invalid audio");
@@ -550,6 +636,9 @@ void rt_game3d_audio_set_reverb_routing(void *obj, int8_t enabled) {
 }
 
 /// @brief Configure listener->source occlusion raycasts for tracked sources.
+/// @param obj Sound3D subsystem to configure.
+/// @param enabled Non-zero to perform occlusion raycasts; zero to disable them.
+/// @param mask Collision-layer mask used by the occlusion rays.
 /// @param amount Occlusion applied to a blocked source (0..1; mixer smooths).
 void rt_game3d_audio_set_occlusion(void *obj, int8_t enabled, int64_t mask, double amount) {
     rt_game3d_audio *audio =
@@ -562,6 +651,8 @@ void rt_game3d_audio_set_occlusion(void *obj, int8_t enabled, int64_t mask, doub
 }
 
 /// @brief Cap occlusion raycasts per world step (default 8, round-robin).
+/// @param obj Sound3D subsystem to configure.
+/// @param budget Positive per-step raycast count, clamped to 256.
 void rt_game3d_audio_set_occlusion_budget(void *obj, int64_t budget) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.SetOcclusionBudget: invalid audio");
@@ -572,6 +663,9 @@ void rt_game3d_audio_set_occlusion_budget(void *obj, int64_t budget) {
 /// @brief Play a dialogue clip on the ducking-trigger "g3d_dialogue" group.
 /// @details Pair with Audio.SetGroupDucking("g3d_dialogue", "music", ...) so
 ///   music dips under speech. Returns a positive voice id, or 0 on failure.
+/// @param obj Sound3D subsystem supplying master volume and dialogue routing.
+/// @param clip Sound handle to play.
+/// @return A positive mixer voice identifier, or 0 on failure.
 int64_t rt_game3d_audio_play_dialogue(void *obj, void *clip) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.PlayDialogue: invalid audio");
@@ -594,6 +688,8 @@ int64_t rt_game3d_audio_play_dialogue(void *obj, void *clip) {
 }
 
 /// @brief Create an ambient-bed crossfader bound to the world's audio subsystem.
+/// @param world_obj World3D whose Sound3D subsystem will own the bed.
+/// @return A new AmbientBed3D, or NULL when the world lacks audio or allocation fails.
 void *rt_game3d_ambientbed_new(void *world_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.AmbientBed3D.New: invalid world");
@@ -623,6 +719,12 @@ void *rt_game3d_ambientbed_new(void *world_obj) {
 }
 
 /// @brief Fluent: add a zone (Vec3 min/max) whose bed loops @p clip at @p volume.
+/// @param obj AmbientBed3D to extend.
+/// @param min_obj Vec3 containing one input corner.
+/// @param max_obj Vec3 containing the opposite input corner.
+/// @param clip Sound handle to loop while the listener is inside.
+/// @param volume Playback volume clamped to the range 0 through 100.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_ambientbed_add_zone(
     void *obj, void *min_obj, void *max_obj, void *clip, int64_t volume) {
     rt_game3d_ambientbed *bed =
@@ -654,6 +756,10 @@ void *rt_game3d_ambientbed_add_zone(
 }
 
 /// @brief Fluent: set the outside-all-zones bed (NULL clip = silence).
+/// @param obj AmbientBed3D to configure.
+/// @param clip Sound handle to loop outside every zone, or NULL for silence.
+/// @param volume Playback volume clamped to the range 0 through 100.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_ambientbed_set_default(void *obj, void *clip, int64_t volume) {
     rt_game3d_ambientbed *bed =
         game3d_ambientbed_checked(obj, "Game3D.AmbientBed3D.SetDefault: invalid bed");
@@ -672,6 +778,8 @@ void *rt_game3d_ambientbed_set_default(void *obj, void *clip, int64_t volume) {
 }
 
 /// @brief Set the bed crossfade duration in seconds (default 2).
+/// @param obj AmbientBed3D to configure.
+/// @param seconds Non-negative finite crossfade duration.
 void rt_game3d_ambientbed_set_crossfade(void *obj, double seconds) {
     rt_game3d_ambientbed *bed =
         game3d_ambientbed_checked(obj, "Game3D.AmbientBed3D.set_CrossfadeSeconds: invalid bed");
@@ -680,6 +788,8 @@ void rt_game3d_ambientbed_set_crossfade(void *obj, double seconds) {
 }
 
 /// @brief Get the bed crossfade duration in seconds.
+/// @param obj AmbientBed3D to query.
+/// @return The crossfade duration, or 0 for an invalid bed.
 double rt_game3d_ambientbed_get_crossfade(void *obj) {
     rt_game3d_ambientbed *bed =
         game3d_ambientbed_checked(obj, "Game3D.AmbientBed3D.get_CrossfadeSeconds: invalid bed");
@@ -687,6 +797,8 @@ double rt_game3d_ambientbed_get_crossfade(void *obj) {
 }
 
 /// @brief Active zone index, or -1 for the default bed / outside all zones.
+/// @param obj AmbientBed3D to query.
+/// @return The zero-based active zone index, or -1 while the default bed is selected.
 int64_t rt_game3d_ambientbed_get_active_zone(void *obj) {
     rt_game3d_ambientbed *bed =
         game3d_ambientbed_checked(obj, "Game3D.AmbientBed3D.get_ActiveZone: invalid bed");
@@ -694,6 +806,9 @@ int64_t rt_game3d_ambientbed_get_active_zone(void *obj) {
 }
 
 /// @brief Ease the group reverb toward the highest-priority zone containing the listener.
+/// @param audio Sound3D subsystem whose current mixer parameters are advanced.
+/// @param listener Three-component listener position in world space.
+/// @param dt Simulation interval controlling the maximum blend step.
 static void game3d_audio_reverb_tick(rt_game3d_audio *audio, const double listener[3], double dt) {
     if (audio->reverb_group < 0 || audio->reverb_fx < 0)
         return;
@@ -733,6 +848,9 @@ static void game3d_audio_reverb_tick(rt_game3d_audio *audio, const double listen
 }
 
 /// @brief Budgeted round-robin listener->source occlusion raycasts.
+/// @param world World3D supplying the physics raycast interface.
+/// @param audio Sound3D subsystem whose tracked sources are sampled.
+/// @param listener Three-component listener position in world space.
 static void game3d_audio_occlusion_tick(rt_game3d_world *world,
                                         rt_game3d_audio *audio,
                                         const double listener[3]) {
@@ -775,6 +893,9 @@ static void game3d_audio_occlusion_tick(rt_game3d_world *world,
 }
 
 /// @brief Crossfade the ambient bed toward the zone containing the listener.
+/// @param bed AmbientBed3D whose active and previous voices are advanced.
+/// @param listener Three-component listener position in world space.
+/// @param dt Simulation interval used to advance the equal-power fade.
 static void game3d_audio_ambientbed_tick(rt_game3d_ambientbed *bed,
                                          const double listener[3],
                                          double dt) {
@@ -834,6 +955,8 @@ static void game3d_audio_ambientbed_tick(rt_game3d_ambientbed *bed,
 ///          which are stored in world space and would otherwise leave the listener
 ///          in the wrong zone after a recenter. Subtracts the delta to match the
 ///          scene/physics rebase convention.
+/// @param audio Sound3D subsystem containing fixed sources and world-space effect zones.
+/// @param delta Three-component world-origin shift to subtract.
 void game3d_audio_rebase_origin(rt_game3d_audio *audio, const double delta[3]) {
     if (!audio || !delta)
         return;
@@ -867,6 +990,8 @@ void game3d_audio_rebase_origin(rt_game3d_audio *audio, const double delta[3]) {
 }
 
 /// @brief Per-step audio-immersion pass: zone reverb, occlusion, ambient beds.
+/// @param world World3D whose Sound3D subsystem and listener state are evaluated.
+/// @param dt Deterministic simulation interval in seconds.
 void game3d_audio_immersion_tick(struct rt_game3d_world *world, double dt) {
     rt_game3d_audio *audio =
         (rt_game3d_audio *)rt_g3d_checked_or_null(world->audio, RT_G3D_GAME3D_SOUND_CLASS_ID);

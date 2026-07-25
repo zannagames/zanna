@@ -28,6 +28,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file vgfx3d_backend_d3d11_shared.c
+/// @brief Implements platform-neutral validation, packing, sizing, and policy helpers
+///   shared by the D3D11 backend implementation.
+/// @details The helpers in this file operate on caller-owned values and descriptors.
+///   They centralize defensive arithmetic and state decisions so native D3D11 resource
+///   code can consume normalized, bounded inputs.
+
 #include "vgfx3d_backend_d3d11_shared.h"
 
 #include "rt_textureasset3d.h"
@@ -39,6 +46,10 @@
 
 /// @brief Pack a flat scalar array into HLSL-aligned float4 slots, four scalars per vector.
 /// Remaining vector lanes are zeroed. Truncates if @p src exceeds @p dst capacity.
+/// @param[out] dst Destination array of HLSL-compatible four-float vectors.
+/// @param[in] dst_vec_count Number of vectors available in @p dst.
+/// @param[in] src Flat scalar input; may be `NULL` to produce an all-zero destination.
+/// @param[in] src_scalar_count Number of readable scalars in @p src.
 void vgfx3d_d3d11_pack_scalar_array4(float (*dst)[4],
                                      int32_t dst_vec_count,
                                      const float *src,
@@ -63,6 +74,7 @@ void vgfx3d_d3d11_pack_scalar_array4(float (*dst)[4],
 /// @details D3D11 identity-pads unused bones instead of zero-padding them so
 ///   malformed skinning indices that reference an unused palette entry leave
 ///   vertices in bind pose instead of collapsing them to the origin.
+/// @param[out] dst Writable storage for sixteen row-major float elements.
 static void vgfx3d_d3d11_store_identity4x4(float *dst) {
     memset(dst, 0, sizeof(float) * 16u);
     dst[0] = 1.0f;
@@ -72,6 +84,9 @@ static void vgfx3d_d3d11_store_identity4x4(float *dst) {
 }
 
 /// @brief Return non-zero only when every float in @p values is finite.
+/// @param[in] values Array to validate; may be `NULL` only when @p count is zero.
+/// @param[in] count Number of elements to inspect.
+/// @return One when every requested element is finite; otherwise zero.
 int vgfx3d_d3d11_float_array_is_finite(const float *values, size_t count) {
     if (!values && count > 0)
         return 0;
@@ -83,6 +98,10 @@ int vgfx3d_d3d11_float_array_is_finite(const float *values, size_t count) {
 }
 
 /// @brief Return non-zero only when every float is finite and within @p abs_max.
+/// @param[in] values Array to validate; may be `NULL` only when @p count is zero.
+/// @param[in] count Number of elements to inspect.
+/// @param[in] abs_max Inclusive finite magnitude limit.
+/// @return One when every element is finite and within the limit; otherwise zero.
 int vgfx3d_d3d11_float_array_is_bounded(const float *values, size_t count, float abs_max) {
     if ((!values && count > 0) || !isfinite(abs_max) || abs_max < 0.0f)
         return 0;
@@ -94,6 +113,10 @@ int vgfx3d_d3d11_float_array_is_bounded(const float *values, size_t count, float
 }
 
 /// @brief Copy float constants while replacing NaN/Inf lanes with @p fallback.
+/// @param[out] dst Destination array.
+/// @param[in] src Source array, or `NULL` to fill entirely with the fallback.
+/// @param[in] count Number of elements to write.
+/// @param[in] fallback Replacement for non-finite or absent source values.
 void vgfx3d_d3d11_copy_float_array_finite_or(float *dst,
                                              const float *src,
                                              size_t count,
@@ -112,6 +135,12 @@ void vgfx3d_d3d11_copy_float_array_finite_or(float *dst,
 }
 
 /// @brief Copy float constants while substituting invalid lanes and clamping finite extremes.
+/// @param[out] dst Destination array.
+/// @param[in] src Source array, or `NULL` to fill with the normalized fallback.
+/// @param[in] count Number of elements to write.
+/// @param[in] min_value Inclusive lower bound; invalid bounds collapse to zero.
+/// @param[in] max_value Inclusive upper bound; invalid bounds collapse to zero.
+/// @param[in] fallback Replacement for absent or non-finite source values.
 void vgfx3d_d3d11_copy_float_array_clamped_finite_or(
     float *dst, const float *src, size_t count, float min_value, float max_value, float fallback) {
     float safe_fallback;
@@ -138,6 +167,8 @@ void vgfx3d_d3d11_copy_float_array_clamped_finite_or(
 }
 
 /// @brief Validate a finite direction vector before CPU constants or HLSL normalize.
+/// @param[in] values Three-component direction vector to inspect.
+/// @return One when the vector is finite and has a safe, nondegenerate length; otherwise zero.
 int vgfx3d_d3d11_vec3_direction_is_usable(const float *values) {
     double len2;
 
@@ -149,6 +180,9 @@ int vgfx3d_d3d11_vec3_direction_is_usable(const float *values) {
 }
 
 /// @brief Copy and normalize a direction vector with a stable default for invalid sources.
+/// @param[out] dst Destination for the normalized three-component vector.
+/// @param[in] src Preferred source direction.
+/// @param[in] fallback Secondary direction used when @p src is unusable.
 void vgfx3d_d3d11_copy_vec3_direction_or(float *dst, const float *src, const float fallback[3]) {
     static const float default_forward[3] = {0.0f, 0.0f, -1.0f};
     const float *chosen;
@@ -172,6 +206,8 @@ void vgfx3d_d3d11_copy_vec3_direction_or(float *dst, const float *src, const flo
 }
 
 /// @brief Copy a matrix when finite, otherwise write identity.
+/// @param[out] dst Destination for sixteen row-major matrix elements.
+/// @param[in] src Preferred matrix, or `NULL`; all elements must be bounded.
 void vgfx3d_d3d11_copy_mat4_finite_or_identity(float *dst, const float *src) {
     if (!dst)
         return;
@@ -184,6 +220,9 @@ void vgfx3d_d3d11_copy_mat4_finite_or_identity(float *dst, const float *src) {
 }
 
 /// @brief Copy a matrix when finite, otherwise copy a finite fallback or identity.
+/// @param[out] dst Destination for sixteen row-major matrix elements.
+/// @param[in] src Preferred matrix, or `NULL`.
+/// @param[in] fallback Secondary matrix, or `NULL`; identity is the final fallback.
 void vgfx3d_d3d11_copy_mat4_finite_or(float *dst, const float *src, const float *fallback) {
     if (!dst)
         return;
@@ -201,6 +240,8 @@ void vgfx3d_d3d11_copy_mat4_finite_or(float *dst, const float *src, const float 
 }
 
 /// @brief Validate a bounded light view-projection matrix with at least one useful lane.
+/// @param[in] matrix Sixteen-element matrix to inspect.
+/// @return One when all elements are bounded and at least one is non-negligible; otherwise zero.
 int vgfx3d_d3d11_shadow_matrix_is_usable(const float *matrix) {
     float max_abs = 0.0f;
 
@@ -218,6 +259,9 @@ int vgfx3d_d3d11_shadow_matrix_is_usable(const float *matrix) {
 /// Fills unused slots with identity so out-of-range indices do not collapse vertices.
 /// If @p bone_count exceeds `VGFX3D_D3D11_MAX_BONES`, the upload is clamped to
 /// the largest supported palette size for this backend.
+/// @param[out] dst Fixed-capacity destination palette.
+/// @param[in] src Contiguous row-major source matrices, or `NULL`.
+/// @param[in] bone_count Number of source matrices requested for packing.
 void vgfx3d_d3d11_pack_bone_palette(float *dst, const float *src, int32_t bone_count) {
     int32_t first_unused = 0;
 
@@ -238,6 +282,11 @@ void vgfx3d_d3d11_pack_bone_palette(float *dst, const float *src, int32_t bone_c
 /// @brief Build per-instance cbuffer entries (model + normal + prev_model) for instanced draws.
 /// When previous-frame matrices are missing, prev_model is filled with the current model so
 /// motion-vector shaders compute zero displacement (no false motion).
+/// @param[out] dst Destination array of per-instance constant-buffer entries.
+/// @param[in] instance_count Number of instances to populate.
+/// @param[in] instance_matrices Current row-major model matrices.
+/// @param[in] prev_instance_matrices Optional previous-frame model matrices.
+/// @param[in] has_prev_instance_matrices Nonzero when the previous matrix array is valid.
 void vgfx3d_d3d11_fill_instance_data(vgfx3d_d3d11_instance_data_t *dst,
                                      int32_t instance_count,
                                      const float *instance_matrices,
@@ -260,6 +309,9 @@ void vgfx3d_d3d11_fill_instance_data(vgfx3d_d3d11_instance_data_t *dst,
 }
 
 /// @brief Decide whether instanced motion-history attributes are actually available.
+/// @param[in] prev_instance_matrices Optional previous-frame matrix array.
+/// @param[in] has_prev_instance_matrices Caller-provided availability flag.
+/// @return One only when the availability flag is set and the array exists.
 int vgfx3d_d3d11_should_use_previous_instance_matrices(const float *prev_instance_matrices,
                                                        int8_t has_prev_instance_matrices) {
     return has_prev_instance_matrices && prev_instance_matrices ? 1 : 0;
@@ -268,6 +320,12 @@ int vgfx3d_d3d11_should_use_previous_instance_matrices(const float *prev_instanc
 /// @brief Roll the per-frame VP/inv-VP/cam-pos history forward by one frame.
 /// Scene VP and overlay VP are tracked separately because overlay passes use
 /// the current VP for both "current" and "previous" (no temporal coherence).
+/// @param[in,out] history History record to update.
+/// @param[in] vp Current view-projection matrix.
+/// @param[in] inv_vp Current inverse view-projection matrix.
+/// @param[in] cam_pos Optional current camera position.
+/// @param[in] is_overlay_pass Nonzero when updating an overlay rather than scene pass.
+/// @param[in] uses_separate_overlay_target Nonzero when the overlay has a distinct target.
 void vgfx3d_d3d11_update_frame_history(vgfx3d_d3d11_frame_history_t *history,
                                        const float *vp,
                                        const float *inv_vp,
@@ -306,6 +364,9 @@ void vgfx3d_d3d11_update_frame_history(vgfx3d_d3d11_frame_history_t *history,
 /// If the current upload failed, both skinning flags are cleared so the shader
 /// falls back to the unskinned path. If only the prev-frame upload failed, motion
 /// vectors degrade gracefully to "no skinning history".
+/// @param[in,out] object_data Per-object flags to reconcile.
+/// @param[in] current_upload_ok Nonzero when the current bone palette was uploaded.
+/// @param[in] prev_upload_ok Nonzero when the previous-frame palette was uploaded.
 void vgfx3d_d3d11_resolve_bone_upload_status(vgfx3d_d3d11_per_object_t *object_data,
                                              int current_upload_ok,
                                              int prev_upload_ok) {
@@ -321,6 +382,9 @@ void vgfx3d_d3d11_resolve_bone_upload_status(vgfx3d_d3d11_per_object_t *object_d
 }
 
 /// @brief Decide if shader skinning can run; palette uploads clamp to shader capacity.
+/// @param[in] bone_palette Optional source bone palette.
+/// @param[in] bone_count Number of matrices advertised by @p bone_palette.
+/// @return One when a nonempty palette is available; otherwise zero.
 int vgfx3d_d3d11_should_enable_skinning(const float *bone_palette, int32_t bone_count) {
     return (bone_palette && bone_count > 0) ? 1 : 0;
 }
@@ -329,6 +393,9 @@ int vgfx3d_d3d11_should_enable_skinning(const float *bone_palette, int32_t bone_
 /// On failure the shape count drops to 0 (mesh renders un-morphed). If only normal
 /// deltas fail, the position morph still applies but normals will be re-derived from
 /// the morphed positions.
+/// @param[in,out] object_data Per-object morph flags to reconcile.
+/// @param[in] morph_upload_ok Nonzero when position deltas were uploaded.
+/// @param[in] morph_normal_upload_ok Nonzero when normal deltas were uploaded.
 void vgfx3d_d3d11_resolve_morph_upload_status(vgfx3d_d3d11_per_object_t *object_data,
                                               int morph_upload_ok,
                                               int morph_normal_upload_ok) {
@@ -347,6 +414,9 @@ void vgfx3d_d3d11_resolve_morph_upload_status(vgfx3d_d3d11_per_object_t *object_
 
 /// @brief Compute the number of mipmap levels required to reach 1×1 from (width × height).
 /// Returns 0 for invalid dimensions. Used when creating textures with full mip chains.
+/// @param[in] width Base-level width in pixels.
+/// @param[in] height Base-level height in pixels.
+/// @return Full mip-chain level count, or zero for nonpositive dimensions.
 int32_t vgfx3d_d3d11_compute_mip_count(int32_t width, int32_t height) {
     int32_t mip_count = 1;
 
@@ -363,6 +433,8 @@ int32_t vgfx3d_d3d11_compute_mip_count(int32_t width, int32_t height) {
 }
 
 /// @brief Clamp material sampler anisotropy into the backend cacheable [1,16] range.
+/// @param[in] requested Requested anisotropy level.
+/// @return The request clamped to the backend-supported range.
 int32_t vgfx3d_d3d11_sanitize_anisotropy(int32_t requested) {
     if (requested < 1)
         return 1;
@@ -372,16 +444,24 @@ int32_t vgfx3d_d3d11_sanitize_anisotropy(int32_t requested) {
 }
 
 /// @brief Convert sanitized anisotropy to a compact cache index [0,15].
+/// @param[in] requested Requested anisotropy level.
+/// @return Zero-based cache index for the sanitized level.
 int32_t vgfx3d_d3d11_sampler_anisotropy_index(int32_t requested) {
     return vgfx3d_d3d11_sanitize_anisotropy(requested) - 1;
 }
 
 /// @brief Normalize texture UV-set selectors to the shader-visible uv0/uv1 range.
+/// @param[in] requested Caller-provided UV-set selector.
+/// @return Zero for UV0 or one for every positive selector.
 int32_t vgfx3d_d3d11_sanitize_texture_uv_set(int32_t requested) {
     return requested > 0 ? 1 : 0;
 }
 
 /// @brief Clamp an integer cbuffer parameter, tolerating inverted caller bounds.
+/// @param[in] requested Value to clamp.
+/// @param[in] min_value First inclusive bound.
+/// @param[in] max_value Second inclusive bound.
+/// @return @p requested clamped between the ordered bounds.
 int32_t vgfx3d_d3d11_clamp_int_param(int32_t requested, int32_t min_value, int32_t max_value) {
     int32_t tmp;
 
@@ -398,6 +478,9 @@ int32_t vgfx3d_d3d11_clamp_int_param(int32_t requested, int32_t min_value, int32
 }
 
 /// @brief Replace NaN/Inf float parameters before D3D11 cbuffer/state upload.
+/// @param[in] requested Preferred value.
+/// @param[in] fallback Replacement when @p requested is not finite.
+/// @return The requested value when finite, otherwise a finite fallback or zero.
 float vgfx3d_d3d11_finite_or(float requested, float fallback) {
     if (isfinite(requested))
         return requested;
@@ -405,6 +488,11 @@ float vgfx3d_d3d11_finite_or(float requested, float fallback) {
 }
 
 /// @brief Clamp a finite float parameter, tolerating inverted caller bounds.
+/// @param[in] requested Preferred value.
+/// @param[in] min_value First inclusive bound.
+/// @param[in] max_value Second inclusive bound.
+/// @param[in] fallback Replacement when the requested value is not finite.
+/// @return A finite value clamped between normalized bounds.
 float vgfx3d_d3d11_clamp_float_param(float requested,
                                      float min_value,
                                      float max_value,
@@ -435,16 +523,23 @@ float vgfx3d_d3d11_clamp_float_param(float requested,
 }
 
 /// @brief Normalize arbitrary integer flags to shader-facing 0/1 values.
+/// @param[in] requested Arbitrary caller-provided flag.
+/// @return One for any nonzero input; otherwise zero.
 int32_t vgfx3d_d3d11_sanitize_bool_flag(int32_t requested) {
     return requested ? 1 : 0;
 }
 
 /// @brief Normalize light type constants before indexing shader-side branches.
+/// @param[in] requested Caller-provided light type.
+/// @return A supported type in `[0, 6]`, defaulting to zero.
 int32_t vgfx3d_d3d11_sanitize_light_type(int32_t requested) {
     return requested >= 0 && requested <= 6 ? requested : 0;
 }
 
 /// @brief Normalize shadow projection constants after the shadow slot is known valid.
+/// @param[in] sanitized_shadow_index Previously validated shadow slot, or a negative sentinel.
+/// @param[in] requested_projection_type Caller-provided projection type.
+/// @return Perspective or cube when valid for a real slot; otherwise orthographic.
 int32_t vgfx3d_d3d11_sanitize_shadow_projection_type(int32_t sanitized_shadow_index,
                                                      int32_t requested_projection_type) {
     if (sanitized_shadow_index < 0)
@@ -456,6 +551,10 @@ int32_t vgfx3d_d3d11_sanitize_shadow_projection_type(int32_t sanitized_shadow_in
 }
 
 /// @brief Clamp and order spot-light cone cosines before shader upload.
+/// @param[in] requested_inner Requested inner-cone cosine.
+/// @param[in] requested_outer Requested outer-cone cosine.
+/// @param[out] out_inner Optional receiver for the sanitized inner cosine.
+/// @param[out] out_outer Optional receiver for the sanitized outer cosine.
 void vgfx3d_d3d11_sanitize_spot_cone(float requested_inner,
                                      float requested_outer,
                                      float *out_inner,
@@ -475,6 +574,9 @@ void vgfx3d_d3d11_sanitize_spot_cone(float requested_inner,
 }
 
 /// @brief Sanitize shadow cascade split distances into a finite nondecreasing sequence.
+/// @param[out] dst Destination split array.
+/// @param[in] src Optional source split array.
+/// @param[in] count Number of split values to write.
 void vgfx3d_d3d11_sanitize_shadow_cascade_splits(float *dst, const float *src, size_t count) {
     float previous = 0.0f;
 
@@ -492,6 +594,9 @@ void vgfx3d_d3d11_sanitize_shadow_cascade_splits(float *dst, const float *src, s
 }
 
 /// @brief Clamp a clustered-light global prefix to the uploaded light-array range.
+/// @param[in] requested Requested number of globally evaluated lights, or a negative sentinel.
+/// @param[in] light_count Number of uploaded lights.
+/// @return `-1` for a disabled clustered path, otherwise a count bounded by uploaded lights.
 int32_t vgfx3d_d3d11_sanitize_cluster_global_count(int32_t requested, int32_t light_count) {
     int32_t max_count;
 
@@ -502,6 +607,10 @@ int32_t vgfx3d_d3d11_sanitize_cluster_global_count(int32_t requested, int32_t li
 }
 
 /// @brief Validate a clustered-light table before uploading it to fixed-size HLSL arrays.
+/// @param[in] table Cluster offsets, indices, depth range, and revision to validate.
+/// @param[in] expected_revision Required nonzero light revision.
+/// @param[in] light_count Number of lights expected in the table.
+/// @return One when all metadata, offsets, and indices are internally consistent.
 int vgfx3d_d3d11_cluster_table_is_usable(const vgfx3d_cluster_table_t *table,
                                          uint32_t expected_revision,
                                          int32_t light_count) {
@@ -534,6 +643,10 @@ int vgfx3d_d3d11_cluster_table_is_usable(const vgfx3d_cluster_table_t *table,
 }
 
 /// @brief Sanitize the clustered-light logarithmic Z range before shader upload.
+/// @param[in] requested_near Requested positive near distance.
+/// @param[in] requested_far Requested far distance greater than the near distance.
+/// @param[out] out_near Optional receiver for the sanitized near distance.
+/// @param[out] out_far Optional receiver for the sanitized far distance.
 void vgfx3d_d3d11_sanitize_cluster_depth_range(float requested_near,
                                                float requested_far,
                                                float *out_near,
@@ -572,6 +685,8 @@ void vgfx3d_d3d11_sanitize_cluster_depth_range(float requested_near,
 }
 
 /// @brief Sanitize slope-scaled rasterizer bias before D3D11 state creation/cache keys.
+/// @param[in] requested Requested slope-scaled depth bias.
+/// @return Finite bias clamped to the backend-supported magnitude.
 float vgfx3d_d3d11_sanitize_slope_scaled_depth_bias(float requested) {
     return vgfx3d_d3d11_clamp_float_param(requested,
                                           -VGFX3D_D3D11_MAX_SLOPE_SCALED_DEPTH_BIAS,
@@ -580,18 +695,28 @@ float vgfx3d_d3d11_sanitize_slope_scaled_depth_bias(float requested) {
 }
 
 /// @brief Convert constant depth bias using the selected depth convention.
+/// @param[in] requested Requested floating-point bias.
+/// @param[in] reversed_z Nonzero to invert the bias for reversed-Z rendering.
+/// @return D3D11 integer depth-bias units.
 int32_t vgfx3d_d3d11_depth_bias_units(float requested, int reversed_z) {
     float bias = vgfx3d_d3d11_finite_or(requested, 0.0f);
     return vgfx3d_depth_bias_d3d11_units(reversed_z ? -bias : bias);
 }
 
 /// @brief Clamp and sign slope-scaled depth bias using the selected depth convention.
+/// @param[in] requested Requested slope-scaled bias.
+/// @param[in] reversed_z Nonzero to convert for reversed-Z rendering.
+/// @return Sanitized slope-scaled bias in the selected depth convention.
 float vgfx3d_d3d11_depth_slope_bias(float requested, int reversed_z) {
     float bias = vgfx3d_d3d11_sanitize_slope_scaled_depth_bias(requested);
     return reversed_z ? vgfx3d_depth_bias_slope_reversed_z(bias) : bias;
 }
 
 /// @brief Validate one packed per-instance bone palette against the fixed shader palette.
+/// @param[in] requested_stride Bone matrices assigned to each instance.
+/// @param[in] total_bone_count Total matrices in the packed palette.
+/// @param[in] instance_count Number of instances using the palette.
+/// @return The validated stride, or zero when counts are invalid or inconsistent.
 int32_t vgfx3d_d3d11_sanitize_instance_bone_stride(int32_t requested_stride,
                                                    int32_t total_bone_count,
                                                    int32_t instance_count) {
@@ -609,6 +734,11 @@ int32_t vgfx3d_d3d11_sanitize_instance_bone_stride(int32_t requested_stride,
 }
 
 /// @brief Convert one NDC coordinate to an in-bounds D3D11 texture coordinate.
+/// @param[in] ndc Normalized-device coordinate, clamped to `[-1, 1]`.
+/// @param[in] extent Texture extent along the selected axis.
+/// @param[in] invert_axis Nonzero to reverse the unit coordinate before conversion.
+/// @param[out] out_pixel Receives the clamped integer texel coordinate.
+/// @return One on successful conversion; otherwise zero.
 int vgfx3d_d3d11_ndc_to_pixel(float ndc, int32_t extent, int invert_axis, int32_t *out_pixel) {
     double unit;
     int32_t pixel;
@@ -635,23 +765,31 @@ int vgfx3d_d3d11_ndc_to_pixel(float ndc, int32_t extent, int invert_axis, int32_
 }
 
 /// @brief Convert reversed-Z storage to canonical depth while rejecting invalid samples.
+/// @param[in] reversed_depth Raw reversed-Z depth sample.
+/// @return Sanitized canonical depth, or the shared invalid-depth sentinel.
 float vgfx3d_d3d11_sanitize_depth_probe_result(float reversed_depth) {
     return vgfx3d_sanitize_reversed_depth_probe_result(reversed_depth);
 }
 
 /// @brief Keep the CPU-side SSR request identical to the shader's loop bounds.
+/// @param[in] requested Requested ray-march step count.
+/// @return Step count clamped to the shader-supported range.
 int32_t vgfx3d_d3d11_sanitize_ssr_steps(int32_t requested) {
     return vgfx3d_d3d11_clamp_int_param(
         requested, VGFX3D_D3D11_SSR_STEPS_MIN, VGFX3D_D3D11_SSR_STEPS_MAX);
 }
 
 /// @brief Normalize material workflow constants before the shader branches on them.
+/// @param[in] requested Caller-provided material workflow.
+/// @return PBR for the exact PBR constant; otherwise the legacy workflow.
 int32_t vgfx3d_d3d11_sanitize_material_workflow(int32_t requested) {
     return requested == RT_MATERIAL3D_WORKFLOW_PBR ? RT_MATERIAL3D_WORKFLOW_PBR
                                                    : RT_MATERIAL3D_WORKFLOW_LEGACY;
 }
 
 /// @brief Normalize alpha-mode constants before draw-state and shader upload.
+/// @param[in] requested Caller-provided alpha mode.
+/// @return A supported alpha mode, defaulting to opaque.
 int32_t vgfx3d_d3d11_sanitize_alpha_mode(int32_t requested) {
     if (requested < RT_MATERIAL3D_ALPHA_MODE_OPAQUE || requested > RT_MATERIAL3D_ALPHA_MODE_BLEND)
         return RT_MATERIAL3D_ALPHA_MODE_OPAQUE;
@@ -659,6 +797,8 @@ int32_t vgfx3d_d3d11_sanitize_alpha_mode(int32_t requested) {
 }
 
 /// @brief Normalize Game3D shading-model constants before shader upload.
+/// @param[in] requested Caller-provided shading-model index.
+/// @return A supported model index, defaulting to zero.
 int32_t vgfx3d_d3d11_sanitize_shading_model(int32_t requested) {
     if (requested < 0 || requested > VGFX3D_D3D11_SHADING_MODEL_MAX)
         return 0;
@@ -666,6 +806,8 @@ int32_t vgfx3d_d3d11_sanitize_shading_model(int32_t requested) {
 }
 
 /// @brief Normalize tonemap mode constants before shader upload.
+/// @param[in] requested Caller-provided tonemap mode.
+/// @return A supported mode index, defaulting to zero.
 int32_t vgfx3d_d3d11_sanitize_tonemap_mode(int32_t requested) {
     if (requested < 0 || requested > VGFX3D_D3D11_TONEMAP_MODE_MAX)
         return 0;
@@ -673,6 +815,10 @@ int32_t vgfx3d_d3d11_sanitize_tonemap_mode(int32_t requested) {
 }
 
 /// @brief Sanitize fog near/far distances before scene constant upload.
+/// @param[in] requested_near Requested fog start distance.
+/// @param[in] requested_far Requested fog end distance.
+/// @param[out] out_near Optional receiver for the sanitized start distance.
+/// @param[out] out_far Optional receiver for the sanitized end distance.
 void vgfx3d_d3d11_sanitize_fog_range(float requested_near,
                                      float requested_far,
                                      float *out_near,
@@ -697,17 +843,23 @@ void vgfx3d_d3d11_sanitize_fog_range(float requested_near,
 }
 
 /// @brief Sanitize D3D11 shader-facing shadow depth bias.
+/// @param[in] requested Requested shadow comparison bias.
+/// @return Finite bias clamped to the supported magnitude.
 float vgfx3d_d3d11_sanitize_shadow_bias(float requested) {
     return vgfx3d_d3d11_clamp_float_param(
         requested, -VGFX3D_D3D11_SHADOW_BIAS_MAX, VGFX3D_D3D11_SHADOW_BIAS_MAX, 0.0f);
 }
 
 /// @brief Validate a backend-facing post-FX chain before indexed iteration.
+/// @param[in] chain Post-processing chain to validate.
+/// @return Nonzero when the chain descriptor and effect count are usable.
 int vgfx3d_d3d11_postfx_chain_is_usable(const vgfx3d_postfx_chain_t *chain) {
     return vgfx3d_postfx_chain_is_usable(chain);
 }
 
 /// @brief Return non-zero when one PostFX effect descriptor actually changes rendering.
+/// @param[in] effect Effect descriptor to inspect.
+/// @return One when the effect type's corresponding snapshot flag is enabled.
 int vgfx3d_d3d11_postfx_effect_is_active(const vgfx3d_postfx_effect_desc_t *effect) {
     const vgfx3d_postfx_snapshot_t *snapshot;
 
@@ -741,6 +893,9 @@ int vgfx3d_d3d11_postfx_effect_is_active(const vgfx3d_postfx_effect_desc_t *effe
 }
 
 /// @brief Return non-zero when a usable chain contains an active effect of @p type_value.
+/// @param[in] chain Post-processing chain to inspect.
+/// @param[in] type_value Effect type to locate.
+/// @return One when a matching active effect is present; otherwise zero.
 int vgfx3d_d3d11_postfx_chain_has_active_effect(const vgfx3d_postfx_chain_t *chain,
                                                 int32_t type_value) {
     if (!vgfx3d_d3d11_postfx_chain_is_usable(chain))
@@ -754,6 +909,8 @@ int vgfx3d_d3d11_postfx_chain_has_active_effect(const vgfx3d_postfx_chain_t *cha
 }
 
 /// @brief Return non-zero when a usable chain contains any active effect.
+/// @param[in] chain Post-processing chain to inspect.
+/// @return One when at least one effect is active; otherwise zero.
 int vgfx3d_d3d11_postfx_chain_has_active_effects(const vgfx3d_postfx_chain_t *chain) {
     if (!vgfx3d_d3d11_postfx_chain_is_usable(chain))
         return 0;
@@ -765,17 +922,27 @@ int vgfx3d_d3d11_postfx_chain_has_active_effects(const vgfx3d_postfx_chain_t *ch
 }
 
 /// @brief Decide whether a draw needs current/previous bone cbuffer uploads.
+/// @param[in] has_skinning Nonzero when current-frame skinning is enabled.
+/// @param[in] has_prev_skinning Nonzero when previous-frame skinning history is enabled.
+/// @return One when either palette is required; otherwise zero.
 int vgfx3d_d3d11_should_upload_bone_palette(int has_skinning, int has_prev_skinning) {
     return has_skinning || has_prev_skinning ? 1 : 0;
 }
 
 /// @brief Add two uint64_t counters with saturation instead of wraparound.
+/// @param[in] a First unsigned counter.
+/// @param[in] b Second unsigned counter.
+/// @return Their sum, saturated at `UINT64_MAX`.
 uint64_t vgfx3d_d3d11_saturating_add_u64(uint64_t a, uint64_t b) {
     return a > UINT64_MAX - b ? UINT64_MAX : a + b;
 }
 
 /// @brief Capacity-doubling growth helper: returns the next power-of-2 capacity >= @p needed.
 /// Saturates at @p needed when doubling would overflow INT_MAX.
+/// @param[in] current_capacity Existing allocation capacity.
+/// @param[in] needed Minimum capacity required by the caller.
+/// @param[in] minimum_capacity Initial growth floor when no capacity exists.
+/// @return Existing or geometrically grown capacity sufficient for @p needed.
 int32_t vgfx3d_d3d11_next_capacity(int32_t current_capacity,
                                    int32_t needed,
                                    int32_t minimum_capacity) {
@@ -800,6 +967,10 @@ int32_t vgfx3d_d3d11_next_capacity(int32_t current_capacity,
 /// @brief Overflow-checked size_t multiplication used by byte-span helpers.
 /// @details The destination is cleared before any validation so callers never
 ///   observe a stale byte count after a rejected span.
+/// @param[in] a First multiplicand.
+/// @param[in] b Second multiplicand.
+/// @param[out] out Receives the product on success and zero on failure.
+/// @return One when the product is representable; otherwise zero.
 static int vgfx3d_d3d11_checked_mul_size(size_t a, size_t b, size_t *out) {
     if (out)
         *out = 0;
@@ -815,6 +986,10 @@ static int vgfx3d_d3d11_checked_mul_size(size_t a, size_t b, size_t *out) {
 /// @details Used before upload/readback copies so all callers share the same
 ///   overflow behavior and reject non-positive dimensions before casting to
 ///   unsigned D3D11 pitches.
+/// @param[in] width Positive row width in pixels or elements.
+/// @param[in] bytes_per_pixel Positive byte size of each element.
+/// @param[out] out_bytes Receives the checked packed row size.
+/// @return One on success; otherwise zero with @p out_bytes cleared.
 int vgfx3d_d3d11_compute_row_bytes(int32_t width, int32_t bytes_per_pixel, size_t *out_bytes) {
     if (out_bytes)
         *out_bytes = 0;
@@ -824,6 +999,9 @@ int vgfx3d_d3d11_compute_row_bytes(int32_t width, int32_t bytes_per_pixel, size_
 }
 
 /// @brief Compute a valid D3D11 buffer ByteWidth from a size_t byte count.
+/// @param[in] size Requested nonzero buffer size.
+/// @param[out] out_width Receives the D3D11-compatible unsigned width.
+/// @return One when @p size fits `UINT`; otherwise zero.
 int vgfx3d_d3d11_compute_buffer_byte_width(size_t size, uint32_t *out_width) {
     if (out_width)
         *out_width = 0;
@@ -834,6 +1012,9 @@ int vgfx3d_d3d11_compute_buffer_byte_width(size_t size, uint32_t *out_width) {
 }
 
 /// @brief Compute a valid 16-byte-aligned D3D11 constant-buffer ByteWidth.
+/// @param[in] size Requested logical constant-buffer size.
+/// @param[out] out_width Receives the aligned D3D11 byte width.
+/// @return One when the aligned size is valid for a constant buffer; otherwise zero.
 int vgfx3d_d3d11_compute_constant_buffer_byte_width(size_t size, uint32_t *out_width) {
     size_t aligned_size;
 
@@ -851,6 +1032,9 @@ int vgfx3d_d3d11_compute_constant_buffer_byte_width(size_t size, uint32_t *out_w
 }
 
 /// @brief Compute a D3D11 row pitch for a tightly packed RGBA8 upload.
+/// @param[in] width Positive image width in pixels.
+/// @param[out] out_pitch Receives four times @p width when representable.
+/// @return One on success; otherwise zero.
 int vgfx3d_d3d11_compute_rgba8_upload_pitch(int32_t width, uint32_t *out_pitch) {
     size_t row_bytes;
 
@@ -863,6 +1047,10 @@ int vgfx3d_d3d11_compute_rgba8_upload_pitch(int32_t width, uint32_t *out_pitch) 
 }
 
 /// @brief Compute one mip level extent for a square D3D11 texture chain.
+/// @param[in] base_extent Base square extent.
+/// @param[in] mip_level Zero-based mip level.
+/// @param[out] out_extent Receives the expected level extent.
+/// @return One when the base and level are valid; otherwise zero.
 int vgfx3d_d3d11_expected_square_mip_extent(int32_t base_extent,
                                             int32_t mip_level,
                                             int32_t *out_extent) {
@@ -874,6 +1062,12 @@ int vgfx3d_d3d11_expected_square_mip_extent(int32_t base_extent,
 }
 
 /// @brief Compute a bloom mip extent using the backend's bounded half-res policy.
+/// @param[in] width Source scene width in pixels.
+/// @param[in] height Source scene height in pixels.
+/// @param[in] mip_level Zero-based bloom mip level.
+/// @param[out] out_width Receives the mip width.
+/// @param[out] out_height Receives the mip height.
+/// @return One when the requested bloom level is valid; otherwise zero.
 int vgfx3d_d3d11_compute_bloom_mip_extent(
     int32_t width, int32_t height, int32_t mip_level, int32_t *out_width, int32_t *out_height) {
     int32_t mip_width;
@@ -904,6 +1098,11 @@ int vgfx3d_d3d11_compute_bloom_mip_extent(
 }
 
 /// @brief Validate an IBL mip payload extent against the destination cubemap mip.
+/// @param[in] face_size Base cubemap face size.
+/// @param[in] mip_level Zero-based mip level.
+/// @param[in] width Payload width.
+/// @param[in] height Payload height.
+/// @return One when both payload dimensions equal the expected mip extent.
 int vgfx3d_d3d11_validate_ibl_mip_extent(int32_t face_size,
                                          int32_t mip_level,
                                          int32_t width,
@@ -916,6 +1115,12 @@ int vgfx3d_d3d11_validate_ibl_mip_extent(int32_t face_size,
 }
 
 /// @brief Validate an IBL mip chain against a concrete D3D11 cubemap mip layout.
+/// @param[in] face_size Destination cubemap base face size.
+/// @param[in] ibl_base_size Source IBL chain base size.
+/// @param[in] ibl_mip_count Number of source IBL levels.
+/// @param[in] max_ibl_mips Maximum levels accepted by the destination.
+/// @param[out] out_level_base Receives the destination level corresponding to the IBL base.
+/// @return One when the chain maps exactly into the destination layout; otherwise zero.
 int vgfx3d_d3d11_validate_ibl_layout(int32_t face_size,
                                      int32_t ibl_base_size,
                                      int32_t ibl_mip_count,
@@ -931,11 +1136,22 @@ int vgfx3d_d3d11_validate_ibl_layout(int32_t face_size,
 }
 
 /// @brief Check a whole-resource upload against a saturating per-frame byte budget.
+/// @param[in] budget Per-frame byte budget.
+/// @param[in] used Bytes already consumed.
+/// @param[in] requested Additional bytes requested.
+/// @return One when the additional upload fits the budget; otherwise zero.
 int vgfx3d_d3d11_upload_budget_allows(uint64_t budget, uint64_t used, uint64_t requested) {
     return vgfx3d_upload_budget_allows(budget, used, requested);
 }
 
 /// @brief Select cache-owned native telemetry or compute pending RGBA row bytes.
+/// @param[in] has_native_asset Nonzero when upload telemetry comes from a native asset.
+/// @param[in] cached_native_bytes Cached pending size for that native asset.
+/// @param[in] width RGBA fallback width in pixels.
+/// @param[in] height RGBA fallback height in pixels.
+/// @param[in] next_row Next RGBA row awaiting upload.
+/// @param[in] upload_in_progress Nonzero while either upload path is active.
+/// @return Pending upload bytes for the selected asset representation.
 uint64_t vgfx3d_d3d11_cached_pending_texture_bytes(int has_native_asset,
                                                    uint64_t cached_native_bytes,
                                                    int32_t width,
@@ -951,6 +1167,10 @@ uint64_t vgfx3d_d3d11_cached_pending_texture_bytes(int has_native_asset,
 /// @details The D3D11 `ByteWidth` field is a UINT, so the helper rejects both
 ///   size_t multiplication overflow and byte counts that cannot be represented
 ///   by the D3D11 buffer descriptor. The output is cleared on failure.
+/// @param[in] instance_count Number of instances to upload.
+/// @param[in] instance_stride Bytes occupied by each instance.
+/// @param[out] out_bytes Receives the checked total byte size.
+/// @return One when the total is nonzero and representable by D3D11; otherwise zero.
 int vgfx3d_d3d11_compute_instance_upload_bytes(int32_t instance_count,
                                                size_t instance_stride,
                                                size_t *out_bytes) {
@@ -972,6 +1192,10 @@ int vgfx3d_d3d11_compute_instance_upload_bytes(int32_t instance_count,
 /// @details The backing buffer can be larger than the live morph payload after
 ///   capacity growth; this helper keeps UpdateSubresource boxed to the live
 ///   elements and rejects stale counts that exceed the allocation.
+/// @param[in] element_count Number of live float elements.
+/// @param[in] capacity Allocated float-element capacity.
+/// @param[out] out_bytes Receives the live byte count.
+/// @return One when both counts are valid and the live range fits; otherwise zero.
 int vgfx3d_d3d11_compute_float_srv_update_bytes(size_t element_count,
                                                 size_t capacity,
                                                 size_t *out_bytes) {
@@ -985,12 +1209,18 @@ int vgfx3d_d3d11_compute_float_srv_update_bytes(size_t element_count,
 }
 
 /// @brief Check the element limit for a typed D3D11 buffer SRV.
+/// @param[in] element_count Number of float elements.
+/// @return One when the count is nonzero and fits D3D11 and byte-width limits.
 int vgfx3d_d3d11_is_valid_float_srv_element_count(size_t element_count) {
     return element_count > 0 && element_count <= VGFX3D_D3D11_MAX_BUFFER_TEXELS &&
            element_count <= (size_t)(UINT_MAX / sizeof(float));
 }
 
 /// @brief Grow typed-float storage geometrically while respecting D3D11 limits.
+/// @param[in] current_capacity Existing float-element capacity.
+/// @param[in] needed_capacity Required live float-element count.
+/// @param[out] out_capacity Receives a valid retained or grown capacity.
+/// @return One when a supported capacity can satisfy the request; otherwise zero.
 int vgfx3d_d3d11_compute_float_srv_capacity(size_t current_capacity,
                                             size_t needed_capacity,
                                             size_t *out_capacity) {
@@ -1022,6 +1252,13 @@ int vgfx3d_d3d11_compute_float_srv_capacity(size_t current_capacity,
 }
 
 /// @brief Validate the fields required for WRITE_DISCARD constant-buffer updates.
+/// @param[in] byte_width Descriptor byte width.
+/// @param[in] has_dynamic_usage Nonzero when usage is dynamic.
+/// @param[in] has_constant_buffer_bind Nonzero when constant-buffer binding is enabled.
+/// @param[in] has_cpu_write_access Nonzero when CPU write access is enabled.
+/// @param[in] misc_flags Descriptor miscellaneous flags.
+/// @param[in] structure_byte_stride Structured-buffer stride field.
+/// @return One when the descriptor is valid for mapped constant-buffer updates.
 int vgfx3d_d3d11_constant_buffer_desc_is_usable(uint32_t byte_width,
                                                 int has_dynamic_usage,
                                                 int has_constant_buffer_bind,
@@ -1037,6 +1274,11 @@ int vgfx3d_d3d11_constant_buffer_desc_is_usable(uint32_t byte_width,
 /// @details The total stride * height span is checked even when @p out_bytes is
 ///   NULL. That keeps callers that only need a boolean answer from accepting an
 ///   impossible destination size on narrower hosts.
+/// @param[in] width Destination width in pixels.
+/// @param[in] height Destination height in pixels.
+/// @param[in] stride Destination row stride in bytes.
+/// @param[out] out_bytes Optional receiver for the total destination span.
+/// @return One when dimensions, stride, and total span are valid; otherwise zero.
 int vgfx3d_d3d11_validate_rgba8_destination(int32_t width,
                                             int32_t height,
                                             int32_t stride,
@@ -1060,6 +1302,10 @@ int vgfx3d_d3d11_validate_rgba8_destination(int32_t width,
 }
 
 /// @brief Validate a row span before converting it into unsigned D3D11 box bounds.
+/// @param[in] extent Total row count.
+/// @param[in] start First row in the requested span.
+/// @param[in] count Number of rows in the span.
+/// @return One when the positive span lies wholly within the extent.
 int vgfx3d_d3d11_validate_row_span(int32_t extent, int32_t start, int32_t count) {
     if (extent <= 0 || start < 0 || count <= 0 || start >= extent)
         return 0;
@@ -1067,12 +1313,22 @@ int vgfx3d_d3d11_validate_row_span(int32_t extent, int32_t start, int32_t count)
 }
 
 /// @brief Check 2D texture dimensions against D3D11 feature-level 11 limits.
+/// @param[in] width Texture width in pixels.
+/// @param[in] height Texture height in pixels.
+/// @return One when both dimensions are positive and supported; otherwise zero.
 int vgfx3d_d3d11_is_valid_texture2d_extent(int32_t width, int32_t height) {
     return width > 0 && height > 0 && width <= VGFX3D_D3D11_MAX_TEXTURE2D_DIMENSION &&
            height <= VGFX3D_D3D11_MAX_TEXTURE2D_DIMENSION;
 }
 
 /// @brief Validate the descriptor shape required by CopyResource into a single-mip staging tex.
+/// @param[in] width Texture width.
+/// @param[in] height Texture height.
+/// @param[in] mip_levels Descriptor mip-level count.
+/// @param[in] array_size Descriptor array size.
+/// @param[in] sample_count Multisample count.
+/// @param[in] sample_quality Multisample quality.
+/// @return One for a bounded, single-level, non-array, non-multisampled texture.
 int vgfx3d_d3d11_is_single_subresource_texture2d(uint32_t width,
                                                  uint32_t height,
                                                  uint32_t mip_levels,
@@ -1085,22 +1341,36 @@ int vgfx3d_d3d11_is_single_subresource_texture2d(uint32_t width,
 }
 
 /// @brief Check a square cubemap face dimension against D3D11 limits.
+/// @param[in] face_size Cubemap face width and height.
+/// @return One when the positive size is supported; otherwise zero.
 int vgfx3d_d3d11_is_valid_cubemap_extent(int32_t face_size) {
     return face_size > 0 && face_size <= VGFX3D_D3D11_MAX_CUBEMAP_DIMENSION;
 }
 
 /// @brief Validate an in-progress row upload without repairing corrupted state.
+/// @param[in] extent Total row count.
+/// @param[in] next_row Next row awaiting upload.
+/// @return One when the cursor identifies an unfinished in-bounds row.
 int vgfx3d_d3d11_row_upload_cursor_is_valid(int32_t extent, int32_t next_row) {
     return extent > 0 && next_row >= 0 && next_row < extent;
 }
 
 /// @brief Validate an in-progress cubemap face/row upload cursor.
+/// @param[in] face_size Cubemap face extent.
+/// @param[in] face Zero-based cubemap face index.
+/// @param[in] next_row Next row awaiting upload within that face.
+/// @return One when the face and row identify an unfinished upload.
 int vgfx3d_d3d11_cubemap_upload_cursor_is_valid(int32_t face_size, int32_t face, int32_t next_row) {
     return vgfx3d_d3d11_is_valid_cubemap_extent(face_size) && face >= 0 && face < 6 &&
            vgfx3d_d3d11_row_upload_cursor_is_valid(face_size, next_row);
 }
 
 /// @brief Validate an in-progress native compressed mip/block-row cursor.
+/// @param[in] mip_count Total native mip count.
+/// @param[in] next_mip Next mip awaiting upload.
+/// @param[in] block_rows Number of block rows in that mip.
+/// @param[in] next_block_row Next compressed block row awaiting upload.
+/// @return One when the cursor identifies an unfinished valid native upload.
 int vgfx3d_d3d11_native_upload_cursor_is_valid(int64_t mip_count,
                                                int64_t next_mip,
                                                uint64_t block_rows,
@@ -1111,6 +1381,13 @@ int vgfx3d_d3d11_native_upload_cursor_is_valid(int64_t mip_count,
 }
 
 /// @brief Validate source/destination row spans for a mapped texture readback copy.
+/// @param[in] width Number of pixels copied per row.
+/// @param[in] dst_stride Destination RGBA8 row stride in bytes.
+/// @param[in] src_row_pitch Mapped source row pitch in bytes.
+/// @param[in] src_bytes_per_pixel Source pixel size in bytes.
+/// @param[out] out_src_row_bytes Optional receiver for the packed source row size.
+/// @param[out] out_dst_row_bytes Optional receiver for the packed RGBA8 row size.
+/// @return One when both row buffers can contain the requested copy; otherwise zero.
 int vgfx3d_d3d11_validate_mapped_texture_copy(int32_t width,
                                               int32_t dst_stride,
                                               uint32_t src_row_pitch,
@@ -1139,6 +1416,8 @@ int vgfx3d_d3d11_validate_mapped_texture_copy(int32_t width,
 }
 
 /// @brief Bytes per compressed/native block row for D3D11 texture updates.
+/// @param[in] mip Native mip descriptor.
+/// @return Required block-row byte count, or zero for invalid input or overflow.
 uint64_t vgfx3d_d3d11_native_mip_row_bytes(const vgfx3d_native_texture_mip_t *mip) {
     uint64_t cols;
 
@@ -1152,6 +1431,8 @@ uint64_t vgfx3d_d3d11_native_mip_row_bytes(const vgfx3d_native_texture_mip_t *mi
 }
 
 /// @brief Number of compressed/native block rows needed to cover a mip height.
+/// @param[in] mip Native mip descriptor.
+/// @return Required block-row count, or zero for an invalid descriptor.
 uint64_t vgfx3d_d3d11_native_mip_block_rows(const vgfx3d_native_texture_mip_t *mip) {
     if (!mip || mip->height <= 0 || mip->block_height <= 0)
         return 0;
@@ -1160,6 +1441,8 @@ uint64_t vgfx3d_d3d11_native_mip_block_rows(const vgfx3d_native_texture_mip_t *m
 }
 
 /// @brief Minimum payload bytes required by a complete compressed/native mip.
+/// @param[in] mip Native mip descriptor.
+/// @return Product of block-row size and count, or zero for invalid input or overflow.
 uint64_t vgfx3d_d3d11_native_mip_required_bytes(const vgfx3d_native_texture_mip_t *mip) {
     uint64_t row_bytes;
     uint64_t block_rows;
@@ -1172,6 +1455,11 @@ uint64_t vgfx3d_d3d11_native_mip_required_bytes(const vgfx3d_native_texture_mip_
 }
 
 /// @brief Return the block footprint D3D11 expects for one native compressed format.
+/// @param[in] format_id Runtime native texture format identifier.
+/// @param[out] out_block_width Receives the format block width in texels.
+/// @param[out] out_block_height Receives the format block height in texels.
+/// @param[out] out_block_bytes Receives bytes occupied by one compressed block.
+/// @return One for a supported BC format; otherwise zero with outputs cleared.
 int vgfx3d_d3d11_native_format_block_layout(int32_t format_id,
                                             int32_t *out_block_width,
                                             int32_t *out_block_height,
@@ -1205,6 +1493,13 @@ int vgfx3d_d3d11_native_format_block_layout(int32_t format_id,
 }
 
 /// @brief Check one native compressed mip against D3D11 chain and block invariants.
+/// @param[in] mip Descriptor to validate.
+/// @param[in] previous_mip Optional immediately preceding, larger mip descriptor.
+/// @param[in] expected_format_id Required native format identifier.
+/// @param[in] expected_block_width Required block width, or nonpositive to infer it.
+/// @param[in] expected_block_height Required block height, or nonpositive to infer it.
+/// @param[in] expected_block_bytes Required block byte size, or nonpositive to infer it.
+/// @return One when format, extent, layout, and payload size are valid; otherwise zero.
 int vgfx3d_d3d11_validate_native_mip_desc(const vgfx3d_native_texture_mip_t *mip,
                                           const vgfx3d_native_texture_mip_t *previous_mip,
                                           int32_t expected_format_id,
@@ -1275,6 +1570,10 @@ int vgfx3d_d3d11_validate_native_mip_desc(const vgfx3d_native_texture_mip_t *mip
 }
 
 /// @brief Check that a native mip count can fit in D3D11's MipLevels field and chain length.
+/// @param[in] base_width Base texture width.
+/// @param[in] base_height Base texture height.
+/// @param[in] mip_count Requested native mip count.
+/// @return One when the count is positive, representable, and no longer than a full chain.
 int vgfx3d_d3d11_is_valid_native_mip_count(int32_t base_width,
                                            int32_t base_height,
                                            int64_t mip_count) {
@@ -1288,6 +1587,9 @@ int vgfx3d_d3d11_is_valid_native_mip_count(int32_t base_width,
 /// @details HLSL buffer indexing is signed-int based in the shader source, so
 ///   the largest accepted shape count is also bounded by
 ///   `(shape * vertex_count + vertex_id) * 3 + component <= INT_MAX`.
+/// @param[in] vertex_count Vertices addressed by each morph shape.
+/// @param[in] requested_shape_count Requested number of shapes.
+/// @return Shape count clamped to shader and signed-index limits, or zero.
 int32_t vgfx3d_d3d11_clamp_morph_shape_count(uint32_t vertex_count, int32_t requested_shape_count) {
     int32_t shape_count;
     uint32_t max_indexed_vertices;
@@ -1308,6 +1610,10 @@ int32_t vgfx3d_d3d11_clamp_morph_shape_count(uint32_t vertex_count, int32_t requ
 }
 
 /// @brief Compute the float element count for a D3D11 morph-delta SRV upload.
+/// @param[in] vertex_count Vertices addressed by each shape.
+/// @param[in] requested_shape_count Requested number of shapes.
+/// @param[out] out_elements Receives `shapes * vertices * 3` when valid.
+/// @return One when the element and byte counts fit backend limits; otherwise zero.
 int vgfx3d_d3d11_compute_morph_float_count(uint32_t vertex_count,
                                            int32_t requested_shape_count,
                                            size_t *out_elements) {
@@ -1337,6 +1643,13 @@ int vgfx3d_d3d11_compute_morph_float_count(uint32_t vertex_count,
 /// @details The predicate keeps enough unvisited entries to preserve the
 ///   resident floor. `kept_count` is the number already copied to the compacted
 ///   prefix, and `scan_index` is the current entry in the original array.
+/// @param[in] total_count Entries in the original cache.
+/// @param[in] kept_count Entries already retained in the compacted prefix.
+/// @param[in] scan_index Index currently being considered.
+/// @param[in] age Current entry's age in frame serials.
+/// @param[in] max_resident Minimum resident entry count to preserve.
+/// @param[in] prune_age Age threshold that must be exceeded.
+/// @return One when the current entry may be dropped safely; otherwise zero.
 int vgfx3d_d3d11_should_prune_cache_entry(int32_t total_count,
                                           int32_t kept_count,
                                           int32_t scan_index,
@@ -1360,6 +1673,12 @@ int vgfx3d_d3d11_should_prune_cache_entry(int32_t total_count,
 }
 
 /// @brief Convert one completed timestamp query pair to rounded microseconds.
+/// @param[in] disjoint Nonzero when the timestamp interval is invalid.
+/// @param[in] frequency GPU timestamp ticks per second.
+/// @param[in] start_ticks Beginning timestamp.
+/// @param[in] end_ticks Ending timestamp.
+/// @param[out] out_microseconds Receives the rounded elapsed microseconds.
+/// @return One for a valid ordered timestamp pair; otherwise zero.
 int vgfx3d_d3d11_compute_gpu_time_us(int disjoint,
                                      uint64_t frequency,
                                      uint64_t start_ticks,
@@ -1380,11 +1699,15 @@ int vgfx3d_d3d11_compute_gpu_time_us(int disjoint,
 }
 
 /// @brief Bound non-blocking timestamp polling so one lost query cannot disable telemetry forever.
+/// @param[in] pending_polls Number of unsuccessful non-blocking polls.
+/// @return One when the configured abandonment limit has been reached.
 int vgfx3d_d3d11_should_abandon_frame_timing(uint32_t pending_polls) {
     return pending_polls >= VGFX3D_D3D11_FRAME_TIMING_PENDING_POLL_LIMIT;
 }
 
 /// @brief Bound non-blocking probe polling so one busy staging copy cannot starve later frames.
+/// @param[in] pending_polls Number of unsuccessful non-blocking polls.
+/// @return One when the configured depth-probe abandonment limit has been reached.
 int vgfx3d_d3d11_should_abandon_depth_probe(uint32_t pending_polls) {
     return pending_polls >= VGFX3D_D3D11_DEPTH_PROBE_PENDING_POLL_LIMIT;
 }
@@ -1393,6 +1716,9 @@ int vgfx3d_d3d11_should_abandon_depth_probe(uint32_t pending_polls) {
 /// @details EndFrame clears the active bit before Present consumes the pending
 ///   bit. Treating only `frame_active` as busy allowed target and post-FX
 ///   mutation to invalidate a completed frame before it reached the swapchain.
+/// @param[in] frame_active Nonzero between begin-frame and end-frame.
+/// @param[in] frame_pending_present Nonzero while a completed frame awaits presentation.
+/// @return One only when neither protocol phase is active.
 int vgfx3d_d3d11_frame_state_is_idle(int8_t frame_active, int8_t frame_pending_present) {
     return !frame_active && !frame_pending_present;
 }
@@ -1401,6 +1727,14 @@ int vgfx3d_d3d11_frame_state_is_idle(int8_t frame_active, int8_t frame_pending_p
 /// @details Shadow rendering has a dedicated submission entry point. Main and
 ///   overlay draws must therefore be inside BeginFrame/EndFrame, outside a
 ///   shadow pass, and have a concrete color target and positive viewport.
+/// @param[in] frame_active Nonzero while an ordinary frame is open.
+/// @param[in] shadow_pass_slot Active shadow slot, or a negative sentinel.
+/// @param[in] has_device_context Nonzero when a native device context exists.
+/// @param[in] render_target_count Number of bound color targets.
+/// @param[in] has_primary_render_target Nonzero when color target zero is valid.
+/// @param[in] target_width Active target width.
+/// @param[in] target_height Active target height.
+/// @return One when all ordinary-draw prerequisites are satisfied.
 int vgfx3d_d3d11_draw_submission_is_ready(int8_t frame_active,
                                           int32_t shadow_pass_slot,
                                           int has_device_context,
@@ -1415,6 +1749,10 @@ int vgfx3d_d3d11_draw_submission_is_ready(int8_t frame_active,
 /// @brief Pick the right render-target classification for the current draw context.
 /// Order of priority: explicit RTT > swapchain (no postfx) > overlay (loading existing
 /// color) > scene (HDR intermediate that postfx will tonemap).
+/// @param[in] rtt_active Nonzero when an explicit render target is bound.
+/// @param[in] gpu_postfx_enabled Nonzero when window rendering uses the offscreen scene route.
+/// @param[in] load_existing_color Nonzero when the pass must preserve prior color.
+/// @return Target class selected by the backend routing priority.
 vgfx3d_d3d11_target_kind_t vgfx3d_d3d11_choose_target_kind(int8_t rtt_active,
                                                            int8_t gpu_postfx_enabled,
                                                            int8_t load_existing_color) {
@@ -1432,6 +1770,11 @@ vgfx3d_d3d11_target_kind_t vgfx3d_d3d11_choose_target_kind(int8_t rtt_active,
 ///   propagated to the backend state machine. Overlay falls back to scene first
 ///   because that preserves the already-rendered 3D color when a separate HUD
 ///   target allocation failed.
+/// @param[in] requested Requested target class.
+/// @param[in] scene_available Nonzero when the scene target set is complete.
+/// @param[in] overlay_available Nonzero when the overlay target set is complete.
+/// @param[in] rtt_available Nonzero when the explicit RTT target set is complete.
+/// @return The requested target when available, or its safest available fallback.
 vgfx3d_d3d11_target_kind_t vgfx3d_d3d11_resolve_available_target(
     vgfx3d_d3d11_target_kind_t requested,
     int scene_available,
@@ -1455,6 +1798,10 @@ vgfx3d_d3d11_target_kind_t vgfx3d_d3d11_resolve_available_target(
 /// @details Overlay targets only load after this frame has already rendered
 ///   into the separate overlay target; the first overlay pass clears stale HUD
 ///   contents from prior frames.
+/// @param[in] target_kind Resolved target class for the pass.
+/// @param[in] requested_load_existing_color Caller request to preserve target color.
+/// @param[in] overlay_used_this_frame Nonzero after an earlier pass wrote the overlay target.
+/// @return One when the selected pass should load rather than clear color.
 int8_t vgfx3d_d3d11_should_load_existing_color(vgfx3d_d3d11_target_kind_t target_kind,
                                                int8_t requested_load_existing_color,
                                                int8_t overlay_used_this_frame) {
@@ -1471,6 +1818,13 @@ int8_t vgfx3d_d3d11_should_load_existing_color(vgfx3d_d3d11_target_kind_t target
 ///   Without that bit, a payload uploaded for position-only morphing could be
 ///   reused for a later draw that requires normal deltas but did not change the
 ///   content revision.
+/// @param[in] cached_key Stable identity stored by the cache entry.
+/// @param[in] cached_revision Content revision stored by the cache entry.
+/// @param[in] cached_shape_count Shape count stored by the cache entry.
+/// @param[in] cached_vertex_count Vertex count stored by the cache entry.
+/// @param[in] cached_has_normal_deltas Nonzero when cached normal deltas exist.
+/// @param[in] cmd Candidate draw command.
+/// @return One when every cache discriminator matches the sanitized command.
 int vgfx3d_d3d11_should_reuse_morph_cache(const void *cached_key,
                                           uint64_t cached_revision,
                                           int32_t cached_shape_count,
@@ -1498,6 +1852,9 @@ int vgfx3d_d3d11_should_reuse_morph_cache(const void *cached_key,
 ///   bindings, so advertising a higher slot while an earlier slot is missing
 ///   would let a light sample an unbound shadow texture. Requiring a contiguous
 ///   prefix keeps `0 <= shadowIndex < shadowCount` equivalent to "SRV exists".
+/// @param[in] slot_count Number of entries exposed by @p slot_complete.
+/// @param[in] slot_complete Per-slot completion flags starting at slot zero.
+/// @return Length of the contiguous positive prefix, bounded by backend capacity.
 int32_t vgfx3d_d3d11_compute_shadow_count(int32_t slot_count, const int *slot_complete) {
     int32_t count = 0;
     int32_t max_slots;
@@ -1514,6 +1871,9 @@ int32_t vgfx3d_d3d11_compute_shadow_count(int32_t slot_count, const int *slot_co
 /// @details Invalid, negative, sparse, or out-of-range slots are converted to -1,
 ///   which the shader treats as unshadowed. This prevents stale scene data from
 ///   indexing a shadow SRV that was not allocated this frame.
+/// @param[in] requested_shadow_index Light-provided shadow slot.
+/// @param[in] advertised_shadow_count Number of contiguous completed slots.
+/// @return Valid slot index, or `-1` when the light must be treated as unshadowed.
 int32_t vgfx3d_d3d11_sanitize_shadow_index(int32_t requested_shadow_index,
                                            int32_t advertised_shadow_count) {
     advertised_shadow_count = vgfx3d_d3d11_clamp_shadow_count(advertised_shadow_count);
@@ -1524,6 +1884,10 @@ int32_t vgfx3d_d3d11_sanitize_shadow_index(int32_t requested_shadow_index,
 }
 
 /// @brief Require every cube face to fit in the completed contiguous shadow prefix.
+/// @param[in] requested_shadow_index First slot requested by the light.
+/// @param[in] advertised_shadow_count Number of contiguous completed slots.
+/// @param[in] projection_type Sanitized light shadow projection type.
+/// @return Valid first slot, or `-1` when the projection cannot fit.
 int32_t vgfx3d_d3d11_sanitize_shadow_index_for_projection(int32_t requested_shadow_index,
                                                           int32_t advertised_shadow_count,
                                                           int32_t projection_type) {
@@ -1539,6 +1903,11 @@ int32_t vgfx3d_d3d11_sanitize_shadow_index_for_projection(int32_t requested_shad
 }
 
 /// @brief Clamp a light's cascade count so it cannot address beyond advertised shadow slots.
+/// @param[in] requested_cascade_count Requested directional cascade count.
+/// @param[in] sanitized_shadow_index Validated first shadow slot.
+/// @param[in] advertised_shadow_count Number of contiguous completed slots.
+/// @param[in] projection_type Sanitized shadow projection type.
+/// @return Safe cascade count; non-cascade and invalid cases resolve to one.
 int32_t vgfx3d_d3d11_sanitize_shadow_cascade_count(int32_t requested_cascade_count,
                                                    int32_t sanitized_shadow_index,
                                                    int32_t advertised_shadow_count,
@@ -1559,6 +1928,8 @@ int32_t vgfx3d_d3d11_sanitize_shadow_cascade_count(int32_t requested_cascade_cou
 }
 
 /// @brief Clamp a shadow-count value to the fixed HLSL shadow texture bindings.
+/// @param[in] advertised_shadow_count Caller-provided completed-slot count.
+/// @return Count clamped to `[0, VGFX3D_MAX_SHADOW_LIGHTS]`.
 int32_t vgfx3d_d3d11_clamp_shadow_count(int32_t advertised_shadow_count) {
     if (advertised_shadow_count <= 0)
         return 0;
@@ -1567,6 +1938,12 @@ int32_t vgfx3d_d3d11_clamp_shadow_count(int32_t advertised_shadow_count) {
 }
 
 /// @brief Select scene depth according to the actual render route for this frame.
+/// @param[in] rtt_active Nonzero when explicit RTT rendering is active.
+/// @param[in] gpu_postfx_enabled Nonzero when window rendering uses scene targets.
+/// @param[in] has_rtt_depth Nonzero when RTT depth is complete.
+/// @param[in] has_scene_depth Nonzero when offscreen scene depth is complete.
+/// @param[in] has_swapchain_depth Nonzero when swapchain depth is complete.
+/// @return Target class containing readable frame depth, or `VGFX3D_D3D11_TARGET_NONE`.
 vgfx3d_d3d11_target_kind_t vgfx3d_d3d11_choose_depth_probe_target(int8_t rtt_active,
                                                                   int8_t gpu_postfx_enabled,
                                                                   int has_rtt_depth,
@@ -1582,6 +1959,11 @@ vgfx3d_d3d11_target_kind_t vgfx3d_d3d11_choose_depth_probe_target(int8_t rtt_act
 }
 
 /// @brief Project a world-space point through a shadow VP matrix using HLSL sampling rules.
+/// @param[in] shadow_vp Row-major light view-projection matrix.
+/// @param[in] projection_type Orthographic, perspective, or cube projection type.
+/// @param[in] world_pos Three-component world-space position.
+/// @param[out] out_uv_depth Receives texture U, V, and canonical depth.
+/// @return One when projection produces finite coordinates; otherwise zero.
 int vgfx3d_d3d11_project_shadow_coord(const float *shadow_vp,
                                       int32_t projection_type,
                                       const float world_pos[3],
@@ -1637,6 +2019,14 @@ int vgfx3d_d3d11_project_shadow_coord(const float *shadow_vp,
 /// @details End-of-frame dirtying is meaningful only when the target handle and
 ///   every GPU resource needed for a later staging copy are present. This helper
 ///   keeps partial allocation failures from installing stale sync hooks.
+/// @param[in] rtt_active Nonzero when RTT rendering is active.
+/// @param[in] has_target Nonzero when the host target descriptor exists.
+/// @param[in] has_color_tex Nonzero when the color texture exists.
+/// @param[in] has_color_rtv Nonzero when its render-target view exists.
+/// @param[in] has_depth_tex Nonzero when the depth texture exists.
+/// @param[in] has_depth_dsv Nonzero when its depth-stencil view exists.
+/// @param[in] has_staging Nonzero when the readback staging texture exists.
+/// @return One only when dirtying can later be serviced safely.
 int vgfx3d_d3d11_should_mark_rtt_dirty(int8_t rtt_active,
                                        int has_target,
                                        int has_color_tex,
@@ -1649,6 +2039,13 @@ int vgfx3d_d3d11_should_mark_rtt_dirty(int8_t rtt_active,
 }
 
 /// @brief Require the host target metadata to match the resources retained by the backend.
+/// @param[in] target_width Host target width.
+/// @param[in] target_height Host target height.
+/// @param[in] target_format Host target color format.
+/// @param[in] resource_width Native resource width.
+/// @param[in] resource_height Native resource height.
+/// @param[in] resource_format Native resource color format.
+/// @return One when dimensions and supported formats match exactly.
 int vgfx3d_d3d11_rtt_readback_state_matches(int32_t target_width,
                                             int32_t target_height,
                                             int32_t target_format,
@@ -1663,23 +2060,31 @@ int vgfx3d_d3d11_rtt_readback_state_matches(int32_t target_width,
 }
 
 /// @brief Validate the two color formats supported by RenderTarget3D.
+/// @param[in] color_format RenderTarget3D color-format value.
+/// @return One for UNORM8 or HDR16F; otherwise zero.
 int vgfx3d_d3d11_is_valid_rtt_color_format(int32_t color_format) {
     return color_format == (int32_t)VGFX3D_RENDERTARGET_COLOR_FORMAT_UNORM8 ||
            color_format == (int32_t)VGFX3D_RENDERTARGET_COLOR_FORMAT_HDR16F;
 }
 
 /// @brief Validate the two internal color classes accepted by D3D11 target creation.
+/// @param[in] color_format Internal D3D11 color-format value.
+/// @return One for UNORM8 or HDR16F; otherwise zero.
 int vgfx3d_d3d11_is_valid_color_format(int32_t color_format) {
     return color_format == (int32_t)VGFX3D_D3D11_COLOR_FORMAT_UNORM8 ||
            color_format == (int32_t)VGFX3D_D3D11_COLOR_FORMAT_HDR16F;
 }
 
 /// @brief Keep cached bloom counts within the fixed context arrays.
+/// @param[in] mip_count Cached bloom mip count.
+/// @return One when the count is positive and within fixed array capacity.
 int vgfx3d_d3d11_is_valid_bloom_mip_count(int32_t mip_count) {
     return mip_count > 0 && mip_count <= VGFX3D_D3D11_BLOOM_MIP_COUNT_MAX;
 }
 
 /// @brief Map a draw command to its required blend state (alpha vs opaque).
+/// @param[in] cmd Draw command whose additive and alpha settings are inspected.
+/// @return Additive, alpha, or opaque backend blend mode.
 vgfx3d_d3d11_blend_mode_t vgfx3d_d3d11_choose_blend_mode(const vgfx3d_draw_cmd_t *cmd) {
     if (cmd && cmd->additive_blend)
         return VGFX3D_D3D11_BLEND_ADDITIVE;
@@ -1689,6 +2094,8 @@ vgfx3d_d3d11_blend_mode_t vgfx3d_d3d11_choose_blend_mode(const vgfx3d_draw_cmd_t
 
 /// @brief Pick the color format for a render target — HDR16F for the scene pass
 /// (so post-FX tonemapping has headroom), UNORM8 for everything else.
+/// @param[in] target_kind Target class being allocated.
+/// @return HDR16F for scene intermediates; otherwise UNORM8.
 vgfx3d_d3d11_color_format_t vgfx3d_d3d11_choose_color_format(
     vgfx3d_d3d11_target_kind_t target_kind) {
     return target_kind == VGFX3D_D3D11_TARGET_SCENE ? VGFX3D_D3D11_COLOR_FORMAT_HDR16F
@@ -1699,6 +2106,9 @@ vgfx3d_d3d11_color_format_t vgfx3d_d3d11_choose_color_format(
 /// @details Motion vectors are only meaningful for opaque scene draws. Alpha
 ///   and additive passes blend multiple histories into one pixel, so they draw
 ///   color only and leave motion at the clear "no object history" sentinel.
+/// @param[in] target_kind Target class receiving the draw.
+/// @param[in] cmd Draw command used to evaluate depth and blend behavior.
+/// @return Color-and-motion mode for eligible opaque scene draws; otherwise color-only.
 vgfx3d_d3d11_motion_attachment_mode_t vgfx3d_d3d11_choose_motion_attachment_mode(
     vgfx3d_d3d11_target_kind_t target_kind, const vgfx3d_draw_cmd_t *cmd) {
     if (target_kind != VGFX3D_D3D11_TARGET_SCENE)
@@ -1714,6 +2124,13 @@ vgfx3d_d3d11_motion_attachment_mode_t vgfx3d_d3d11_choose_motion_attachment_mode
 /// @details D3D11's shader samples the control map plus four layers as a unit;
 ///   partial binds are treated as no splat so missing layers do not sample NULL
 ///   resources or produce backend-specific black terrain.
+/// @param[in] cmd_has_splat Nonzero when the draw requests terrain splatting.
+/// @param[in] has_splat_map Nonzero when the control map is bound.
+/// @param[in] has_layer0 Nonzero when layer zero is bound.
+/// @param[in] has_layer1 Nonzero when layer one is bound.
+/// @param[in] has_layer2 Nonzero when layer two is bound.
+/// @param[in] has_layer3 Nonzero when layer three is bound.
+/// @return One only when splatting is requested and every required texture exists.
 int vgfx3d_d3d11_has_complete_splat(int8_t cmd_has_splat,
                                     int has_splat_map,
                                     int has_layer0,
@@ -1724,11 +2141,19 @@ int vgfx3d_d3d11_has_complete_splat(int8_t cmd_has_splat,
 }
 
 /// @brief A streaming fallback is bindable but must not advertise the authored map as resident.
+/// @param[in] has_srv Nonzero when some shader resource view is bindable.
+/// @param[in] is_fallback_srv Nonzero when that view is a streaming placeholder.
+/// @return One only for a non-fallback shader resource view.
 int vgfx3d_d3d11_srv_is_ready(int has_srv, int is_fallback_srv) {
     return has_srv && !is_fallback_srv;
 }
 
 /// @brief Decide whether the offscreen scene still needs a swapchain composite.
+/// @param[in] rtt_active Nonzero when rendering to an explicit target.
+/// @param[in] gpu_postfx_enabled Nonzero when the offscreen scene route is enabled.
+/// @param[in] has_scene_targets Nonzero when scene targets are complete.
+/// @param[in] scene_composited_to_swapchain Nonzero after this frame was already resolved.
+/// @return One when an uncomposited window scene still needs resolution.
 int vgfx3d_d3d11_should_composite_to_swapchain(int8_t rtt_active,
                                                int8_t gpu_postfx_enabled,
                                                int has_scene_targets,
@@ -1737,18 +2162,27 @@ int vgfx3d_d3d11_should_composite_to_swapchain(int8_t rtt_active,
 }
 
 /// @brief Decide whether a new begin-frame invalidates a prior swapchain composite.
+/// @param[in] rtt_active Nonzero when the new frame targets an explicit RTT.
+/// @param[in] load_existing_color Nonzero when the new pass preserves prior color.
+/// @return One when the recorded composite must be reset.
 int vgfx3d_d3d11_should_reset_composited_swapchain_for_frame(int8_t rtt_active,
                                                              int8_t load_existing_color) {
     return rtt_active || !load_existing_color;
 }
 
 /// @brief Decide whether a post-FX enable update invalidates a prior swapchain composite.
+/// @param[in] current_enabled Current normalized enable state.
+/// @param[in] requested_enabled Requested enable state.
+/// @return One when the normalized enable state changes.
 int vgfx3d_d3d11_should_reset_composited_swapchain_for_postfx_update(int8_t current_enabled,
                                                                      int8_t requested_enabled) {
     return (current_enabled ? 1 : 0) != (requested_enabled ? 1 : 0);
 }
 
 /// @brief Decide whether a begin-frame should preserve scene temporal history.
+/// @param[in] resolved_target_kind Available target selected for the new pass.
+/// @param[in] requested_load_existing_color Caller request to preserve existing color.
+/// @return One when the pass is logically an overlay for temporal-history purposes.
 int vgfx3d_d3d11_should_treat_begin_frame_as_overlay(
     vgfx3d_d3d11_target_kind_t resolved_target_kind, int8_t requested_load_existing_color) {
     if (resolved_target_kind == VGFX3D_D3D11_TARGET_OVERLAY)
@@ -1760,12 +2194,26 @@ int vgfx3d_d3d11_should_treat_begin_frame_as_overlay(
 }
 
 /// @brief Decide whether overlay contents are in the separate overlay target.
+/// @param[in] resolved_target_kind Available target selected for the pass.
+/// @param[in] has_overlay_target Nonzero when separate overlay resources exist.
+/// @return One when the resolved route uses the separate overlay target.
 int vgfx3d_d3d11_uses_separate_overlay_target(vgfx3d_d3d11_target_kind_t resolved_target_kind,
                                               int has_overlay_target) {
     return resolved_target_kind == VGFX3D_D3D11_TARGET_OVERLAY && has_overlay_target;
 }
 
 /// @brief Choose the readback source class without touching D3D11 resources.
+/// @param[in] presented_snapshot_valid Nonzero when a successful snapshot is recorded.
+/// @param[in] presented_snapshot_has_texture Nonzero when its texture still exists.
+/// @param[in] scene_composited_to_swapchain Nonzero when the current scene is on the backbuffer.
+/// @param[in] gpu_postfx_enabled Nonzero when the offscreen post-FX route is enabled.
+/// @param[in] postfx_chain_valid Nonzero when a stable chain snapshot exists.
+/// @param[in] postfx_chain_enabled Nonzero when that chain is enabled.
+/// @param[in] postfx_effect_count Number of effects in the chain.
+/// @param[in] postfx_has_effects Nonzero when the chain contains an active effect.
+/// @param[in] has_scene_targets Nonzero when offscreen scene resources are complete.
+/// @param[in] current_target_kind Target class most recently selected.
+/// @return Presented snapshot, backbuffer, post-FX composite, or scene-color source class.
 vgfx3d_d3d11_readback_kind_t vgfx3d_d3d11_choose_readback_kind(
     int8_t presented_snapshot_valid,
     int presented_snapshot_has_texture,
@@ -1792,6 +2240,9 @@ vgfx3d_d3d11_readback_kind_t vgfx3d_d3d11_choose_readback_kind(
 }
 
 /// @brief Keep a pre-present snapshot only when both snapshot and Present succeeded.
+/// @param[in] snapshot_ok Nonzero when snapshot capture succeeded.
+/// @param[in] present_ok Nonzero when swapchain presentation succeeded.
+/// @return One only when both operations succeeded.
 int vgfx3d_d3d11_should_keep_presented_snapshot(int snapshot_ok, int present_ok) {
     return snapshot_ok && present_ok ? 1 : 0;
 }

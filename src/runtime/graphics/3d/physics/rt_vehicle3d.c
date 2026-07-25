@@ -27,6 +27,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements load-limited raycast suspension and tire forces for `Vehicle3D`.
+///
+/// Each configured wheel casts from a chassis-local suspension anchor, derives spring and
+/// damper load from the latest chassis motion, and applies suspension, steering, drive, brake,
+/// and lateral forces at its contact patch. All forces are accumulated on the caller-owned
+/// chassis for the following world step.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_physics3d.h"
@@ -40,8 +48,19 @@
 #include <stdint.h>
 #include <string.h>
 
+/// @brief Allocates a runtime object payload with a graphics class identifier.
+/// @param class_id Runtime class identifier.
+/// @param byte_size Positive payload size in bytes.
+/// @return Owned object handle, or null on allocation failure.
 extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
+
+/// @brief Assigns the cleanup callback invoked when an object is reclaimed.
+/// @param obj Borrowed runtime object.
+/// @param fn Native finalizer callback.
 extern void rt_obj_set_finalizer(void *obj, void (*fn)(void *));
+
+/// @brief Retains a nullable runtime object reference.
+/// @param obj Borrowed object; null is a no-op.
 extern void rt_obj_retain_maybe(void *obj);
 
 #define VEHICLE3D_MAX_WHEELS 8
@@ -87,11 +106,18 @@ typedef struct {
 } rt_vehicle3d;
 
 /// @brief Validate @p obj as a Vehicle3D handle (NULL on mismatch).
+/// @param obj Borrowed runtime object to validate.
+/// @return Borrowed vehicle payload, or null when the class does not match.
 static rt_vehicle3d *vehicle3d_checked(void *obj) {
     return (rt_vehicle3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEHICLE3D_CLASS_ID);
 }
 
 /// @brief Clamp @p value to [lo, hi], mapping non-finite input to @p fallback.
+/// @param value Candidate scalar.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @param fallback Value returned for a non-finite candidate.
+/// @return Finite fallback or bounded candidate.
 static double vehicle3d_clamp_or(double value, double lo, double hi, double fallback) {
     if (!isfinite(value))
         return fallback;
@@ -103,6 +129,7 @@ static double vehicle3d_clamp_or(double value, double lo, double hi, double fall
 }
 
 /// @brief GC finalizer: release the retained world and chassis references.
+/// @param obj Owned `rt_vehicle3d` payload being finalized; null is a no-op.
 static void vehicle3d_finalizer(void *obj) {
     rt_vehicle3d *v = (rt_vehicle3d *)obj;
     if (!v)
@@ -115,6 +142,10 @@ static void vehicle3d_finalizer(void *obj) {
 /// @details The chassis must be a dynamic Body3D already added to @p world.
 ///   Wheels start empty; add them with AddWheel, then call Step(dt) before
 ///   each World3D.Step(dt).
+/// @param world Borrowed `World3D` retained for the vehicle's lifetime.
+/// @param chassis Borrowed `Body3D` retained for the vehicle's lifetime; dynamic registration is
+///        an operational precondition checked by later stepping.
+/// @return Owned `Vehicle3D`, or null after trapping on invalid types or allocation failure.
 void *rt_vehicle3d_new(void *world, void *chassis) {
     rt_vehicle3d *v;
     if (!rt_g3d_has_class(world, RT_G3D_WORLD3D_CLASS_ID)) {
@@ -150,6 +181,18 @@ void *rt_vehicle3d_new(void *world, void *chassis) {
 ///   ray starts there and casts down chassis -Y for rest + radius). Returns
 ///   the wheel index, or -1 when the wheel table is full or inputs are
 ///   degenerate.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param x Chassis-local suspension-anchor x coordinate.
+/// @param y Chassis-local suspension-anchor y coordinate.
+/// @param z Chassis-local suspension-anchor z coordinate.
+/// @param radius Positive wheel radius in world units.
+/// @param suspension_rest Positive unloaded suspension length in world units.
+/// @param stiffness Positive spring stiffness in newtons per metre.
+/// @param damping Non-negative damping coefficient in newton-seconds per metre.
+/// @param steers Nonzero when steering input rotates this wheel's tire frame.
+/// @param driven Nonzero when this wheel shares the throttle force budget.
+/// @return New wheel index in `[0, 7]`, or `-1` for an invalid vehicle, full wheel table, or
+///         unusable dimensions/stiffness.
 int64_t rt_vehicle3d_add_wheel(void *obj,
                                double x,
                                double y,
@@ -190,6 +233,10 @@ int64_t rt_vehicle3d_add_wheel(void *obj,
 }
 
 /// @brief `Vehicle3D.SetInput(throttle, brake, steer)` — per-frame controls.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param throttle Signed drive input clamped to `[-1, 1]`.
+/// @param brake Braking input clamped to `[0, 1]`.
+/// @param steer Signed steering input clamped to `[-1, 1]`.
 void rt_vehicle3d_set_input(void *obj, double throttle, double brake, double steer) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     if (!v)
@@ -200,6 +247,9 @@ void rt_vehicle3d_set_input(void *obj, double throttle, double brake, double ste
 }
 
 /// @brief `Vehicle3D.SetDriveForce(newtons)` — total driven-wheel force budget.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param newtons Requested non-negative total force, capped at the parameter maximum; non-finite
+///        values restore the default.
 void rt_vehicle3d_set_drive_force(void *obj, double newtons) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     if (v)
@@ -208,6 +258,9 @@ void rt_vehicle3d_set_drive_force(void *obj, double newtons) {
 }
 
 /// @brief `Vehicle3D.SetBrakeForce(newtons)` — total brake force budget.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param newtons Requested non-negative total force, capped at the parameter maximum; non-finite
+///        values restore the default.
 void rt_vehicle3d_set_brake_force(void *obj, double newtons) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     if (v)
@@ -216,6 +269,8 @@ void rt_vehicle3d_set_brake_force(void *obj, double newtons) {
 }
 
 /// @brief `Vehicle3D.SetMaxSteer(degrees)` — full-lock steering angle.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param degrees Requested magnitude clamped to `[0, 85]`; non-finite values restore the default.
 void rt_vehicle3d_set_max_steer(void *obj, double degrees) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     if (v)
@@ -224,6 +279,9 @@ void rt_vehicle3d_set_max_steer(void *obj, double degrees) {
 }
 
 /// @brief `Vehicle3D.SetGrip(longitudinal, lateral)` — tire friction coefficients.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param longitudinal Non-negative longitudinal load multiplier clamped to 100.
+/// @param lateral Non-negative lateral load multiplier clamped to 100.
 void rt_vehicle3d_set_grip(void *obj, double longitudinal, double lateral) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     if (!v)
@@ -233,6 +291,8 @@ void rt_vehicle3d_set_grip(void *obj, double longitudinal, double lateral) {
 }
 
 /// @brief `Vehicle3D.SetCollisionMask(mask)` — layers wheel rays may hit.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param mask Collision-layer bit mask passed to every suspension raycast.
 void rt_vehicle3d_set_collision_mask(void *obj, int64_t mask) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     if (v)
@@ -240,6 +300,9 @@ void rt_vehicle3d_set_collision_mask(void *obj, int64_t mask) {
 }
 
 /// @brief Rotate chassis-local vector @p local into world space by the chassis orientation.
+/// @param body Borrowed chassis body supplying its orientation.
+/// @param local Borrowed three-element chassis-local direction.
+/// @param[out] out Three-element world-space direction.
 static void vehicle3d_local_to_world_dir(const rt_body3d *body, const double local[3],
                                          double out[3]) {
     quat_rotate_vec3(body->orientation, local, out);
@@ -253,6 +316,8 @@ static void vehicle3d_local_to_world_dir(const rt_body3d *body, const double loc
 ///   opposing longitudinal motion, and lateral grip cancelling side slip —
 ///   all clamped by a load-scaled friction circle so an unloaded wheel cannot
 ///   generate grip.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param dt Positive finite frame interval in seconds, used to cap side-slip cancellation.
 void rt_vehicle3d_step(void *obj, double dt) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     rt_body3d *body;
@@ -454,6 +519,9 @@ void rt_vehicle3d_step(void *obj, double dt) {
 }
 
 /// @brief `Vehicle3D.get_Speed` — signed speed along the chassis forward (m/s).
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @return Signed chassis velocity projected onto its world-space local +Z axis, or zero for an
+///         invalid vehicle/chassis.
 double rt_vehicle3d_get_speed(void *obj) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     rt_body3d *body;
@@ -469,12 +537,18 @@ double rt_vehicle3d_get_speed(void *obj) {
 }
 
 /// @brief `Vehicle3D.get_WheelCount` — number of wheels added.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @return Configured wheel count in `[0, 8]`, or zero for an invalid handle.
 int64_t rt_vehicle3d_get_wheel_count(void *obj) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     return v ? v->wheel_count : 0;
 }
 
 /// @brief `Vehicle3D.WheelInContact(i)` — whether wheel @p i touched ground last Step.
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param index Zero-based wheel index.
+/// @return `1` when the wheel produced a valid suspension hit during its most recent vehicle step;
+///         `0` for no hit or an invalid handle/index.
 int8_t rt_vehicle3d_wheel_in_contact(void *obj, int64_t index) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     if (!v || index < 0 || index >= v->wheel_count)
@@ -484,6 +558,9 @@ int8_t rt_vehicle3d_wheel_in_contact(void *obj, int64_t index) {
 
 /// @brief `Vehicle3D.WheelTravel(i)` — current suspension length of wheel @p i
 ///   (rest length when airborne; smaller when compressed).
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param index Zero-based wheel index.
+/// @return Current suspension length in world units, or zero for an invalid handle/index.
 double rt_vehicle3d_wheel_travel(void *obj, int64_t index) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     if (!v || index < 0 || index >= v->wheel_count)
@@ -492,6 +569,10 @@ double rt_vehicle3d_wheel_travel(void *obj, int64_t index) {
 }
 
 /// @brief `Vehicle3D.WheelLoad(i)` — suspension force on wheel @p i last Step (N).
+/// @param obj Borrowed `Vehicle3D` handle.
+/// @param index Zero-based wheel index.
+/// @return Non-negative spring-plus-damper load in newtons, or zero for an airborne or invalid
+///         wheel.
 double rt_vehicle3d_wheel_load(void *obj, int64_t index) {
     rt_vehicle3d *v = vehicle3d_checked(obj);
     if (!v || index < 0 || index >= v->wheel_count)

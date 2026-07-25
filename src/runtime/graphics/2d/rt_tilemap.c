@@ -57,6 +57,7 @@
 ///   on a 16-pixel tile should map to tile -1, not tile 0. The correction subtracts 1
 ///   when the quotient was rounded toward zero away from the true floor (i.e., when the
 ///   remainder is non-zero and the operands have different signs).
+/// @param value Dividend to convert from pixels to a signed grid coordinate.
 /// @param divisor Must not be zero; returns 0 if it is (defensive).
 /// @return ⌊value / divisor⌋ with floor semantics.
 static int64_t tilemap_floor_div(int64_t value, int64_t divisor) {
@@ -73,6 +74,8 @@ static int64_t tilemap_floor_div(int64_t value, int64_t divisor) {
 /// @details Handles NaN/infinity (returns 0) and values at or beyond the int64_t bounds
 ///          (saturates to INT64_MAX / INT64_MIN). Used to convert floating-point camera
 ///          scroll positions to tile coordinates without undefined-behavior casts.
+/// @param value Floating-point value to truncate toward zero after range handling.
+/// @param out Required destination for the converted integer.
 /// @return 1 on success (finite value in range or saturated); 0 if `out` is NULL or value is
 /// non-finite.
 static int8_t tilemap_double_to_i64_sat(double value, int64_t *out) {
@@ -94,6 +97,10 @@ static int8_t tilemap_double_to_i64_sat(double value, int64_t *out) {
 /// @details Returns 0 for non-positive dimensions or if width × height would overflow int64_t,
 ///          or if tile_count × sizeof(int64_t) would overflow size_t. On success writes the
 ///          tile count and byte size to the optional output pointers.
+/// @param width Proposed positive grid width.
+/// @param height Proposed positive grid height.
+/// @param tile_count_out Optional destination for `width * height`.
+/// @param tiles_size_out Optional destination for the tile array's byte size.
 /// @return 1 if the grid is valid and sizes were computed; 0 otherwise.
 static int32_t tilemap_checked_grid_size(int64_t width,
                                          int64_t height,
@@ -121,6 +128,9 @@ static int32_t tilemap_checked_grid_size(int64_t width,
 ///          Wrong-class handles always return NULL silently — the GC may
 ///          reach this with stale references during finalization, and a trap
 ///          there would crash the collector.
+/// @param tilemap_ptr Candidate opaque Tilemap handle.
+/// @param trap_message Optional diagnostic used only when the handle is null.
+/// @return Validated Tilemap implementation pointer, or `NULL` on failure.
 static rt_tilemap_impl *tilemap_checked(void *tilemap_ptr, const char *trap_message) {
     if (!tilemap_ptr) {
         if (trap_message)
@@ -138,6 +148,9 @@ static rt_tilemap_impl *tilemap_checked(void *tilemap_ptr, const char *trap_mess
 ///   short-circuits when the map has no animated tiles — the common case — so a
 ///   full-viewport redraw no longer pays an O(tile_anim_count) scan plus an
 ///   rt_obj_is_instance validation for every drawn tile.
+/// @param tm Already validated Tilemap implementation.
+/// @param tile_id Base tile identifier to resolve.
+/// @return Current animation frame tile when configured, otherwise @p tile_id.
 static inline int64_t tilemap_resolve_anim_tile_fast(rt_tilemap_impl *tm, int64_t tile_id) {
     if (!tm || tm->tile_anim_count == 0)
         return tile_id;
@@ -153,12 +166,16 @@ static inline int64_t tilemap_resolve_anim_tile_fast(rt_tilemap_impl *tm, int64_
 ///          INT64_MIN, which has no positive two's-complement representation. The result
 ///          is used to measure how far a negative tile coordinate is from the origin so
 ///          the caller can skip that many tiles without signed-overflow arithmetic.
+/// @param value Signed coordinate, normally negative.
+/// @return Exact unsigned magnitude of @p value.
 static uint64_t tilemap_distance_to_zero(int64_t value) {
     return (uint64_t)(-(value + 1)) + 1u;
 }
 
 /// @brief Negate @p value with saturation — INT64_MIN has no positive representation
 ///        in two's complement, so it saturates to INT64_MAX instead.
+/// @param value Signed value to negate.
+/// @return `-value`, or `INT64_MAX` for `INT64_MIN`.
 static int64_t tilemap_negate_saturating(int64_t value) {
     return value == INT64_MIN ? INT64_MAX : -value;
 }
@@ -166,6 +183,9 @@ static int64_t tilemap_negate_saturating(int64_t value) {
 /// @brief Add two int64_t values with saturation at INT64_MAX / INT64_MIN.
 /// @details Used for all pixel-coordinate addition in tilemap rendering and collision
 ///   to prevent wrapping when a world coordinate plus offset exceeds the int64_t range.
+/// @param a Left addend.
+/// @param b Right addend.
+/// @return Mathematical sum when representable, otherwise the corresponding limit.
 static int64_t tilemap_add_saturating(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -175,6 +195,9 @@ static int64_t tilemap_add_saturating(int64_t a, int64_t b) {
 }
 
 /// @brief Saturating int64 subtraction (a - b), clamped to the int64 range.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @return Mathematical difference when representable, otherwise the corresponding limit.
 static int64_t tilemap_sub_saturating(int64_t a, int64_t b) {
     if (b > 0 && a < INT64_MIN + b)
         return INT64_MIN;
@@ -189,6 +212,9 @@ static int64_t tilemap_sub_saturating(int64_t a, int64_t b) {
 ///   behavior from signed integer overflow. The special case `(-1) * INT64_MIN` is
 ///   handled explicitly because it is the only multiply whose absolute value exceeds
 ///   INT64_MAX.
+/// @param a Left factor.
+/// @param b Right factor.
+/// @return Mathematical product when representable, otherwise the corresponding limit.
 static int64_t tilemap_mul_saturating(int64_t a, int64_t b) {
     if (a == 0 || b == 0)
         return 0;
@@ -210,12 +236,19 @@ static int64_t tilemap_mul_saturating(int64_t a, int64_t b) {
     return a * b;
 }
 
+/// @brief Scale a positive dimension by an integer percentage with saturation.
+/// @param dim Source dimension.
+/// @param scale_percent Scale percentage.
+/// @return Truncated scaled dimension, clamped to at least one.
 static int64_t tilemap_scale_dimension(int64_t dim, int64_t scale_percent) {
     int64_t scaled = tilemap_mul_saturating(dim, scale_percent);
     scaled /= 100;
     return scaled <= 0 ? 1 : scaled;
 }
 
+/// @brief Round a floating-point value to nearest with half ties away from zero.
+/// @param value Value to round; NaN maps to zero.
+/// @return Rounded integer saturated to the `int64_t` range.
 static int64_t tilemap_round_ties_away_saturating(double value) {
     if (isnan(value))
         return 0;
@@ -231,6 +264,10 @@ static int64_t tilemap_round_ties_away_saturating(double value) {
     return (int64_t)rounded;
 }
 
+/// @brief Test whether a source-grid coordinate belongs to the configured stagger parity.
+/// @param tilemap Imported-layout configuration to inspect.
+/// @param coordinate Signed row or column coordinate.
+/// @return Nonzero when the coordinate matches the configured even/odd parity.
 static int tilemap_is_staggered_coordinate(const rt_tilemap_impl *tilemap, int64_t coordinate) {
     int64_t remainder = coordinate % 2;
     if (remainder < 0)
@@ -238,6 +275,14 @@ static int tilemap_is_staggered_coordinate(const rt_tilemap_impl *tilemap, int64
     return tilemap->import_stagger_even ? remainder == 0 : remainder == 1;
 }
 
+/// @brief Project one logical tile coordinate into imported source-pixel space.
+/// @details Applies the imported origin and orientation-specific orthogonal,
+///          isometric, staggered, hexagonal, or oblique transform.
+/// @param tilemap Imported layout configuration.
+/// @param tile_x Logical tile X coordinate.
+/// @param tile_y Logical tile Y coordinate.
+/// @param pixel_x Destination for projected source-space X.
+/// @param pixel_y Destination for projected source-space Y.
 static void tilemap_project_source(const rt_tilemap_impl *tilemap,
                                    int64_t tile_x,
                                    int64_t tile_y,
@@ -297,6 +342,13 @@ static void tilemap_project_source(const rt_tilemap_impl *tilemap,
     }
 }
 
+/// @brief Combine camera, layer, map, and parallax-origin offsets for native drawing.
+/// @param tilemap Imported map-level layout configuration.
+/// @param layer Imported layer metadata.
+/// @param camera_x Destination-pixel camera X.
+/// @param camera_y Destination-pixel camera Y.
+/// @param offset_x Destination for effective screen X offset.
+/// @param offset_y Destination for effective screen Y offset.
 static void tilemap_effective_layer_offset(const rt_tilemap_impl *tilemap,
                                            const tm_layer *layer,
                                            int64_t camera_x,
@@ -315,6 +367,13 @@ static void tilemap_effective_layer_offset(const rt_tilemap_impl *tilemap,
 /// @details Camera scroll is already expressed in destination pixels and is not
 ///          zoomed. Authored layer, tileset-frame, and parallax-origin offsets are
 ///          source-space geometry and therefore scale with the map.
+/// @param tilemap Imported map-level layout configuration.
+/// @param layer Imported layer metadata.
+/// @param camera_x Destination-pixel camera X.
+/// @param camera_y Destination-pixel camera Y.
+/// @param map_scale Positive editor zoom multiplier.
+/// @param offset_x Destination for effective screen X offset.
+/// @param offset_y Destination for effective screen Y offset.
 static void tilemap_effective_layer_offset_scaled(const rt_tilemap_impl *tilemap,
                                                   const tm_layer *layer,
                                                   int64_t camera_x,
@@ -332,6 +391,14 @@ static void tilemap_effective_layer_offset_scaled(const rt_tilemap_impl *tilemap
     *offset_y = (double)camera_y * layer->import_parallax_y + authored_y * map_scale;
 }
 
+/// @brief Apply the analytic inverse of the imported source projection.
+/// @details Staggered/hexagonal results are approximate continuous coordinates;
+///          exact cell selection is completed by `tilemap_projected_pixel_to_cell()`.
+/// @param tilemap Imported layout configuration.
+/// @param pixel_x Source-space pixel X.
+/// @param pixel_y Source-space pixel Y.
+/// @param tile_x Destination for continuous logical tile X.
+/// @param tile_y Destination for continuous logical tile Y.
 static void tilemap_inverse_project_source(const rt_tilemap_impl *tilemap,
                                            double pixel_x,
                                            double pixel_y,
@@ -391,6 +458,9 @@ static void tilemap_inverse_project_source(const rt_tilemap_impl *tilemap,
     *tile_y = source_y - (double)tilemap->import_origin_tile_y;
 }
 
+/// @brief Floor a double and saturate it to `int64_t`.
+/// @param value Value to floor; infinities saturate by sign.
+/// @return Floored and saturated integer.
 static int64_t tilemap_floor_double_saturating(double value) {
     if (!isfinite(value))
         return value < 0.0 ? INT64_MIN : INT64_MAX;
@@ -402,6 +472,9 @@ static int64_t tilemap_floor_double_saturating(double value) {
     return (int64_t)value;
 }
 
+/// @brief Ceil a double and saturate it to `int64_t`.
+/// @param value Value to ceil; infinities saturate by sign.
+/// @return Ceiled and saturated integer.
 static int64_t tilemap_ceil_double_saturating(double value) {
     if (!isfinite(value))
         return value < 0.0 ? INT64_MIN : INT64_MAX;
@@ -413,6 +486,7 @@ static int64_t tilemap_ceil_double_saturating(double value) {
     return (int64_t)value;
 }
 
+/// @brief Diagonal neighbor choices used by staggered diamond corner tests.
 enum tilemap_stagger_neighbor {
     TILEMAP_NEIGHBOR_TOP_LEFT = 0,
     TILEMAP_NEIGHBOR_TOP_RIGHT = 1,
@@ -421,6 +495,10 @@ enum tilemap_stagger_neighbor {
 };
 
 /// @brief Move one source-grid coordinate to a stagger-aware diagonal neighbor.
+/// @param tilemap Imported stagger-axis/parity configuration.
+/// @param source_x In/out source-grid X coordinate.
+/// @param source_y In/out source-grid Y coordinate.
+/// @param neighbor Diagonal direction to apply.
 static void tilemap_move_stagger_neighbor(const rt_tilemap_impl *tilemap,
                                           int64_t *source_x,
                                           int64_t *source_y,
@@ -452,6 +530,11 @@ static void tilemap_move_stagger_neighbor(const rt_tilemap_impl *tilemap,
 /// @details This follows Tiled's diamond corner tests for staggered maps and
 ///          nearest-center selection for hexagonal maps. Other orientations use
 ///          the analytic inverse projection.
+/// @param tilemap Imported layout configuration.
+/// @param pixel_x Projected source-space pixel X.
+/// @param pixel_y Projected source-space pixel Y.
+/// @param tile_x Destination for the exact logical tile X.
+/// @param tile_y Destination for the exact logical tile Y.
 static void tilemap_projected_pixel_to_cell(const rt_tilemap_impl *tilemap,
                                             double pixel_x,
                                             double pixel_y,
@@ -618,6 +701,21 @@ static void tilemap_projected_pixel_to_cell(const rt_tilemap_impl *tilemap,
     *tile_y = tilemap_sub_saturating(source_y, tilemap->import_origin_tile_y);
 }
 
+/// @brief Compute a conservative logical viewport for an imported projected layer.
+/// @details Inverse-projects the four canvas corners after accounting for frame
+///          extent and effective layer offset, expands by three cells, and clips
+///          the result to map bounds.
+/// @param tilemap Imported layout and logical bounds.
+/// @param layer Layer supplying offset and parallax.
+/// @param canvas_width Positive destination width.
+/// @param canvas_height Positive destination height.
+/// @param camera_x Camera X in destination pixels.
+/// @param camera_y Camera Y in destination pixels.
+/// @param view_x Destination for first logical X.
+/// @param view_y Destination for first logical Y.
+/// @param view_width Destination for visible logical width.
+/// @param view_height Destination for visible logical height.
+/// @return Nonzero when a nonempty clipped viewport is produced.
 static int32_t tilemap_visible_import_region(rt_tilemap_impl *tilemap,
                                              tm_layer *layer,
                                              int64_t canvas_width,
@@ -675,6 +773,18 @@ static int32_t tilemap_visible_import_region(rt_tilemap_impl *tilemap,
 }
 
 /// @brief Compute a conservative imported-layout viewport at an editor zoom.
+/// @param tilemap Imported layout and logical bounds.
+/// @param layer Layer supplying offset and parallax.
+/// @param canvas_width Positive destination width.
+/// @param canvas_height Positive destination height.
+/// @param camera_x Unscaled destination-pixel camera X.
+/// @param camera_y Unscaled destination-pixel camera Y.
+/// @param map_scale Positive finite zoom multiplier.
+/// @param view_x Destination for first logical X.
+/// @param view_y Destination for first logical Y.
+/// @param view_width Destination for visible logical width.
+/// @param view_height Destination for visible logical height.
+/// @return Nonzero when a nonempty clipped viewport is produced.
 static int32_t tilemap_visible_import_region_scaled(rt_tilemap_impl *tilemap,
                                                     tm_layer *layer,
                                                     int64_t canvas_width,
@@ -733,6 +843,11 @@ static int32_t tilemap_visible_import_region_scaled(rt_tilemap_impl *tilemap,
     return 1;
 }
 
+/// @brief Test whether a layer can use the simple orthogonal fast path.
+/// @param tilemap Map-level imported layout metadata.
+/// @param layer Per-layer imported offset and parallax metadata.
+/// @return Nonzero when projection, frame geometry, offsets, and parallax all
+///         match the native orthogonal layout.
 static int tilemap_layer_uses_default_layout(const rt_tilemap_impl *tilemap,
                                              const tm_layer *layer) {
     return tilemap->import_orientation == RT_TILEMAP_IMPORT_ORTHOGONAL &&
@@ -751,6 +866,9 @@ static int tilemap_layer_uses_default_layout(const rt_tilemap_impl *tilemap,
 ///          the leading skipped tiles from *length); spans that extend past @p limit are
 ///          truncated. Returns 0 and zeroes *length for degenerate inputs (null pointers,
 ///          non-positive length or limit, span fully outside [0, limit)).
+/// @param start In/out inclusive span start.
+/// @param length In/out span length.
+/// @param limit Exclusive positive upper bound.
 /// @return 1 if the clipped span has length > 0; 0 if the span was fully clipped or invalid.
 static int32_t tilemap_clip_span_to_bounds(int64_t *start, int64_t *length, int64_t limit) {
     if (!start || !length || *length <= 0 || limit <= 0) {
@@ -822,6 +940,9 @@ static int32_t tilemap_visible_span(int64_t canvas_size,
 //=============================================================================
 
 /// @brief GC finalizer for Tilemap — release the tileset, per-layer tiles, and per-layer tilesets.
+/// @details Also frees every animation's frame-id and duration arrays. The base
+///          tile grid is inline in the managed allocation and is not freed separately.
+/// @param obj Candidate Tilemap supplied by the runtime finalizer.
 static void tilemap_finalize(void *obj) {
     rt_tilemap_impl *tm = tilemap_checked(obj, NULL);
     if (!tm)
@@ -848,6 +969,12 @@ static void tilemap_finalize(void *obj) {
 /// GC allocation). Layer 0 is the implicit "base" layer; additional
 /// layers are added via `rt_tilemap_add_layer`. All tiles start at 0
 /// (empty). Dimension args are clamped to ≥1 (defaults: tile size 16×16).
+/// @param width Logical width in cells; nonpositive values become 1.
+/// @param height Logical height in cells; nonpositive values become 1.
+/// @param tile_width Logical cell width; nonpositive values become 16.
+/// @param tile_height Logical cell height; nonpositive values become 16.
+/// @return A caller-owned runtime-managed Tilemap, or `NULL` after a dimension
+///         overflow trap or allocation failure.
 void *rt_tilemap_new(int64_t width, int64_t height, int64_t tile_width, int64_t tile_height) {
     if (width <= 0)
         width = 1;
@@ -925,24 +1052,32 @@ void *rt_tilemap_new(int64_t width, int64_t height, int64_t tile_width, int64_t 
 // ===========================================================================
 
 /// @brief Number of tiles across the map (width). Traps on null.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @return Logical grid width, or `0` after validation failure.
 int64_t rt_tilemap_get_width(void *tilemap_ptr) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.Width: null tilemap");
     return tilemap ? tilemap->width : 0;
 }
 
 /// @brief Number of tiles down the map (height). Traps on null.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @return Logical grid height, or `0` after validation failure.
 int64_t rt_tilemap_get_height(void *tilemap_ptr) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.Height: null tilemap");
     return tilemap ? tilemap->height : 0;
 }
 
 /// @brief Width of a single tile in pixels.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @return Logical tile width, or `0` after validation failure.
 int64_t rt_tilemap_get_tile_width(void *tilemap_ptr) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.TileWidth: null tilemap");
     return tilemap ? tilemap->tile_width : 0;
 }
 
 /// @brief Height of a single tile in pixels.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @return Logical tile height, or `0` after validation failure.
 int64_t rt_tilemap_get_tile_height(void *tilemap_ptr) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.TileHeight: null tilemap");
     return tilemap ? tilemap->tile_height : 0;
@@ -952,6 +1087,28 @@ int64_t rt_tilemap_get_tile_height(void *tilemap_ptr) {
 // Tileset Management
 //=============================================================================
 
+/// @brief Configure projection and map-level metadata for imported tile content.
+/// @details Validates enum ranges, positive source-frame dimensions, finite
+///          skew/parallax values, hex side length, and invertible oblique skew,
+///          then atomically stores the supplied layout fields.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param orientation One `RT_TILEMAP_IMPORT_*` orientation.
+/// @param origin_tile_x Imported source-grid X represented by logical cell zero.
+/// @param origin_tile_y Imported source-grid Y represented by logical cell zero.
+/// @param source_frame_width Width of one rendered source frame.
+/// @param source_frame_height Height of one rendered source frame.
+/// @param draw_offset_x Map-level authored source-space X offset.
+/// @param draw_offset_y Map-level authored source-space Y offset.
+/// @param render_order One `RT_TILEMAP_IMPORT_*` traversal order.
+/// @param stagger_axis Zero for columns or one for rows.
+/// @param stagger_even Nonzero to stagger even coordinates.
+/// @param hex_side_length Hex side length along the stagger axis.
+/// @param skew_x Oblique horizontal skew in pixels per logical tile height.
+/// @param skew_y Oblique vertical skew in pixels per logical tile width.
+/// @param parallax_origin_x Imported parallax-origin X.
+/// @param parallax_origin_y Imported parallax-origin Y.
+/// @param projection_height Imported map height used by isometric projection.
+/// @return `1` when configuration is accepted, otherwise `0` with no change.
 int8_t rt_tilemap_configure_import_layout(void *tilemap_ptr,
                                           int64_t orientation,
                                           int64_t origin_tile_x,
@@ -1003,6 +1160,14 @@ int8_t rt_tilemap_configure_import_layout(void *tilemap_ptr,
     return 1;
 }
 
+/// @brief Set imported offset and parallax metadata for one layer.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Valid zero-based layer index.
+/// @param offset_x Finite authored source-space X offset.
+/// @param offset_y Finite authored source-space Y offset.
+/// @param parallax_x Finite horizontal parallax factor.
+/// @param parallax_y Finite vertical parallax factor.
+/// @return `1` when stored, otherwise `0`.
 int8_t rt_tilemap_configure_import_layer(void *tilemap_ptr,
                                          int64_t layer,
                                          double offset_x,
@@ -1020,6 +1185,10 @@ int8_t rt_tilemap_configure_import_layer(void *tilemap_ptr,
     return 1;
 }
 
+/// @brief Override the valid imported base tileset entry count.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param tile_count Positive count not exceeding the derived tileset grid.
+/// @return `1` when stored for the base map/layer, otherwise `0`.
 int8_t rt_tilemap_set_import_tile_count(void *tilemap_ptr, int64_t tile_count) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap || tile_count <= 0 || tile_count > tilemap->tileset_cols * tilemap->tileset_rows)
@@ -1034,6 +1203,10 @@ int8_t rt_tilemap_set_import_tile_count(void *tilemap_ptr, int64_t tile_count) {
 /// The tileset is laid out as a regular grid of `tile_width × tile_height`
 /// cells. Tile indices are 1-based (0 means "empty"), reading
 /// left-to-right top-to-bottom in the tileset image.
+/// @details The input Pixels is cloned, so subsequent caller mutation is not
+///          reflected. The old clone is released only after cloning succeeds.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param pixels Valid Pixels image to clone as the base tileset.
 void rt_tilemap_set_tileset(void *tilemap_ptr, void *pixels) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.SetTileset: null tilemap");
     if (!tilemap)
@@ -1081,6 +1254,8 @@ void rt_tilemap_set_tileset(void *tilemap_ptr, void *pixels) {
 }
 
 /// @brief Total number of distinct tiles available in the bound tileset (cols × rows).
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @return Valid base tileset entry count, or `0` after validation failure.
 int64_t rt_tilemap_get_tile_count(void *tilemap_ptr) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.TileCount: null tilemap");
     return tilemap ? tilemap->tile_count : 0;
@@ -1092,6 +1267,10 @@ int64_t rt_tilemap_get_tile_count(void *tilemap_ptr) {
 
 /// @brief Place tile `tile_index` at grid `(x, y)` on the base layer (silently no-op out of
 /// bounds).
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param x Zero-based logical column.
+/// @param y Zero-based logical row.
+/// @param tile_index Tile identifier to store; zero represents empty.
 void rt_tilemap_set_tile(void *tilemap_ptr, int64_t x, int64_t y, int64_t tile_index) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.SetTile: null tilemap");
     if (!tilemap)
@@ -1104,6 +1283,10 @@ void rt_tilemap_set_tile(void *tilemap_ptr, int64_t x, int64_t y, int64_t tile_i
 }
 
 /// @brief Read the tile index at grid `(x, y)`. Returns 0 (empty) for out-of-bounds.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param x Zero-based logical column.
+/// @param y Zero-based logical row.
+/// @return Stored tile identifier, or `0` for invalid/out-of-bounds access.
 int64_t rt_tilemap_get_tile(void *tilemap_ptr, int64_t x, int64_t y) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.GetTile: null tilemap");
     if (!tilemap)
@@ -1116,6 +1299,8 @@ int64_t rt_tilemap_get_tile(void *tilemap_ptr, int64_t x, int64_t y) {
 }
 
 /// @brief Fill the entire base layer with the given tile index.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param tile_index Tile identifier to store in every logical cell.
 void rt_tilemap_fill(void *tilemap_ptr, int64_t tile_index) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.Fill: null tilemap");
     if (!tilemap)
@@ -1134,11 +1319,18 @@ void rt_tilemap_fill(void *tilemap_ptr, int64_t tile_index) {
 }
 
 /// @brief Reset every tile on the base layer to 0 (empty).
+/// @param tilemap_ptr Candidate Tilemap handle.
 void rt_tilemap_clear(void *tilemap_ptr) {
     rt_tilemap_fill(tilemap_ptr, 0);
 }
 
 /// @brief Fill a rectangular region of the base layer with `tile_index`. Bounds-clamped.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param x Requested logical left edge.
+/// @param y Requested logical top edge.
+/// @param w Requested width, clipped to the map.
+/// @param h Requested height, clipped to the map.
+/// @param tile_index Tile identifier to store.
 void rt_tilemap_fill_rect(
     void *tilemap_ptr, int64_t x, int64_t y, int64_t w, int64_t h, int64_t tile_index) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.FillRect: null tilemap");
@@ -1160,6 +1352,10 @@ void rt_tilemap_fill_rect(
 // Rendering
 //=============================================================================
 
+/// @brief Callback invoked for each logical cell in visual draw order.
+/// @param tile_x Logical cell X.
+/// @param tile_y Logical cell Y.
+/// @param context Caller-provided traversal state.
 typedef void (*tilemap_cell_visitor)(int64_t tile_x, int64_t tile_y, void *context);
 
 /// @brief Visit a clipped rectangle in the visual depth order of the imported map.
@@ -1167,6 +1363,13 @@ typedef void (*tilemap_cell_visitor)(int64_t tile_x, int64_t tile_y, void *conte
 ///          Isometric maps walk screen-space diagonals from top to bottom. For
 ///          X-staggered maps, non-staggered and staggered half-rows are interleaved;
 ///          Y-staggered maps use ordinary top-to-bottom rows.
+/// @param tilemap Imported orientation and ordering metadata.
+/// @param view_x First logical column.
+/// @param view_y First logical row.
+/// @param view_w Positive logical width.
+/// @param view_h Positive logical height.
+/// @param visitor Callback invoked once per visited coordinate.
+/// @param context Opaque state passed to @p visitor.
 static void tilemap_visit_draw_order(const rt_tilemap_impl *tilemap,
                                      int64_t view_x,
                                      int64_t view_y,
@@ -1231,6 +1434,7 @@ static void tilemap_visit_draw_order(const rt_tilemap_impl *tilemap,
     }
 }
 
+/// @brief Immutable state shared by callbacks during one native layer draw.
 typedef struct {
     rt_tilemap_impl *tilemap;
     void *canvas;
@@ -1245,6 +1449,9 @@ typedef struct {
 } tilemap_native_draw_context;
 
 /// @brief Draw one imported-layout cell visited by tilemap_visit_draw_order.
+/// @param tile_x Logical cell X.
+/// @param tile_y Logical cell Y.
+/// @param opaque Pointer to `tilemap_native_draw_context`.
 static void tilemap_draw_native_cell(int64_t tile_x, int64_t tile_y, void *opaque) {
     tilemap_native_draw_context *context = (tilemap_native_draw_context *)opaque;
     int64_t tile_index = tilemap_resolve_anim_tile_fast(
@@ -1282,9 +1489,16 @@ static void tilemap_draw_native_cell(int64_t tile_x, int64_t tile_y, void *opaqu
 ///   All coordinate multiplications use `tilemap_mul_saturating` and additions use
 ///   `tilemap_add_saturating` to prevent overflow on extreme map sizes. The per-layer
 ///   tileset (if set) overrides the tilemap's default tileset.
-/// @param view_x,view_y    Top-left tile coordinate of the visible region.
-/// @param view_w,view_h    Width and height of the visible region in tiles.
-/// @param offset_x,offset_y Canvas pixel offset for the top-left tile.
+/// @param tilemap Valid implementation providing layout and base tileset.
+/// @param tilemap_ptr Original opaque handle; retained for ABI symmetry and unused.
+/// @param canvas_ptr Destination Canvas.
+/// @param layer Layer whose visible tile array is traversed.
+/// @param offset_x Camera/destination X offset.
+/// @param offset_y Camera/destination Y offset.
+/// @param view_x First logical column.
+/// @param view_y First logical row.
+/// @param view_w Logical width.
+/// @param view_h Logical height.
 static void rt_tilemap_draw_region_layer_impl(rt_tilemap_impl *tilemap,
                                               void *tilemap_ptr,
                                               void *canvas_ptr,
@@ -1327,6 +1541,15 @@ static void rt_tilemap_draw_region_layer_impl(rt_tilemap_impl *tilemap,
 }
 
 /// @brief Count non-empty tiles one layer would draw over a clipped tile region.
+/// @param tilemap Valid implementation providing animation and base tileset state.
+/// @param tilemap_ptr Original opaque handle; unused.
+/// @param layer Layer to inspect.
+/// @param view_x First logical column.
+/// @param view_y First logical row.
+/// @param view_w Logical width.
+/// @param view_h Logical height.
+/// @return Number of visible, in-range, nonempty resolved tile identifiers,
+///         saturated to `INT64_MAX`.
 static int64_t rt_tilemap_count_drawn_region_layer_impl(rt_tilemap_impl *tilemap,
                                                         void *tilemap_ptr,
                                                         tm_layer *layer,
@@ -1364,6 +1587,12 @@ static int64_t rt_tilemap_count_drawn_region_layer_impl(rt_tilemap_impl *tilemap
 /// Walks layers in order; layer 0 (base) draws first, followed by
 /// each added layer's tiles. Per-tile draws blit the source rect
 /// from the tileset. Out-of-canvas tiles are skipped early.
+/// @details Imported projections compute a conservative per-layer logical
+///          viewport; default orthogonal layouts use direct axis culling.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param canvas_ptr Destination Canvas.
+/// @param offset_x Camera/destination X offset.
+/// @param offset_y Camera/destination Y offset.
 void rt_tilemap_draw(void *tilemap_ptr, void *canvas_ptr, int64_t offset_x, int64_t offset_y) {
     if (!tilemap_ptr || !canvas_ptr)
         return;
@@ -1432,6 +1661,16 @@ void rt_tilemap_draw(void *tilemap_ptr, void *canvas_ptr, int64_t offset_x, int6
 /// `(view_x, view_y, view_w, view_h)` defines a rectangle in
 /// tile coordinates within the tilemap. Saves work for large maps
 /// when only a small viewport needs drawing.
+/// @details The requested logical spans are clipped to map bounds, then every
+///          visible layer is traversed in imported visual order.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param canvas_ptr Destination Canvas.
+/// @param offset_x Camera/destination X offset.
+/// @param offset_y Camera/destination Y offset.
+/// @param view_x Requested first logical column.
+/// @param view_y Requested first logical row.
+/// @param view_w Requested logical width.
+/// @param view_h Requested logical height.
 void rt_tilemap_draw_region(void *tilemap_ptr,
                             void *canvas_ptr,
                             int64_t offset_x,
@@ -1466,11 +1705,14 @@ void rt_tilemap_draw_region(void *tilemap_ptr,
 }
 
 /// @brief Release a temporary runtime object after a retained handoff.
+/// @param obj Temporary runtime object; `NULL` is accepted.
 static void tilemap_release_temp(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief One open-addressed entry in a per-draw scaled-tile cache.
+/// @details The entry owns @c scaled_pixels until the draw releases the cache.
 typedef struct {
     void *tileset;
     int64_t tile_index;
@@ -1482,6 +1724,9 @@ typedef struct {
 /// @details The cache is per draw call, so pointer identity is sufficient for
 ///   the tileset portion of the key. The mixed result is used with a power-of-two
 ///   table mask by tilemap_scaled_cache_find/insert.
+/// @param tileset Source tileset identity.
+/// @param tile_index One-based source tile identifier.
+/// @return Mixed platform-sized hash value.
 static size_t tilemap_scaled_cache_hash(void *tileset, int64_t tile_index) {
     uintptr_t ptr = (uintptr_t)tileset;
     uint64_t h = (uint64_t)(ptr >> 4u) ^ (uint64_t)tile_index;
@@ -1518,6 +1763,11 @@ static void *tilemap_scaled_cache_find(tilemap_scaled_tile_cache_entry *entries,
 }
 
 /// @brief Insert an already-owned scaled tile into a hash-table slot.
+/// @param entries Open-addressed cache storage.
+/// @param cap Power-of-two slot count.
+/// @param tileset Source tileset identity.
+/// @param tile_index One-based source tile identifier.
+/// @param scaled_pixels Owned scaled Pixels to place.
 /// @return Non-zero on success; zero if the table is full or invalid.
 static int tilemap_scaled_cache_place(tilemap_scaled_tile_cache_entry *entries,
                                       size_t cap,
@@ -1542,6 +1792,8 @@ static int tilemap_scaled_cache_place(tilemap_scaled_tile_cache_entry *entries,
 }
 
 /// @brief Grow the scaled-tile cache hash table and reinsert existing entries.
+/// @param entries In/out cache allocation pointer.
+/// @param cap In/out power-of-two slot count; zero selects the initial 64 slots.
 /// @return Non-zero on success, zero on allocation failure or capacity overflow.
 static int tilemap_scaled_cache_grow(tilemap_scaled_tile_cache_entry **entries, size_t *cap) {
     if (!entries || !cap)
@@ -1613,6 +1865,7 @@ static void tilemap_scaled_cache_release(tilemap_scaled_tile_cache_entry *entrie
     free(entries);
 }
 
+/// @brief Shared state for scaled-cell callbacks during one layer traversal.
 typedef struct {
     rt_tilemap_impl *tilemap;
     void *canvas;
@@ -1638,6 +1891,11 @@ typedef struct {
 } tilemap_scaled_draw_context;
 
 /// @brief Scale and draw one source-frame cell at its projected zoomed position.
+/// @details Reuses one scaled Pixels allocation per `(tileset,tile_id)` pair
+///          across the current draw call.
+/// @param tile_x Logical cell X.
+/// @param tile_y Logical cell Y.
+/// @param opaque Pointer to `tilemap_scaled_draw_context`.
 static void tilemap_draw_scaled_cell(int64_t tile_x, int64_t tile_y, void *opaque) {
     tilemap_scaled_draw_context *context = (tilemap_scaled_draw_context *)opaque;
     int64_t tile_index = tilemap_resolve_anim_tile_fast(
@@ -1704,6 +1962,11 @@ static void tilemap_draw_scaled_cell(int64_t tile_x, int64_t tile_y, void *opaqu
 ///          offsets remain destination-pixel values. Scale 100 delegates to the
 ///          native fast path. Renderers that need batching should use
 ///          TilemapRenderer2D.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param canvas_ptr Destination Canvas.
+/// @param offset_x Unscaled destination-pixel camera X.
+/// @param offset_y Unscaled destination-pixel camera Y.
+/// @param scale_percent Positive map zoom percentage.
 void rt_tilemap_draw_scaled(void *tilemap_ptr,
                             void *canvas_ptr,
                             int64_t offset_x,
@@ -1810,6 +2073,14 @@ void rt_tilemap_draw_scaled(void *tilemap_ptr,
 }
 
 /// @brief Count non-empty, drawable tiles in a tile-coordinate sub-region.
+/// @details Counts every visible layer after resolving animation and rejecting
+///          identifiers outside that layer's effective tileset. The region is clipped.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param view_x Requested first logical column.
+/// @param view_y Requested first logical row.
+/// @param view_w Requested logical width.
+/// @param view_h Requested logical height.
+/// @return Saturating total drawable-cell count, or `0` for invalid/empty input.
 int64_t rt_tilemap_count_drawn_region(
     void *tilemap_ptr, int64_t view_x, int64_t view_y, int64_t view_w, int64_t view_h) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
@@ -1833,6 +2104,13 @@ int64_t rt_tilemap_count_drawn_region(
 }
 
 /// @brief Count non-empty, drawable tiles visible in a canvas-sized viewport.
+/// @details Uses the same default or imported per-layer culling geometry as
+///          native drawing without allocating or blitting Pixels.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param canvas_ptr Canvas supplying viewport dimensions.
+/// @param offset_x Camera/destination X offset.
+/// @param offset_y Camera/destination Y offset.
+/// @return Saturating number of drawable cells in the computed viewport.
 int64_t rt_tilemap_count_drawn_visible(void *tilemap_ptr,
                                        void *canvas_ptr,
                                        int64_t offset_x,
@@ -1896,6 +2174,14 @@ int64_t rt_tilemap_count_drawn_visible(void *tilemap_ptr,
 }
 
 /// @brief Count drawable tiles visible in a scaled canvas viewport.
+/// @details Mirrors scaled drawing's per-layer culling without creating scaled
+///          Pixels. A scale of 100 delegates to the native visibility counter.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param canvas_ptr Canvas supplying viewport dimensions.
+/// @param offset_x Unscaled destination-pixel camera X.
+/// @param offset_y Unscaled destination-pixel camera Y.
+/// @param scale_percent Positive zoom percentage.
+/// @return Saturating number of drawable cells, or `0` for invalid input.
 int64_t rt_tilemap_count_drawn_visible_scaled(void *tilemap_ptr,
                                               void *canvas_ptr,
                                               int64_t offset_x,
@@ -1953,6 +2239,17 @@ int64_t rt_tilemap_count_drawn_visible_scaled(void *tilemap_ptr,
 }
 
 /// @brief Convert scaled screen coordinates to tile coordinates and return a result map.
+/// @details Uses base-layer effective offsets and either scaled orthogonal floor
+///          division or exact imported inverse selection. The returned map always
+///          contains `tileX`, `tileY`, `tile`, `scalePercent`, and `inBounds`.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param screen_x Destination-space X to test.
+/// @param screen_y Destination-space Y to test.
+/// @param offset_x Unscaled destination-pixel camera X.
+/// @param offset_y Unscaled destination-pixel camera Y.
+/// @param scale_percent Requested zoom percentage.
+/// @return A caller-owned result Map; invalid inputs yield zero coordinates/tile
+///         with `inBounds` false.
 void *rt_tilemap_hit_test_scaled(void *tilemap_ptr,
                                  int64_t screen_x,
                                  int64_t screen_y,
@@ -2011,6 +2308,11 @@ void *rt_tilemap_hit_test_scaled(void *tilemap_ptr,
 // ===========================================================================
 
 /// @brief Convert pixel `(px, py)` to tile-grid coordinates, written to `*tx, *ty`.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param pixel_x Projected source-space pixel X.
+/// @param pixel_y Projected source-space pixel Y.
+/// @param tile_x Required destination for logical tile X.
+/// @param tile_y Required destination for logical tile Y.
 void rt_tilemap_pixel_to_tile(
     void *tilemap_ptr, int64_t pixel_x, int64_t pixel_y, int64_t *tile_x, int64_t *tile_y) {
     if (!tilemap_ptr || !tile_x || !tile_y)
@@ -2029,6 +2331,11 @@ void rt_tilemap_pixel_to_tile(
 }
 
 /// @brief X-axis: convert pixel coordinate to tile-grid column.
+/// @details For projected layouts this evaluates the inverse at Y equal to zero;
+///          use `rt_tilemap_pixel_to_tile()` when both coordinates are available.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param pixel_x Source-space pixel X.
+/// @return Logical tile X, or `0` for an invalid map.
 int64_t rt_tilemap_to_tile_x(void *tilemap_ptr, int64_t pixel_x) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2043,6 +2350,11 @@ int64_t rt_tilemap_to_tile_x(void *tilemap_ptr, int64_t pixel_x) {
 }
 
 /// @brief Y-axis: convert pixel coordinate to tile-grid row.
+/// @details For projected layouts this evaluates the inverse at X equal to zero;
+///          use `rt_tilemap_pixel_to_tile()` when both coordinates are available.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param pixel_y Source-space pixel Y.
+/// @return Logical tile Y, or `0` for an invalid map.
 int64_t rt_tilemap_to_tile_y(void *tilemap_ptr, int64_t pixel_y) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2058,6 +2370,11 @@ int64_t rt_tilemap_to_tile_y(void *tilemap_ptr, int64_t pixel_y) {
 
 /// @brief Convert (tile_x, tile_y) grid coordinates to top-left pixel coordinates of that cell.
 /// Writes the result into the provided out-parameters; no-ops on null inputs.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param tile_x Logical tile X.
+/// @param tile_y Logical tile Y.
+/// @param pixel_x Required destination for projected source-space X.
+/// @param pixel_y Required destination for projected source-space Y.
 void rt_tilemap_tile_to_pixel(
     void *tilemap_ptr, int64_t tile_x, int64_t tile_y, int64_t *pixel_x, int64_t *pixel_y) {
     if (!tilemap_ptr || !pixel_x || !pixel_y)
@@ -2073,7 +2390,10 @@ void rt_tilemap_tile_to_pixel(
     *pixel_y = tilemap_round_ties_away_saturating(projected_y);
 }
 
-/// @brief X-axis: convert tile column to pixel coordinate (tile_x * tile_width).
+/// @brief Project a tile column's X coordinate with tile Y fixed at zero.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param tile_x Logical tile X.
+/// @return Rounded projected source-space X, or `0` for an invalid map.
 int64_t rt_tilemap_to_pixel_x(void *tilemap_ptr, int64_t tile_x) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2084,7 +2404,10 @@ int64_t rt_tilemap_to_pixel_x(void *tilemap_ptr, int64_t tile_x) {
     return tilemap_round_ties_away_saturating(pixel_x);
 }
 
-/// @brief Y-axis: convert tile row to pixel coordinate (tile_y * tile_height).
+/// @brief Project a tile row's Y coordinate with tile X fixed at zero.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param tile_y Logical tile Y.
+/// @return Rounded projected source-space Y, or `0` for an invalid map.
 int64_t rt_tilemap_to_pixel_y(void *tilemap_ptr, int64_t tile_y) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2101,6 +2424,9 @@ int64_t rt_tilemap_to_pixel_y(void *tilemap_ptr, int64_t tile_y) {
 
 /// @brief Tag a tile id with a collision type (e.g. SOLID). Out-of-range ids are silently ignored.
 /// Collision is keyed on the raw tile id, not the layer; one table is shared by every layer.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param tile_id Positive raw tile identifier below `MAX_TILE_COLLISION_IDS`.
+/// @param coll_type `NONE`, `SOLID`, or `ONE_WAY_UP`.
 void rt_tilemap_set_collision(void *tilemap_ptr, int64_t tile_id, int64_t coll_type) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.SetCollision: null tilemap");
     if (!tilemap)
@@ -2115,6 +2441,9 @@ void rt_tilemap_set_collision(void *tilemap_ptr, int64_t tile_id, int64_t coll_t
 
 /// @brief Read the collision type previously set for a tile id; 0 (NONE) for unset/out-of-range
 /// ids.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param tile_id Raw tile identifier.
+/// @return Stored collision enum, or `RT_TILE_COLLISION_NONE` when invalid/unset.
 int64_t rt_tilemap_get_collision(void *tilemap_ptr, int64_t tile_id) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, "Tilemap.GetCollision: null tilemap");
     if (!tilemap)
@@ -2127,6 +2456,10 @@ int64_t rt_tilemap_get_collision(void *tilemap_ptr, int64_t tile_id) {
 /// @brief Sample the designated collision layer at a pixel coordinate; returns 1 if SOLID.
 /// Collision is keyed by the base tile id stored in the map. Animated tiles
 /// may change their rendered frame, but their collision remains stable.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param pixel_x Logical orthogonal world-pixel X.
+/// @param pixel_y Logical orthogonal world-pixel Y.
+/// @return `1` only for an in-bounds cell tagged solid; otherwise `0`.
 int8_t rt_tilemap_is_solid_at(void *tilemap_ptr, int64_t pixel_x, int64_t pixel_y) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2146,6 +2479,12 @@ int8_t rt_tilemap_is_solid_at(void *tilemap_ptr, int64_t pixel_x, int64_t pixel_
 
 /// @brief Resolve an AABB against solid tiles. Returns 1 if any collision occurred.
 /// Updates the position (out_x, out_y) and velocity (out_vx, out_vy) in-place.
+/// @details Uses up to four separation passes against the designated logical
+///          collision layer. Solid tiles resolve on the shallowest axis;
+///          one-way-up tiles resolve only while descending across their top.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param body_ptr Physics2D body whose public position/velocity state is updated.
+/// @return `1` when at least one collision is resolved, otherwise `0`.
 int8_t rt_tilemap_collide_body(void *tilemap_ptr, void *body_ptr) {
     if (!tilemap_ptr || !body_ptr)
         return 0;
@@ -2284,6 +2623,9 @@ int8_t rt_tilemap_collide_body(void *tilemap_ptr, void *body_ptr) {
 /// Names must fit in the fixed 31-byte layer name slot; layers default to visible with no per-layer
 /// tileset.
 /// Returns -1 on null input, on hitting `TM_MAX_LAYERS`, or on allocation failure.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param name Optional borrowed runtime string; null creates an empty name.
+/// @return New zero-based layer index, or `-1` on validation/capacity/allocation failure.
 int64_t rt_tilemap_add_layer(void *tilemap_ptr, rt_string name) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2334,12 +2676,17 @@ int64_t rt_tilemap_add_layer(void *tilemap_ptr, rt_string name) {
 }
 
 /// @brief Number of layers currently present (always >= 1 for a valid tilemap).
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @return Layer count, or `0` for an invalid map.
 int64_t rt_tilemap_get_layer_count(void *tilemap_ptr) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     return tilemap ? tilemap->layer_count : 0;
 }
 
 /// @brief Linear lookup of a layer by name (case-sensitive `strcmp`); returns -1 if not found.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param name Borrowed runtime string to find.
+/// @return First matching layer index, or `-1` when invalid/absent.
 int64_t rt_tilemap_get_layer_by_name(void *tilemap_ptr, rt_string name) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap || !name)
@@ -2358,6 +2705,8 @@ int64_t rt_tilemap_get_layer_by_name(void *tilemap_ptr, rt_string name) {
 /// @brief Remove a non-base layer (index 0 is permanent), shifting subsequent layers down.
 /// Frees the owned tile grid + per-layer tileset, and rebases `collision_layer` so it still points
 /// at a valid layer (resets to 0 if removed, or decrements if it was above the removed slot).
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Nonzero valid layer index to remove.
 void rt_tilemap_remove_layer(void *tilemap_ptr, int64_t layer) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2394,6 +2743,9 @@ void rt_tilemap_remove_layer(void *tilemap_ptr, int64_t layer) {
 }
 
 /// @brief Toggle a layer's visibility flag (drawing skips invisible layers).
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Valid zero-based layer index.
+/// @param visible Zero to hide; nonzero to show.
 void rt_tilemap_set_layer_visible(void *tilemap_ptr, int64_t layer, int8_t visible) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2404,6 +2756,9 @@ void rt_tilemap_set_layer_visible(void *tilemap_ptr, int64_t layer, int8_t visib
 }
 
 /// @brief Read a layer's visibility flag (0 = hidden, 1 = visible). Returns 0 for invalid layers.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Layer index to query.
+/// @return Normalized visibility flag, or `0` for invalid input.
 int8_t rt_tilemap_get_layer_visible(void *tilemap_ptr, int64_t layer) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2419,6 +2774,11 @@ int8_t rt_tilemap_get_layer_visible(void *tilemap_ptr, int64_t layer) {
 
 /// @brief Write a tile id at (x, y) on a specific layer. Silently no-ops on out-of-range
 /// layer/coords.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Layer index to modify.
+/// @param x Logical column.
+/// @param y Logical row.
+/// @param tile Tile identifier to store.
 void rt_tilemap_set_tile_layer(
     void *tilemap_ptr, int64_t layer, int64_t x, int64_t y, int64_t tile) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
@@ -2435,6 +2795,11 @@ void rt_tilemap_set_tile_layer(
 
 /// @brief Read the tile id at (x, y) on a specific layer; 0 for out-of-range queries or empty
 /// cells.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Layer index to inspect.
+/// @param x Logical column.
+/// @param y Logical row.
+/// @return Stored tile identifier, or `0` for invalid/out-of-bounds access.
 int64_t rt_tilemap_get_tile_layer(void *tilemap_ptr, int64_t layer, int64_t x, int64_t y) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2449,6 +2814,9 @@ int64_t rt_tilemap_get_tile_layer(void *tilemap_ptr, int64_t layer, int64_t x, i
 }
 
 /// @brief Fill every cell of a single layer with the given tile id.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Layer index to fill.
+/// @param tile Tile identifier to store.
 void rt_tilemap_fill_layer(void *tilemap_ptr, int64_t layer, int64_t tile) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2465,6 +2833,8 @@ void rt_tilemap_fill_layer(void *tilemap_ptr, int64_t layer, int64_t tile) {
 }
 
 /// @brief Zero every cell of a single layer (`memset` shortcut for `fill_layer(layer, 0)`).
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Layer index to clear.
 void rt_tilemap_clear_layer(void *tilemap_ptr, int64_t layer) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2487,6 +2857,9 @@ void rt_tilemap_clear_layer(void *tilemap_ptr, int64_t layer) {
 /// Pass `pixels=NULL` to clear and fall back to the tilemap-wide tileset. The image is cloned
 /// (via `rt_pixels_clone`) and retained on the heap; the previous binding is released.
 /// `tile_count` is recomputed from the cloned image's dimensions divided by tile_width/height.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Valid layer index.
+/// @param pixels Valid Pixels to clone, or `NULL` to restore base-tileset fallback.
 void rt_tilemap_set_layer_tileset(void *tilemap_ptr, int64_t layer, void *pixels) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2535,6 +2908,11 @@ void rt_tilemap_set_layer_tileset(void *tilemap_ptr, int64_t layer, void *pixels
 /// layers, layers without tile storage, and tiles outside the visible rect (camera + canvas size).
 /// Tile id 0 is treated as empty; ids are 1-based into the chosen tileset (so id `n` maps to
 /// `(n-1) % cols, (n-1) / cols`). `cam_x`/`cam_y` are world→screen offsets in pixels.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param canvas_ptr Destination Canvas.
+/// @param layer Layer index to render.
+/// @param cam_x Camera/destination X offset.
+/// @param cam_y Camera/destination Y offset.
 void rt_tilemap_draw_layer(
     void *tilemap_ptr, void *canvas_ptr, int64_t layer, int64_t cam_x, int64_t cam_y) {
     if (!tilemap_ptr || !canvas_ptr)
@@ -2605,6 +2983,8 @@ void rt_tilemap_draw_layer(
 //=============================================================================
 
 /// @brief Designate which layer's tile grid is consulted by `is_solid_at` and `collide_body`.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param layer Valid layer index to designate.
 void rt_tilemap_set_collision_layer(void *tilemap_ptr, int64_t layer) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap)
@@ -2615,6 +2995,8 @@ void rt_tilemap_set_collision_layer(void *tilemap_ptr, int64_t layer) {
 }
 
 /// @brief Read the index of the layer currently designated as the collision source (default 0).
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @return Collision-layer index, or `0` for an invalid map.
 int64_t rt_tilemap_get_collision_layer(void *tilemap_ptr) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     return tilemap ? tilemap->collision_layer : 0;
@@ -2624,6 +3006,10 @@ int64_t rt_tilemap_get_collision_layer(void *tilemap_ptr) {
 // Tile Animation
 //=============================================================================
 
+/// @brief Find animation storage by raw base tile identifier.
+/// @param tm Candidate Tilemap implementation.
+/// @param base_tile_id Positive animation key.
+/// @return Borrowed animation entry, or `NULL` when absent.
 static tm_tile_anim *tilemap_find_anim(rt_tilemap_impl *tm, int64_t base_tile_id) {
     if (!tm)
         return NULL;
@@ -2634,6 +3020,17 @@ static tm_tile_anim *tilemap_find_anim(rt_tilemap_impl *tm, int64_t base_tile_id
     return NULL;
 }
 
+/// @brief Transactionally add or replace a variable-duration tile animation.
+/// @details Validates all positive frames/durations, allocates both arrays
+///          before modifying the map, resets playback to frame zero, and stores
+///          @p uniform_duration as metadata.
+/// @param tm Candidate Tilemap implementation.
+/// @param base_tile_id Positive raw tile identifier used as the lookup key.
+/// @param frame_count Positive count within the imported-animation limit.
+/// @param frame_tiles Array of positive resolved tile identifiers.
+/// @param frame_durations Array of positive per-frame milliseconds.
+/// @param uniform_duration Uniform duration metadata, or zero for imported timing.
+/// @return `1` on success, otherwise `0` with any existing animation unchanged.
 static int8_t tilemap_assign_anim(rt_tilemap_impl *tm,
                                   int64_t base_tile_id,
                                   int64_t frame_count,
@@ -2685,6 +3082,10 @@ static int8_t tilemap_assign_anim(rt_tilemap_impl *tm,
 /// time. The frame table defaults to sequential ids `(base, base+1, ..., base+frame_count-1)`;
 /// override individual frames with `set_tile_anim_frame`. Caps at `TM_MAX_TILE_ANIMS` registrations
 /// and `TM_MAX_ANIM_FRAMES` per animation; duplicate base tile ids replace the existing animation.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param base_tile_id Positive raw tile identifier used as the animation key.
+/// @param frame_count Number of sequential frames.
+/// @param ms_per_frame Positive uniform duration.
 void rt_tilemap_set_tile_anim(void *tilemap_ptr,
                               int64_t base_tile_id,
                               int64_t frame_count,
@@ -2707,6 +3108,10 @@ void rt_tilemap_set_tile_anim(void *tilemap_ptr,
 /// @brief Override one frame in an existing animation (selected by `base_tile_id`).
 /// Useful for non-contiguous tilesets where animation frames don't sit on adjacent indices.
 /// Silently no-ops if the animation is not registered or the frame index is out of range.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param base_tile_id Animation key to find.
+/// @param frame_idx Zero-based frame index.
+/// @param tile_id Replacement tile identifier, stored without range validation.
 void rt_tilemap_set_tile_anim_frame(void *tilemap_ptr,
                                     int64_t base_tile_id,
                                     int64_t frame_idx,
@@ -2725,6 +3130,13 @@ void rt_tilemap_set_tile_anim_frame(void *tilemap_ptr,
     }
 }
 
+/// @brief Register imported animation frames with individual durations.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param base_tile_id Positive raw tile identifier used as the animation key.
+/// @param frame_count Positive number of entries.
+/// @param frame_tiles Array of positive tile identifiers.
+/// @param frame_durations Array of positive durations in milliseconds.
+/// @return `1` when copied and registered, otherwise `0`.
 int8_t rt_tilemap_set_import_tile_anim(void *tilemap_ptr,
                                        int64_t base_tile_id,
                                        int64_t frame_count,
@@ -2737,6 +3149,8 @@ int8_t rt_tilemap_set_import_tile_anim(void *tilemap_ptr,
 /// @brief Advance all registered tile animations by `dt_ms` milliseconds.
 /// Negative deltas are ignored. Large deltas advance by division/modulo so one call can span many
 /// frames without looping once per elapsed frame.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param dt_ms Elapsed milliseconds; negative values become zero.
 void rt_tilemap_update_anims(void *tilemap_ptr, int64_t dt_ms) {
     if (!tilemap_ptr)
         return;
@@ -2793,6 +3207,9 @@ void rt_tilemap_update_anims(void *tilemap_ptr, int64_t dt_ms) {
 /// If `tile_id` is not the base of any registered animation it is returned unchanged. Called by
 /// rendering paths so animated tiles display the current frame while collision
 /// continues to use the base tile id stored in the map data.
+/// @param tilemap_ptr Candidate Tilemap handle.
+/// @param tile_id Raw tile identifier to resolve.
+/// @return Current animation frame identifier, or @p tile_id when unregistered/invalid.
 int64_t rt_tilemap_resolve_anim_tile(void *tilemap_ptr, int64_t tile_id) {
     if (!tilemap_ptr)
         return tile_id;

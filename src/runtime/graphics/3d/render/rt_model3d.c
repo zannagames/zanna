@@ -32,6 +32,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Assembles Model3D ownership, asset-loader, and public API implementations.
+/// @details Model3D stores an immutable imported template scene plus deduplicated retained asset
+///          arrays. The included implementation fragments clone that template into independently
+///          mutable instances while sharing immutable meshes, materials, skeletons, and animations
+///          where their ownership contracts allow.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_model3d.h"

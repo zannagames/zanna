@@ -12,9 +12,10 @@
 // Key invariants:
 //   - At most RT_BLENDTREE3D_MAX_SAMPLES (16) animation samples per tree.
 //   - 1D trees blend the two samples bracketing param_x; 2D trees use
-//     normalized inverse-distance-squared weighting over all samples.
+//     Delaunay/barycentric freeform weighting by default, with legacy
+//     inverse-distance-squared weighting available explicitly.
 //   - A parameter landing exactly on a sample snaps fully to it (1D shares
-//     weight equally among ties; 2D takes the first exact match).
+//     weight equally among ties; legacy 2D takes the first exact match).
 //   - Weights are recomputed eagerly on every add_sample/set_param/update.
 //
 // Ownership/Lifetime:
@@ -24,6 +25,14 @@
 // Links: rt_blendtree3d.h, rt_skeleton3d.h (AnimBlend3D backend)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements one- and two-dimensional parametric animation blending.
+/// @details BlendTree3D owns an AnimBlend3D backend bound to one Skeleton3D.
+///          It maps up to sixteen parameter-space samples to backend state
+///          weights using bracketing interpolation in one dimension or either
+///          Delaunay/barycentric freeform blending or legacy inverse-distance
+///          weighting in two dimensions.
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
@@ -39,10 +48,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// Maximum number of sample-to-animation mappings stored inline.
 #define RT_BLENDTREE3D_MAX_SAMPLES 16
+/// Absolute clamp applied to public parameter coordinates.
 #define RT_BLENDTREE3D_PARAM_ABS_MAX 1000000.0
-/* Delaunay of <= 16 points has at most 2n - 2 - b < 30 triangles; 32 is a
- * comfortable inline bound (Bowyer-Watson transiently uses a few more). */
+/// Delaunay of at most 16 points has fewer than 30 final triangles; the larger
+/// bound also accommodates transient Bowyer-Watson cavity triangles.
 #define RT_BLENDTREE3D_MAX_TRIS 64
 
 extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
@@ -53,50 +64,70 @@ extern void rt_obj_free(void *obj);
 /// @brief One parameter-space sample: its (x, y) coordinate and the AnimBlend3D
 ///        state index it drives.
 typedef struct {
+    /// Sanitized horizontal coordinate.
     double x;
+    /// Sanitized vertical coordinate; ignored by one-dimensional weighting.
     double y;
+    /// Corresponding state index in the owned AnimBlend3D.
     int64_t blend_index;
 } rt_blend_tree3d_sample;
 
 /// @brief BlendTree3D state: the owned AnimBlend3D, dimensionality (1 or 2), the
 ///        current parameter, and the inline fixed-capacity sample table.
 typedef struct {
+    /// Runtime object header / virtual table slot.
     void *vptr;
+    /// Owned AnimBlend3D backend.
     void *blend;
+    /// Tree dimensionality, always 1 or 2.
     int32_t dimensions;
+    /// Logical number of initialized inline samples.
     int32_t sample_count;
+    /// Current sanitized horizontal parameter.
     double param_x;
+    /// Current sanitized vertical parameter.
     double param_y;
+    /// Fixed-capacity parameter-to-backend-state table.
     rt_blend_tree3d_sample samples[RT_BLENDTREE3D_MAX_SAMPLES];
-    /* 2D blend mode: 0 = freeform-directional (Delaunay + barycentric,
-     * default), 1 = legacy inverse-distance-squared. */
+    /// Two-dimensional mode: zero for freeform Delaunay/barycentric; one for
+    /// legacy inverse-distance-squared weighting.
     int32_t blend_mode_2d;
-    /* Cached Delaunay triangulation of the sample points (freeform mode).
-     * Rebuilt lazily whenever samples change; tri_count == 0 with
-     * tris_dirty == 0 marks a degenerate layout (collinear samples) that
-     * falls back to the legacy weighting. */
+    /// Cached triples of sample indexes forming the freeform triangulation.
     int32_t tris[RT_BLENDTREE3D_MAX_TRIS * 3];
+    /// Number of initialized triangles in @ref tris.
     int32_t tri_count;
+    /// Nonzero when sample changes require a triangulation rebuild.
+    /// A clean zero-triangle cache marks a degenerate layout that falls back
+    /// to legacy weighting.
     int8_t tris_dirty;
 } rt_blend_tree3d;
 
 /// @brief Validate @p obj as a BlendTree3D handle and return its typed pointer (NULL on mismatch).
+/// @param[in] obj Opaque borrowed runtime object handle.
+/// @return Borrowed typed tree pointer, or `NULL` on class/liveness mismatch.
 static rt_blend_tree3d *blend_tree3d_checked(void *obj) {
     return (rt_blend_tree3d *)rt_g3d_checked_or_null(obj, RT_G3D_BLENDTREE3D_CLASS_ID);
 }
 
 /// @brief Return true when the owned backend still points at a live AnimBlend3D.
+/// @param[in] tree Blend tree whose private backend slot to validate.
+/// @return Nonzero only when both the tree and correctly typed backend exist.
 static int blend_tree3d_blend_valid(const rt_blend_tree3d *tree) {
     return tree && rt_g3d_has_class(tree->blend, RT_G3D_ANIMBLEND3D_CLASS_ID);
 }
 
 /// @brief Release a GC-managed reference when this drop is the last one.
+/// @param[in,out] obj Runtime object whose local owning reference to release;
+///                    `NULL` is ignored.
 static void blend_tree3d_release_local(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief Release the owned AnimBlend3D only if the private slot still has that class.
+/// @details A non-null wrong-class value is cleared as an unowned corrupt slot
+///          instead of being released through the expected backend path.
+/// @param[in,out] slot Address of the owned backend slot.
 static void blend_tree3d_release_blend_ref(void **slot) {
     if (!slot || !*slot)
         return;
@@ -108,6 +139,10 @@ static void blend_tree3d_release_blend_ref(void **slot) {
 }
 
 /// @brief Return @p value when finite, else 0 — sanitizes parameter inputs.
+/// @details Finite values outside the supported parameter range saturate to
+///          `±RT_BLENDTREE3D_PARAM_ABS_MAX`.
+/// @param[in] value Parameter coordinate to sanitize.
+/// @return Finite, range-bounded coordinate.
 static double blend_tree3d_finite_or_zero(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -120,6 +155,8 @@ static double blend_tree3d_finite_or_zero(double value) {
 
 /// @brief Number of blend-tree samples safe to use: clamped to RT_BLENDTREE3D_MAX_SAMPLES and
 ///   truncated at the first sample whose blend_index falls outside the blender's state range.
+/// @param[in] tree Blend tree and backend metadata to inspect.
+/// @return Safe readable prefix length, or zero for missing/invalid storage.
 static int32_t blend_tree3d_safe_sample_count(const rt_blend_tree3d *tree) {
     int32_t limit;
     int32_t count = 0;
@@ -140,6 +177,8 @@ static int32_t blend_tree3d_safe_sample_count(const rt_blend_tree3d *tree) {
 }
 
 /// @brief Clamp the blend tree's sample_count to its safe value (defensive).
+/// @details A wrong-class backend reference is cleared without releasing it.
+/// @param[in,out] tree Tree whose backend slot and sample count to repair.
 static void blend_tree3d_repair_sample_count(rt_blend_tree3d *tree) {
     if (!tree)
         return;
@@ -149,6 +188,7 @@ static void blend_tree3d_repair_sample_count(rt_blend_tree3d *tree) {
 }
 
 /// @brief Zero every sample's blend weight so a fresh weighting can be written.
+/// @param[in,out] tree Tree whose valid backend state weights to clear.
 static void blend_tree3d_clear_weights(rt_blend_tree3d *tree) {
     int32_t sample_count;
     if (!tree || !blend_tree3d_blend_valid(tree))
@@ -164,6 +204,7 @@ static void blend_tree3d_clear_weights(rt_blend_tree3d *tree) {
 ///          them. Samples within 1e-9 of param_x are treated as exact and share the full
 ///          weight equally; when param_x falls outside the sample range, the single
 ///          bracketing sample receives weight 1.0.
+/// @param[in,out] tree One-dimensional tree whose backend weights to replace.
 static void blend_tree3d_apply_1d(rt_blend_tree3d *tree) {
     int32_t lower = -1;
     int32_t upper = -1;
@@ -228,7 +269,9 @@ static void blend_tree3d_apply_1d(rt_blend_tree3d *tree) {
 /// @details Uses normalized inverse-distance-squared weighting: each sample contributes
 ///          1/d² of its parameter-space distance, then all weights are normalized to sum
 ///          to 1. A parameter landing on a sample (d² ≤ 1e-12) snaps fully to it; a
-///          degenerate total (non-finite or near zero) falls back to weighting sample 0.
+///          degenerate total (non-finite or near zero) snaps to the nearest
+///          geometrically valid sample.
+/// @param[in,out] tree Two-dimensional tree whose backend weights to replace.
 static void blend_tree3d_apply_2d(rt_blend_tree3d *tree) {
     double raw[RT_BLENDTREE3D_MAX_SAMPLES];
     double total = 0.0;
@@ -281,6 +324,14 @@ static void blend_tree3d_apply_2d(rt_blend_tree3d *tree) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Twice the signed area of triangle (a, b, c) in parameter space.
+/// @param[in] ax First vertex X coordinate.
+/// @param[in] ay First vertex Y coordinate.
+/// @param[in] bx Second vertex X coordinate.
+/// @param[in] by Second vertex Y coordinate.
+/// @param[in] cx Third vertex X coordinate.
+/// @param[in] cy Third vertex Y coordinate.
+/// @return Positive for counter-clockwise orientation, negative for clockwise,
+///         or zero for collinearity.
 static double blend_tree3d_signed_area2(
     double ax, double ay, double bx, double by, double cx, double cy) {
     return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
@@ -289,6 +340,10 @@ static double blend_tree3d_signed_area2(
 /// @brief Rebuild the Delaunay triangulation of the tree's sample points
 ///        (Bowyer–Watson with a super-triangle). Leaves tri_count == 0 for
 ///        degenerate (collinear / duplicate-heavy) layouts.
+/// @details Every rebuild clears the dirty flag first. A working-capacity
+///          overflow also leaves zero final triangles so weighting can fall
+///          back safely.
+/// @param[in,out] tree Tree whose cached triangle triples to replace.
 static void blend_tree3d_triangulate(rt_blend_tree3d *tree) {
     tree->tri_count = 0;
     tree->tris_dirty = 0;
@@ -427,6 +482,8 @@ static void blend_tree3d_triangulate(rt_blend_tree3d *tree) {
 ///        Delaunay triangle (at most 3 non-zero weights), nearest-hull-edge
 ///        projection outside the hull (2 weights). Degenerate triangulations
 ///        fall back to the legacy inverse-distance weighting.
+/// @param[in,out] tree Two-dimensional tree whose cached triangulation and
+///                     backend weights to update.
 static void blend_tree3d_apply_2d_freeform(rt_blend_tree3d *tree) {
     int32_t sample_count = blend_tree3d_safe_sample_count(tree);
     if (!tree || !blend_tree3d_blend_valid(tree) || sample_count <= 0)
@@ -516,6 +573,9 @@ static void blend_tree3d_apply_2d_freeform(rt_blend_tree3d *tree) {
 }
 
 /// @brief Dispatch to the 1D or 2D weighting routine based on the tree's dimensionality.
+/// @details Two-dimensional mode one selects legacy inverse-distance weighting;
+///          every other two-dimensional mode selects freeform weighting.
+/// @param[in,out] tree Tree whose current parameters to apply.
 static void blend_tree3d_apply_weights(rt_blend_tree3d *tree) {
     if (!tree)
         return;
@@ -530,6 +590,7 @@ static void blend_tree3d_apply_weights(rt_blend_tree3d *tree) {
 }
 
 /// @brief GC finalizer: release the owned AnimBlend3D backend.
+/// @param[in,out] obj BlendTree3D storage being finalized; `NULL` is ignored.
 static void blend_tree3d_finalize(void *obj) {
     rt_blend_tree3d *tree = (rt_blend_tree3d *)obj;
     if (!tree)
@@ -540,6 +601,12 @@ static void blend_tree3d_finalize(void *obj) {
 /// @brief Shared constructor for 1D/2D trees: wrap a new AnimBlend3D bound to @p skeleton.
 /// @details @p dimensions is clamped to 1 or 2. Returns NULL if @p skeleton is not a
 ///          Skeleton3D or if either the AnimBlend3D or the tree allocation fails.
+/// @param[in] skeleton Borrowed Skeleton3D handle passed to the backend
+///                     constructor.
+/// @param[in] dimensions Requested dimensionality; exactly two selects 2D and
+///                       every other value selects 1D.
+/// @return New GC-managed BlendTree3D, or `NULL` for an invalid skeleton or
+///         allocation/backend-construction failure.
 static void *blend_tree3d_new(void *skeleton, int32_t dimensions) {
     rt_blend_tree3d *tree;
     void *blend;
@@ -564,11 +631,19 @@ static void *blend_tree3d_new(void *skeleton, int32_t dimensions) {
 }
 
 /// @brief Create a 1D blend tree bound to @p skeleton.
+/// @param[in] skeleton Borrowed Skeleton3D handle retained indirectly by the
+///                     owned AnimBlend3D.
+/// @return New GC-managed one-dimensional BlendTree3D, or `NULL` on invalid
+///         input or allocation failure.
 void *rt_blend_tree3d_new_1d(void *skeleton) {
     return blend_tree3d_new(skeleton, 1);
 }
 
 /// @brief Create a 2D blend tree bound to @p skeleton.
+/// @param[in] skeleton Borrowed Skeleton3D handle retained indirectly by the
+///                     owned AnimBlend3D.
+/// @return New GC-managed two-dimensional BlendTree3D using freeform mode, or
+///         `NULL` on invalid input or allocation failure.
 void *rt_blend_tree3d_new_2d(void *skeleton) {
     return blend_tree3d_new(skeleton, 2);
 }
@@ -576,6 +651,15 @@ void *rt_blend_tree3d_new_2d(void *skeleton) {
 /// @brief Register an animation sample at parameter coordinate (x, y) and reblend.
 /// @details Non-finite coordinates are sanitized to 0. Returns the new sample's index,
 ///          or -1 if the handle/animation is invalid or the sample table is full.
+///          Finite coordinates saturate to the supported parameter range.
+///          The backend validates skeleton compatibility and retains the clip
+///          when it creates the corresponding blend state.
+/// @param[in,out] obj BlendTree3D to extend.
+/// @param[in] animation Borrowed Animation3D sample clip.
+/// @param[in] x Horizontal parameter coordinate.
+/// @param[in] y Vertical coordinate; stored but ignored by a 1D tree.
+/// @return Newly appended zero-based sample index, or `-1` for invalid input,
+///         incompatibility, capacity exhaustion, or backend failure.
 int64_t rt_blend_tree3d_add_sample(void *obj, void *animation, double x, double y) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
     int64_t blend_index;
@@ -598,6 +682,9 @@ int64_t rt_blend_tree3d_add_sample(void *obj, void *animation, double x, double 
 }
 
 /// @brief Set the current blend parameters (sanitized to finite) and recompute weights.
+/// @param[in,out] obj BlendTree3D to configure.
+/// @param[in] x Horizontal parameter coordinate, sanitized and range-clamped.
+/// @param[in] y Vertical parameter coordinate, sanitized and range-clamped.
 void rt_blend_tree3d_set_param(void *obj, double x, double y) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
     if (!tree)
@@ -609,6 +696,11 @@ void rt_blend_tree3d_set_param(void *obj, double x, double y) {
 }
 
 /// @brief Recompute sample weights and advance the underlying AnimBlend3D by @p dt seconds.
+/// @details Negative or non-finite elapsed time becomes zero, which still
+///          refreshes weights and evaluates the backend without advancing its
+///          clocks.
+/// @param[in,out] obj BlendTree3D to evaluate.
+/// @param[in] dt Requested elapsed time in seconds.
 void rt_blend_tree3d_update(void *obj, double dt) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
     if (!tree || !blend_tree3d_blend_valid(tree))
@@ -621,12 +713,16 @@ void rt_blend_tree3d_update(void *obj, double dt) {
 }
 
 /// @brief Number of samples currently registered (0 for an invalid handle).
+/// @param[in] obj BlendTree3D to inspect.
+/// @return Sanitized readable sample count.
 int64_t rt_blend_tree3d_get_sample_count(void *obj) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
     return tree ? blend_tree3d_safe_sample_count(tree) : 0;
 }
 
 /// @brief Borrow the underlying AnimBlend3D handle (not retained; NULL if invalid).
+/// @param[in] obj BlendTree3D to inspect.
+/// @return Borrowed backend handle, or `NULL`; the caller must not release it.
 void *rt_blend_tree3d_get_blend(void *obj) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
     return blend_tree3d_blend_valid(tree) ? tree->blend : NULL;
@@ -637,6 +733,9 @@ void *rt_blend_tree3d_get_blend(void *obj) {
 ///        projection outside), 1 = legacy inverse-distance-squared (kept for
 ///        content authored against the old soft blending). No effect on 1D
 ///        trees. Weights are recomputed immediately.
+/// @param[in,out] obj BlendTree3D to configure.
+/// @param[in] mode One for legacy inverse-distance weighting; every other
+///                 value selects freeform weighting.
 void rt_blend_tree3d_set_blend_mode(void *obj, int64_t mode) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
     if (!tree)
@@ -647,6 +746,8 @@ void rt_blend_tree3d_set_blend_mode(void *obj, int64_t mode) {
 }
 
 /// @brief Current 2D weighting mode (0 = freeform, 1 = legacy IDW).
+/// @param[in] obj BlendTree3D to inspect.
+/// @return Stored normalized mode, or zero for an invalid handle.
 int64_t rt_blend_tree3d_get_blend_mode(void *obj) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
     return tree ? tree->blend_mode_2d : 0;

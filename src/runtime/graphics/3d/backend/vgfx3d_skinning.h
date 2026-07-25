@@ -22,6 +22,16 @@
 // Links: rt_canvas3d_internal.h (vgfx3d_vertex_t), plans/3d/14-skeletal-animation.md
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file vgfx3d_skinning.h
+ * @brief Declares CPU linear-blend skinning for Graphics3D vertex streams.
+ *
+ * Positions are transformed by weighted affine bone matrices; normals and tangents use the
+ * corresponding inverse-transpose matrices and are normalized after blending. The destination
+ * may alias the source, weights need not sum to one, and optional caller-owned scratch storage
+ * amortizes palette validation and normal-matrix derivation across vertices.
+ */
 #pragma once
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -31,9 +41,15 @@
 #include <stdint.h>
 
 /// @brief Apply skeletal skinning on the CPU.
-/// Transforms position and normal of each vertex by the weighted bone matrices.
-/// @brief CPU-skin @p vertex_count vertices applying both the vertex record's 4
-///   influences and the optional per-vertex influences 5-8 side stream.
+/// @details Transforms @p vertex_count vertices using both the four influences stored in each
+///          vertex and optional per-vertex influences five through eight in @p extra.
+/// @param src Borrowed source array of @p vertex_count vertices.
+/// @param dst Caller-owned destination array; may equal @p src for in-place skinning.
+/// @param vertex_count Number of vertices and, when present, side-stream entries to process.
+/// @param palette Borrowed row-major palette of @p bone_count consecutive 4×4 matrices.
+/// @param bone_count Palette size, clamped to the 256 indices representable by vertex records.
+/// @param extra Optional borrowed array containing four additional influences per vertex.
+/// @param scratch Optional caller-owned grow-only cache for normal matrices and validity flags.
 void vgfx3d_skin_vertices_extra(const vgfx3d_vertex_t *src,
                                 vgfx3d_vertex_t *dst,
                                 uint32_t vertex_count,
@@ -42,6 +58,16 @@ void vgfx3d_skin_vertices_extra(const vgfx3d_vertex_t *src,
                                 const vgfx3d_extra_influences_t *extra,
                                 vgfx3d_skinning_scratch_t *scratch);
 
+/// @brief CPU-skin vertices using the four bone influences stored in each vertex record.
+/// @details This convenience wrapper delegates to vgfx3d_skin_vertices_extra() without an extra
+///          influence side stream. Attributes other than transformed position, normal, and tangent
+///          are sanitized and copied through.
+/// @param src Borrowed source array of @p vertex_count vertices.
+/// @param dst Caller-owned destination array; may equal @p src for in-place skinning.
+/// @param vertex_count Number of vertices to process.
+/// @param bone_palette Borrowed row-major palette of @p bone_count consecutive 4×4 matrices.
+/// @param bone_count Palette size, clamped to the 256 indices representable by vertex records.
+/// @param scratch Optional caller-owned grow-only cache for normal matrices and validity flags.
 void vgfx3d_skin_vertices(const vgfx3d_vertex_t *src,
                           vgfx3d_vertex_t *dst,
                           uint32_t vertex_count,

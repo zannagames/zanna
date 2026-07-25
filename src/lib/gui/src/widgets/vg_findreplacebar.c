@@ -1113,9 +1113,11 @@ static void findreplacebar_arrange(
     widget->width = width;
     widget->height = height;
 
+    // Children are stored parent-relative: painters and screen-bounds queries
+    // add the bar's origin, so rows must not include (x, y) here.
     // Layout first row: Find input, prev/next buttons, options, close
-    float row_y = y + PADDING;
-    float cur_x = x + PADDING;
+    float row_y = PADDING;
+    float cur_x = PADDING;
     float row_height = FINDREPLACEBAR_HEIGHT - PADDING * 2;
 
     // Find input
@@ -1163,14 +1165,14 @@ static void findreplacebar_arrange(
     // Close button at right
     if (bar->close_btn) {
         vg_widget_t *w = (vg_widget_t *)bar->close_btn;
-        float close_x = x + width - BUTTON_WIDTH - PADDING;
+        float close_x = width - BUTTON_WIDTH - PADDING;
         vg_widget_arrange(w, close_x, row_y + 4, BUTTON_WIDTH, row_height - 8);
     }
 
     // Second row (replace mode): Replace input, replace/all buttons
     if (bar->show_replace) {
-        row_y = y + FINDREPLACEBAR_HEIGHT;
-        cur_x = x + PADDING;
+        row_y = FINDREPLACEBAR_HEIGHT;
+        cur_x = PADDING;
 
         // Replace input
         if (bar->replace_input) {

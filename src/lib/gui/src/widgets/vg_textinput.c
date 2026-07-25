@@ -974,8 +974,22 @@ static void textinput_measure(vg_widget_t *widget, float available_width, float 
     // Default height from theme
     float height = theme->input.height;
 
-    // Width uses available or minimum
-    float width = available_width > 0 ? available_width : widget->constraints.min_width;
+    // Single-line inputs report a bounded natural width: parent rows sum
+    // intrinsic child widths (HBox/Flex measure), so claiming the entire
+    // available width here inflates every "label + input + button" row beyond
+    // its own lane and ratchets scrollable panes wider than they are. The
+    // final width still comes from flex/stretch at arrange. Multiline inputs
+    // remain fill-available content areas.
+    float width;
+    if (input->multiline) {
+        width = available_width > 0 ? available_width : widget->constraints.min_width;
+    } else {
+        width = 160.0f;
+        if (available_width > 0 && width > available_width)
+            width = available_width;
+        if (widget->constraints.min_width > 0 && width < widget->constraints.min_width)
+            width = widget->constraints.min_width;
+    }
 
     if (widget->constraints.preferred_width > 0) {
         width = widget->constraints.preferred_width;

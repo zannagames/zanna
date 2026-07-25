@@ -30,6 +30,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Canvas3D HUD overlays, debug drawing, capability queries, and screenshots.
+/// @details Helpers project retained scene geometry into logical screen space,
+///   queue post-scene primitives with bounded raster caches, expose renderer
+///   diagnostics and capability truth, and convert backend readback into the
+///   runtime Pixels packing convention.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -62,6 +69,8 @@ extern int8_t rt_textureasset3d_cpu_supports_ktx2(void);
 #define CANVAS3D_AA_TEXT_CACHE_MAX_ENTRY_BYTES (2u * 1024u * 1024u)
 
 /// @brief Drop one AA text cache entry and compact the live prefix.
+/// @param c Canvas3D owning the retained raster and key storage.
+/// @param index Zero-based live entry to release.
 static void canvas3d_remove_aa_text_cache_entry(rt_canvas3d *c, int32_t index) {
     rt_canvas3d_aa_text_cache_entry *entry;
     int32_t last;
@@ -85,6 +94,8 @@ static void canvas3d_remove_aa_text_cache_entry(rt_canvas3d *c, int32_t index) {
 }
 
 /// @brief Find the least-recently-used AA text raster.
+/// @param c Borrowed Canvas3D containing cache usage stamps.
+/// @return Zero-based oldest entry, or negative one for an empty/invalid cache.
 static int32_t canvas3d_oldest_aa_text_cache_entry(const rt_canvas3d *c) {
     int32_t oldest = 0;
 
@@ -98,6 +109,7 @@ static int32_t canvas3d_oldest_aa_text_cache_entry(const rt_canvas3d *c) {
 }
 
 /// @brief Release all persistent AA text rasters owned by a canvas.
+/// @param c Canvas3D whose raster references, text keys, and cache array are freed.
 void canvas3d_clear_aa_text_cache(rt_canvas3d *c) {
     if (!c)
         return;
@@ -109,6 +121,14 @@ void canvas3d_clear_aa_text_cache(rt_canvas3d *c) {
 }
 
 /// @brief Return a cached raster that exactly matches the rendered AA text inputs.
+/// @param c Canvas3D whose cache is searched and usage stamp updated.
+/// @param text Borrowed UTF-8 byte sequence.
+/// @param text_len Number of key bytes in @p text.
+/// @param color Packed runtime text color.
+/// @param scale Exact raster scale key.
+/// @param width Expected raster width in pixels.
+/// @param height Expected raster height in pixels.
+/// @return Borrowed cached Pixels handle, or `NULL` when no exact entry exists.
 static void *canvas3d_find_aa_text_cache_entry(rt_canvas3d *c,
                                                const char *text,
                                                size_t text_len,
@@ -131,6 +151,14 @@ static void *canvas3d_find_aa_text_cache_entry(rt_canvas3d *c,
 }
 
 /// @brief Make @p pixels the persistent raster for one rendered AA label.
+/// @param c Canvas3D owning the bounded cache.
+/// @param text Borrowed UTF-8 byte sequence copied into the key.
+/// @param text_len Number of key bytes in @p text.
+/// @param color Packed runtime text color.
+/// @param scale Exact raster scale key.
+/// @param width Positive raster width in pixels.
+/// @param height Positive raster height in pixels.
+/// @param pixels Owned Pixels reference transferred only on success.
 /// @return 1 when the cache owns the Pixels reference, or 0 for frame-local fallback.
 static int canvas3d_insert_aa_text_cache_entry(rt_canvas3d *c,
                                                const char *text,
@@ -205,6 +233,13 @@ static int canvas3d_insert_aa_text_cache_entry(rt_canvas3d *c,
 ///          markers stay anchored across the begin/end boundary.
 ///          Returns 0 if no scene VP is available or the point is behind
 ///          the camera (caller should skip the draw).
+/// @param c Borrowed Canvas3D supplying the retained scene view-projection matrix.
+/// @param wp Borrowed three-component world position.
+/// @param sx Non-`NULL` horizontal screen-coordinate output.
+/// @param sy Non-`NULL` vertical screen-coordinate output.
+/// @param fb_w Positive logical output width.
+/// @param fb_h Positive logical output height.
+/// @return Non-zero when the point lies in front of an available scene camera.
 static int world_to_screen(
     const rt_canvas3d *c, const float *wp, float *sx, float *sy, int32_t fb_w, int32_t fb_h) {
     const float *vp = canvas3d_active_scene_vp(c);
@@ -230,6 +265,10 @@ static int world_to_screen(
 /// @details When a render target is bound, overlays size to the RTT. Otherwise
 ///          they size to the Canvas3D logical dimensions, not the framebuffer
 ///          backing size, so HiDPI windows keep stable public coordinates.
+/// @param c Borrowed Canvas3D whose active output is inspected.
+/// @param out_w Optional output initialized and set to logical width.
+/// @param out_h Optional output initialized and set to logical height.
+/// @return Non-zero when both resolved dimensions are positive.
 static int overlay_output_size(const rt_canvas3d *c, int32_t *out_w, int32_t *out_h) {
     if (out_w)
         *out_w = 0;
@@ -252,6 +291,16 @@ static int overlay_output_size(const rt_canvas3d *c, int32_t *out_w, int32_t *ou
 }
 
 /// @brief Pack an RGBA byte surface into `Pixels`, scaling to logical size when needed.
+/// @details Equal dimensions copy directly; differing dimensions use box
+///   averaging so high-DPI readback downsamples without channel swizzling.
+/// @param pv Mutable Pixels payload with @p dst_w by @p dst_h storage.
+/// @param src Borrowed RGBA8 source bytes.
+/// @param src_w Positive source width.
+/// @param src_h Positive source height.
+/// @param src_stride Source row stride in bytes.
+/// @param dst_w Positive destination width.
+/// @param dst_h Positive destination height.
+/// @return Non-zero when the full image is packed successfully.
 static int canvas3d_pack_rgba_to_pixels(rt_pixels_impl *pv,
                                         const uint8_t *src,
                                         int32_t src_w,
@@ -318,6 +367,7 @@ static int canvas3d_pack_rgba_to_pixels(rt_pixels_impl *pv,
 }
 
 /// @brief Drop one reference and free if zero. Safe on NULL.
+/// @param obj Owned local runtime reference to release.
 static void canvas3d_release_local(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -325,6 +375,10 @@ static void canvas3d_release_local(void *obj) {
 
 /// @brief Draw a 3D world-space line between two Vec3 endpoints in `color`. Useful for debug
 /// visualizers, motion trails, gizmos. Color is 0xRRGGBBAA. Auto-projects to screen space.
+/// @param obj Borrowed Canvas3D handle.
+/// @param from Borrowed three-double world-space start point.
+/// @param to Borrowed three-double world-space end point.
+/// @param color Packed RGB runtime color; overlay alpha is opaque.
 void rt_canvas3d_draw_line3d_raw(void *obj, const double *from, const double *to, int64_t color) {
     int8_t started_temp_frame = 0;
 
@@ -368,6 +422,10 @@ void rt_canvas3d_draw_line3d_raw(void *obj, const double *from, const double *to
 }
 
 /// @brief Draw a 3D line segment between two Vec3 world points in the given packed color.
+/// @param obj Borrowed Canvas3D handle.
+/// @param from Borrowed Vec3 start point.
+/// @param to Borrowed Vec3 end point.
+/// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_line3d(void *obj, void *from, void *to, int64_t color) {
     double p0[3];
     double p1[3];
@@ -384,6 +442,10 @@ void rt_canvas3d_draw_line3d(void *obj, void *from, void *to, int64_t color) {
 
 /// @brief Draw a 3D world-space point at `pos` (Vec3) as a `size`-pixel filled square in `color`.
 /// Useful for marking spawn points, raycast hits, AI waypoints during debug.
+/// @param obj Borrowed Canvas3D handle.
+/// @param pos Borrowed Vec3 world position.
+/// @param color Packed RGB runtime color.
+/// @param size Requested square side length in pixels; non-positive values become one.
 void rt_canvas3d_draw_point3d(void *obj, void *pos, int64_t color, int64_t size) {
     int8_t started_temp_frame = 0;
 
@@ -426,6 +488,12 @@ void rt_canvas3d_draw_point3d(void *obj, void *pos, int64_t color, int64_t size)
 
 /// @brief Draw a screen-space (2D, ignores 3D camera) filled rectangle. Useful for HUDs and
 /// debug overlays composited over the 3D scene.
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left edge in logical pixels.
+/// @param y Top edge in logical pixels.
+/// @param w Width in logical pixels.
+/// @param h Height in logical pixels.
+/// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_rect2d(void *obj, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color) {
     int8_t started_temp_frame = 0;
 
@@ -447,6 +515,13 @@ void rt_canvas3d_draw_rect2d(void *obj, int64_t x, int64_t y, int64_t w, int64_t
 /// @brief Draw a screen-space filled rectangle with explicit opacity.
 /// @details Like `DrawRect2D` but blends with the scene: `alpha` 0..1 (values
 ///   are clamped). The workhorse for HUD panels and full-screen fade overlays.
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left edge in logical pixels.
+/// @param y Top edge in logical pixels.
+/// @param w Width in logical pixels.
+/// @param h Height in logical pixels.
+/// @param color Packed RGB runtime color.
+/// @param alpha Normalized opacity; invalid values are sanitized by queueing.
 void rt_canvas3d_draw_rect2d_alpha(
     void *obj, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color, double alpha) {
     int8_t started_temp_frame = 0;
@@ -486,6 +561,12 @@ void rt_canvas3d_draw_rect2d_alpha(
 /// @details Screen-space, unlit, ignores the 3D camera — composites over the scene like
 ///   `DrawRect2D`/`DrawText2D`. Pair with `RenderTarget3D.AsPixels` to display a rendered
 ///   texture (e.g. a top-down minimap) on the HUD. NULL- and empty-rect-safe.
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left destination edge in logical pixels.
+/// @param y Top destination edge in logical pixels.
+/// @param w Destination width in logical pixels.
+/// @param h Destination height in logical pixels.
+/// @param pixels Borrowed Pixels handle retained through deferred replay.
 void rt_canvas3d_draw_image2d(void *obj, int64_t x, int64_t y, int64_t w, int64_t h, void *pixels) {
     int8_t started_temp_frame = 0;
 
@@ -505,6 +586,13 @@ void rt_canvas3d_draw_image2d(void *obj, int64_t x, int64_t y, int64_t w, int64_
 }
 
 /// @brief Draw a screen-space line segment (thickness 1) with explicit opacity (Plan 08).
+/// @param obj Borrowed Canvas3D handle.
+/// @param x0 First endpoint X in logical pixels.
+/// @param y0 First endpoint Y in logical pixels.
+/// @param x1 Second endpoint X in logical pixels.
+/// @param y1 Second endpoint Y in logical pixels.
+/// @param color Packed RGB runtime color.
+/// @param alpha Normalized opacity.
 void rt_canvas3d_draw_line2d(
     void *obj, int64_t x0, int64_t y0, int64_t x1, int64_t y1, int64_t color, double alpha) {
     int8_t started_temp_frame = 0;
@@ -540,6 +628,13 @@ void rt_canvas3d_draw_line2d(
 }
 
 /// @brief Draw a screen-space 1px rectangle outline with explicit opacity (Plan 08).
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left edge in logical pixels.
+/// @param y Top edge in logical pixels.
+/// @param w Width in logical pixels.
+/// @param h Height in logical pixels.
+/// @param color Packed RGB runtime color.
+/// @param alpha Normalized opacity.
 void rt_canvas3d_draw_frame2d(
     void *obj, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color, double alpha) {
     int8_t started_temp_frame = 0;
@@ -582,6 +677,14 @@ void rt_canvas3d_draw_frame2d(
 }
 
 /// @brief Draw a screen-space filled rounded rectangle with explicit opacity (Plan 08).
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left edge in logical pixels.
+/// @param y Top edge in logical pixels.
+/// @param w Width in logical pixels.
+/// @param h Height in logical pixels.
+/// @param radius Corner radius in logical pixels.
+/// @param color Packed RGB runtime color.
+/// @param alpha Normalized opacity.
 void rt_canvas3d_draw_round_rect2d(void *obj,
                                    int64_t x,
                                    int64_t y,
@@ -627,6 +730,14 @@ void rt_canvas3d_draw_round_rect2d(void *obj,
 /// @brief Draw a screen-space rounded rectangle outline with explicit opacity (Plan 08).
 /// @details Walks the same perimeter as the filled rounded rect (four quarter-arcs,
 ///          6 segments each, joined by straight edges) with 1px line segments.
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left edge in logical pixels.
+/// @param y Top edge in logical pixels.
+/// @param w Width in logical pixels.
+/// @param h Height in logical pixels.
+/// @param radius Corner radius in logical pixels.
+/// @param color Packed RGB runtime color.
+/// @param alpha Normalized opacity.
 void rt_canvas3d_draw_round_frame2d(void *obj,
                                     int64_t x,
                                     int64_t y,
@@ -702,6 +813,12 @@ void rt_canvas3d_draw_round_frame2d(void *obj,
 }
 
 /// @brief Draw screen-space text scaled by a size multiplier (Plan 08).
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left text origin in logical pixels.
+/// @param y Top text origin in logical pixels.
+/// @param text Borrowed runtime string.
+/// @param color Packed RGB runtime color.
+/// @param scale Positive bitmap-font scale.
 void rt_canvas3d_draw_text2d_scaled(
     void *obj, int64_t x, int64_t y, rt_string text, int64_t color, double scale) {
     int8_t started_temp_frame = 0;
@@ -720,6 +837,16 @@ void rt_canvas3d_draw_text2d_scaled(
 }
 
 /// @brief Blit a sub-region of a Pixels image into the overlay (Plan 08).
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left destination edge in logical pixels.
+/// @param y Top destination edge in logical pixels.
+/// @param w Destination width in logical pixels.
+/// @param h Destination height in logical pixels.
+/// @param pixels Borrowed Pixels source retained through replay.
+/// @param sx Source-region left edge in pixels.
+/// @param sy Source-region top edge in pixels.
+/// @param sw Source-region width in pixels.
+/// @param sh Source-region height in pixels.
 void rt_canvas3d_draw_image2d_region(void *obj,
                                      int64_t x,
                                      int64_t y,
@@ -769,6 +896,12 @@ void rt_canvas3d_draw_image2d_region(void *obj,
 ///   while giving clean edges at fractional scales (1.5x, 3.7x, ...). A bounded
 ///   canvas-owned LRU retains repeated labels across frames; the normal temp-object
 ///   queue adds a submission-lifetime reference for the current frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left text origin in logical pixels.
+/// @param y Top text origin in logical pixels.
+/// @param text Borrowed runtime string copied or keyed before return.
+/// @param color Packed RGB runtime color.
+/// @param scale Requested raster scale, sanitized to the supported range.
 void rt_canvas3d_draw_text2d_aa(
     void *obj, int64_t x, int64_t y, rt_string text, int64_t color, double scale) {
     int8_t started_temp_frame = 0;
@@ -866,6 +999,10 @@ void rt_canvas3d_draw_text2d_aa(
 }
 
 /// @brief Width in pixels of DrawText2DAA output for @p text at @p scale.
+/// @param obj Borrowed Canvas3D handle used for validation.
+/// @param text Borrowed runtime string measured up to the AA renderer's length limit.
+/// @param scale Requested raster scale, sanitized to the supported range.
+/// @return Ceil-rounded output width in logical pixels, or zero for invalid input.
 int64_t rt_canvas3d_measure_text2d_aa(void *obj, rt_string text, double scale) {
     const char *str;
     size_t len;
@@ -887,6 +1024,16 @@ int64_t rt_canvas3d_measure_text2d_aa(void *obj, rt_string text, double scale) {
 
 /// @brief Draw a 9-slice image: corners unscaled, edges stretched on one axis,
 ///   center stretched on both — HUD panels/buttons from a single texture.
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left destination edge in logical pixels.
+/// @param y Top destination edge in logical pixels.
+/// @param w Destination width in logical pixels.
+/// @param h Destination height in logical pixels.
+/// @param pixels Borrowed Pixels source retained through replay.
+/// @param inset_l Left source inset in pixels.
+/// @param inset_t Top source inset in pixels.
+/// @param inset_r Right source inset in pixels.
+/// @param inset_b Bottom source inset in pixels.
 void rt_canvas3d_draw_image2d_nine_slice(void *obj,
                                          int64_t x,
                                          int64_t y,
@@ -976,6 +1123,11 @@ void rt_canvas3d_draw_image2d_nine_slice(void *obj,
 /// @details Enqueue-time CPU clipping: rects, lines, images, and text queued while the
 ///          clip is active are trimmed canvas-side, so all four backends behave
 ///          identically. Degenerate rects clear the clip.
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left clip edge in logical pixels.
+/// @param y Top clip edge in logical pixels.
+/// @param w Clip width; non-positive values clear clipping.
+/// @param h Clip height; non-positive values clear clipping.
 void rt_canvas3d_set_clip_rect2d(void *obj, int64_t x, int64_t y, int64_t w, int64_t h) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -992,6 +1144,7 @@ void rt_canvas3d_set_clip_rect2d(void *obj, int64_t x, int64_t y, int64_t w, int
 }
 
 /// @brief Remove the overlay 2D clip rect (Plan 08).
+/// @param obj Borrowed Canvas3D handle.
 void rt_canvas3d_clear_clip_rect2d(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -1001,6 +1154,10 @@ void rt_canvas3d_clear_clip_rect2d(void *obj) {
 
 /// @brief Width in pixels of DrawText2DScaled output for @p text at @p scale (Plan 08).
 /// @details The built-in font advances 6 dots per character at 2px per dot.
+/// @param obj Borrowed Canvas3D handle used for validation.
+/// @param text Borrowed runtime string.
+/// @param scale Requested size multiplier, sanitized to the supported range.
+/// @return Logical text advance in pixels, or zero for invalid input.
 int64_t rt_canvas3d_measure_text2d(void *obj, rt_string text, double scale) {
     const char *str;
     size_t len = 0;
@@ -1020,6 +1177,9 @@ int64_t rt_canvas3d_measure_text2d(void *obj, rt_string text, double scale) {
 }
 
 /// @brief Draw a centered crosshair (FPS reticle) at screen center with `size` arms in `color`.
+/// @param obj Borrowed Canvas3D handle.
+/// @param color Packed RGB runtime color.
+/// @param size Total arm span in logical pixels.
 void rt_canvas3d_draw_crosshair(void *obj, int64_t color, int64_t size) {
     int8_t started_temp_frame = 0;
 
@@ -1054,6 +1214,11 @@ void rt_canvas3d_draw_crosshair(void *obj, int64_t color, int64_t size) {
 }
 
 /// @brief Draw screen-space text at (x, y) using the built-in 8×8 font in `color`.
+/// @param obj Borrowed Canvas3D handle.
+/// @param x Left text origin in logical pixels.
+/// @param y Top text origin in logical pixels.
+/// @param text Borrowed runtime string.
+/// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_text2d(void *obj, int64_t x, int64_t y, rt_string text, int64_t color) {
     int8_t started_temp_frame = 0;
 
@@ -1072,6 +1237,8 @@ void rt_canvas3d_draw_text2d(void *obj, int64_t x, int64_t y, rt_string text, in
 
 /// @brief Return the active backend name as a string ("metal", "d3d11", "opengl", ...).
 /// Useful for backend-specific debug output / feature gating.
+/// @param obj Borrowed Canvas3D handle.
+/// @return New runtime string reference naming the active backend, or `"unknown"`.
 rt_string rt_canvas3d_get_backend(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -1080,6 +1247,8 @@ rt_string rt_canvas3d_get_backend(void *obj) {
 }
 
 /// @brief Return whether the active canvas fell back from a selected GPU backend to software.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Non-zero when backend creation used a fallback.
 int8_t rt_canvas3d_get_backend_fallback(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return (c && c->backend_fallback) ? 1 : 0;
@@ -1089,6 +1258,8 @@ int8_t rt_canvas3d_get_backend_fallback(void *obj) {
 /// @details The returned string is a static runtime constant, not per-call heap storage. It lets
 ///          tools distinguish an unavailable selected backend from one that failed to initialize
 ///          without scraping stderr.
+/// @param obj Borrowed Canvas3D handle.
+/// @return New runtime string reference containing the fallback reason, or an empty string.
 rt_string rt_canvas3d_get_backend_fallback_reason(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || !c->backend_fallback || !c->backend_fallback_reason)
@@ -1100,6 +1271,8 @@ rt_string rt_canvas3d_get_backend_fallback_reason(void *obj) {
 /// @details Keep this tied to the real backend vtables, not backend-name strings, so
 ///          stack/fake unit-test backends do not accidentally advertise production
 ///          clustered/forward+ support just because they use a GPU-like name.
+/// @param backend Borrowed backend vtable to classify.
+/// @return Non-zero for production backends with the many-light implementation.
 static int canvas3d_backend_supports_clustered_lighting(const vgfx3d_backend_t *backend) {
     if (!backend)
         return 0;
@@ -1122,6 +1295,8 @@ static int canvas3d_backend_supports_clustered_lighting(const vgfx3d_backend_t *
 }
 
 /// @brief True when the backend can consume multiple shadow slots as primary-light cascades.
+/// @param backend Borrowed backend vtable to classify.
+/// @return Non-zero when required shadow hooks and a production CSM path exist.
 static int canvas3d_backend_supports_shadow_csm(const vgfx3d_backend_t *backend) {
     if (!backend || !backend->shadow_begin || !backend->shadow_draw || !backend->shadow_end)
         return 0;
@@ -1149,6 +1324,8 @@ static int canvas3d_backend_supports_shadow_csm(const vgfx3d_backend_t *backend)
 ///          behavior layered around a backend draw path. Partial diagnostic/test backends can
 ///          expose telemetry hooks without being drawable, so those feature bits are advertised
 ///          only when the base submit hook exists.
+/// @param backend Borrowed backend vtable to inspect.
+/// @return Non-zero when ordinary mesh submission is available.
 static int canvas3d_backend_has_draw_path(const vgfx3d_backend_t *backend) {
     return backend && backend->submit_draw;
 }
@@ -1157,6 +1334,8 @@ static int canvas3d_backend_has_draw_path(const vgfx3d_backend_t *backend) {
 /// @details The mask is based on backend vtable hooks plus the software
 ///          fallback paths owned by Canvas3D. This lets applications choose
 ///          production-safe rendering paths without hardcoding backend names.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Bitwise OR of truthful RT_CANVAS3D_BACKEND_CAP_* flags, or zero.
 int64_t rt_canvas3d_get_backend_capabilities(void *obj) {
     int64_t caps = 0;
 
@@ -1240,6 +1419,8 @@ int64_t rt_canvas3d_get_backend_capabilities(void *obj) {
 ///   aliases are accepted per flag ("shadows" / "shadow_maps", "postfx" / "post_fx", etc.)
 ///   so scripts can use whichever reads more natural. Unknown names return 0, which the
 ///   caller treats as "capability not supported".
+/// @param name Borrowed non-empty NUL-terminated capability name.
+/// @return Matching single RT_CANVAS3D_BACKEND_CAP_* bit, or zero when unknown.
 static int64_t canvas3d_capability_from_name(const char *name) {
     if (!name || !*name)
         return 0;
@@ -1374,6 +1555,7 @@ static int64_t canvas3d_native_texture_capability_from_name(const char *name) {
 }
 
 /// @brief Return a CPU texture fallback support answer for `texture:*` capability keys.
+/// @param name Borrowed NUL-terminated capability name.
 /// @return 0/1 for recognized texture keys, -1 when @p name is not a texture capability key.
 static int canvas3d_texture_capability_from_name(const char *name) {
     const char *format_name;
@@ -1390,6 +1572,9 @@ static int canvas3d_texture_capability_from_name(const char *name) {
 }
 
 /// @brief Return whether the active backend supports a named capability.
+/// @param obj Borrowed Canvas3D handle.
+/// @param capability Borrowed runtime string using a documented capability name or alias.
+/// @return Non-zero only when the active backend/runtime path truthfully supports the request.
 int8_t rt_canvas3d_backend_supports(void *obj, rt_string capability) {
     int64_t flag;
     int64_t native_texture_flag;
@@ -1442,6 +1627,8 @@ int8_t rt_canvas3d_backend_supports(void *obj, rt_string capability) {
 }
 
 /// @brief Force all skinned draws through the CPU path (bisection/debug override).
+/// @param obj Borrowed Canvas3D handle.
+/// @param enabled Non-zero to bypass GPU skinning.
 void rt_canvas3d_set_force_cpu_skinning(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (c)
@@ -1449,12 +1636,16 @@ void rt_canvas3d_set_force_cpu_skinning(void *obj, int8_t enabled) {
 }
 
 /// @brief Lifetime count of skinned draws routed to GPU vertex-shader skinning.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Non-negative lifetime draw count.
 int64_t rt_canvas3d_get_gpu_skinned_draw_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c && c->gpu_skinned_draw_count > 0 ? c->gpu_skinned_draw_count : 0;
 }
 
 /// @brief Lifetime bone-palette bytes handed to the backend for GPU skinning.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Non-negative lifetime byte count.
 int64_t rt_canvas3d_get_skinning_upload_bytes(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c && c->skinning_upload_bytes > 0 ? c->skinning_upload_bytes : 0;
@@ -1463,6 +1654,9 @@ int64_t rt_canvas3d_get_skinning_upload_bytes(void *obj) {
 /// @brief Per-pass draw submissions for the latest frame (plan 30).
 /// @details Pass ids follow Game3D.RenderPass; PostFX/Present report 0 in
 ///   v1 (no per-draw work is attributed to them yet).
+/// @param obj Borrowed Canvas3D handle.
+/// @param pass RenderPass id in the inclusive range zero through five.
+/// @return Latest attributed draw count, or zero for invalid input.
 int64_t rt_canvas3d_pass_draw_count(void *obj, int64_t pass) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || pass < 0 || pass > 5)
@@ -1471,6 +1665,9 @@ int64_t rt_canvas3d_pass_draw_count(void *obj, int64_t pass) {
 }
 
 /// @brief Per-pass instances (instanced draws expanded) for the latest frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @param pass RenderPass id in the inclusive range zero through five.
+/// @return Latest attributed instance count, or zero for invalid input.
 int64_t rt_canvas3d_pass_instance_count(void *obj, int64_t pass) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || pass < 0 || pass > 5)
@@ -1479,18 +1676,24 @@ int64_t rt_canvas3d_pass_instance_count(void *obj, int64_t pass) {
 }
 
 /// @brief Number of main 3D draw submissions queued by the latest ended frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest main draw count, or zero for invalid input.
 int64_t rt_canvas3d_get_draw_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_draw_count : 0;
 }
 
 /// @brief Number of latest Scene3D draw submissions skipped by visibility culling.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest aggregate visibility-cull count, or zero.
 int64_t rt_canvas3d_get_occluded_draw_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_occluded_draw_count : 0;
 }
 
 /// @brief Set the shadow-light slot budget (clamped 1..VGFX3D_MAX_SHADOW_LIGHTS).
+/// @param obj Borrowed Canvas3D handle.
+/// @param budget Requested slot count, clamped to the supported interval.
 void rt_canvas3d_set_shadow_budget(void *obj, int64_t budget) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -1503,18 +1706,24 @@ void rt_canvas3d_set_shadow_budget(void *obj, int64_t budget) {
 }
 
 /// @brief Shadow slots rendered in the latest frame (cascades included).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest used slot count, or zero.
 int64_t rt_canvas3d_get_shadow_slots_used(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_shadow_slots_used : 0;
 }
 
 /// @brief Shadow-requesting lights denied a slot in the latest frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest denied request count, or zero.
 int64_t rt_canvas3d_get_shadow_requests_dropped(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_shadow_requests_dropped : 0;
 }
 
 /// @brief Set the per-cluster light-index capacity (clamped 8..64; default 64).
+/// @param obj Borrowed Canvas3D handle.
+/// @param budget Requested indices per cluster, clamped to eight through 64.
 void rt_canvas3d_set_cluster_light_budget(void *obj, int64_t budget) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -1527,12 +1736,16 @@ void rt_canvas3d_set_cluster_light_budget(void *obj, int64_t budget) {
 }
 
 /// @brief Lifetime count of cluster light-index entries truncated by capacity.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Non-negative lifetime truncation count.
 int64_t rt_canvas3d_get_cluster_overflow_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->cluster_overflow_total : 0;
 }
 
 /// @brief Enabled lights truncated by the forward-path light limit this frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest dropped-light count, or zero.
 int64_t rt_canvas3d_get_dropped_light_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_dropped_light_count : 0;
@@ -1542,12 +1755,16 @@ int64_t rt_canvas3d_get_dropped_light_count(void *obj) {
 ///        in the current/latest frame. Opaque batches use the backend hook and
 ///        contribute zero; sustained non-zero values flag material setups that
 ///        forgo real instancing.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Current or latest fallback instance count.
 int64_t rt_canvas3d_get_instanced_fallback_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_instanced_fallback_count : 0;
 }
 
 /// @brief Instances skipped because a chunked fallback queue reservation actually failed.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Current or latest dropped fallback instance count.
 int64_t rt_canvas3d_get_instanced_fallback_dropped_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_instanced_fallback_dropped_count : 0;
@@ -1585,12 +1802,16 @@ void rt_canvas3d_reset_submission_diagnostics(void *obj) {
 }
 
 /// @brief Lifetime count of window/input events dropped from the public PollEvent ring.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Non-negative lifetime dropped-event count.
 int64_t rt_canvas3d_get_event_drop_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->event_type_dropped_count : 0;
 }
 
 /// @brief Mesh snapshot bytes copied by the current frame, or latest ended frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Non-negative byte count, saturated at INT64_MAX.
 int64_t rt_canvas3d_get_mesh_snapshot_bytes(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -1604,48 +1825,64 @@ int64_t rt_canvas3d_get_mesh_snapshot_bytes(void *obj) {
 }
 
 /// @brief Mesh snapshot allocation/budget denials in the current/latest frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Current or latest snapshot denial count.
 int64_t rt_canvas3d_get_mesh_snapshot_drop_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_mesh_snapshot_drop_count : 0;
 }
 
 /// @brief Requested mesh snapshot bytes denied in the current/latest frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Current or latest denied byte count.
 int64_t rt_canvas3d_get_mesh_snapshot_dropped_bytes(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_mesh_snapshot_dropped_bytes : 0;
 }
 
 /// @brief Per-frame mesh snapshot byte budget used by deferred geometry snapshots.
+/// @param obj Borrowed Canvas3D handle accepted for registry consistency.
+/// @return Compile-time per-frame byte budget.
 int64_t rt_canvas3d_get_mesh_snapshot_budget_bytes(void *obj) {
     (void)obj;
     return (int64_t)RT_CANVAS3D_MESH_SNAPSHOT_FRAME_BYTE_BUDGET;
 }
 
 /// @brief Number of latest draw submissions rejected by CPU frustum culling.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest frustum-rejection count.
 int64_t rt_canvas3d_get_frustum_culled_draw_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_frustum_culled_draw_count : 0;
 }
 
 /// @brief Number of latest draw submissions rejected by the CPU occlusion grid.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest CPU occlusion rejection count.
 int64_t rt_canvas3d_get_cpu_occluded_draw_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_cpu_occluded_draw_count : 0;
 }
 
 /// @brief Number of opaque draws tested by the CPU occlusion grid in the latest frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest occlusion-candidate count.
 int64_t rt_canvas3d_get_occlusion_candidate_count(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_occlusion_candidate_count : 0;
 }
 
 /// @brief Texture payload bytes uploaded to backend storage in the latest ended frame.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest backend texture-upload byte count.
 int64_t rt_canvas3d_get_texture_upload_bytes(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_texture_upload_bytes : 0;
 }
 
 /// @brief Latest completed backend GPU frame time in microseconds.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest non-negative GPU time, or zero when unavailable.
 int64_t rt_canvas3d_get_frame_gpu_time_us(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_frame_gpu_time_us : 0;
@@ -1657,6 +1894,9 @@ int64_t rt_canvas3d_get_frame_gpu_time_us(void *obj) {
 ///   post-FX submission), 2 = screen overlay pass, 3 = backend end-of-frame
 ///   (encode/present). Diagnostics only — a profiler HUD can render these
 ///   without touching simulation state. Unknown ids return 0.
+/// @param obj Borrowed Canvas3D handle.
+/// @param pass Pass index in the supported diagnostic range.
+/// @return Latest CPU duration in milliseconds, or zero for invalid input.
 double rt_canvas3d_get_pass_cpu_ms(void *obj, int64_t pass) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || pass < 0 || pass >= RT_CANVAS3D_PASS_COUNT)
@@ -1665,36 +1905,48 @@ double rt_canvas3d_get_pass_cpu_ms(void *obj, int64_t pass) {
 }
 
 /// @brief `Canvas3D.get_PassCount` — number of PassCpuMs stages (currently 4).
+/// @param obj Borrowed Canvas3D handle accepted for registry consistency.
+/// @return Number of available pass timing slots.
 int64_t rt_canvas3d_get_pass_count(void *obj) {
     (void)obj;
     return RT_CANVAS3D_PASS_COUNT;
 }
 
 /// @brief Backend draw submissions issued since the latest public frame begin.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Current frame backend submission count.
 int64_t rt_canvas3d_get_draws_submitted(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->frame_draws_submitted : 0;
 }
 
 /// @brief World-AABB transform computations performed since the latest public frame begin.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Current frame AABB transform count.
 int64_t rt_canvas3d_get_aabb_transforms(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->frame_aabb_transforms : 0;
 }
 
 /// @brief Stable deferred sort passes run since the latest public frame begin.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Current frame sort-pass count.
 int64_t rt_canvas3d_get_sort_passes(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->frame_sort_passes : 0;
 }
 
 /// @brief Material/backend state-group transitions observed during backend submission.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Current frame backend state-transition count.
 int64_t rt_canvas3d_get_backend_state_changes(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->frame_backend_state_changes : 0;
 }
 
 /// @brief Set the active backend's per-frame texture upload budget.
+/// @param obj Borrowed Canvas3D handle.
+/// @param bytes Non-negative byte budget, or negative for unlimited uploads.
 void rt_canvas3d_set_texture_upload_budget(void *obj, int64_t bytes) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     uint64_t budget = bytes < 0 ? UINT64_MAX : (uint64_t)bytes;
@@ -1703,6 +1955,8 @@ void rt_canvas3d_set_texture_upload_budget(void *obj, int64_t bytes) {
 }
 
 /// @brief Texture payload bytes still waiting for backend texture upload budget.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Pending bytes saturated at INT64_MAX, or zero when unsupported.
 int64_t rt_canvas3d_get_texture_upload_pending_bytes(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     uint64_t bytes = 0;
@@ -1732,6 +1986,8 @@ static vgfx3d_backend_stats_t canvas3d_get_backend_stats_snapshot(rt_canvas3d *c
 }
 
 /// @brief Successful draw calls emitted by the active backend since canvas creation.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Saturated backend draw-call counter, or zero when unsupported.
 int64_t rt_canvas3d_get_backend_draw_calls(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     vgfx3d_backend_stats_t stats = canvas3d_get_backend_stats_snapshot(c);
@@ -1739,6 +1995,8 @@ int64_t rt_canvas3d_get_backend_draw_calls(void *obj) {
 }
 
 /// @brief Draw commands rejected inside the active backend since canvas creation.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Saturated backend dropped-draw counter, or zero when unsupported.
 int64_t rt_canvas3d_get_backend_dropped_draws(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     vgfx3d_backend_stats_t stats = canvas3d_get_backend_stats_snapshot(c);
@@ -1746,6 +2004,8 @@ int64_t rt_canvas3d_get_backend_dropped_draws(void *obj) {
 }
 
 /// @brief Static mesh cache hits observed by the active backend since canvas creation.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Saturated cache-hit counter, or zero when unsupported.
 int64_t rt_canvas3d_get_backend_mesh_cache_hits(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     vgfx3d_backend_stats_t stats = canvas3d_get_backend_stats_snapshot(c);
@@ -1753,6 +2013,8 @@ int64_t rt_canvas3d_get_backend_mesh_cache_hits(void *obj) {
 }
 
 /// @brief Static mesh cache misses observed by the active backend since canvas creation.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Saturated cache-miss counter, or zero when unsupported.
 int64_t rt_canvas3d_get_backend_mesh_cache_misses(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     vgfx3d_backend_stats_t stats = canvas3d_get_backend_stats_snapshot(c);
@@ -1760,6 +2022,8 @@ int64_t rt_canvas3d_get_backend_mesh_cache_misses(void *obj) {
 }
 
 /// @brief Transient mesh uploads performed by the active backend since canvas creation.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Saturated stream-upload counter, or zero when unsupported.
 int64_t rt_canvas3d_get_backend_mesh_stream_uploads(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     vgfx3d_backend_stats_t stats = canvas3d_get_backend_stats_snapshot(c);
@@ -1767,6 +2031,8 @@ int64_t rt_canvas3d_get_backend_mesh_stream_uploads(void *obj) {
 }
 
 /// @brief Fallback texture binds observed by the active backend since canvas creation.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Saturated fallback-bind counter, or zero when unsupported.
 int64_t rt_canvas3d_get_backend_texture_fallback_binds(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     vgfx3d_backend_stats_t stats = canvas3d_get_backend_stats_snapshot(c);
@@ -1774,6 +2040,8 @@ int64_t rt_canvas3d_get_backend_texture_fallback_binds(void *obj) {
 }
 
 /// @brief Active backend present path: 0 unknown, 1 direct GPU drawable, 2 offscreen resolve.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Backend present-path enum value, or zero when unsupported.
 int64_t rt_canvas3d_get_backend_present_path(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     vgfx3d_backend_stats_t stats = canvas3d_get_backend_stats_snapshot(c);
@@ -1781,6 +2049,9 @@ int64_t rt_canvas3d_get_backend_present_path(void *obj) {
 }
 
 /// @brief Grow the reusable GPU-readback staging buffer without losing the previous allocation.
+/// @param c Canvas3D owning reusable byte storage.
+/// @param required Positive minimum capacity in bytes.
+/// @return Non-zero when at least @p required bytes are available.
 static int canvas3d_reserve_readback_scratch(rt_canvas3d *c, size_t required) {
     size_t capacity;
     uint8_t *next;
@@ -1817,6 +2088,8 @@ static int canvas3d_reserve_readback_scratch(rt_canvas3d *c, size_t required) {
 ///          The 0xRRGGBBAA pack here matches the `rt_pixels` storage
 ///          convention (top byte = red), so the screenshot can be saved
 ///          to BMP/PNG via `Pixels.Save` without a swizzle pass.
+/// @param c Borrowed Canvas3D whose active output is captured.
+/// @param pv Mutable same-size Pixels destination.
 /// @return 1 after a successful copy, or 0 on invalid layout/readback/allocation failure.
 static int canvas3d_screenshot_into(rt_canvas3d *c, rt_pixels_impl *pv) {
     int32_t shot_w;
@@ -1892,6 +2165,7 @@ static int canvas3d_screenshot_into(rt_canvas3d *c, rt_pixels_impl *pv) {
 }
 
 /// @brief Capture the current canvas contents into a freshly allocated Pixels object.
+/// @param obj Borrowed Canvas3D handle.
 /// @return A new Pixels object, or NULL on invalid size, allocation, or readback failure.
 void *rt_canvas3d_screenshot(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -1915,6 +2189,8 @@ void *rt_canvas3d_screenshot(void *obj) {
 /// @details Reuses canvas-owned GPU staging storage after the first large-enough readback, avoiding
 ///          per-frame allocation in capture loops. Render-target and software paths allocate no
 ///          staging storage. The destination generation advances on success.
+/// @param obj Borrowed Canvas3D handle.
+/// @param pixels Borrowed mutable Pixels handle whose dimensions must match the output.
 /// @return 1 on success; 0 for invalid handles, size mismatch, or readback failure.
 int8_t rt_canvas3d_try_copy_screenshot_to(void *obj, void *pixels) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -1923,6 +2199,10 @@ int8_t rt_canvas3d_try_copy_screenshot_to(void *obj, void *pixels) {
 }
 
 /// @brief Draw an axis-aligned bounding box as 12 wireframe edges from raw min/max corner arrays.
+/// @param obj Borrowed Canvas3D handle.
+/// @param min_v Borrowed three-double minimum corner.
+/// @param max_v Borrowed three-double maximum corner.
+/// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_aabb_wire_raw(void *obj,
                                     const double *min_v,
                                     const double *max_v,
@@ -1956,6 +2236,10 @@ void rt_canvas3d_draw_aabb_wire_raw(void *obj,
 
 /// @brief Draw an axis-aligned bounding box (12 lines) between `min_v` and `max_v` Vec3s.
 /// Useful for collision/culling debug visualization.
+/// @param obj Borrowed Canvas3D handle.
+/// @param min_v Borrowed Vec3 minimum corner.
+/// @param max_v Borrowed Vec3 maximum corner.
+/// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_aabb_wire(void *obj, void *min_v, void *max_v, int64_t color) {
     double mn[3];
     double mx[3];
@@ -1972,6 +2256,10 @@ void rt_canvas3d_draw_aabb_wire(void *obj, void *min_v, void *max_v, int64_t col
 
 /// @brief Draw three orthogonal great circles approximating a sphere (XY, XZ, YZ planes) at
 /// `center` with `radius`. Cheaper than tessellating a real sphere for debug viz.
+/// @param obj Borrowed Canvas3D handle.
+/// @param center Borrowed Vec3 sphere center.
+/// @param radius Positive finite radius in world units.
+/// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_sphere_wire(void *obj, void *center, double radius, int64_t color) {
     if (!obj || !center || !isfinite(radius) || radius <= 0.0)
         return;
@@ -2009,8 +2297,14 @@ void rt_canvas3d_draw_sphere_wire(void *obj, void *center, double radius, int64_
     }
 }
 
-/// @brief Draw a ray from `origin` along `dir` (Vec3, normalized internally) for `length`
-/// world units. Useful for visualizing physics raycasts and AI line-of-sight.
+/// @brief Draw a ray from `origin` along `dir` for a scalar `length`.
+/// @details The direction is multiplied directly rather than normalized; callers
+///   should provide a unit Vec3 when @p length must equal world-space distance.
+/// @param obj Borrowed Canvas3D handle.
+/// @param origin Borrowed Vec3 ray origin.
+/// @param dir Borrowed direction Vec3.
+/// @param length Finite direction multiplier.
+/// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_debug_ray(void *obj, void *origin, void *dir, double length, int64_t color) {
     if (!obj || !origin || !dir || !isfinite(length))
         return;
@@ -2023,6 +2317,9 @@ void rt_canvas3d_draw_debug_ray(void *obj, void *origin, void *dir, double lengt
 
 /// @brief Draw an XYZ axis gizmo at `origin` with arms of length `scale`. Standard color
 /// convention: red=X, green=Y, blue=Z. Useful for visualizing world / object orientation.
+/// @param obj Borrowed Canvas3D handle.
+/// @param origin Borrowed Vec3 gizmo origin.
+/// @param scale Finite signed arm length in world units.
 void rt_canvas3d_draw_axis(void *obj, void *origin, double scale) {
     if (!obj || !origin || !isfinite(scale))
         return;

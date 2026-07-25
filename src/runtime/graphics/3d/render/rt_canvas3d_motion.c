@@ -17,6 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Canvas3D previous-transform history and stable draw identities.
+/// @details A compact entry array stores temporal matrices while a rebuilt
+///   open-addressing index provides constant-time lookup. Keys combine caller
+///   identities with allocation generations so address reuse cannot inherit
+///   stale motion, and retention tolerates temporarily culled objects.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d_internal.h"
@@ -25,6 +32,10 @@
 #include <string.h>
 
 /// @brief Ensure the motion-history entry array can hold @p needed entries (grows geometrically).
+/// @param c Canvas3D owning the entry allocation.
+/// @param needed Positive minimum number of entries.
+/// @return Non-zero when capacity is available; zero on invalid input,
+///   representational overflow, or allocation failure.
 static int ensure_motion_history_capacity(rt_canvas3d *c, int32_t needed) {
     if (!c || needed <= 0)
         return 0;
@@ -51,6 +62,7 @@ static int ensure_motion_history_capacity(rt_canvas3d *c, int32_t needed) {
 }
 
 /// @brief Clear the motion-history hash table (all slots back to the empty sentinel 0).
+/// @param c Canvas3D owning the hash allocation; missing storage is a no-op.
 static void canvas3d_motion_hash_reset(rt_canvas3d *c) {
     if (!c || !c->motion_history_hash || c->motion_history_hash_capacity <= 0)
         return;
@@ -63,6 +75,7 @@ static void canvas3d_motion_hash_reset(rt_canvas3d *c) {
 /// @details Used after floating-origin rebases and other whole-world coordinate shifts. The next
 ///   frame starts each motion key fresh, avoiding temporal artifacts from comparing transforms
 ///   captured before and after an origin discontinuity.
+/// @param c Canvas3D whose logical entry count and hash index are reset.
 void canvas3d_clear_motion_history(rt_canvas3d *c) {
     if (!c)
         return;
@@ -73,6 +86,10 @@ void canvas3d_clear_motion_history(rt_canvas3d *c) {
 /// @brief Ensure the motion-history hash has a power-of-two capacity sized for @p count_hint
 /// entries.
 /// @details Targets ~2x load headroom (min 32) and resets the table on growth.
+/// @param c Canvas3D owning the open-addressing table.
+/// @param count_hint Non-negative anticipated number of live history entries.
+/// @return Non-zero when a sufficiently large table exists; zero on invalid
+///   input, overflow, or allocation failure.
 static int canvas3d_ensure_motion_hash_capacity(rt_canvas3d *c, int32_t count_hint) {
     if (!c)
         return 0;
@@ -95,6 +112,8 @@ static int canvas3d_ensure_motion_hash_capacity(rt_canvas3d *c, int32_t count_hi
 }
 
 /// @brief Insert history entry @p index into the hash by linear probing (slot stores index+1).
+/// @param c Canvas3D owning synchronized history and hash arrays.
+/// @param index Zero-based existing history entry to index.
 /// @return 1 on success, 0 if the table is full or inputs are invalid.
 static int canvas3d_motion_hash_insert_existing(rt_canvas3d *c, int32_t index) {
     if (!c || !c->motion_history_hash || index < 0 || index >= c->motion_history_count)
@@ -116,6 +135,9 @@ static int canvas3d_motion_hash_insert_existing(rt_canvas3d *c, int32_t index) {
 
 /// @brief Rebuild the motion-history hash from scratch over the current history array.
 /// @details Sizes the table to the entry count, clears it, and re-inserts every entry.
+/// @param c Canvas3D whose hash is reconstructed from its authoritative entry array.
+/// @return Non-zero when all live entries are indexed; zero on invalid input
+///   or capacity/insertion failure.
 static int canvas3d_rebuild_motion_hash(rt_canvas3d *c) {
     if (!c)
         return 0;
@@ -135,6 +157,8 @@ static int canvas3d_rebuild_motion_hash(rt_canvas3d *c) {
 
 /// @brief Look up the motion-history index for @p key, rebuilding the hash if it is
 /// stale/undersized.
+/// @param c Canvas3D owning the history and hash arrays.
+/// @param key Non-zero stable motion identity to locate.
 /// @return The history index, or -1 if the key is absent.
 static int32_t canvas3d_motion_hash_find_index(rt_canvas3d *c, uintptr_t key) {
     if (!c || key == 0 || c->motion_history_count <= 0)
@@ -167,6 +191,7 @@ static int32_t canvas3d_motion_hash_find_index(rt_canvas3d *c, uintptr_t key) {
 /// In-place compaction. Retaining a few missed frames keeps motion vectors stable when objects are
 /// temporarily skipped by frustum or occlusion culling, while bounded eviction still prevents the
 /// table from growing without bound after objects stop drawing or are destroyed.
+/// @param c Canvas3D whose history is compacted in place and reindexed.
 void canvas3d_prune_motion_history(rt_canvas3d *c) {
     if (!c || c->motion_history_count <= 0)
         return;
@@ -196,6 +221,11 @@ void canvas3d_prune_motion_history(rt_canvas3d *c) {
 ///   3. New entry → register, return "no previous yet".
 /// Returns through `out_has_prev` whether the previous frame was
 /// available — first-frame draws fall back to current=previous.
+/// @param c Canvas3D owning the temporal history.
+/// @param motion_key Non-zero stable identity for the logical draw instance.
+/// @param current_model Borrowed current row-major 16-float model matrix.
+/// @param out_prev_model Non-`NULL` output receiving the prior matrix when available.
+/// @param out_has_prev Non-`NULL` output set to one only for genuine history.
 void canvas3d_resolve_previous_model(rt_canvas3d *c,
                                      uintptr_t motion_key,
                                      const float *current_model,
@@ -247,12 +277,17 @@ void canvas3d_resolve_previous_model(rt_canvas3d *c,
 
 /// @brief Mix one pointer/value into a running motion-history hash key (boost-style
 ///   hash_combine with the golden-ratio constant) so per-object motion vectors stay stable.
+/// @param key Current accumulated identity.
+/// @param value Next pointer-sized component to incorporate.
+/// @return Mixed pointer-sized identity.
 static uintptr_t canvas3d_mix_motion_key(uintptr_t key, uintptr_t value) {
     key ^= value + (uintptr_t)0x9e3779b97f4a7c15ull + (key << 6) + (key >> 2);
     return key;
 }
 
 /// @brief Mix a pointer-sized key into a 32-bit hash for the motion-history table.
+/// @param value Pointer-sized identity to hash.
+/// @return Deterministic 32-bit avalanche hash.
 uint32_t canvas3d_hash_u64(uintptr_t value) {
     uint64_t x = (uint64_t)value;
     x ^= x >> 33;
@@ -264,6 +299,9 @@ uint32_t canvas3d_hash_u64(uintptr_t value) {
 }
 
 /// @brief Round @p value up to the next power of two (used to size the open-addressing hash table).
+/// @param value Requested signed capacity.
+/// @return One for values at most one; otherwise the smallest representable
+///   power of two at least @p value, or @p value when doubling would overflow.
 int32_t canvas3d_next_power_of_two_i32(int32_t value) {
     int32_t cap = 1;
     if (value <= 1)
@@ -277,6 +315,8 @@ int32_t canvas3d_next_power_of_two_i32(int32_t value) {
 }
 
 /// @brief Monotonic allocation generation for pointer-keyed history salting.
+/// @details Main-thread object construction owns this non-atomic process-wide counter.
+/// @return A newly allocated non-zero 32-bit identity, wrapping past zero to one.
 uint32_t rt_g3d_next_identity_serial(void) {
     static uint32_t serial = 0;
     serial++;
@@ -289,6 +329,9 @@ uint32_t rt_g3d_next_identity_serial(void) {
 /// @details Motion (and occlusion) history outlives object frees by a few frames; a new
 ///   object recycled onto the same address would otherwise inherit the dead object's
 ///   previous transform and flash a bogus motion vector on its first frame.
+/// @param obj Borrowed candidate Mesh3D or Material3D runtime handle.
+/// @return The object's non-zero allocation generation, or zero for another
+///   type or an invalid handle.
 static uintptr_t canvas3d_object_identity_salt(const void *obj) {
     void *handle = (void *)(uintptr_t)obj;
     const rt_mesh3d *mesh =
@@ -303,6 +346,10 @@ static uintptr_t canvas3d_object_identity_salt(const void *obj) {
 }
 
 /// @brief Derive a stable object draw key for transform-handle draw calls.
+/// @param mesh_obj Borrowed Mesh3D identity.
+/// @param material_obj Borrowed Material3D identity.
+/// @param transform_obj Borrowed Mat4 identity.
+/// @return Non-zero mixed key incorporating addresses and allocation generations.
 uintptr_t canvas3d_mesh_transform_motion_key(const void *mesh_obj,
                                              const void *material_obj,
                                              const void *transform_obj) {
@@ -319,6 +366,12 @@ uintptr_t canvas3d_mesh_transform_motion_key(const void *mesh_obj,
 ///          the same mesh/material/count do not alias one another's previous
 ///          transforms. Keeping the same matrix buffer across frames preserves
 ///          continuous history; a reallocated buffer safely starts fresh.
+/// @param mesh_obj Borrowed shared Mesh3D identity.
+/// @param material_obj Borrowed shared Material3D identity.
+/// @param batch_obj Borrowed stable identity of the original matrix array.
+/// @param instance_count Original number of instances in the batch.
+/// @param index Original zero-based instance index.
+/// @return Non-zero mixed per-instance key.
 uintptr_t canvas3d_instance_motion_key(const void *mesh_obj,
                                        const void *material_obj,
                                        const void *batch_obj,

@@ -27,6 +27,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file vgfx3d_backend_utils.c
+ * @brief Implements backend-neutral validation, image conversion, upload pacing, matrix, and
+ *        compact-vertex helpers for Graphics3D.
+ *
+ * These stateless routines form the defensive boundary shared by the software, OpenGL, Metal,
+ * and D3D11 backends. They sanitize render snapshots, validate compressed texture layouts,
+ * convert Pixels and cubemap data into uploadable formats, perform checked color conversions,
+ * derive matrix data, and encode compact vertex streams without retaining caller-owned objects.
+ */
+
 #include "vgfx3d_backend_utils.h"
 
 #include "rt_canvas3d.h"
@@ -63,6 +74,7 @@ typedef struct {
 } vgfx3d_cubemap_view_t;
 
 /// @brief Store the row-major 4x4 identity matrix.
+/// @param dst Receives 16 row-major float elements; must be non-null.
 static void vgfx3d_store_identity4x4(float *dst) {
     memset(dst, 0, sizeof(float) * 16u);
     dst[0] = 1.0f;
@@ -72,6 +84,10 @@ static void vgfx3d_store_identity4x4(float *dst) {
 }
 
 /// @brief Return non-zero only when every input lane is finite and bounded.
+/// @param values Borrowed float array; may be null only when @p count is zero.
+/// @param count Number of lanes to validate.
+/// @param abs_max Finite non-negative inclusive absolute bound.
+/// @return Non-zero when every lane is finite and within `[-abs_max, abs_max]`, otherwise zero.
 int vgfx3d_float_array_is_bounded(const float *values, size_t count, float abs_max) {
     if ((!values && count > 0) || !isfinite(abs_max) || abs_max < 0.0f)
         return 0;
@@ -83,6 +99,10 @@ int vgfx3d_float_array_is_bounded(const float *values, size_t count, float abs_m
 }
 
 /// @brief Copy float constants while replacing non-finite lanes with a stable value.
+/// @param dst Receives @p count float values; null is a no-op.
+/// @param src Optional borrowed source array; a null source uses the fallback for every lane.
+/// @param count Number of lanes to copy.
+/// @param fallback Replacement for non-finite lanes; non-finite fallback input becomes zero.
 void vgfx3d_copy_float_array_finite_or(float *dst, const float *src, size_t count, float fallback) {
     float safe_fallback = isfinite(fallback) ? fallback : 0.0f;
     if (!dst)
@@ -92,6 +112,8 @@ void vgfx3d_copy_float_array_finite_or(float *dst, const float *src, size_t coun
 }
 
 /// @brief Copy a bounded matrix or replace it with identity.
+/// @param dst Receives a 16-float row-major matrix; null is a no-op.
+/// @param src Optional borrowed matrix accepted only when every component is finite and bounded.
 void vgfx3d_copy_mat4_finite_or_identity(float *dst, const float *src) {
     if (!dst)
         return;
@@ -103,6 +125,9 @@ void vgfx3d_copy_mat4_finite_or_identity(float *dst, const float *src) {
 }
 
 /// @brief Copy a bounded matrix, then a bounded fallback, or identity.
+/// @param dst Receives a 16-float row-major matrix; null is a no-op.
+/// @param src Preferred optional borrowed matrix.
+/// @param fallback Secondary optional borrowed matrix used when @p src is unusable.
 void vgfx3d_copy_mat4_finite_or(float *dst, const float *src, const float *fallback) {
     if (!dst)
         return;
@@ -118,6 +143,8 @@ void vgfx3d_copy_mat4_finite_or(float *dst, const float *src, const float *fallb
 }
 
 /// @brief Validate a bounded shadow matrix with at least one useful component.
+/// @param matrix Borrowed 16-float row-major matrix.
+/// @return Non-zero when all components are bounded and at least one has meaningful magnitude.
 int vgfx3d_shadow_matrix_is_usable(const float *matrix) {
     float max_abs = 0.0f;
 
@@ -133,6 +160,9 @@ int vgfx3d_shadow_matrix_is_usable(const float *matrix) {
 }
 
 /// @brief Copy and normalize a direction with deterministic fallback semantics.
+/// @param dst Receives the normalized three-component direction; null is a no-op.
+/// @param src Preferred optional borrowed direction.
+/// @param fallback Secondary borrowed direction, followed by the built-in negative-Z default.
 void vgfx3d_copy_vec3_direction_or(float *dst, const float *src, const float fallback[3]) {
     static const float kDefaultDirection[3] = {0.0f, 0.0f, -1.0f};
     const float *chosen = NULL;
@@ -165,10 +195,20 @@ void vgfx3d_copy_vec3_direction_or(float *dst, const float *src, const float fal
     dst[2] = (float)((double)chosen[2] * inverse_length);
 }
 
+/// @brief Select a finite requested value with deterministic fallback semantics.
+/// @param requested Preferred value.
+/// @param fallback Secondary value used when @p requested is non-finite.
+/// @return @p requested when finite, otherwise finite @p fallback, otherwise zero.
 float vgfx3d_finite_or(float requested, float fallback) {
     return isfinite(requested) ? requested : (isfinite(fallback) ? fallback : 0.0f);
 }
 
+/// @brief Sanitize and clamp a float while tolerating non-finite or inverted bounds.
+/// @param requested Preferred value to constrain.
+/// @param min_value Requested lower bound.
+/// @param max_value Requested upper bound.
+/// @param fallback Replacement for non-finite requested input and unusable bounds.
+/// @return Finite value inside the normalized inclusive bound pair.
 float vgfx3d_clamp_float_param(float requested, float min_value, float max_value, float fallback) {
     float safe_fallback = isfinite(fallback) ? fallback : 0.0f;
     float temporary;
@@ -195,12 +235,16 @@ float vgfx3d_clamp_float_param(float requested, float min_value, float max_value
 }
 
 /// @brief Normalize material workflow constants before backend shader dispatch.
+/// @param requested Caller-provided workflow enum value.
+/// @return PBR for the exact PBR constant, otherwise the legacy workflow.
 int32_t vgfx3d_sanitize_material_workflow(int32_t requested) {
     return requested == RT_MATERIAL3D_WORKFLOW_PBR ? RT_MATERIAL3D_WORKFLOW_PBR
                                                    : RT_MATERIAL3D_WORKFLOW_LEGACY;
 }
 
 /// @brief Normalize alpha-mode constants before draw-state and shader upload.
+/// @param requested Caller-provided alpha-mode enum value.
+/// @return A valid opaque, mask, or blend mode; malformed input becomes opaque.
 int32_t vgfx3d_sanitize_alpha_mode(int32_t requested) {
     if (requested < RT_MATERIAL3D_ALPHA_MODE_OPAQUE || requested > RT_MATERIAL3D_ALPHA_MODE_BLEND)
         return RT_MATERIAL3D_ALPHA_MODE_OPAQUE;
@@ -208,11 +252,15 @@ int32_t vgfx3d_sanitize_alpha_mode(int32_t requested) {
 }
 
 /// @brief Normalize Game3D shading-model constants before shader upload.
+/// @param requested Caller-provided shading-model value.
+/// @return Value in the shader-visible range `[0, 5]`, defaulting to zero.
 int32_t vgfx3d_sanitize_shading_model(int32_t requested) {
     return requested >= 0 && requested <= 5 ? requested : 0;
 }
 
 /// @brief Normalize shadow-mode constants before shadow submission decisions.
+/// @param requested Caller-provided material shadow-mode value.
+/// @return Valid auto, none, or cast value; malformed input becomes auto.
 int32_t vgfx3d_sanitize_shadow_mode(int32_t requested) {
     if (requested < RT_MATERIAL3D_SHADOW_MODE_AUTO || requested > RT_MATERIAL3D_SHADOW_MODE_CAST)
         return RT_MATERIAL3D_SHADOW_MODE_AUTO;
@@ -220,6 +268,8 @@ int32_t vgfx3d_sanitize_shadow_mode(int32_t requested) {
 }
 
 /// @brief Normalize texture-wrap constants before sampler selection and CPU sampling.
+/// @param requested Caller-provided texture addressing value.
+/// @return Valid repeat, clamp-to-edge, or mirrored-repeat value; malformed input becomes repeat.
 int32_t vgfx3d_sanitize_texture_wrap(int32_t requested) {
     if (requested == RT_MATERIAL3D_TEXTURE_WRAP_CLAMP_TO_EDGE ||
         requested == RT_MATERIAL3D_TEXTURE_WRAP_MIRRORED_REPEAT)
@@ -228,12 +278,16 @@ int32_t vgfx3d_sanitize_texture_wrap(int32_t requested) {
 }
 
 /// @brief Normalize texture-filter constants before sampler selection and CPU sampling.
+/// @param requested Caller-provided texture filter value.
+/// @return Nearest for the exact nearest constant, otherwise linear.
 int32_t vgfx3d_sanitize_texture_filter(int32_t requested) {
     return requested == RT_MATERIAL3D_TEXTURE_FILTER_NEAREST ? RT_MATERIAL3D_TEXTURE_FILTER_NEAREST
                                                              : RT_MATERIAL3D_TEXTURE_FILTER_LINEAR;
 }
 
 /// @brief Normalize texture mip-filter constants before sampler selection.
+/// @param requested Caller-provided mip filter value.
+/// @return Valid none, nearest, or linear mip filter; malformed input becomes none.
 int32_t vgfx3d_sanitize_texture_mip_filter(int32_t requested) {
     if (requested == RT_MATERIAL3D_TEXTURE_MIP_FILTER_NEAREST ||
         requested == RT_MATERIAL3D_TEXTURE_MIP_FILTER_LINEAR)
@@ -242,6 +296,8 @@ int32_t vgfx3d_sanitize_texture_mip_filter(int32_t requested) {
 }
 
 /// @brief Normalize a material texture coordinate selector to uv0 or uv1.
+/// @param requested Caller-provided UV-set selector.
+/// @return Zero for UV0 or one for any positive UV1 selector.
 int32_t vgfx3d_sanitize_texture_uv_set(int32_t requested) {
     return requested > 0 ? 1 : 0;
 }
@@ -250,6 +306,9 @@ int32_t vgfx3d_sanitize_texture_uv_set(int32_t requested) {
 /// @details Canvas normally supplies resolved material values, but backend hooks are an
 ///          internal C boundary used by tests and tools. Keeping this operation shared
 ///          prevents API-specific shader behavior when a malformed command crosses it.
+/// @param src Borrowed source draw command.
+/// @param dst Receives a full copy with matrices, material scalars, enum values, UV transforms,
+///            and counts normalized for backend consumption.
 void vgfx3d_sanitize_draw_command(const struct vgfx3d_draw_cmd *src, struct vgfx3d_draw_cmd *dst) {
     static const float uv_fallback[6] = {1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
     const float material_max = 1000000.0f;
@@ -347,6 +406,9 @@ void vgfx3d_sanitize_draw_command(const struct vgfx3d_draw_cmd *src, struct vgfx
 }
 
 /// @brief Copy camera parameters while enforcing the common shader/input contract.
+/// @param src Borrowed camera snapshot.
+/// @param dst Receives a full copy with matrices, clip planes, fog, IBL, shadow, and boolean state
+///            normalized for backend consumption.
 void vgfx3d_sanitize_camera_params(const struct vgfx3d_camera_params *src,
                                    struct vgfx3d_camera_params *dst) {
     static const float sun_direction_fallback[3] = {0.0f, 1.0f, 0.0f};
@@ -429,6 +491,9 @@ void vgfx3d_sanitize_camera_params(const struct vgfx3d_camera_params *src,
 }
 
 /// @brief Copy one light payload while enforcing finite, backend-portable semantics.
+/// @param src Borrowed light snapshot.
+/// @param dst Receives a full copy with type, directions, shadow metadata, color, attenuation,
+///            shape, and range normalized for backend consumption.
 void vgfx3d_sanitize_light_params(const struct vgfx3d_light_params *src,
                                   struct vgfx3d_light_params *dst) {
     static const float direction_fallback[3] = {0.0f, -1.0f, 0.0f};
@@ -493,6 +558,12 @@ void vgfx3d_sanitize_light_params(const struct vgfx3d_light_params *src,
 }
 
 /// @brief Copy up to the fixed renderer light limit into a caller-owned array.
+/// @param src Borrowed source-light array.
+/// @param count Caller-provided source count.
+/// @param dst Receives sanitized light values.
+/// @param dst_capacity Positive number of entries available in @p dst.
+/// @return Number of entries initialized, constrained by the source count, destination capacity,
+///         and @c VGFX3D_MAX_LIGHTS.
 int32_t vgfx3d_sanitize_light_array(const struct vgfx3d_light_params *src,
                                     int32_t count,
                                     struct vgfx3d_light_params *dst,
@@ -509,6 +580,8 @@ int32_t vgfx3d_sanitize_light_array(const struct vgfx3d_light_params *src,
 }
 
 /// @brief Restrict a sanitized light's shadow slots to a contiguous backend range.
+/// @param light Mutable sanitized light whose base slot and cascade/cubemap span are adjusted.
+/// @param shadow_count Number of contiguous shadow slots advertised by the backend.
 void vgfx3d_sanitize_light_shadow_span(struct vgfx3d_light_params *light, int32_t shadow_count) {
     int32_t remaining;
     if (!light)
@@ -543,6 +616,8 @@ void vgfx3d_sanitize_light_shadow_span(struct vgfx3d_light_params *light, int32_
 }
 
 /// @brief Copy finite non-negative ambient RGB, defaulting malformed lanes to black.
+/// @param src Optional borrowed ambient RGB triplet; null is treated as black.
+/// @param dst Receives three finite, non-negative, bounded components; null is a no-op.
 void vgfx3d_sanitize_ambient_rgb(const float *src, float dst[3]) {
     if (!dst)
         return;
@@ -551,6 +626,10 @@ void vgfx3d_sanitize_ambient_rgb(const float *src, float dst[3]) {
 }
 
 /// @brief Validate clustered-light metadata and every shader-consumed offset/index.
+/// @param table Borrowed clustered-light table.
+/// @param expected_revision Non-zero light revision the table must match.
+/// @param light_count Number of sanitized lights addressable by table indices.
+/// @return Non-zero when counts, depth range, monotonic offsets, and every binned index are valid.
 int vgfx3d_cluster_table_is_usable(const struct vgfx3d_cluster_table *table,
                                    uint32_t expected_revision,
                                    int32_t light_count) {
@@ -581,6 +660,9 @@ int vgfx3d_cluster_table_is_usable(const struct vgfx3d_cluster_table *table,
 }
 
 /// @brief Validate the pointer/count/capacity relationship of an enabled effect chain.
+/// @param chain Borrowed post-processing chain.
+/// @return Non-zero when the chain is enabled, contains a valid effect array and count, and every
+///         effect type lies in the public range.
 int vgfx3d_postfx_chain_is_usable(const struct vgfx3d_postfx_chain *chain) {
     if (!chain || !chain->enabled || !chain->effects || chain->effect_count <= 0 ||
         chain->effect_capacity < chain->effect_count)
@@ -594,6 +676,9 @@ int vgfx3d_postfx_chain_is_usable(const struct vgfx3d_postfx_chain *chain) {
 }
 
 /// @brief Copy a post-FX snapshot into bounded shader-facing values.
+/// @param src Optional borrowed effect snapshot; null produces an all-disabled result.
+/// @param dst Receives normalized toggles, finite scalar settings, and bounded shader loop counts;
+///            null is a no-op.
 void vgfx3d_sanitize_postfx_snapshot(const struct vgfx3d_postfx_snapshot *src,
                                      struct vgfx3d_postfx_snapshot *dst) {
     const float scalar_max = 1000000.0f;
@@ -654,6 +739,8 @@ void vgfx3d_sanitize_postfx_snapshot(const struct vgfx3d_postfx_snapshot *src,
 }
 
 /// @brief Convert one reversed-Z depth sample into the backend hook's canonical convention.
+/// @param reversed_depth Reversed-Z sample where near is one and far is zero.
+/// @return Canonical depth in `[0, 1]`, or -1 for non-finite input.
 float vgfx3d_sanitize_reversed_depth_probe_result(float reversed_depth) {
     if (!isfinite(reversed_depth))
         return -1.0f;
@@ -697,6 +784,10 @@ int vgfx3d_compute_scaled_scene_extent(int32_t output_width,
 }
 
 /// @brief Compute the exact extent of one level in a square mip pyramid.
+/// @param base_extent Positive base-level width and height.
+/// @param mip_level Non-negative mip index.
+/// @param out_extent Receives the level extent and is cleared before validation.
+/// @return 1 when @p mip_level exists in the pyramid, otherwise 0.
 int vgfx3d_expected_square_mip_extent(int32_t base_extent, int32_t mip_level, int32_t *out_extent) {
     int32_t extent;
     int32_t level = 0;
@@ -717,6 +808,12 @@ int vgfx3d_expected_square_mip_extent(int32_t base_extent, int32_t mip_level, in
 }
 
 /// @brief Validate a prefiltered IBL tail against a concrete cubemap mip layout.
+/// @param face_size Positive base cubemap face extent.
+/// @param ibl_base_size Positive extent of the first supplied IBL mip.
+/// @param ibl_mip_count Number of consecutive supplied IBL mips.
+/// @param max_ibl_mips Capacity of the caller's IBL mip storage.
+/// @param out_level_base Receives the destination level corresponding to @p ibl_base_size.
+/// @return 1 when the IBL chain exactly fits a suffix of the complete cubemap pyramid, otherwise 0.
 int vgfx3d_validate_cubemap_ibl_layout(int32_t face_size,
                                        int32_t ibl_base_size,
                                        int32_t ibl_mip_count,
@@ -749,6 +846,10 @@ int vgfx3d_validate_cubemap_ibl_layout(int32_t face_size,
 }
 
 /// @brief Test a whole upload against the bytes remaining in a frame budget.
+/// @param budget Maximum upload bytes for the frame, or @c UINT64_MAX for unlimited.
+/// @param used Bytes already consumed from the frame budget.
+/// @param requested Bytes required by the indivisible upload.
+/// @return Non-zero when the request is empty, unlimited, or fits the remaining budget.
 int vgfx3d_upload_budget_allows(uint64_t budget, uint64_t used, uint64_t requested) {
     if (requested == 0 || budget == UINT64_MAX)
         return 1;
@@ -760,6 +861,8 @@ int vgfx3d_upload_budget_allows(uint64_t budget, uint64_t used, uint64_t request
 /// @brief Read the monotonic generation counter on a Pixels object.
 /// Returns 0 for null. Backends compare against last-seen generation to detect
 /// when a GPU texture upload is required.
+/// @param pixels_ptr Borrowed opaque Pixels object.
+/// @return Current content generation, or zero for a null object.
 uint64_t vgfx3d_get_pixels_generation(const void *pixels_ptr) {
     const vgfx3d_pixels_view_t *pv = (const vgfx3d_pixels_view_t *)pixels_ptr;
     if (!pv)
@@ -779,6 +882,8 @@ uint64_t vgfx3d_get_pixels_generation(const void *pixels_ptr) {
 ///   space. Null pointer returns 0 as a distinguishable "no Pixels"
 ///   sentinel. Since an arbitrary 64-bit hash can still land on zero, a
 ///   populated object's zero result is remapped to one.
+/// @param pixels_ptr Borrowed opaque Pixels object.
+/// @return Non-zero identity/content signature for a populated object, or zero for null.
 uint64_t vgfx3d_get_pixels_cache_key(const void *pixels_ptr) {
     const vgfx3d_pixels_view_t *pv = (const vgfx3d_pixels_view_t *)pixels_ptr;
     uint64_t signature = 1469598103934665603ull;
@@ -795,6 +900,9 @@ uint64_t vgfx3d_get_pixels_cache_key(const void *pixels_ptr) {
 /// @details TextureAsset3D's authoritative format table supplies the exact backend bit, so this
 ///          cross-backend query cannot drift from parser block geometry or native format identity.
 ///          Assets without retained native blocks or a resident range report unsupported.
+/// @param asset Borrowed TextureAsset3D object.
+/// @param native_caps Backend capability bitset.
+/// @return Non-zero when the asset has native content and its exact format bit is advertised.
 int vgfx3d_textureasset_native_supported(void *asset, int64_t native_caps) {
     int64_t capability_bit;
 
@@ -809,6 +917,9 @@ int vgfx3d_textureasset_native_supported(void *asset, int64_t native_caps) {
 /// @details @p relative_mip is offset from the asset's first resident mip. Validates that the
 /// payload,
 ///          dimensions, block geometry, and format are all usable before reporting success.
+/// @param asset Borrowed TextureAsset3D object.
+/// @param relative_mip Zero-based index within the current resident mip window.
+/// @param out_mip Receives borrowed payload and format metadata and is cleared before validation.
 /// @return 1 with @p out_mip populated, or 0 (out_mip zeroed) if out of range or incomplete.
 int vgfx3d_textureasset_get_native_resident_mip(void *asset,
                                                 int64_t relative_mip,
@@ -829,6 +940,12 @@ int vgfx3d_textureasset_get_native_resident_mip(void *asset,
 /// @details Draw commands record the resident mip window they observed at queue time. Backends use
 ///          this helper during deferred submission so native compressed uploads cannot switch to a
 ///          different mip window if streaming code mutates the TextureAsset3D later in the frame.
+/// @param asset Borrowed TextureAsset3D object.
+/// @param first_mip Absolute first mip captured by the draw.
+/// @param mip_count Number of consecutive captured resident mips.
+/// @param relative_mip Zero-based offset within the captured window.
+/// @param out_mip Receives borrowed payload and format metadata and is cleared before validation.
+/// @return 1 when the requested snapshot mip exists and has valid native metadata, otherwise 0.
 int vgfx3d_textureasset_get_native_snapshot_mip(void *asset,
                                                 int64_t first_mip,
                                                 int64_t mip_count,
@@ -866,6 +983,11 @@ int vgfx3d_textureasset_get_native_snapshot_mip(void *asset,
 /// @details Counts the current resident mip from @p next_block_row and later mips from the
 ///          beginning, saturating at UINT64_MAX. Returns 0 when no upload is in progress, so
 ///          callers can budget streaming work per frame.
+/// @param asset Borrowed TextureAsset3D object whose current resident window is measured.
+/// @param next_relative_mip Zero-based current mip within the resident window.
+/// @param next_block_row First compressed block row not yet uploaded in the current mip.
+/// @param upload_in_progress Non-zero only while the upload cursor is meaningful.
+/// @return Remaining native payload bytes, saturated at @c UINT64_MAX.
 uint64_t vgfx3d_textureasset_pending_native_bytes(void *asset,
                                                   int64_t next_relative_mip,
                                                   int32_t next_block_row,
@@ -880,6 +1002,13 @@ uint64_t vgfx3d_textureasset_pending_native_bytes(void *asset,
 }
 
 /// @brief Compute pending native upload bytes inside an explicit resident-window snapshot.
+/// @param asset Borrowed TextureAsset3D object.
+/// @param first_mip Absolute first mip captured by the draw.
+/// @param mip_count Number of consecutive captured resident mips.
+/// @param next_relative_mip Zero-based current mip within the captured window.
+/// @param next_block_row First compressed block row not yet uploaded in the current mip.
+/// @param upload_in_progress Non-zero only while the upload cursor is meaningful.
+/// @return Remaining snapshot payload bytes, saturated at @c UINT64_MAX.
 uint64_t vgfx3d_textureasset_pending_native_snapshot_bytes(void *asset,
                                                            int64_t first_mip,
                                                            int64_t mip_count,
@@ -915,6 +1044,11 @@ uint64_t vgfx3d_textureasset_pending_native_snapshot_bytes(void *asset,
 /// @brief Decode a Pixels object into a freshly malloc'd RGBA8 byte array.
 /// Caller owns and frees the returned buffer. Returns 0 on success, -1 on
 /// invalid dimensions or allocation failure. Out-params are unmodified on error.
+/// @param pixels_ptr Borrowed opaque Pixels object storing packed @c 0xRRGGBBAA values.
+/// @param out_w Receives decoded width on success.
+/// @param out_h Receives decoded height on success.
+/// @param out_rgba Receives newly allocated tightly packed RGBA8 storage on success.
+/// @return 0 on success, otherwise -1 without publishing outputs.
 int vgfx3d_unpack_pixels_rgba(const void *pixels_ptr,
                               int32_t *out_w,
                               int32_t *out_h,
@@ -952,6 +1086,9 @@ int vgfx3d_unpack_pixels_rgba(const void *pixels_ptr,
 }
 
 /// @brief Read a Pixels object's width/height without unpacking its data.
+/// @param pixels_ptr Borrowed opaque Pixels object.
+/// @param out_w Receives width and is cleared before validation.
+/// @param out_h Receives height and is cleared before validation.
 /// @return 1 with @p out_w / @p out_h set, or 0 (both zeroed) for a NULL/empty/oversized surface.
 int vgfx3d_get_pixels_extent(const void *pixels_ptr, int32_t *out_w, int32_t *out_h) {
     const vgfx3d_pixels_view_t *pv = (const vgfx3d_pixels_view_t *)pixels_ptr;
@@ -973,6 +1110,14 @@ int vgfx3d_get_pixels_extent(const void *pixels_ptr, int32_t *out_w, int32_t *ou
 /// @details Unpacks @p row_count rows from @p start_row (clamped to the image), optionally flipping
 ///          vertically (@p flip_y) for backends with a bottom-left origin. Enables streaming a
 ///          large texture upload row-band by row-band.
+/// @param pixels_ptr Borrowed opaque Pixels object storing packed @c 0xRRGGBBAA values.
+/// @param start_row Zero-based first destination band row.
+/// @param row_count Positive requested row count, clamped at the image boundary.
+/// @param flip_y Non-zero to map band rows through the vertically reversed source.
+/// @param out_w Receives decoded row width and is cleared before validation.
+/// @param out_rows Receives actual decoded row count and is cleared before validation.
+/// @param out_rgba Receives newly allocated tightly packed RGBA8 storage and is cleared before
+///                 validation.
 /// @return 0 on success with out-params set, -1 on invalid args or allocation failure.
 int vgfx3d_unpack_pixels_rgba_rows(const void *pixels_ptr,
                                    int32_t start_row,
@@ -1034,6 +1179,9 @@ int vgfx3d_unpack_pixels_rgba_rows(const void *pixels_ptr,
 }
 
 /// @brief Compute the RGBA8 byte count uploaded for one Pixels texture.
+/// @param pixels_ptr Borrowed opaque Pixels object.
+/// @param out_bytes Receives tightly packed RGBA8 bytes and is cleared before validation.
+/// @return 1 when the surface is valid and its byte count is representable, otherwise 0.
 int vgfx3d_estimate_pixels_rgba_upload_bytes(const void *pixels_ptr, uint64_t *out_bytes) {
     const vgfx3d_pixels_view_t *pv = (const vgfx3d_pixels_view_t *)pixels_ptr;
     uint64_t w;
@@ -1061,6 +1209,13 @@ int vgfx3d_estimate_pixels_rgba_upload_bytes(const void *pixels_ptr, uint64_t *o
 /// @brief How many texture rows from @p next_row fit in the remaining per-frame upload byte budget.
 /// @details UINT64_MAX budget means "all remaining rows"; otherwise divides the leftover budget by
 ///          the row size, always allowing at least one row so progress is guaranteed.
+/// @param width Positive texture width in pixels.
+/// @param height Positive texture height in pixels.
+/// @param next_row First source row not yet uploaded.
+/// @param budget Per-frame byte budget, or @c UINT64_MAX for unlimited.
+/// @param used Bytes already consumed during the frame.
+/// @return Number of consecutive rows to upload next, or zero when no valid/progressing upload is
+///         possible.
 int32_t vgfx3d_upload_rows_for_budget(
     int32_t width, int32_t height, int32_t next_row, uint64_t budget, uint64_t used) {
     uint64_t row_bytes;
@@ -1091,6 +1246,11 @@ int32_t vgfx3d_upload_rows_for_budget(
 /// @brief Bytes still to upload for an RGBA texture from @p next_row to the last row.
 /// @details Returns 0 when no upload is in progress; saturates at UINT64_MAX. Lets the scheduler
 ///          weigh this texture's remaining work against the frame budget.
+/// @param width Positive texture width in pixels.
+/// @param height Positive texture height in pixels.
+/// @param next_row First row not yet uploaded.
+/// @param upload_in_progress Non-zero only while the row cursor is meaningful.
+/// @return Remaining tightly packed RGBA8 bytes, saturated at @c UINT64_MAX.
 uint64_t vgfx3d_pending_rgba_upload_bytes(int32_t width,
                                           int32_t height,
                                           int32_t next_row,
@@ -1111,6 +1271,11 @@ uint64_t vgfx3d_pending_rgba_upload_bytes(int32_t width,
 /// @details Counts the rows left in the current face plus every row of the faces after it (faces
 /// are
 ///          uploaded in order 0..5). Returns 0 when idle; saturates at UINT64_MAX.
+/// @param face_size Positive square face extent.
+/// @param upload_face Current face index in `[0, 5]`.
+/// @param upload_next_row First row not yet uploaded in the current face.
+/// @param upload_in_progress Non-zero only while the face/row cursor is meaningful.
+/// @return Remaining tightly packed RGBA8 bytes, saturated at @c UINT64_MAX.
 uint64_t vgfx3d_pending_cubemap_rgba_upload_bytes(int32_t face_size,
                                                   int32_t upload_face,
                                                   int32_t upload_next_row,
@@ -1132,6 +1297,13 @@ uint64_t vgfx3d_pending_cubemap_rgba_upload_bytes(int32_t face_size,
 /// @brief Compute a block-compressed texture's block-row count and per-block-row byte size.
 /// @details Rounds width/height up to whole blocks (BCn/ASTC/ETC2 tile the image in fixed blocks),
 ///          overflow-checking the row size. Shared by the block-upload budget/pending helpers.
+/// @param width Positive mip width in pixels.
+/// @param height Positive mip height in pixels.
+/// @param block_width Positive compression-block width in pixels.
+/// @param block_height Positive compression-block height in pixels.
+/// @param block_bytes Positive encoded bytes per block.
+/// @param out_block_rows Optional output receiving the rounded-up block-row count.
+/// @param out_row_bytes Optional output receiving bytes per complete block row.
 /// @return 1 with the out-params set, 0 on invalid dimensions or overflow.
 static int vgfx3d_block_upload_shape(int32_t width,
                                      int32_t height,
@@ -1165,6 +1337,8 @@ static int vgfx3d_block_upload_shape(int32_t width,
 }
 
 /// @brief Verify a native format's fixed/canonical compressed-block footprint.
+/// @param mip Borrowed native mip descriptor containing format and block metadata.
+/// @return Non-zero when the format is supported and its block dimensions/size are canonical.
 int vgfx3d_native_texture_block_layout_is_valid(const vgfx3d_native_texture_mip_t *mip) {
     int astc_shape;
 
@@ -1201,6 +1375,18 @@ int vgfx3d_native_texture_block_layout_is_valid(const vgfx3d_native_texture_mip_
 ///          least the complete rounded-up block payload. The optional payload ceiling lets API
 ///          adapters reject values their length fields cannot represent before making a driver
 ///          call.
+/// @param mip Borrowed native mip descriptor to validate.
+/// @param base_width Positive first uploaded mip width.
+/// @param base_height Positive first uploaded mip height.
+/// @param relative_mip Zero-based mip index relative to the captured base.
+/// @param expected_format_id Native format required throughout the chain.
+/// @param expected_block_width Compression-block width required throughout the chain.
+/// @param expected_block_height Compression-block height required throughout the chain.
+/// @param expected_block_bytes Encoded bytes per block required throughout the chain.
+/// @param max_payload_bytes Optional non-zero ceiling imposed by the backend driver API.
+/// @param out_required_bytes Receives the exact rounded block payload and is cleared before
+///                           validation.
+/// @return 1 when all dimensions, layout, payload, and ceiling constraints hold, otherwise 0.
 int vgfx3d_validate_native_texture_mip(const vgfx3d_native_texture_mip_t *mip,
                                        int32_t base_width,
                                        int32_t base_height,
@@ -1258,6 +1444,16 @@ int vgfx3d_validate_native_texture_mip(const vgfx3d_native_texture_mip_t *mip,
 /// @details Block-compressed analogue of vgfx3d_upload_rows_for_budget; UINT64_MAX budget means all
 ///          remaining block-rows, and at least one block-row is always returned so uploads
 ///          progress.
+/// @param width Positive mip width in pixels.
+/// @param height Positive mip height in pixels.
+/// @param block_width Positive compression-block width.
+/// @param block_height Positive compression-block height.
+/// @param block_bytes Positive encoded bytes per block.
+/// @param next_block_row First compressed block row not yet uploaded.
+/// @param budget Per-frame byte budget, or @c UINT64_MAX for unlimited.
+/// @param used Bytes already consumed during the frame.
+/// @return Number of consecutive block rows to upload next, or zero when progress is invalid or
+///         disallowed.
 int32_t vgfx3d_upload_block_rows_for_budget(int32_t width,
                                             int32_t height,
                                             int32_t block_width,
@@ -1294,6 +1490,14 @@ int32_t vgfx3d_upload_block_rows_for_budget(int32_t width,
 /// @brief Bytes still to upload for a block-compressed texture from @p next_block_row onward.
 /// @details Returns 0 when idle; saturates at UINT64_MAX. The block analogue of
 ///          vgfx3d_pending_rgba_upload_bytes.
+/// @param width Positive mip width in pixels.
+/// @param height Positive mip height in pixels.
+/// @param block_width Positive compression-block width.
+/// @param block_height Positive compression-block height.
+/// @param block_bytes Positive encoded bytes per block.
+/// @param next_block_row First compressed block row not yet uploaded.
+/// @param upload_in_progress Non-zero only while the cursor is meaningful.
+/// @return Remaining compressed bytes, saturated at @c UINT64_MAX.
 uint64_t vgfx3d_pending_block_upload_bytes(int32_t width,
                                            int32_t height,
                                            int32_t block_width,
@@ -1320,6 +1524,11 @@ uint64_t vgfx3d_pending_block_upload_bytes(int32_t width,
 /// @brief Decode all six cubemap faces into separate RGBA8 byte arrays.
 /// All faces must be square and the same size. Caller owns and frees each
 /// face buffer. On error any partially-allocated faces are freed automatically.
+/// @param cubemap_ptr Borrowed opaque cubemap object.
+/// @param out_face_size Receives the common square extent and is cleared before validation.
+/// @param out_faces Receives six newly allocated tightly packed RGBA8 buffers; all entries are
+///                  cleared before validation.
+/// @return 0 on success, otherwise -1 after freeing any partial outputs.
 int vgfx3d_unpack_cubemap_faces_rgba(const void *cubemap_ptr,
                                      int32_t *out_face_size,
                                      uint8_t *out_faces[6]) {
@@ -1354,6 +1563,8 @@ int vgfx3d_unpack_cubemap_faces_rgba(const void *cubemap_ptr,
 }
 
 /// @brief Read a cubemap's face size, verifying all six faces are square and identically sized.
+/// @param cubemap_ptr Borrowed opaque cubemap object.
+/// @param out_face_size Receives the validated common extent and is cleared before validation.
 /// @return 1 with @p out_face_size set, or 0 (zeroed) if any face is missing or mis-sized.
 int vgfx3d_get_cubemap_face_size(const void *cubemap_ptr, int32_t *out_face_size) {
     const vgfx3d_cubemap_view_t *cubemap = (const vgfx3d_cubemap_view_t *)cubemap_ptr;
@@ -1381,6 +1592,15 @@ int vgfx3d_get_cubemap_face_size(const void *cubemap_ptr, int32_t *out_face_size
 /// @brief Decode a horizontal band of one cubemap face into a fresh RGBA8 buffer (caller frees).
 /// @details Per-face, row-band analogue of vgfx3d_unpack_pixels_rgba_rows for streaming cubemap
 ///          uploads; validates @p face_index in [0, 6) and that the face matches the cube size.
+/// @param cubemap_ptr Borrowed opaque cubemap object.
+/// @param face_index Face index in `[0, 5]`.
+/// @param start_row Zero-based first destination band row.
+/// @param row_count Positive requested row count, clamped at the face boundary.
+/// @param flip_y Non-zero to map band rows through the vertically reversed face.
+/// @param out_face_size Receives the common face extent and is cleared before validation.
+/// @param out_rows Receives actual decoded row count and is cleared before validation.
+/// @param out_rgba Receives newly allocated tightly packed RGBA8 storage and is cleared before
+///                 validation.
 /// @return 0 on success with out-params set, -1 on invalid args or allocation failure.
 int vgfx3d_unpack_cubemap_rgba_rows(const void *cubemap_ptr,
                                     int32_t face_index,
@@ -1420,6 +1640,10 @@ int vgfx3d_unpack_cubemap_rgba_rows(const void *cubemap_ptr,
 }
 
 /// @brief Compute the RGBA8 byte count uploaded for one six-face cubemap.
+/// @param cubemap_ptr Borrowed opaque cubemap object.
+/// @param out_bytes Receives total tightly packed bytes for all six faces and is cleared before
+///                  validation.
+/// @return 1 when every face is valid and the total is representable, otherwise 0.
 int vgfx3d_estimate_cubemap_rgba_upload_bytes(const void *cubemap_ptr, uint64_t *out_bytes) {
     const vgfx3d_cubemap_view_t *cubemap = (const vgfx3d_cubemap_view_t *)cubemap_ptr;
     int32_t face_size = 0;
@@ -1449,6 +1673,8 @@ int vgfx3d_estimate_cubemap_rgba_upload_bytes(const void *cubemap_ptr, uint64_t 
 /// Uses an FNV-prime mixing scheme so face mutations, face replacement, and
 /// cubemap object replacement all invalidate backend caches. Returns 0 when no
 /// complete face set is bound.
+/// @param cubemap_ptr Borrowed opaque cubemap object.
+/// @return Non-zero identity/content signature, or zero for an incomplete cubemap.
 uint64_t vgfx3d_get_cubemap_generation(const void *cubemap_ptr) {
     const vgfx3d_cubemap_view_t *cubemap = (const vgfx3d_cubemap_view_t *)cubemap_ptr;
     uint64_t signature = 1469598103934665603ull;
@@ -1473,6 +1699,9 @@ uint64_t vgfx3d_get_cubemap_generation(const void *cubemap_ptr) {
 /// @brief Flip an RGBA8 image vertically in place (top<->bottom row swap).
 /// Used to convert between Pixels' top-left origin and APIs that expect
 /// bottom-left (e.g., OpenGL textures).
+/// @param rgba Mutable tightly packed RGBA8 storage.
+/// @param w Positive image width in pixels.
+/// @param h Image height in pixels; values below two are a no-op.
 void vgfx3d_flip_rgba_rows(uint8_t *rgba, int32_t w, int32_t h) {
     uint8_t temporary[256];
     size_t row_bytes;
@@ -1503,6 +1732,8 @@ void vgfx3d_flip_rgba_rows(uint8_t *rgba, int32_t w, int32_t h) {
 }
 
 /// @brief Convert IEEE-754 binary16 to binary32.
+/// @param bits Raw IEEE-754 binary16 bit pattern.
+/// @return Numerically equivalent binary32 value, preserving signed zero, infinity, and NaN class.
 float vgfx3d_half_to_float(uint16_t bits) {
     uint32_t sign = (uint32_t)(bits & 0x8000u) << 16;
     uint32_t exp = (bits >> 10) & 0x1Fu;
@@ -1533,6 +1764,8 @@ float vgfx3d_half_to_float(uint16_t bits) {
 }
 
 /// @brief Clamp a float to [0,1] and quantize to UNORM8.
+/// @param value Linear normalized value; non-positive and NaN input maps to zero.
+/// @return Nearest eight-bit unsigned normalized representation.
 uint8_t vgfx3d_float_to_unorm8(float value) {
     if (!(value > 0.0f))
         return 0;
@@ -1542,6 +1775,9 @@ uint8_t vgfx3d_float_to_unorm8(float value) {
 }
 
 /// @brief Apply a simple Reinhard tonemap before UNORM8 quantization.
+/// @param value Linear HDR channel value. Non-positive and NaN values map to zero, while positive
+///              infinity maps to the maximum representable channel value.
+/// @return Tonemapped eight-bit unsigned normalized representation.
 uint8_t vgfx3d_hdr_to_unorm8(float value) {
     if (!(value > 0.0f))
         return 0;
@@ -1552,6 +1788,14 @@ uint8_t vgfx3d_hdr_to_unorm8(float value) {
 
 /// @brief Validate a row-copy request: positive extents, non-negative strides, no 32-bit
 ///   overflow in the per-row byte/unit math, and strides large enough for one row.
+/// @param copy_w Number of pixels copied from each row.
+/// @param copy_h Number of rows copied.
+/// @param dst_stride_units Distance between destination rows, measured in destination units.
+/// @param src_stride_bytes Distance between source rows, measured in bytes.
+/// @param dst_units_per_pixel Number of destination units occupied by one pixel.
+/// @param dst_unit_bytes Size of one destination unit in bytes.
+/// @param src_bytes_per_pixel Number of source bytes occupied by one pixel.
+/// @return 1 when all row sizes and offsets are valid and representable, otherwise 0.
 static int vgfx3d_copy_dims_are_valid(int32_t copy_w,
                                       int32_t copy_h,
                                       int32_t dst_stride_units,
@@ -1588,6 +1832,14 @@ static int vgfx3d_copy_dims_are_valid(int32_t copy_w,
 }
 
 /// @brief Convert linear RGBA16F rows to displayable RGBA8.
+/// @details RGB channels are Reinhard-tonemapped before quantization; alpha is clamped directly to
+///          UNORM8. Invalid pointers, extents, or strides leave the destination untouched.
+/// @param dst_rgba Caller-owned RGBA8 destination buffer.
+/// @param dst_stride Distance between destination rows in bytes.
+/// @param copy_w Number of pixels converted per row.
+/// @param copy_h Number of rows converted.
+/// @param src_rgba16f Borrowed source buffer containing IEEE-754 binary16 RGBA pixels.
+/// @param src_stride_bytes Distance between source rows in bytes.
 void vgfx3d_copy_linear_rgba16f_to_rgba8(uint8_t *dst_rgba,
                                          int32_t dst_stride,
                                          int32_t copy_w,
@@ -1617,6 +1869,14 @@ void vgfx3d_copy_linear_rgba16f_to_rgba8(uint8_t *dst_rgba,
 }
 
 /// @brief Convert linear RGBA16F rows to linear RGBA32F.
+/// @details Each binary16 channel is expanded independently without tonemapping. Invalid pointers,
+///          extents, or strides leave the destination untouched.
+/// @param dst_rgba32f Caller-owned RGBA32F destination buffer.
+/// @param dst_stride_floats Distance between destination rows in float elements.
+/// @param copy_w Number of pixels converted per row.
+/// @param copy_h Number of rows converted.
+/// @param src_rgba16f Borrowed source buffer containing IEEE-754 binary16 RGBA pixels.
+/// @param src_stride_bytes Distance between source rows in bytes.
 void vgfx3d_copy_linear_rgba16f_to_rgba32f(float *dst_rgba32f,
                                            int32_t dst_stride_floats,
                                            int32_t copy_w,
@@ -1650,6 +1910,14 @@ void vgfx3d_copy_linear_rgba16f_to_rgba32f(float *dst_rgba32f,
 }
 
 /// @brief Convert linear RGBA32F rows to displayable RGBA8.
+/// @details RGB channels are Reinhard-tonemapped before quantization; alpha is clamped directly to
+///          UNORM8. Invalid pointers, extents, or strides leave the destination untouched.
+/// @param dst_rgba Caller-owned RGBA8 destination buffer.
+/// @param dst_stride Distance between destination rows in bytes.
+/// @param copy_w Number of pixels converted per row.
+/// @param copy_h Number of rows converted.
+/// @param src_rgba32f Borrowed source buffer containing linear float RGBA pixels.
+/// @param src_stride_bytes Distance between source rows in bytes.
 void vgfx3d_copy_linear_rgba32f_to_rgba8(uint8_t *dst_rgba,
                                          int32_t dst_stride,
                                          int32_t copy_w,
@@ -1679,6 +1947,7 @@ void vgfx3d_copy_linear_rgba32f_to_rgba8(uint8_t *dst_rgba,
 
 /// @brief Write a 4×4 identity matrix into @p out_matrix — the normal-matrix fallback
 ///   when the model matrix is singular and cannot be inverse-transposed.
+/// @param out_matrix Caller-owned storage for 16 row-major float elements.
 static void vgfx3d_store_identity_normal_matrix4(float *out_matrix) {
     memset(out_matrix, 0, sizeof(float) * 16);
     out_matrix[0] = 1.0f;
@@ -1691,6 +1960,9 @@ static void vgfx3d_store_identity_normal_matrix4(float *out_matrix) {
 /// @p model_matrix) and place it in the upper-left 3×3 of @p out_matrix.
 /// Falls back to identity when the matrix is singular or non-finite, avoiding
 /// NaN/Inf propagation in shaders and CPU skinning.
+/// @param model_matrix Borrowed 4×4 row-major model matrix.
+/// @param out_matrix Caller-owned storage for the resulting 4×4 row-major normal matrix. A null
+///                   pointer, or a null @p model_matrix, makes the operation a no-op.
 void vgfx3d_compute_normal_matrix4(const float *model_matrix, float *out_matrix) {
     if (!model_matrix || !out_matrix)
         return;
@@ -1757,6 +2029,8 @@ void vgfx3d_compute_normal_matrix4(const float *model_matrix, float *out_matrix)
 }
 
 /// @brief Invert a 4×4 row-major matrix using cofactor expansion.
+/// @param matrix Borrowed 16-element source matrix.
+/// @param out_matrix Caller-owned 16-element destination matrix.
 /// @return 0 on success, -1 if @p matrix is null or singular (|det| < 1e-12).
 /// Out-buffer is unmodified on failure.
 int vgfx3d_invert_matrix4(const float *matrix, float *out_matrix) {
@@ -1837,6 +2111,9 @@ int vgfx3d_invert_matrix4(const float *matrix, float *out_matrix) {
 /// @brief Convert a float to IEEE 754 binary16 bits (round-to-nearest-even).
 /// @details Deterministic bit-level conversion: no fenv dependence. Values
 ///          beyond half range clamp to +-65504; NaN maps to a quiet NaN.
+/// @param value Binary32 value to encode.
+/// @return Raw binary16 bit pattern. Infinities and finite overflow clamp to the largest finite
+///         value with the matching sign.
 static uint16_t vgfx3d_float_to_half_bits(float value) {
     uint32_t bits;
     uint32_t sign;
@@ -1882,6 +2159,8 @@ static uint16_t vgfx3d_float_to_half_bits(float value) {
 }
 
 /// @brief Encode a [-1, 1] float as snorm16 (round-half-away-from-zero, deterministic).
+/// @param value Value to clamp and encode; NaN maps to zero.
+/// @return Signed normalized 16-bit representation in the range [-32767, 32767].
 static int16_t vgfx3d_float_to_snorm16(float value) {
     float clamped = value;
     float scaled;
@@ -1893,6 +2172,14 @@ static int16_t vgfx3d_float_to_snorm16(float value) {
     return (int16_t)(scaled >= 0.0f ? (int32_t)(scaled + 0.5f) : -(int32_t)(0.5f - scaled));
 }
 
+/// @brief Encode full vertices into the fixed-width compact static-mesh stream.
+/// @details Positions remain three binary32 values. Normals and tangents become SNORM16, both UV
+///          sets become binary16, and colors and bone weights become UNORM8; bone indices are
+///          copied verbatim. Source and destination storage must not overlap.
+/// @param src Borrowed array of @p count full vertices.
+/// @param count Number of vertices to encode.
+/// @param dst Caller-owned buffer of at least `count * VGFX3D_COMPACT_VERTEX_STRIDE` bytes. Null
+///            source or destination pointers make the operation a no-op.
 void vgfx3d_encode_compact_vertices(const vgfx3d_vertex_t *src, uint32_t count, uint8_t *dst) {
     if (!src || !dst)
         return;

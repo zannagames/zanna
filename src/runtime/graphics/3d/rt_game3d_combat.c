@@ -30,6 +30,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Game3D combat volumes, health state, and polled combat events.
+/// @details Bone- or entity-attached hit and hurt volumes are evaluated outside Physics3D in a
+///   deterministic per-world pass. Activation windows suppress repeat victims, Health3D applies
+///   damage and invulnerability state, and bounded event records retain their participants.
+
 #include "rt_animcontroller3d.h"
 #include "rt_collider3d.h"
 #include "rt_game3d.h"
@@ -54,6 +60,9 @@
 //=========================================================================
 
 /// @brief out = a ⊗ b (Hamilton product, xyzw layout).
+/// @param a Left quaternion in XYZW component order.
+/// @param b Right quaternion in XYZW component order.
+/// @param out Four-component output receiving the Hamilton product.
 static void combat_quat_mul(const double a[4], const double b[4], double out[4]) {
     double x = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
     double y = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
@@ -66,6 +75,9 @@ static void combat_quat_mul(const double a[4], const double b[4], double out[4])
 }
 
 /// @brief Rotate vector @p v by quaternion @p q (xyzw).
+/// @param q Rotation quaternion in XYZW component order.
+/// @param v Three-component input vector.
+/// @param out Three-component output receiving the rotated vector.
 static void combat_quat_rotate(const double q[4], const double v[3], double out[3]) {
     double cx = q[1] * v[2] - q[2] * v[1];
     double cy = q[2] * v[0] - q[0] * v[2];
@@ -83,6 +95,9 @@ static void combat_quat_rotate(const double q[4], const double v[3], double out[
 //=========================================================================
 
 /// @brief Validate @p obj as a Hitbox3D handle, trapping @p method on mismatch.
+/// @param obj Candidate Hitbox3D handle.
+/// @param method Trap message emitted on runtime-class mismatch.
+/// @return The validated hitbox, or NULL after reporting an invalid handle.
 static rt_game3d_hitbox *game3d_hitbox_checked(void *obj, const char *method) {
     rt_game3d_hitbox *hitbox =
         (rt_game3d_hitbox *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_HITBOX_CLASS_ID);
@@ -92,6 +107,9 @@ static rt_game3d_hitbox *game3d_hitbox_checked(void *obj, const char *method) {
 }
 
 /// @brief Validate @p obj as a Health3D handle, trapping @p method on mismatch.
+/// @param obj Candidate Health3D handle.
+/// @param method Trap message emitted on runtime-class mismatch.
+/// @return The validated health component, or NULL after reporting an invalid handle.
 static rt_game3d_health *game3d_health_checked(void *obj, const char *method) {
     rt_game3d_health *health =
         (rt_game3d_health *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_HEALTH_CLASS_ID);
@@ -101,6 +119,7 @@ static rt_game3d_health *game3d_health_checked(void *obj, const char *method) {
 }
 
 /// @brief GC finalizer for Hitbox3D: release the retained collider shape.
+/// @param obj Hitbox3D allocation being finalized.
 static void game3d_hitbox_finalize(void *obj) {
     rt_game3d_hitbox *hitbox = (rt_game3d_hitbox *)obj;
     if (!hitbox)
@@ -109,6 +128,9 @@ static void game3d_hitbox_finalize(void *obj) {
 }
 
 /// @brief Append @p hitbox to @p entity's retained combat-volume array.
+/// @param entity Entity3D that will own the hitbox reference.
+/// @param hitbox Hitbox3D to append.
+/// @return 1 when retained and appended, or 0 when the array cannot grow.
 static int game3d_entity_append_hitbox(rt_game3d_entity *entity, rt_game3d_hitbox *hitbox) {
     if (entity->hitbox_count >= entity->hitbox_capacity) {
         int32_t new_cap = entity->hitbox_capacity ? entity->hitbox_capacity * 2 : 4;
@@ -125,6 +147,11 @@ static int game3d_entity_append_hitbox(rt_game3d_entity *entity, rt_game3d_hitbo
 }
 
 /// @brief Shared Hitbox3D constructor body (entity-space or bone attachment).
+/// @param entity_obj Entity3D that will own and position the volume.
+/// @param collider Collider3D shape retained by the volume.
+/// @param bone_index Skeleton bone index, or -1 for entity-space attachment.
+/// @param api_name Trap context used when validating the owner.
+/// @return A newly registered Hitbox3D handle, or NULL on validation, allocation, or registration failure.
 static void *game3d_hitbox_new_impl(void *entity_obj,
                                     void *collider,
                                     int64_t bone_index,
@@ -164,12 +191,19 @@ static void *game3d_hitbox_new_impl(void *entity_obj,
 
 /// @brief Create an entity-space combat volume registered on @p entity_obj.
 ///   Defaults: kind Hurt, team 0, channel 1, inactive. See header.
+/// @param entity_obj Entity3D that will own and position the volume.
+/// @param collider Collider3D shape retained by the hitbox.
+/// @return A new Hitbox3D handle, or NULL on failure.
 void *rt_game3d_hitbox_new(void *entity_obj, void *collider) {
     return game3d_hitbox_new_impl(entity_obj, collider, -1, "Game3D.Hitbox3D.New: invalid entity");
 }
 
 /// @brief Create a bone-attached combat volume; traps when the entity has no
 ///   animator/skeleton or the bone name is unknown. See header.
+/// @param entity_obj Entity3D whose animator supplies the skeleton.
+/// @param bone_name Runtime string naming the attachment bone.
+/// @param collider Collider3D shape retained by the hitbox.
+/// @return A new bone-attached Hitbox3D handle, or NULL on failure.
 void *rt_game3d_hitbox_new_on_bone(void *entity_obj, rt_string bone_name, void *collider) {
     rt_game3d_entity *entity =
         game3d_entity_checked(entity_obj, "Game3D.Hitbox3D.NewOnBone: invalid entity");
@@ -192,6 +226,8 @@ void *rt_game3d_hitbox_new_on_bone(void *entity_obj, rt_string bone_name, void *
 }
 
 /// @brief Get the volume kind (0 = Hurt, 1 = Hit).
+/// @param obj Hitbox3D to query.
+/// @return RT_GAME3D_HITBOX_KIND_HURT or RT_GAME3D_HITBOX_KIND_HIT.
 int64_t rt_game3d_hitbox_get_kind(void *obj) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.get_kind: invalid hitbox");
@@ -199,6 +235,8 @@ int64_t rt_game3d_hitbox_get_kind(void *obj) {
 }
 
 /// @brief Set the volume kind (0 = Hurt, 1 = Hit); other values trap.
+/// @param obj Hitbox3D to configure.
+/// @param kind Valid RT_GAME3D_HITBOX_KIND_* value.
 void rt_game3d_hitbox_set_kind(void *obj, int64_t kind) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.set_kind: invalid hitbox");
@@ -212,6 +250,8 @@ void rt_game3d_hitbox_set_kind(void *obj, int64_t kind) {
 }
 
 /// @brief Get the team id (same-team pairs are skipped unless friendly fire).
+/// @param obj Hitbox3D to query.
+/// @return The application-defined team identifier, or 0 when invalid.
 int64_t rt_game3d_hitbox_get_team(void *obj) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.get_team: invalid hitbox");
@@ -219,6 +259,8 @@ int64_t rt_game3d_hitbox_get_team(void *obj) {
 }
 
 /// @brief Set the team id.
+/// @param obj Hitbox3D to configure.
+/// @param team Application-defined team identifier.
 void rt_game3d_hitbox_set_team(void *obj, int64_t team) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.set_team: invalid hitbox");
@@ -227,6 +269,8 @@ void rt_game3d_hitbox_set_team(void *obj, int64_t team) {
 }
 
 /// @brief Get the channel bitmask (hit×hurt require overlapping channels).
+/// @param obj Hitbox3D to query.
+/// @return The configured combat-channel bit mask, or 0 when invalid.
 int64_t rt_game3d_hitbox_get_channel(void *obj) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.get_channel: invalid hitbox");
@@ -234,6 +278,8 @@ int64_t rt_game3d_hitbox_get_channel(void *obj) {
 }
 
 /// @brief Set the channel bitmask.
+/// @param obj Hitbox3D to configure.
+/// @param channel Combat-channel bits used by pair filtering.
 void rt_game3d_hitbox_set_channel(void *obj, int64_t channel) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.set_channel: invalid hitbox");
@@ -242,6 +288,8 @@ void rt_game3d_hitbox_set_channel(void *obj, int64_t channel) {
 }
 
 /// @brief Get the manual activation switch.
+/// @param obj Hitbox3D to query.
+/// @return 1 when manually active, or 0 when inactive or invalid.
 int8_t rt_game3d_hitbox_get_active(void *obj) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.get_active: invalid hitbox");
@@ -249,6 +297,8 @@ int8_t rt_game3d_hitbox_get_active(void *obj) {
 }
 
 /// @brief Set the manual activation switch (scripted attacks).
+/// @param obj Hitbox3D to configure.
+/// @param active Non-zero to activate the volume; zero to deactivate it.
 void rt_game3d_hitbox_set_active(void *obj, int8_t active) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.set_active: invalid hitbox");
@@ -257,6 +307,8 @@ void rt_game3d_hitbox_set_active(void *obj, int8_t active) {
 }
 
 /// @brief Get the friendly-fire flag on this attacking volume.
+/// @param obj Hitbox3D to query.
+/// @return 1 when same-team victims are allowed, or 0 otherwise.
 int8_t rt_game3d_hitbox_get_friendly_fire(void *obj) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.get_friendlyFire: invalid hitbox");
@@ -264,6 +316,8 @@ int8_t rt_game3d_hitbox_get_friendly_fire(void *obj) {
 }
 
 /// @brief Set the friendly-fire flag (allow same-team hits from this attacker).
+/// @param obj Hitbox3D to configure.
+/// @param enabled Non-zero to allow same-team hits; zero to filter them.
 void rt_game3d_hitbox_set_friendly_fire(void *obj, int8_t enabled) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.set_friendlyFire: invalid hitbox");
@@ -273,6 +327,11 @@ void rt_game3d_hitbox_set_friendly_fire(void *obj, int8_t enabled) {
 
 /// @brief Fluent: bind an activation window — live while the owner's animator
 ///   base state is @p state_name and its time is within [t0, t1]. Up to 4.
+/// @param obj Hitbox3D to configure.
+/// @param state_name Non-empty runtime string naming the animator state.
+/// @param t0 First endpoint of the activation interval in seconds.
+/// @param t1 Second endpoint; endpoints are reordered when necessary.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_hitbox_bind_window(void *obj, rt_string state_name, double t0, double t1) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.bindWindow: invalid hitbox");
@@ -302,6 +361,11 @@ void *rt_game3d_hitbox_bind_window(void *obj, rt_string state_name, double t0, d
 }
 
 /// @brief Fluent: set the shape offset in bone/entity space.
+/// @param obj Hitbox3D to configure.
+/// @param x Local X offset.
+/// @param y Local Y offset.
+/// @param z Local Z offset.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_hitbox_set_local_offset(void *obj, double x, double y, double z) {
     rt_game3d_hitbox *hitbox =
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.setLocalOffset: invalid hitbox");
@@ -314,6 +378,9 @@ void *rt_game3d_hitbox_set_local_offset(void *obj, double x, double y, double z)
 }
 
 /// @brief Compute a hitbox's world pose (position + orientation).
+/// @param hitbox Hitbox3D whose owner, bone pose, and local offset are composed.
+/// @param out_pos Three-component output receiving world position.
+/// @param out_quat Four-component output receiving XYZW world orientation.
 /// @return 0 when the owner entity/node is unavailable.
 static int game3d_hitbox_world_pose(rt_game3d_hitbox *hitbox,
                                     double out_pos[3],
@@ -369,6 +436,8 @@ static int game3d_hitbox_world_pose(rt_game3d_hitbox *hitbox,
 ///   sample uses instantaneous membership (the prev sample belonged to another
 ///   state, so the crossing interval would be meaningless). Called once per
 ///   hitbox per combat step — it advances the stored sample.
+/// @param hitbox Hitbox3D whose manual and animator-window state is sampled.
+/// @return 1 when the volume is live for this combat step, or 0 otherwise.
 static int game3d_hitbox_is_live(rt_game3d_hitbox *hitbox) {
     if (hitbox->active)
         return 1;
@@ -407,6 +476,9 @@ static int game3d_hitbox_is_live(rt_game3d_hitbox *hitbox) {
 }
 
 /// @brief True when @p victim was already reported for the current activation.
+/// @param hitbox Attacking Hitbox3D containing the bounded victim set.
+/// @param victim Candidate victim entity identity.
+/// @return 1 when already recorded, or 0 otherwise.
 static int game3d_hitbox_victim_seen(const rt_game3d_hitbox *hitbox,
                                      const rt_game3d_entity *victim) {
     for (int32_t i = 0; i < hitbox->hit_victim_count; ++i)
@@ -419,6 +491,8 @@ static int game3d_hitbox_victim_seen(const rt_game3d_hitbox *hitbox,
 /// @return 1 when recorded; 0 when the ring is full. Callers must fail closed
 ///   (suppress the hit) on 0 — an unrecorded victim would otherwise be re-hit
 ///   on every subsequent combat pass of the same activation.
+/// @param hitbox Attacking Hitbox3D whose bounded victim set is updated.
+/// @param victim Victim entity identity to remember.
 static int game3d_hitbox_remember_victim(rt_game3d_hitbox *hitbox, rt_game3d_entity *victim) {
     if (hitbox->hit_victim_count >= RT_GAME3D_HITBOX_MAX_VICTIMS)
         return 0;
@@ -432,6 +506,7 @@ static int game3d_hitbox_remember_victim(rt_game3d_hitbox *hitbox, rt_game3d_ent
 
 /// @brief Release an entity's hitbox array and health slot, clearing component
 ///   backrefs first so surviving handles fail closed. See internal header.
+/// @param entity Entity3D whose combat component ownership is dismantled.
 void game3d_entity_release_combat_slots(rt_game3d_entity *entity) {
     if (!entity)
         return;
@@ -458,6 +533,8 @@ void game3d_entity_release_combat_slots(rt_game3d_entity *entity) {
 //=========================================================================
 
 /// @brief Create a health component with @p max_hp (clamped positive).
+/// @param max_hp Requested positive maximum hit points.
+/// @return A new full-health Health3D component, or NULL on allocation failure.
 void *rt_game3d_health_new(double max_hp) {
     rt_game3d_health *health =
         (rt_game3d_health *)rt_obj_new_i64(RT_G3D_GAME3D_HEALTH_CLASS_ID, (int64_t)sizeof(*health));
@@ -472,6 +549,9 @@ void *rt_game3d_health_new(double max_hp) {
 }
 
 /// @brief Fluent: attach a Health3D component (one per entity; reattach replaces).
+/// @param obj Entity3D that will retain the component.
+/// @param health_obj Health3D to attach.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_attach_health(void *obj, void *health_obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.attachHealth: invalid entity");
@@ -489,6 +569,8 @@ void *rt_game3d_entity_attach_health(void *obj, void *health_obj) {
 }
 
 /// @brief Get the entity's Health3D component (NULL when none/stale entity).
+/// @param obj Entity3D to query.
+/// @return The borrowed validated Health3D handle, or NULL.
 void *rt_game3d_entity_get_health(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_health: invalid entity");
@@ -498,6 +580,8 @@ void *rt_game3d_entity_get_health(void *obj) {
 }
 
 /// @brief Get current hit points.
+/// @param obj Health3D component to query.
+/// @return Current hit points, or 0 when invalid.
 double rt_game3d_health_get_current(void *obj) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.get_current: invalid health");
@@ -505,6 +589,8 @@ double rt_game3d_health_get_current(void *obj) {
 }
 
 /// @brief Get maximum hit points.
+/// @param obj Health3D component to query.
+/// @return Maximum hit points, or 0 when invalid.
 double rt_game3d_health_get_max(void *obj) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.get_max: invalid health");
@@ -512,6 +598,8 @@ double rt_game3d_health_get_max(void *obj) {
 }
 
 /// @brief Set maximum hit points (clamps current downward when reduced).
+/// @param obj Health3D component to configure.
+/// @param max_hp Requested positive maximum hit points.
 void rt_game3d_health_set_max(void *obj, double max_hp) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.set_max: invalid health");
@@ -523,6 +611,8 @@ void rt_game3d_health_set_max(void *obj, double max_hp) {
 }
 
 /// @brief True once hp reached 0 (until Revive).
+/// @param obj Health3D component to query.
+/// @return 1 when death is latched, or 0 otherwise.
 int8_t rt_game3d_health_is_dead(void *obj) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.get_isDead: invalid health");
@@ -530,6 +620,8 @@ int8_t rt_game3d_health_is_dead(void *obj) {
 }
 
 /// @brief Get the i-frame duration granted per applied damage.
+/// @param obj Health3D component to query.
+/// @return Configured invulnerability duration in seconds, or 0 when invalid.
 double rt_game3d_health_get_invuln_seconds(void *obj) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.get_invulnSeconds: invalid health");
@@ -537,6 +629,8 @@ double rt_game3d_health_get_invuln_seconds(void *obj) {
 }
 
 /// @brief Set the i-frame duration granted per applied damage.
+/// @param obj Health3D component to configure.
+/// @param seconds Non-negative duration in seconds, clamped to one hour.
 void rt_game3d_health_set_invuln_seconds(void *obj, double seconds) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.set_invulnSeconds: invalid health");
@@ -545,6 +639,8 @@ void rt_game3d_health_set_invuln_seconds(void *obj, double seconds) {
 }
 
 /// @brief True while i-frames are active.
+/// @param obj Health3D component to query.
+/// @return 1 while invulnerability time remains, or 0 otherwise.
 int8_t rt_game3d_health_get_invulnerable(void *obj) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.get_invulnerable: invalid health");
@@ -554,6 +650,11 @@ int8_t rt_game3d_health_get_invulnerable(void *obj) {
 /// @brief Apply damage: returns the applied amount (0 while invulnerable/dead).
 ///   Grants i-frames, sets one-shot flags, emits a DamageEvent3D, and latches
 ///   death (with a lethal event) when hp crosses 0. See header.
+/// @param obj Health3D component receiving damage.
+/// @param amount Positive requested damage amount.
+/// @param source_entity Optional Entity3D responsible for the damage.
+/// @param tag Application-defined damage tag copied into telemetry.
+/// @return Damage actually removed after clamping to remaining health, or 0 when rejected.
 double rt_game3d_health_damage(void *obj, double amount, void *source_entity, int64_t tag) {
     rt_game3d_health *health = game3d_health_checked(obj, "Game3D.Health3D.Damage: invalid health");
     if (!health)
@@ -590,6 +691,8 @@ double rt_game3d_health_damage(void *obj, double amount, void *source_entity, in
 }
 
 /// @brief Heal by @p amount (no effect while dead; clamps to max).
+/// @param obj Health3D component to heal.
+/// @param amount Positive hit points to restore.
 void rt_game3d_health_heal(void *obj, double amount) {
     rt_game3d_health *health = game3d_health_checked(obj, "Game3D.Health3D.Heal: invalid health");
     if (!health || health->dead)
@@ -603,6 +706,8 @@ void rt_game3d_health_heal(void *obj, double amount) {
 }
 
 /// @brief Clear the death latch and restore @p hp (clamped to 1..max).
+/// @param obj Health3D component to revive.
+/// @param hp Requested restored hit points.
 void rt_game3d_health_revive(void *obj, double hp) {
     rt_game3d_health *health = game3d_health_checked(obj, "Game3D.Health3D.Revive: invalid health");
     if (!health)
@@ -614,6 +719,8 @@ void rt_game3d_health_revive(void *obj, double hp) {
 }
 
 /// @brief One-shot: true for the step after hp crossed to 0.
+/// @param obj Health3D component to query.
+/// @return 1 when death occurred in the current event interval, or 0 otherwise.
 int8_t rt_game3d_health_just_died(void *obj) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.JustDied: invalid health");
@@ -621,6 +728,8 @@ int8_t rt_game3d_health_just_died(void *obj) {
 }
 
 /// @brief One-shot: true for the step after damage applied.
+/// @param obj Health3D component to query.
+/// @return 1 when damage was applied in the current event interval, or 0 otherwise.
 int8_t rt_game3d_health_just_damaged(void *obj) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.JustDamaged: invalid health");
@@ -628,6 +737,8 @@ int8_t rt_game3d_health_just_damaged(void *obj) {
 }
 
 /// @brief Most recent applied damage amount.
+/// @param obj Health3D component to query.
+/// @return The last applied amount, or 0 when unavailable.
 double rt_game3d_health_last_damage(void *obj) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.LastDamage: invalid health");
@@ -635,6 +746,8 @@ double rt_game3d_health_last_damage(void *obj) {
 }
 
 /// @brief Most recent caller-supplied damage tag.
+/// @param obj Health3D component to query.
+/// @return The last damage tag, or 0 when unavailable.
 int64_t rt_game3d_health_last_tag(void *obj) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.LastTag: invalid health");
@@ -644,6 +757,11 @@ int64_t rt_game3d_health_last_tag(void *obj) {
 /// @brief Impulse knockback on the owner's dynamic body: returns false (no-op)
 ///   for kinematic/static/absent bodies so gameplay can route to its character
 ///   controller instead. Not automatic on damage.
+/// @param obj Health3D whose owning entity supplies the body.
+/// @param direction Vec3 impulse direction; normalized internally.
+/// @param strength Positive impulse magnitude.
+/// @param point Vec3 world-space application point.
+/// @return 1 when the impulse was applied, or 0 when validation or body state rejects it.
 int8_t rt_game3d_health_apply_knockback(void *obj, void *direction, double strength, void *point) {
     rt_game3d_health *health =
         game3d_health_checked(obj, "Game3D.Health3D.ApplyKnockback: invalid health");
@@ -682,6 +800,7 @@ int8_t rt_game3d_health_apply_knockback(void *obj, void *direction, double stren
 //=========================================================================
 
 /// @brief Release every record in both combat buffers. See internal header.
+/// @param world World3D whose retained hit and damage records are cleared.
 void game3d_world_clear_combat_events(rt_game3d_world *world) {
     if (!world)
         return;
@@ -702,6 +821,13 @@ void game3d_world_clear_combat_events(rt_game3d_world *world) {
 }
 
 /// @brief Append a hit event record (retains all handles).
+/// @param world World3D whose hit-event buffer is extended.
+/// @param attacker Entity3D owning the attacking volume.
+/// @param victim Entity3D owning the hurt volume.
+/// @param hitbox Attacking Hitbox3D.
+/// @param hurtbox Victim Hitbox3D.
+/// @param point Three-component overlap witness point.
+/// @param normal Three-component contact normal.
 static void game3d_world_push_hit_event(rt_game3d_world *world,
                                         rt_game3d_entity *attacker,
                                         rt_game3d_entity *victim,
@@ -729,6 +855,12 @@ static void game3d_world_push_hit_event(rt_game3d_world *world,
 }
 
 /// @brief Append a damage event record (retains handles). See internal header.
+/// @param world World3D whose damage-event buffer is extended.
+/// @param victim Entity3D receiving damage.
+/// @param source Optional source Entity3D.
+/// @param amount Applied damage amount.
+/// @param tag Application-defined damage tag.
+/// @param was_lethal Non-zero when this damage latched death.
 void game3d_world_push_damage_event(rt_game3d_world *world,
                                     rt_game3d_entity *victim,
                                     rt_game3d_entity *source,
@@ -779,6 +911,8 @@ typedef struct {
 } game3d_combat_scratch;
 
 /// @brief Return the world's combat scratch, allocating it on first use.
+/// @param world World3D that owns the scratch allocation.
+/// @return The per-world scratch buffers, or NULL when absent or allocation fails.
 static game3d_combat_scratch *game3d_combat_scratch_for(rt_game3d_world *world) {
     if (!world)
         return NULL;
@@ -788,6 +922,11 @@ static game3d_combat_scratch *game3d_combat_scratch_for(rt_game3d_world *world) 
 }
 
 /// @brief Collect one entity's live volumes into the hit/hurt lists.
+/// @param entity Live spawned Entity3D whose combat slots are scanned.
+/// @param hits Fixed-capacity output array for live attack volumes.
+/// @param hit_count Input/output count of collected attack volumes.
+/// @param hurts Fixed-capacity output array for hurt volumes.
+/// @param hurt_count Input/output count of collected hurt volumes.
 static void game3d_combat_collect_entity(rt_game3d_entity *entity,
                                          game3d_combat_volume *hits,
                                          int32_t *hit_count,
@@ -842,6 +981,9 @@ static void game3d_combat_collect_entity(rt_game3d_entity *entity,
 }
 
 /// @brief AABB overlap reject for the pairwise pass.
+/// @param a First posed combat volume.
+/// @param b Second posed combat volume.
+/// @return 1 when all three axis intervals overlap, or 0 otherwise.
 static int game3d_combat_aabb_overlap(const game3d_combat_volume *a,
                                       const game3d_combat_volume *b) {
     return a->aabb_min[0] <= b->aabb_max[0] && a->aabb_max[0] >= b->aabb_min[0] &&
@@ -850,6 +992,10 @@ static int game3d_combat_aabb_overlap(const game3d_combat_volume *a,
 }
 
 /// @brief Per-step combat pass. See internal header.
+/// @details Clears prior events and one-shot flags, advances invulnerability, collects posed
+///   volumes, performs broad- and narrow-phase overlap tests, and records one hit per activation.
+/// @param world World3D whose live entity registry is evaluated.
+/// @param dt Simulation interval in seconds, clamped to the shared step limit.
 void game3d_world_update_combat(rt_game3d_world *world, double dt) {
     if (!world)
         return;
@@ -960,6 +1106,8 @@ void game3d_world_update_combat(rt_game3d_world *world, double dt) {
 //=========================================================================
 
 /// @brief Number of hit events buffered by the most recent step.
+/// @param obj World3D to query.
+/// @return The buffered hit-event count, or 0 when invalid.
 int64_t rt_game3d_world_hit_event_count(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.hitEventCount: invalid world");
@@ -967,6 +1115,9 @@ int64_t rt_game3d_world_hit_event_count(void *obj) {
 }
 
 /// @brief Validate @p obj as a HitEvent3D handle, trapping @p method on mismatch.
+/// @param obj Candidate HitEvent3D handle.
+/// @param method Trap message emitted on runtime-class mismatch.
+/// @return The validated event, or NULL after reporting an invalid handle.
 static rt_game3d_hit_event *game3d_hit_event_checked(void *obj, const char *method) {
     rt_game3d_hit_event *event =
         (rt_game3d_hit_event *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_HITEVENT_CLASS_ID);
@@ -976,6 +1127,9 @@ static rt_game3d_hit_event *game3d_hit_event_checked(void *obj, const char *meth
 }
 
 /// @brief Validate @p obj as a DamageEvent3D handle, trapping @p method on mismatch.
+/// @param obj Candidate DamageEvent3D handle.
+/// @param method Trap message emitted on runtime-class mismatch.
+/// @return The validated event, or NULL after reporting an invalid handle.
 static rt_game3d_damage_event *game3d_damage_event_checked(void *obj, const char *method) {
     rt_game3d_damage_event *event =
         (rt_game3d_damage_event *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_DAMAGEEVENT_CLASS_ID);
@@ -985,6 +1139,7 @@ static rt_game3d_damage_event *game3d_damage_event_checked(void *obj, const char
 }
 
 /// @brief GC finalizer for a boxed HitEvent3D.
+/// @param obj HitEvent3D allocation whose retained participants are released.
 static void game3d_hit_event_finalize(void *obj) {
     rt_game3d_hit_event *event = (rt_game3d_hit_event *)obj;
     if (!event)
@@ -996,6 +1151,7 @@ static void game3d_hit_event_finalize(void *obj) {
 }
 
 /// @brief GC finalizer for a boxed DamageEvent3D.
+/// @param obj DamageEvent3D allocation whose retained participants are released.
 static void game3d_damage_event_finalize(void *obj) {
     rt_game3d_damage_event *event = (rt_game3d_damage_event *)obj;
     if (!event)
@@ -1006,6 +1162,9 @@ static void game3d_damage_event_finalize(void *obj) {
 
 /// @brief Get the @p index-th buffered hit event as a boxed HitEvent3D (NULL
 ///   when out of range).
+/// @param obj World3D containing the hit-event buffer.
+/// @param index Zero-based buffered event index.
+/// @return A new boxed HitEvent3D snapshot, or NULL when out of range or allocation fails.
 void *rt_game3d_world_hit_event(void *obj, int64_t index) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.hitEvent: invalid world");
     if (!world || index < 0 || index >= world->hit_event_count)
@@ -1029,6 +1188,7 @@ void *rt_game3d_world_hit_event(void *obj, int64_t index) {
 }
 
 /// @brief Clear the buffered hit and damage events without stepping.
+/// @param obj World3D whose combat-event buffers are released.
 void rt_game3d_world_clear_hit_events(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.clearHitEvents: invalid world");
@@ -1037,6 +1197,8 @@ void rt_game3d_world_clear_hit_events(void *obj) {
 }
 
 /// @brief Number of damage events buffered since the last step.
+/// @param obj World3D to query.
+/// @return The buffered damage-event count, or 0 when invalid.
 int64_t rt_game3d_world_damage_event_count(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.damageEventCount: invalid world");
@@ -1044,6 +1206,9 @@ int64_t rt_game3d_world_damage_event_count(void *obj) {
 }
 
 /// @brief Get the @p index-th buffered damage event as a boxed DamageEvent3D.
+/// @param obj World3D containing the damage-event buffer.
+/// @param index Zero-based buffered event index.
+/// @return A new boxed DamageEvent3D snapshot, or NULL when out of range or allocation fails.
 void *rt_game3d_world_damage_event(void *obj, int64_t index) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.damageEvent: invalid world");
     if (!world || index < 0 || index >= world->damage_event_count)
@@ -1066,6 +1231,8 @@ void *rt_game3d_world_damage_event(void *obj, int64_t index) {
 }
 
 /// @brief HitEvent3D.Attacker — attacking entity (NULL when stale).
+/// @param obj HitEvent3D to query.
+/// @return The borrowed live attacking Entity3D, or NULL when stale.
 void *rt_game3d_hit_event_get_attacker(void *obj) {
     rt_game3d_hit_event *event =
         game3d_hit_event_checked(obj, "Game3D.HitEvent3D.get_attacker: invalid event");
@@ -1077,6 +1244,8 @@ void *rt_game3d_hit_event_get_attacker(void *obj) {
 }
 
 /// @brief HitEvent3D.Victim — victim entity (NULL when stale).
+/// @param obj HitEvent3D to query.
+/// @return The borrowed live victim Entity3D, or NULL when stale.
 void *rt_game3d_hit_event_get_victim(void *obj) {
     rt_game3d_hit_event *event =
         game3d_hit_event_checked(obj, "Game3D.HitEvent3D.get_victim: invalid event");
@@ -1088,6 +1257,8 @@ void *rt_game3d_hit_event_get_victim(void *obj) {
 }
 
 /// @brief HitEvent3D.Hitbox — the attacking volume.
+/// @param obj HitEvent3D to query.
+/// @return The borrowed validated attacking Hitbox3D, or NULL.
 void *rt_game3d_hit_event_get_hitbox(void *obj) {
     rt_game3d_hit_event *event =
         game3d_hit_event_checked(obj, "Game3D.HitEvent3D.get_hitbox: invalid event");
@@ -1095,6 +1266,8 @@ void *rt_game3d_hit_event_get_hitbox(void *obj) {
 }
 
 /// @brief HitEvent3D.Hurtbox — the victim volume.
+/// @param obj HitEvent3D to query.
+/// @return The borrowed validated victim Hitbox3D, or NULL.
 void *rt_game3d_hit_event_get_hurtbox(void *obj) {
     rt_game3d_hit_event *event =
         game3d_hit_event_checked(obj, "Game3D.HitEvent3D.get_hurtbox: invalid event");
@@ -1102,6 +1275,8 @@ void *rt_game3d_hit_event_get_hurtbox(void *obj) {
 }
 
 /// @brief HitEvent3D.Point — deepest-overlap witness point (fresh Vec3).
+/// @param obj HitEvent3D to query.
+/// @return A new Vec3 containing the witness point, or the zero vector when invalid.
 void *rt_game3d_hit_event_point(void *obj) {
     rt_game3d_hit_event *event =
         game3d_hit_event_checked(obj, "Game3D.HitEvent3D.Point: invalid event");
@@ -1111,6 +1286,8 @@ void *rt_game3d_hit_event_point(void *obj) {
 }
 
 /// @brief HitEvent3D.Normal — contact normal (fresh Vec3, +Y fallback).
+/// @param obj HitEvent3D to query.
+/// @return A new Vec3 containing the normalized contact direction, or +Y when invalid.
 void *rt_game3d_hit_event_normal(void *obj) {
     rt_game3d_hit_event *event =
         game3d_hit_event_checked(obj, "Game3D.HitEvent3D.Normal: invalid event");
@@ -1120,6 +1297,8 @@ void *rt_game3d_hit_event_normal(void *obj) {
 }
 
 /// @brief DamageEvent3D.Victim — damaged entity (NULL when stale).
+/// @param obj DamageEvent3D to query.
+/// @return The borrowed live victim Entity3D, or NULL when stale.
 void *rt_game3d_damage_event_get_victim(void *obj) {
     rt_game3d_damage_event *event =
         game3d_damage_event_checked(obj, "Game3D.DamageEvent3D.get_victim: invalid event");
@@ -1131,6 +1310,8 @@ void *rt_game3d_damage_event_get_victim(void *obj) {
 }
 
 /// @brief DamageEvent3D.Source — damage source entity or NULL.
+/// @param obj DamageEvent3D to query.
+/// @return The borrowed live source Entity3D, or NULL when absent or stale.
 void *rt_game3d_damage_event_get_source(void *obj) {
     rt_game3d_damage_event *event =
         game3d_damage_event_checked(obj, "Game3D.DamageEvent3D.get_source: invalid event");
@@ -1142,6 +1323,8 @@ void *rt_game3d_damage_event_get_source(void *obj) {
 }
 
 /// @brief DamageEvent3D.Amount — applied damage amount.
+/// @param obj DamageEvent3D to query.
+/// @return The applied damage amount, or 0 when invalid.
 double rt_game3d_damage_event_get_amount(void *obj) {
     rt_game3d_damage_event *event =
         game3d_damage_event_checked(obj, "Game3D.DamageEvent3D.get_amount: invalid event");
@@ -1149,6 +1332,8 @@ double rt_game3d_damage_event_get_amount(void *obj) {
 }
 
 /// @brief DamageEvent3D.Tag — caller-supplied damage tag.
+/// @param obj DamageEvent3D to query.
+/// @return The application-defined tag, or 0 when invalid.
 int64_t rt_game3d_damage_event_get_tag(void *obj) {
     rt_game3d_damage_event *event =
         game3d_damage_event_checked(obj, "Game3D.DamageEvent3D.get_tag: invalid event");
@@ -1156,6 +1341,8 @@ int64_t rt_game3d_damage_event_get_tag(void *obj) {
 }
 
 /// @brief DamageEvent3D.WasLethal — this damage crossed hp to 0.
+/// @param obj DamageEvent3D to query.
+/// @return 1 when this event latched death, or 0 otherwise.
 int8_t rt_game3d_damage_event_get_was_lethal(void *obj) {
     rt_game3d_damage_event *event =
         game3d_damage_event_checked(obj, "Game3D.DamageEvent3D.get_wasLethal: invalid event");
@@ -1167,11 +1354,13 @@ int8_t rt_game3d_damage_event_get_was_lethal(void *obj) {
 //=========================================================================
 
 /// @brief HitboxKind.Hurt — damageable region volume.
+/// @return The stable RT_GAME3D_HITBOX_KIND_HURT value.
 int64_t rt_game3d_hitbox_kind_hurt(void) {
     return RT_GAME3D_HITBOX_KIND_HURT;
 }
 
 /// @brief HitboxKind.Hit — attack volume.
+/// @return The stable RT_GAME3D_HITBOX_KIND_HIT value.
 int64_t rt_game3d_hitbox_kind_hit(void) {
     return RT_GAME3D_HITBOX_KIND_HIT;
 }

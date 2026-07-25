@@ -19,6 +19,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_cloth3d.c
+ * @brief Implements deterministic Verlet cloth chains and rectangular patches.
+ *
+ * Cloth3D integrates fixed-size point sets with Jakobsen-style distance
+ * relaxation, pin constraints, wind drag, and sphere or capsule pushout. A
+ * fixed-step accumulator makes updates reproducible for identical time-step
+ * sequences, while optional mesh and skeleton bindings publish the simulated
+ * shape to rendering and animation consumers.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_cloth3d.h"
@@ -47,16 +58,25 @@
 #define CLOTH3D_MAX_SUBSTEPS 8
 #define CLOTH3D_GRAVITY 9.81
 
+/// @brief Distance constraint joining two Verlet points.
 typedef struct cloth3d_constraint {
+    ///< Index of the first constrained point.
     int32_t a;
+    ///< Index of the second constrained point.
     int32_t b;
+    ///< Required separation between the points.
     double rest;
 } cloth3d_constraint;
 
+/// @brief Static collision primitive used for cloth-point pushout.
 typedef struct cloth3d_collider {
+    ///< Nonzero for a capsule; zero for a sphere centered at @ref a.
     int8_t is_capsule;
+    ///< Sphere center or capsule segment start.
     double a[3];
+    ///< Capsule segment end; unused by spheres.
     double b[3];
+    ///< Positive collision radius.
     double radius;
 } cloth3d_collider;
 
@@ -92,6 +112,10 @@ typedef struct rt_cloth3d {
     double total_rest; /* summed rest length (teleport threshold basis) */
 } rt_cloth3d;
 
+/// @brief Validate a runtime object as Cloth3D and trap with caller-specific context on failure.
+/// @param obj Candidate runtime handle.
+/// @param method Diagnostic text passed to the trap handler when validation fails.
+/// @return Valid Cloth3D payload, or NULL after reporting an invalid handle.
 static rt_cloth3d *cloth3d_checked(void *obj, const char *method) {
     rt_cloth3d *cloth = (rt_cloth3d *)rt_g3d_checked_or_null(obj, RT_G3D_CLOTH3D_CLASS_ID);
     if (!cloth)
@@ -100,6 +124,7 @@ static rt_cloth3d *cloth3d_checked(void *obj, const char *method) {
 }
 
 /// @brief GC finalizer: free simulation arrays and release bindings.
+/// @param obj Cloth3D payload being finalized; a null pointer is ignored.
 static void cloth3d_finalize(void *obj) {
     rt_cloth3d *cloth = (rt_cloth3d *)obj;
     if (!cloth)
@@ -122,7 +147,11 @@ static void cloth3d_finalize(void *obj) {
     game3d_release_ref(&cloth->animator);
 }
 
-/// @brief Allocate a cloth with point/constraint storage; NULL + trap on failure.
+/// @brief Allocate a cloth with point/constraint storage; NULL plus a trap on failure.
+/// @param points Fixed number of Verlet points to allocate.
+/// @param constraints Fixed number of distance-constraint slots to allocate.
+/// @param method Diagnostic text reported for object or array allocation failure.
+/// @return Initialized runtime-managed cloth payload, or NULL after reporting allocation failure.
 static rt_cloth3d *cloth3d_alloc(int32_t points, int32_t constraints, const char *method) {
     rt_cloth3d *cloth =
         (rt_cloth3d *)rt_obj_new_i64(RT_G3D_CLOTH3D_CLASS_ID, (int64_t)sizeof(*cloth));
@@ -152,6 +181,10 @@ static rt_cloth3d *cloth3d_alloc(int32_t points, int32_t constraints, const char
 }
 
 /// @brief Create a chain of segments+1 points hanging down -Y from the origin.
+/// @param segments Number of equal-length links in the inclusive range 1 through 256.
+/// @param total_length Positive total chain length.
+/// @return Newly allocated Cloth3D chain, or NULL after reporting invalid input or allocation
+/// failure.
 void *rt_cloth3d_new_chain(int64_t segments, double total_length) {
     if (segments < 1 || segments > CLOTH3D_MAX_SEGMENTS) {
         rt_trap("Cloth3D.NewChain: segments must be 1..256");
@@ -184,6 +217,12 @@ void *rt_cloth3d_new_chain(int64_t segments, double total_length) {
 }
 
 /// @brief Create a w x h point grid in the XY plane (X right, Y down from origin).
+/// @param w Number of point columns in the inclusive range 2 through 64.
+/// @param h Number of point rows in the inclusive range 2 through 64.
+/// @param width Positive horizontal span in simulation units.
+/// @param height Positive vertical span in simulation units.
+/// @return Newly allocated Cloth3D patch, or NULL after reporting invalid input or allocation
+/// failure.
 void *rt_cloth3d_new_patch(int64_t w, int64_t h, double width, double height) {
     if (w < 2 || h < 2 || w > CLOTH3D_MAX_PATCH_DIM || h > CLOTH3D_MAX_PATCH_DIM) {
         rt_trap("Cloth3D.NewPatch: grid dims must be 2..64");
@@ -245,56 +284,86 @@ void *rt_cloth3d_new_patch(int64_t w, int64_t h, double width, double height) {
     return cloth;
 }
 
+/// @brief Read the per-substep Verlet velocity damping fraction.
+/// @param obj Cloth3D handle to inspect.
+/// @return Damping in the inclusive range zero to one, or zero after invalid-handle reporting.
 double rt_cloth3d_get_damping(void *obj) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.get_Damping: invalid cloth");
     return cloth ? cloth->damping : 0.0;
 }
 
+/// @brief Set the per-substep Verlet velocity damping fraction.
+/// @param obj Cloth3D handle to modify.
+/// @param damping Finite fraction clamped to the inclusive range zero to one.
 void rt_cloth3d_set_damping(void *obj, double damping) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.set_Damping: invalid cloth");
     if (cloth && isfinite(damping))
         cloth->damping = damping < 0.0 ? 0.0 : (damping > 1.0 ? 1.0 : damping);
 }
 
+/// @brief Read the number of constraint-relaxation passes per fixed substep.
+/// @param obj Cloth3D handle to inspect.
+/// @return Configured iteration count, or zero after invalid-handle reporting.
 int64_t rt_cloth3d_get_iterations(void *obj) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.get_Iterations: invalid cloth");
     return cloth ? cloth->iterations : 0;
 }
 
+/// @brief Set the number of constraint-relaxation passes per fixed substep.
+/// @param obj Cloth3D handle to modify.
+/// @param iterations Positive pass count, capped at 32; non-positive values are ignored.
 void rt_cloth3d_set_iterations(void *obj, int64_t iterations) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.set_Iterations: invalid cloth");
     if (cloth && iterations >= 1)
         cloth->iterations = iterations > 32 ? 32 : (int32_t)iterations;
 }
 
+/// @brief Read the multiplier applied to the built-in downward gravity acceleration.
+/// @param obj Cloth3D handle to inspect.
+/// @return Configured gravity scale, or zero after invalid-handle reporting.
 double rt_cloth3d_get_gravity_scale(void *obj) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.get_GravityScale: invalid cloth");
     return cloth ? cloth->gravity_scale : 0.0;
 }
 
+/// @brief Set the multiplier applied to the built-in downward gravity acceleration.
+/// @param obj Cloth3D handle to modify.
+/// @param scale Finite multiplier; non-finite values are ignored.
 void rt_cloth3d_set_gravity_scale(void *obj, double scale) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.set_GravityScale: invalid cloth");
     if (cloth && isfinite(scale))
         cloth->gravity_scale = scale;
 }
 
+/// @brief Read the coefficient that drives point velocity toward the configured wind vector.
+/// @param obj Cloth3D handle to inspect.
+/// @return Non-negative wind-response coefficient, or zero after invalid-handle reporting.
 double rt_cloth3d_get_wind_response(void *obj) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.get_WindResponse: invalid cloth");
     return cloth ? cloth->wind_response : 0.0;
 }
 
+/// @brief Set the coefficient that drives point velocity toward the configured wind vector.
+/// @param obj Cloth3D handle to modify.
+/// @param response Finite non-negative coefficient; invalid values are ignored.
 void rt_cloth3d_set_wind_response(void *obj, double response) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.set_WindResponse: invalid cloth");
     if (cloth && isfinite(response) && response >= 0.0)
         cloth->wind_response = response;
 }
 
+/// @brief Read the fixed number of simulated points in a cloth.
+/// @param obj Cloth3D handle to inspect.
+/// @return Point count, or zero after invalid-handle reporting.
 int64_t rt_cloth3d_get_point_count(void *obj) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.get_PointCount: invalid cloth");
     return cloth ? cloth->point_count : 0;
 }
 
 /// @brief Fluent: pin point @p index at its current position.
+/// @param obj Cloth3D handle to modify.
+/// @param index Zero-based point index.
+/// @return The original @p obj handle, including after an invalid index is reported.
 void *rt_cloth3d_pin(void *obj, int64_t index) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.Pin: invalid cloth");
     if (!cloth)
@@ -308,6 +377,10 @@ void *rt_cloth3d_pin(void *obj, int64_t index) {
     return obj;
 }
 
+/// @brief Reserve the next fixed-capacity collider slot.
+/// @param cloth Valid Cloth3D payload whose collider count is incremented.
+/// @param method Diagnostic text reported when the 16-collider budget is exhausted.
+/// @return Reserved zero-based slot, or -1 after reporting budget exhaustion.
 static int cloth3d_push_collider(rt_cloth3d *cloth, const char *method) {
     if (cloth->collider_count >= CLOTH3D_MAX_COLLIDERS) {
         rt_trap(method);
@@ -317,6 +390,10 @@ static int cloth3d_push_collider(rt_cloth3d *cloth, const char *method) {
 }
 
 /// @brief Fluent: add a static sphere collider.
+/// @param obj Cloth3D handle to modify.
+/// @param center Vec3 world-space sphere center.
+/// @param radius Positive collision radius.
+/// @return The original @p obj handle; invalid input or budget exhaustion is reported by a trap.
 void *rt_cloth3d_add_sphere(void *obj, void *center, double radius) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.AddSphere: invalid cloth");
     double c[3];
@@ -338,6 +415,11 @@ void *rt_cloth3d_add_sphere(void *obj, void *center, double radius) {
 }
 
 /// @brief Fluent: add a static capsule collider (segment a..b).
+/// @param obj Cloth3D handle to modify.
+/// @param a_obj Vec3 world-space capsule segment start.
+/// @param b_obj Vec3 world-space capsule segment end.
+/// @param radius Positive collision radius surrounding the segment.
+/// @return The original @p obj handle; invalid input or budget exhaustion is reported by a trap.
 void *rt_cloth3d_add_capsule(void *obj, void *a_obj, void *b_obj, double radius) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.AddCapsule: invalid cloth");
     double a[3], b[3];
@@ -361,6 +443,9 @@ void *rt_cloth3d_add_capsule(void *obj, void *a_obj, void *b_obj, double radius)
 }
 
 /// @brief Set the wind velocity (direction Vec3 scaled by strength).
+/// @param obj Cloth3D handle to modify.
+/// @param direction Vec3 direction and relative per-axis magnitude.
+/// @param strength Scalar multiplier; a non-finite value is normalized to zero.
 void rt_cloth3d_set_wind(void *obj, void *direction, double strength) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.SetWind: invalid cloth");
     double d[3];
@@ -375,6 +460,10 @@ void rt_cloth3d_set_wind(void *obj, void *direction, double strength) {
 }
 
 /// @brief Current position of one point as a Vec3.
+/// @param obj Cloth3D handle to inspect.
+/// @param index Zero-based point index.
+/// @return Newly allocated Vec3 containing the point position, or the origin for an invalid index
+/// or handle.
 void *rt_cloth3d_get_point(void *obj, int64_t index) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.GetPoint: invalid cloth");
     if (!cloth || index < 0 || index >= cloth->point_count)
@@ -383,6 +472,9 @@ void *rt_cloth3d_get_point(void *obj, int64_t index) {
 }
 
 /// @brief Fluent: bind a patch to a Mesh3D (built once here, rewritten per step).
+/// @param obj Patch Cloth3D handle to bind.
+/// @param mesh Mesh3D handle retained by the cloth and rebuilt with grid topology.
+/// @return The original @p obj handle; incompatible cloth or mesh inputs are reported by a trap.
 void *rt_cloth3d_bind_mesh(void *obj, void *mesh) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.BindMesh: invalid cloth");
     if (!cloth)
@@ -422,6 +514,10 @@ void *rt_cloth3d_bind_mesh(void *obj, void *mesh) {
 /// @details Walks single-child links from @p root_bone (branching traps),
 ///   reseeds rest lengths from the bind pose, and pins point 0 to the root
 ///   bone's animated model-space position each step.
+/// @param obj Chain Cloth3D handle to bind.
+/// @param animator AnimController3D handle with a skeleton, retained by the cloth.
+/// @param root_bone Name of the first bone in the required linear descendant chain.
+/// @return The original @p obj handle; invalid, branching, or allocation cases report a trap.
 void *rt_cloth3d_bind_bone_chain(void *obj, void *animator, rt_string root_bone) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.BindBoneChain: invalid cloth");
     if (!cloth)
@@ -499,6 +595,7 @@ void *rt_cloth3d_bind_bone_chain(void *obj, void *animator, rt_string root_bone)
  *=========================================================================*/
 
 /// @brief One fixed substep: integrate, relax constraints, push out, re-pin.
+/// @param cloth Valid mutable cloth payload to advance by its configured fixed interval.
 static void cloth3d_substep(rt_cloth3d *cloth) {
     double dt = cloth->substep_dt;
     double dt2 = dt * dt;
@@ -646,6 +743,9 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
 }
 
 /// @brief Quaternion rotating unit vector @p a onto unit vector @p b.
+/// @param a Normalized source direction.
+/// @param b Normalized destination direction.
+/// @param out Receives the normalized XYZW rotation quaternion.
 static void cloth3d_quat_from_to(const double a[3], const double b[3], double out[4]) {
     double dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     if (dot > 1.0 - 1e-9) {
@@ -681,6 +781,9 @@ static void cloth3d_quat_from_to(const double a[3], const double b[3], double ou
 }
 
 /// @brief Hamilton product out = q1 * q2 (xyzw layout).
+/// @param q1 Left-hand XYZW quaternion.
+/// @param q2 Right-hand XYZW quaternion.
+/// @param out Receives the XYZW Hamilton product.
 static void cloth3d_quat_mul(const double q1[4], const double q2[4], double out[4]) {
     out[0] = q1[3] * q2[0] + q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1];
     out[1] = q1[3] * q2[1] - q1[0] * q2[2] + q1[1] * q2[3] + q1[2] * q2[0];
@@ -689,6 +792,9 @@ static void cloth3d_quat_mul(const double q1[4], const double q2[4], double out[
 }
 
 /// @brief Column-layout 4x4 from quaternion + position (ragdoll override format).
+/// @param q XYZW orientation quaternion.
+/// @param p Translation vector.
+/// @param m Receives the 16-element transform matrix in pose-override layout.
 static void cloth3d_mat_from_quat_pos(const double q[4], const double p[3], double *m) {
     double x = q[0], y = q[1], z = q[2], w = q[3];
     m[0] = 1.0 - 2.0 * (y * y + z * z);
@@ -713,6 +819,7 @@ static void cloth3d_mat_from_quat_pos(const double q[4], const double p[3], doub
 /// @details Anchor jumps beyond half the chain's rest length (teleports,
 ///   including the very first bind sync) rigid-translate the whole cloth so
 ///   verlet never manufactures a huge phantom velocity from the pin snap.
+/// @param cloth Chain cloth whose retained animator supplies the root pose.
 static void cloth3d_sync_anchor(rt_cloth3d *cloth) {
     double pos[3], quat[4];
     if (!cloth->animator || cloth->chain_bone_count < 1)
@@ -740,6 +847,7 @@ static void cloth3d_sync_anchor(rt_cloth3d *cloth) {
 }
 
 /// @brief Write simulated chain directions back as bone aim rotations.
+/// @param cloth Bound chain cloth whose pose-override buffers are populated and applied.
 static void cloth3d_write_bone_overrides(rt_cloth3d *cloth) {
     if (!cloth->animator || cloth->chain_bone_count < 1 || !cloth->override_mask ||
         !cloth->override_globals)
@@ -796,6 +904,7 @@ static void cloth3d_write_bone_overrides(rt_cloth3d *cloth) {
 }
 
 /// @brief Rewrite the bound mesh's vertices/normals in place from the grid.
+/// @param cloth Bound patch cloth supplying point positions and grid topology.
 static void cloth3d_write_mesh(rt_cloth3d *cloth) {
     rt_mesh3d *mesh = (rt_mesh3d *)cloth->mesh;
     if (!mesh || !rt_g3d_has_class(mesh, RT_G3D_MESH3D_CLASS_ID))
@@ -849,6 +958,8 @@ static void cloth3d_write_mesh(rt_cloth3d *cloth) {
 }
 
 /// @brief Advance the cloth by dt: anchor sync, fixed substeps, output bindings.
+/// @param obj Cloth3D handle to advance.
+/// @param dt Positive finite elapsed time accumulated into fixed simulation substeps.
 void rt_cloth3d_step(void *obj, double dt) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.Step: invalid cloth");
     if (!cloth || !isfinite(dt) || dt <= 0.0)
@@ -876,6 +987,8 @@ void rt_cloth3d_step(void *obj, double dt) {
  *=========================================================================*/
 
 /// @brief Register a cloth to tick inside World3D.StepSimulation.
+/// @param world_obj World3D handle that retains the registration.
+/// @param cloth_obj Cloth3D handle to retain once; duplicate registrations are ignored.
 void rt_game3d_world_add_cloth(void *world_obj, void *cloth_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.World3D.AddCloth: invalid world");
@@ -901,6 +1014,8 @@ void rt_game3d_world_add_cloth(void *world_obj, void *cloth_obj) {
 }
 
 /// @brief Unregister a world-ticked cloth.
+/// @param world_obj World3D handle whose registration list is searched.
+/// @param cloth_obj Exact Cloth3D handle to release and remove.
 void rt_game3d_world_remove_cloth(void *world_obj, void *cloth_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.World3D.RemoveCloth: invalid world");
@@ -918,6 +1033,8 @@ void rt_game3d_world_remove_cloth(void *world_obj, void *cloth_obj) {
 }
 
 /// @brief Per-step world hook: advance every registered cloth.
+/// @param world Live World3D payload containing retained cloth handles.
+/// @param dt Simulation elapsed time forwarded to each valid registered cloth.
 void game3d_cloth_tick(struct rt_game3d_world *world, double dt) {
     for (int32_t i = 0; i < world->cloth_count; ++i) {
         rt_cloth3d *cloth =

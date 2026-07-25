@@ -408,8 +408,8 @@ void test_empty_clip_rect_suppresses_drawing(void) {
 }
 
 /// @brief Verify that widget-style set/clear clip calls cannot escape a compositor limit.
-/// @details The test also checks non-nesting failure and exact restoration of the clip that was
-///          active before the limit scope began.
+/// @details The test also checks nested-scope intersection, per-scope restoration, and exact
+///          restoration of the clip that was active before the outermost scope began.
 void test_clip_limit_contains_nested_clips_and_restores_state(void) {
     TEST_BEGIN("Retained compositor clip limit contains nested clips");
 
@@ -421,7 +421,6 @@ void test_clip_limit_contains_nested_clips_and_restores_state(void) {
     vgfx_cls(win, VGFX_BLACK);
     vgfx_set_clip(win, 1, 1, 10, 10);
     ASSERT_EQ(vgfx_push_clip_limit(win, 3, 3, 4, 4), 1);
-    ASSERT_EQ(vgfx_push_clip_limit(win, 4, 4, 1, 1), 0);
 
     vgfx_set_clip(win, 0, 0, 12, 12);
     vgfx_fill_rect(win, 0, 0, 12, 12, 0xCC2200);
@@ -433,6 +432,27 @@ void test_clip_limit_contains_nested_clips_and_restores_state(void) {
     ASSERT_EQ(color, VGFX_BLACK);
     ASSERT_EQ(vgfx_point(win, 3, 3, &color), 1);
     ASSERT_EQ(color, 0x00AA44);
+    ASSERT_EQ(vgfx_point(win, 7, 7, &color), 1);
+    ASSERT_EQ(color, VGFX_BLACK);
+
+    // Nested scope: the inner ceiling intersects the outer one, and drawing
+    // after a clear-clip stays inside the innermost ceiling.
+    ASSERT_EQ(vgfx_push_clip_limit(win, 4, 4, 6, 6), 1);
+    vgfx_clear_clip(win);
+    vgfx_fill_rect(win, 0, 0, 12, 12, 0x2244FF);
+    ASSERT_EQ(vgfx_point(win, 3, 3, &color), 1);
+    ASSERT_EQ(color, 0x00AA44); // outside the nested 4..6 ceiling
+    ASSERT_EQ(vgfx_point(win, 5, 5, &color), 1);
+    ASSERT_EQ(color, 0x2244FF);
+    ASSERT_EQ(vgfx_point(win, 7, 7, &color), 1);
+    ASSERT_EQ(color, VGFX_BLACK); // still bounded by the outer 3..6 ceiling
+
+    // Popping the nested scope resumes the outer ceiling.
+    vgfx_pop_clip_limit(win);
+    vgfx_clear_clip(win);
+    vgfx_fill_rect(win, 0, 0, 12, 12, 0xDD8800);
+    ASSERT_EQ(vgfx_point(win, 3, 3, &color), 1);
+    ASSERT_EQ(color, 0xDD8800);
     ASSERT_EQ(vgfx_point(win, 7, 7, &color), 1);
     ASSERT_EQ(color, VGFX_BLACK);
 

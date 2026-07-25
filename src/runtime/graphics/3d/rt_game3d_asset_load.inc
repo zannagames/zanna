@@ -4,13 +4,24 @@
 // standalone translation unit) Purpose: Game3D async asset loading, model-template instantiation,
 // and the public Assets3D API
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements Game3D model loading, template caching, and asynchronous asset handles.
+/// @details This include module is compiled as part of rt_game3d.c. Worker jobs stage immutable
+///   file and glTF data off-thread, then publish models through budgeted main-thread commit slices.
+///   Shared templates use generation-aware cache entries with residency hints and bounded eviction.
+
 /// @brief Assign a newly-created string into an owned slot, then release the caller's reference.
+/// @param slot Address of the owned runtime-string slot to replace.
+/// @param value Newly created runtime string whose caller reference is consumed.
 static void game3d_asset_assign_new_string(rt_string *slot, rt_string value) {
     game3d_assign_ref((void **)slot, value);
     rt_string_unref(value);
 }
 
 /// @brief Copy a transient C string into an owned runtime-string slot.
+/// @param slot Address of the owned runtime-string slot to replace.
+/// @param value Null-terminated text to copy; NULL is normalized to the empty string.
 static void game3d_asset_assign_cstr(rt_string *slot, const char *value) {
     game3d_asset_assign_new_string(slot, rt_const_cstr(value ? value : ""));
 }
@@ -18,6 +29,10 @@ static void game3d_asset_assign_cstr(rt_string *slot, const char *value) {
 /// @brief Update the cache entry backing @p model_template with a residency priority/distance hint.
 /// @details Caller must hold g_game3d_model_cache_lock. Drives victim selection so
 /// high-priority/near models stay resident longer under budget.
+/// @param model_template ModelTemplate whose matching cache entry is updated.
+/// @param priority Requested residency priority, sanitized before storage.
+/// @param distance Requested residency distance, sanitized before storage.
+/// @return 1 when a ready matching entry was updated, or 0 when none was found.
 static int game3d_model_cache_set_template_residency_hint_locked(void *model_template,
                                                                  double priority,
                                                                  double distance) {
@@ -36,6 +51,10 @@ static int game3d_model_cache_set_template_residency_hint_locked(void *model_tem
 }
 
 /// @brief Allocate a ModelTemplate retaining the path and loaded model; traps on OOM.
+/// @param path Runtime string containing the model's source path.
+/// @param asset_path Non-zero when @p path belongs to the packed-asset namespace.
+/// @param model Valid Model3D handle retained by the template.
+/// @return A new ModelTemplate object, or NULL when validation or allocation fails.
 static rt_game3d_model_template *game3d_model_template_new(rt_string path,
                                                            int8_t asset_path,
                                                            void *model) {
@@ -94,6 +113,12 @@ static void game3d_asset_async_run_cache_publish_hook(void) {
 }
 
 /// @brief Allocate a terminal AssetHandle3D retaining its result object.
+/// @param ready Non-zero to mark the new handle terminal immediately.
+/// @param progress Initial progress value, sanitized to the range 0 through 1.
+/// @param error Runtime string containing the terminal diagnostic, if any.
+/// @param entity Optional Entity3D result retained by the handle.
+/// @param model_template Optional ModelTemplate result retained by the handle.
+/// @return A new AssetHandle3D object, or NULL when allocation fails.
 static rt_game3d_asset_handle *game3d_asset_handle_new(
     int8_t ready, double progress, rt_string error, void *entity, void *model_template) {
     rt_game3d_asset_handle *handle = (rt_game3d_asset_handle *)rt_obj_new_i64(
@@ -114,6 +139,10 @@ static rt_game3d_asset_handle *game3d_asset_handle_new(
 }
 
 /// @brief Create a deferred AssetHandle3D request that starts on first observation.
+/// @param path Runtime string containing the requested model path.
+/// @param asset_path Non-zero to load from the packed-asset namespace.
+/// @param template_request Non-zero to produce a ModelTemplate instead of an Entity3D.
+/// @return A new deferred AssetHandle3D object, or NULL when allocation fails.
 static rt_game3d_asset_handle *game3d_asset_handle_pending(rt_string path,
                                                            int8_t asset_path,
                                                            int8_t template_request) {
@@ -128,6 +157,7 @@ static rt_game3d_asset_handle *game3d_asset_handle_pending(rt_string path,
 }
 
 /// @brief Validate an async asset request up front, returning an error string if it cannot start.
+/// @param handle AssetHandle3D whose retained path and extension are validated.
 /// @return Empty string if the request is valid, else an owned error message.
 static rt_string game3d_asset_handle_preflight_error(rt_game3d_asset_handle *handle) {
     const char *path = handle && handle->path ? rt_string_cstr(handle->path) : NULL;
@@ -139,6 +169,8 @@ static rt_string game3d_asset_handle_preflight_error(rt_game3d_asset_handle *han
 }
 
 /// @brief Return the load error recorded on an asset handle (NULL if it loaded successfully).
+/// @param handle AssetHandle3D selecting filesystem or packed-asset wording.
+/// @return A new runtime string containing the stable public failure message.
 static rt_string game3d_asset_handle_load_error(rt_game3d_asset_handle *handle) {
     if (handle && handle->asset_path)
         return rt_const_cstr("failed to load model asset");
@@ -150,6 +182,9 @@ static rt_string game3d_asset_handle_load_error(rt_game3d_asset_handle *handle) 
 ///          itself is absent. Synchronous Game3D asset APIs expose that condition as the stable
 ///          `"failed to load model asset"` string, so async handles do the same while preserving
 ///          genuinely specific parser and texture diagnostics.
+/// @param handle AssetHandle3D selecting filesystem or packed-asset diagnostics.
+/// @param message Detailed loader diagnostic, or NULL when no detail is available.
+/// @return The selected borrowed C-string diagnostic.
 static const char *game3d_asset_async_error_or_fallback(rt_game3d_asset_handle *handle,
                                                         const char *message) {
     if (handle && handle->asset_path && message &&
@@ -160,15 +195,24 @@ static const char *game3d_asset_async_error_or_fallback(rt_game3d_asset_handle *
     return (handle && handle->asset_path) ? "failed to load model asset" : "failed to load model";
 }
 
+/// @brief Atomically read a shared AssetHandle3D boolean flag with acquire ordering.
+/// @param flag Address of the byte flag, or NULL.
+/// @return 1 when the flag is set, or 0 when clear or absent.
 static int8_t game3d_asset_handle_load_flag(const int8_t *flag) {
     return flag && rt_atomic_load_i8(flag, __ATOMIC_ACQUIRE) ? 1 : 0;
 }
 
+/// @brief Atomically publish a normalized AssetHandle3D boolean flag with release ordering.
+/// @param flag Address of the byte flag to update, or NULL.
+/// @param value Value normalized to 0 or 1 before storage.
 static void game3d_asset_handle_store_flag(int8_t *flag, int8_t value) {
     if (flag)
         rt_atomic_store_i8(flag, value ? 1 : 0, __ATOMIC_RELEASE);
 }
 
+/// @brief Normalize an asset progress value to the finite range from 0 through 1.
+/// @param progress Candidate progress value.
+/// @return The finite, clamped progress value.
 static double game3d_asset_handle_sanitize_progress(double progress) {
     progress = game3d_finite_or(progress, 0.0);
     if (progress < 0.0)
@@ -178,6 +222,9 @@ static double game3d_asset_handle_sanitize_progress(double progress) {
     return progress;
 }
 
+/// @brief Atomically read and sanitize an asset handle's published progress.
+/// @param handle AssetHandle3D to query, or NULL.
+/// @return The current progress in the range 0 through 1.
 static double game3d_asset_handle_load_progress(const rt_game3d_asset_handle *handle) {
     double progress = 0.0;
     if (handle)
@@ -185,29 +232,46 @@ static double game3d_asset_handle_load_progress(const rt_game3d_asset_handle *ha
     return game3d_asset_handle_sanitize_progress(progress);
 }
 
+/// @brief Sanitize and atomically publish an asset handle's progress.
+/// @param handle AssetHandle3D to update, or NULL.
+/// @param progress Candidate progress value.
 static void game3d_asset_handle_store_progress(rt_game3d_asset_handle *handle, double progress) {
     double sanitized = game3d_asset_handle_sanitize_progress(progress);
     if (handle)
         rt_atomic_store_f64(&handle->progress, &sanitized, __ATOMIC_RELEASE);
 }
 
+/// @brief Test whether an asset handle has reached a terminal ready state.
+/// @param handle AssetHandle3D to query, or NULL.
+/// @return 1 when ready, or 0 otherwise.
 static int game3d_asset_handle_is_ready(const rt_game3d_asset_handle *handle) {
     return handle ? game3d_asset_handle_load_flag(&handle->ready) != 0 : 0;
 }
 
+/// @brief Test whether cancellation has been requested for an asset handle.
+/// @param handle AssetHandle3D to query, or NULL.
+/// @return 1 when cancelled, or 0 otherwise.
 static int game3d_asset_handle_is_cancelled(const rt_game3d_asset_handle *handle) {
     return handle ? game3d_asset_handle_load_flag(&handle->cancelled) != 0 : 0;
 }
 
+/// @brief Test whether an asset request is waiting for its first observation.
+/// @param handle AssetHandle3D to query, or NULL.
+/// @return 1 when deferred, or 0 otherwise.
 static int game3d_asset_handle_is_deferred(const rt_game3d_asset_handle *handle) {
     return handle ? game3d_asset_handle_load_flag(&handle->deferred) != 0 : 0;
 }
 
+/// @brief Test whether an asset handle already owns a dispatched worker job.
+/// @param handle AssetHandle3D to query, or NULL.
+/// @return 1 when worker processing has started, or 0 otherwise.
 static int game3d_asset_handle_is_async_started(const rt_game3d_asset_handle *handle) {
     return handle ? game3d_asset_handle_load_flag(&handle->async_started) != 0 : 0;
 }
 
 /// @brief Mark an async asset handle terminal with an error if it has not already completed.
+/// @param handle AssetHandle3D whose state is atomically finalized.
+/// @param message Public diagnostic to retain, or NULL to use the generic load failure.
 static void game3d_asset_handle_fail_terminal(rt_game3d_asset_handle *handle, const char *message) {
     if (!handle || game3d_asset_handle_is_ready(handle) || game3d_asset_handle_is_cancelled(handle))
         return;
@@ -250,6 +314,9 @@ static void game3d_asset_async_drain_commits(void) {
 
 /// @brief Retain and return a cached model template if one is already loaded for the path (else
 /// NULL).
+/// @param cache_path Normalized runtime path used as the cache key.
+/// @param asset_path Non-zero when the key belongs to the packed-asset namespace.
+/// @return A retained ready ModelTemplate, or NULL on a miss or stale entry.
 static rt_game3d_model_template *game3d_model_cache_try_retain_ready(rt_string cache_path,
                                                                      int8_t asset_path) {
     rt_game3d_model_template *model_template = NULL;
@@ -272,6 +339,12 @@ static rt_game3d_model_template *game3d_model_cache_try_retain_ready(rt_string c
 }
 
 /// @brief Insert a freshly loaded model template into the cache (evicting a victim if at budget).
+/// @param cache_path Normalized runtime path used as the cache key.
+/// @param asset_path Non-zero when the key belongs to the packed-asset namespace.
+/// @param loaded_model Loaded Model3D retained by the newly created template.
+/// @param generation Cache generation that must still be current at publication.
+/// @param stale Optional output set to 1 when @p generation was superseded.
+/// @return A retained ready ModelTemplate, or NULL when publication fails or is stale.
 static rt_game3d_model_template *game3d_model_cache_store_loaded_template_for_generation(
     rt_string cache_path, int8_t asset_path, void *loaded_model, uint64_t generation, int *stale) {
     if (stale)
@@ -335,6 +408,7 @@ static rt_game3d_model_template *game3d_model_cache_store_loaded_template_for_ge
 }
 
 /// @brief Free an async asset job and all of its owned buffers/handles.
+/// @param job Asynchronous job to release; NULL is accepted.
 static void game3d_asset_async_job_free(rt_game3d_asset_async_job *job) {
     if (!job)
         return;
@@ -348,10 +422,14 @@ static void game3d_asset_async_job_free(rt_game3d_asset_async_job *job) {
 /// @brief Commit-queue discard callback for async asset jobs.
 /// @details If the queue is freed while a job is pending, the queued callback never runs. This hook
 ///          releases the retained handle and any staged glTF payload so shutdown cannot leak jobs.
+/// @param user_data Opaque callback payload containing an asynchronous asset job.
 static void game3d_asset_async_job_cancel(void *user_data) {
     game3d_asset_async_job_free((rt_game3d_asset_async_job *)user_data);
 }
 
+/// @brief Test whether a caller still retains the handle in addition to its worker job.
+/// @param handle AssetHandle3D whose atomic object reference count is inspected.
+/// @return 1 for a finite reference count greater than one, or 0 otherwise.
 static int game3d_asset_handle_has_external_waiter(rt_game3d_asset_handle *handle) {
     if (!handle)
         return 0;
@@ -366,6 +444,8 @@ static int game3d_asset_handle_has_external_waiter(rt_game3d_asset_handle *handl
 /// @details Must run on the main thread before the job is submitted. The worker reads only these
 ///          snapshotted bytes and flags, never the handle's runtime strings or mutable request
 ///          state.
+/// @param job Main-thread-created job that receives worker-safe request fields.
+/// @param handle AssetHandle3D supplying the retained request state.
 /// @return 1 when the request was copied; 0 when the path is absent or too large for the job
 /// buffer.
 static int game3d_asset_async_snapshot_request(rt_game3d_asset_async_job *job,
@@ -387,6 +467,8 @@ static int game3d_asset_async_snapshot_request(rt_game3d_asset_async_job *job,
 }
 
 /// @brief Estimate the main-thread cost (in budget units) of committing an async job's result.
+/// @param job Asynchronous job whose staged payload is measured.
+/// @return Decoded image bytes when known, 1 for non-empty fixed-cost work, or 0 for no work.
 static uint64_t game3d_asset_async_job_commit_cost(rt_game3d_asset_async_job *job) {
     size_t decoded_image_bytes;
     if (!job || job->error[0])
@@ -402,6 +484,8 @@ static uint64_t game3d_asset_async_job_commit_cost(rt_game3d_asset_async_job *jo
 }
 
 /// @brief Cost of the next incremental upload slice for an async job (for budget-paced streaming).
+/// @param job Asynchronous glTF job whose next decoded-image slice is measured.
+/// @return The next slice size in bytes, or 0 when no upload slice remains.
 static uint64_t game3d_asset_async_next_upload_slice_cost(rt_game3d_asset_async_job *job) {
     size_t slice_bytes;
     if (!job || job->error[0] || !job->preloaded_gltf)
@@ -417,6 +501,9 @@ static void game3d_asset_async_commit(void *user_data);
 static void game3d_asset_async_prepare_upload_slice(void *user_data);
 static void game3d_asset_async_worker(void *user_data);
 
+/// @brief Restart a stale template request against the cache's current generation.
+/// @param job Superseded asynchronous job whose immutable request is copied.
+/// @return 1 when replacement work was submitted, 0 when no restart is needed, or -1 on failure.
 static int game3d_asset_async_restart_for_current_generation(rt_game3d_asset_async_job *job) {
     rt_game3d_asset_handle *handle = job ? job->handle : NULL;
     if (!handle || game3d_asset_handle_is_ready(handle) ||
@@ -448,6 +535,9 @@ static int game3d_asset_async_restart_for_current_generation(rt_game3d_asset_asy
     return 1;
 }
 
+/// @brief Drop a stale publication and optionally schedule the request against the new generation.
+/// @param job Superseded asynchronous job to release.
+/// @param loaded_model_slot Optional address of a staged Model3D handle to release and clear.
 static void game3d_asset_async_drop_stale_job(rt_game3d_asset_async_job *job,
                                               void **loaded_model_slot) {
     rt_game3d_asset_handle *handle = job ? job->handle : NULL;
@@ -464,6 +554,7 @@ static void game3d_asset_async_drop_stale_job(rt_game3d_asset_async_job *job,
 }
 
 /// @brief Enqueue the next main-thread commit step for an async job onto the commit queue.
+/// @param job Asynchronous job whose next upload slice or final commit is queued.
 /// @return 1 if a commit was enqueued, 0 if the job is finished.
 static int game3d_asset_async_enqueue_next_commit(rt_game3d_asset_async_job *job) {
     uint64_t slice_cost = game3d_asset_async_next_upload_slice_cost(job);
@@ -482,6 +573,7 @@ static int game3d_asset_async_enqueue_next_commit(rt_game3d_asset_async_job *job
 }
 
 /// @brief Build the final Model3D on the main thread from an async job's preloaded glTF bundle.
+/// @param job Asynchronous job containing staged glTF, FBX, or direct-load state.
 /// @return The loaded model, or NULL on failure (error recorded on the job).
 static void *game3d_asset_async_commit_load_model(rt_game3d_asset_async_job *job) {
     rt_game3d_asset_handle *handle = job ? job->handle : NULL;
@@ -525,6 +617,7 @@ static void *game3d_asset_async_commit_load_model(rt_game3d_asset_async_job *job
 }
 
 /// @brief Commit-queue callback: prepare one budgeted texture-upload slice for an async job.
+/// @param user_data Opaque callback payload containing the asynchronous asset job.
 static void game3d_asset_async_prepare_upload_slice(void *user_data) {
     rt_game3d_asset_async_job *job = (rt_game3d_asset_async_job *)user_data;
     rt_game3d_asset_handle *handle = job ? job->handle : NULL;
@@ -583,6 +676,7 @@ static void game3d_asset_async_prepare_upload_slice(void *user_data) {
 
 /// @brief Commit-queue callback: finalize an async job on the main thread (build model, store,
 /// notify).
+/// @param user_data Opaque callback payload containing the asynchronous asset job.
 static void game3d_asset_async_commit(void *user_data) {
     rt_game3d_asset_async_job *job = (rt_game3d_asset_async_job *)user_data;
     rt_game3d_asset_handle *handle = job ? job->handle : NULL;
@@ -671,6 +765,7 @@ static void game3d_asset_async_commit(void *user_data) {
 
 /// @brief Worker-thread entry point: stage a model's preload bundle off the main thread, then
 /// enqueue commits.
+/// @param user_data Opaque task payload containing the asynchronous asset job.
 static void game3d_asset_async_worker(void *user_data) {
     rt_game3d_asset_async_job *job = (rt_game3d_asset_async_job *)user_data;
     rt_game3d_asset_handle *handle = job ? job->handle : NULL;
@@ -727,6 +822,7 @@ static void game3d_asset_async_worker(void *user_data) {
 
 /// @brief Kick off asynchronous loading for an asset handle (preflight, then dispatch a worker
 /// job).
+/// @param handle Deferred AssetHandle3D to validate and dispatch.
 static void game3d_asset_handle_start_async(rt_game3d_asset_handle *handle) {
     if (!handle || game3d_asset_handle_is_ready(handle) ||
         game3d_asset_handle_is_cancelled(handle) || !game3d_asset_handle_is_deferred(handle) ||
@@ -807,6 +903,8 @@ static void game3d_asset_handle_start_async(rt_game3d_asset_handle *handle) {
 }
 
 /// @brief Advance an asset handle's async state: drain commits and, if requested, start loading.
+/// @param handle AssetHandle3D whose deferred request may be started.
+/// @param start_if_needed Non-zero to dispatch the request after draining commits.
 static void game3d_asset_handle_service(rt_game3d_asset_handle *handle, int start_if_needed) {
     game3d_asset_async_drain_commits();
     if (start_if_needed)
@@ -815,6 +913,11 @@ static void game3d_asset_handle_service(rt_game3d_asset_handle *handle, int star
 
 /// @brief Load a model from disk/asset and wrap it in a new ModelTemplate, bypassing the
 ///   cache; traps `method` if the model fails to load.
+/// @param path Runtime string containing the filesystem or packed-asset path.
+/// @param asset_path Non-zero to load from the packed-asset namespace.
+/// @param method Trap message used when loading fails.
+/// @param trap_on_fail Non-zero to report a runtime trap for load failure.
+/// @return A new ModelTemplate, or NULL when loading or allocation fails.
 static rt_game3d_model_template *game3d_assets_load_template_uncached_impl(rt_string path,
                                                                            int8_t asset_path,
                                                                            const char *method,
@@ -834,12 +937,19 @@ static rt_game3d_model_template *game3d_assets_load_template_uncached_impl(rt_st
 /// @brief Synchronously load a model template from a path, bypassing the cache.
 /// @details Reads the root bytes, parses by extension (glTF/vscn/etc.), and wraps the result as a
 ///          model template. Returns NULL (with an error out-param) on failure.
+/// @param path Runtime string containing the filesystem or packed-asset path.
+/// @param asset_path Non-zero to load from the packed-asset namespace.
+/// @param method Trap message used when loading fails.
+/// @return A new ModelTemplate, or NULL after reporting the failure.
 static rt_game3d_model_template *game3d_assets_load_template_uncached(rt_string path,
                                                                       int8_t asset_path,
                                                                       const char *method) {
     return game3d_assets_load_template_uncached_impl(path, asset_path, method, 1);
 }
 
+/// @brief Remove a matching cache entry when it still represents an in-progress load.
+/// @param cache_path Normalized runtime path used as the cache key.
+/// @param asset_path Non-zero when the key belongs to the packed-asset namespace.
 static void game3d_model_cache_cancel_pending(rt_string cache_path, int8_t asset_path) {
     int32_t pending_index;
     game3d_model_cache_lock();
@@ -851,6 +961,11 @@ static void game3d_model_cache_cancel_pending(rt_string cache_path, int8_t asset
     game3d_model_cache_unlock();
 }
 
+/// @brief Replace a matching pending cache entry with a ready model template.
+/// @param cache_path Normalized runtime path used as the cache key.
+/// @param asset_path Non-zero when the key belongs to the packed-asset namespace.
+/// @param model_template Loaded ModelTemplate to retain and account as resident.
+/// @return 1 when a pending entry was published, or 0 when no matching entry remained.
 static int game3d_model_cache_publish_pending(rt_string cache_path,
                                               int8_t asset_path,
                                               rt_game3d_model_template *model_template) {
@@ -878,6 +993,11 @@ static int game3d_model_cache_publish_pending(rt_string cache_path,
 
 /// @brief Return the cached ModelTemplate for (path, asset_path), loading and inserting
 ///   it on a miss; returns a retained template. Traps on load or cache-grow failure.
+/// @param path Runtime string containing the requested source path.
+/// @param asset_path Non-zero to load from the packed-asset namespace.
+/// @param method Trap message used when loading fails.
+/// @param trap_on_fail Non-zero to report cache and load failures through runtime traps.
+/// @return A retained cached ModelTemplate, or NULL when loading or cache insertion fails.
 static rt_game3d_model_template *game3d_assets_load_template_cached_impl(rt_string path,
                                                                          int8_t asset_path,
                                                                          const char *method,
@@ -978,6 +1098,10 @@ static rt_game3d_model_template *game3d_assets_load_template_cached_impl(rt_stri
 
 /// @brief Load a model template through the cache: return a retained ready entry or load-and-store
 /// it.
+/// @param path Runtime string containing the requested source path.
+/// @param asset_path Non-zero to load from the packed-asset namespace.
+/// @param method Trap message used when loading fails.
+/// @return A retained cached ModelTemplate, or NULL after reporting a failure.
 static rt_game3d_model_template *game3d_assets_load_template_cached(rt_string path,
                                                                     int8_t asset_path,
                                                                     const char *method) {
@@ -986,6 +1110,8 @@ static rt_game3d_model_template *game3d_assets_load_template_cached(rt_string pa
 
 /// @brief Wrap a loaded model's root node as an entity, attaching its animator if the
 ///   node carries one. Returns NULL on a NULL root.
+/// @param root SceneNode3D root produced by model instantiation.
+/// @return A new Entity3D wrapper, or NULL when @p root is invalid or wrapping fails.
 static void *game3d_entity_from_model_root(void *root) {
     rt_game3d_entity *entity;
     void *animator;
@@ -1009,6 +1135,8 @@ static void *game3d_entity_from_model_root(void *root) {
 }
 
 /// @brief Get the loaded model backing the template (NULL if invalid).
+/// @param obj ModelTemplate to query.
+/// @return The borrowed validated Model3D handle, or NULL when unavailable.
 void *rt_game3d_model_template_get_model(void *obj) {
     rt_game3d_model_template *model_template =
         game3d_model_template_checked(obj, "Game3D.ModelTemplate.get_model: invalid template");
@@ -1016,6 +1144,8 @@ void *rt_game3d_model_template_get_model(void *obj) {
 }
 
 /// @brief Get the source path the template was loaded from ("" if invalid).
+/// @param obj ModelTemplate to query.
+/// @return The template's runtime path string, or the empty string when invalid.
 rt_string rt_game3d_model_template_get_path(void *obj) {
     rt_game3d_model_template *model_template =
         game3d_model_template_checked(obj, "Game3D.ModelTemplate.get_path: invalid template");
@@ -1023,6 +1153,8 @@ rt_string rt_game3d_model_template_get_path(void *obj) {
 }
 
 /// @brief True if the template was loaded from a packed asset (0 if invalid).
+/// @param obj ModelTemplate to query.
+/// @return 1 for a packed-asset template, or 0 for a filesystem or invalid template.
 int8_t rt_game3d_model_template_get_is_asset(void *obj) {
     rt_game3d_model_template *model_template =
         game3d_model_template_checked(obj, "Game3D.ModelTemplate.get_isAsset: invalid template");
@@ -1030,6 +1162,8 @@ int8_t rt_game3d_model_template_get_is_asset(void *obj) {
 }
 
 /// @brief Number of immutable scenes on the underlying Model3D. See header.
+/// @param obj ModelTemplate to query.
+/// @return The imported scene count, or 0 when no backing model is available.
 int64_t rt_game3d_model_template_get_scene_count(void *obj) {
     rt_game3d_model_template *model_template =
         game3d_model_template_checked(obj, "Game3D.ModelTemplate.get_sceneCount: invalid template");
@@ -1038,6 +1172,9 @@ int64_t rt_game3d_model_template_get_scene_count(void *obj) {
 }
 
 /// @brief Imported scene name lookup. See header.
+/// @param obj ModelTemplate to query.
+/// @param index Zero-based imported scene index.
+/// @return The scene name, or an empty runtime string when unavailable.
 rt_string rt_game3d_model_template_get_scene_name(void *obj, int64_t index) {
     rt_game3d_model_template *model_template =
         game3d_model_template_checked(obj, "Game3D.ModelTemplate.getSceneName: invalid template");
@@ -1046,6 +1183,9 @@ rt_string rt_game3d_model_template_get_scene_name(void *obj, int64_t index) {
 }
 
 /// @brief Imported camera count per scene. See header.
+/// @param obj ModelTemplate to query.
+/// @param scene_index Zero-based imported scene index.
+/// @return The number of cameras in the scene, or 0 when unavailable.
 int64_t rt_game3d_model_template_get_camera_count(void *obj, int64_t scene_index) {
     rt_game3d_model_template *model_template =
         game3d_model_template_checked(obj, "Game3D.ModelTemplate.getCameraCount: invalid template");
@@ -1054,6 +1194,10 @@ int64_t rt_game3d_model_template_get_camera_count(void *obj, int64_t scene_index
 }
 
 /// @brief Imported camera lookup per scene. See header.
+/// @param obj ModelTemplate to query.
+/// @param scene_index Zero-based imported scene index.
+/// @param index Zero-based camera index within the scene.
+/// @return The imported Camera3D handle, or NULL when either index is invalid.
 void *rt_game3d_model_template_get_camera(void *obj, int64_t scene_index, int64_t index) {
     rt_game3d_model_template *model_template =
         game3d_model_template_checked(obj, "Game3D.ModelTemplate.getCamera: invalid template");
@@ -1062,6 +1206,8 @@ void *rt_game3d_model_template_get_camera(void *obj, int64_t scene_index, int64_
 }
 
 /// @brief Instantiate a fresh entity by cloning the template's model. See header.
+/// @param obj ModelTemplate whose default scene is cloned.
+/// @return A new Entity3D wrapping the cloned root, or NULL when instantiation fails.
 void *rt_game3d_model_template_instantiate(void *obj) {
     rt_game3d_model_template *model_template =
         game3d_model_template_checked(obj, "Game3D.ModelTemplate.instantiate: invalid template");
@@ -1075,6 +1221,9 @@ void *rt_game3d_model_template_instantiate(void *obj) {
 }
 
 /// @brief Instantiate a specific imported scene and wrap its root as a Game3D entity.
+/// @param obj ModelTemplate whose backing model is instantiated.
+/// @param index Zero-based imported scene index.
+/// @return A new Entity3D wrapping the scene root, or NULL when the index or root is invalid.
 void *rt_game3d_model_template_instantiate_scene_at(void *obj, int64_t index) {
     rt_game3d_model_template *model_template = game3d_model_template_checked(
         obj, "Game3D.ModelTemplate.instantiateSceneAt: invalid template");
@@ -1095,6 +1244,8 @@ void *rt_game3d_model_template_instantiate_scene_at(void *obj, int64_t index) {
 }
 
 /// @brief Load a filesystem model (uncached) and return a ready entity. See header.
+/// @param path Runtime string containing the filesystem model path.
+/// @return A new Entity3D instance, or NULL after reporting a load failure.
 void *rt_game3d_assets_load_model(rt_string path) {
     rt_game3d_model_template *model_template = game3d_assets_load_template_uncached(
         path, 0, "Game3D.Assets3D.LoadModel: failed to load model");
@@ -1107,6 +1258,8 @@ void *rt_game3d_assets_load_model(rt_string path) {
 }
 
 /// @brief Load a packed-asset model (uncached) and return a ready entity. See header.
+/// @param path Runtime string containing the packed model path.
+/// @return A new Entity3D instance, or NULL after reporting a load failure.
 void *rt_game3d_assets_load_model_asset(rt_string path) {
     rt_game3d_model_template *model_template = game3d_assets_load_template_uncached(
         path, 1, "Game3D.Assets3D.LoadModelAsset: failed to load model asset");
@@ -1119,63 +1272,89 @@ void *rt_game3d_assets_load_model_asset(rt_string path) {
 }
 
 /// @brief Load a skeletal animation clip from a filesystem model.
+/// @param path Runtime string containing the filesystem model path.
+/// @param index Zero-based skeletal animation index.
+/// @return A loaded Animation3D handle, or NULL when unavailable.
 void *rt_game3d_assets_load_animation(rt_string path, int64_t index) {
     return rt_model3d_load_animation(path, index);
 }
 
 /// @brief Load a skeletal animation clip from a packed model asset.
+/// @param path Runtime string containing the packed model path.
+/// @param index Zero-based skeletal animation index.
+/// @return A loaded Animation3D handle, or NULL when unavailable.
 void *rt_game3d_assets_load_animation_asset(rt_string path, int64_t index) {
     return rt_model3d_load_animation_asset(path, index);
 }
 
 /// @brief Load a node animation clip from a filesystem model.
+/// @param path Runtime string containing the filesystem model path.
+/// @param index Zero-based node animation index.
+/// @return A loaded NodeAnimation3D handle, or NULL when unavailable.
 void *rt_game3d_assets_load_node_animation(rt_string path, int64_t index) {
     return rt_model3d_load_node_animation(path, index);
 }
 
 /// @brief Load a node animation clip from a packed model asset.
+/// @param path Runtime string containing the packed model path.
+/// @param index Zero-based node animation index.
+/// @return A loaded NodeAnimation3D handle, or NULL when unavailable.
 void *rt_game3d_assets_load_node_animation_asset(rt_string path, int64_t index) {
     return rt_model3d_load_node_animation_asset(path, index);
 }
 
 /// @brief Load a filesystem model as a cached reusable template. See header.
+/// @param path Runtime string containing the filesystem model path.
+/// @return A retained cached ModelTemplate, or NULL after reporting a load failure.
 void *rt_game3d_assets_load_model_template(rt_string path) {
     return game3d_assets_load_template_cached(
         path, 0, "Game3D.Assets3D.LoadModelTemplate: failed to load model");
 }
 
 /// @brief Load a packed-asset model as a cached reusable template. See header.
+/// @param path Runtime string containing the packed model path.
+/// @return A retained cached ModelTemplate, or NULL after reporting a load failure.
 void *rt_game3d_assets_load_model_template_asset(rt_string path) {
     return game3d_assets_load_template_cached(
         path, 1, "Game3D.Assets3D.LoadModelTemplateAsset: failed to load model asset");
 }
 
 /// @brief Finalize a synchronous (deferred) asset handle whose result was produced inline.
+/// @param handle AssetHandle3D to service and start if it is still deferred.
 static void game3d_asset_handle_complete_if_deferred(rt_game3d_asset_handle *handle) {
     game3d_asset_handle_service(handle, 1);
 }
 
 /// @brief Load a filesystem model and expose the terminal result through AssetHandle3D.
+/// @param path Runtime string containing the filesystem model path.
+/// @return A new deferred AssetHandle3D configured to produce an Entity3D.
 void *rt_game3d_assets_load_model_async(rt_string path) {
     return game3d_asset_handle_pending(path, 0, 0);
 }
 
 /// @brief Load a packed-asset model and expose the terminal result through AssetHandle3D.
+/// @param path Runtime string containing the packed model path.
+/// @return A new deferred AssetHandle3D configured to produce an Entity3D.
 void *rt_game3d_assets_load_model_asset_async(rt_string path) {
     return game3d_asset_handle_pending(path, 1, 0);
 }
 
 /// @brief Load a filesystem ModelTemplate and expose it through AssetHandle3D.
+/// @param path Runtime string containing the filesystem model path.
+/// @return A new deferred AssetHandle3D configured to produce a cached ModelTemplate.
 void *rt_game3d_assets_load_model_template_async(rt_string path) {
     return game3d_asset_handle_pending(path, 0, 1);
 }
 
 /// @brief Load a packed-asset ModelTemplate and expose it through AssetHandle3D.
+/// @param path Runtime string containing the packed model path.
+/// @return A new deferred AssetHandle3D configured to produce a cached ModelTemplate.
 void *rt_game3d_assets_load_model_template_asset_async(rt_string path) {
     return game3d_asset_handle_pending(path, 1, 1);
 }
 
 /// @brief Set the process-wide ModelTemplate cache budget. Negative means unlimited.
+/// @param bytes Maximum estimated resident bytes, or a negative value for no limit.
 void rt_game3d_assets_set_residency_budget(int64_t bytes) {
     uint64_t budget = bytes < 0 ? UINT64_MAX : (uint64_t)bytes;
     game3d_model_cache_lock();
@@ -1186,6 +1365,7 @@ void rt_game3d_assets_set_residency_budget(int64_t bytes) {
 }
 
 /// @brief Return estimated bytes currently resident in the shared ModelTemplate cache.
+/// @return The saturating signed-byte estimate of all resident cached templates.
 int64_t rt_game3d_assets_get_resident_bytes(void) {
     uint64_t bytes;
     game3d_model_cache_lock();
@@ -1195,6 +1375,9 @@ int64_t rt_game3d_assets_get_resident_bytes(void) {
 }
 
 /// @brief Annotate a cached ModelTemplate for priority/distance-aware eviction.
+/// @param model_template_obj ModelTemplate whose ready cache entry is updated.
+/// @param priority Residency priority used by victim selection.
+/// @param distance Residency distance used by victim selection.
 void rt_game3d_assets_set_residency_hint(void *model_template_obj,
                                          double priority,
                                          double distance) {
@@ -1210,12 +1393,14 @@ void rt_game3d_assets_set_residency_hint(void *model_template_obj,
 }
 
 /// @brief Set the process-wide async asset upload budget. Negative means unlimited.
+/// @param bytes Main-thread upload bytes permitted per drain, or a negative value for no limit.
 void rt_game3d_assets_set_upload_budget(int64_t bytes) {
     uint64_t budget = bytes < 0 ? UINT64_MAX : (uint64_t)bytes;
     rt_atomic_store_u64(&g_game3d_asset_upload_budget_bytes, budget, __ATOMIC_RELEASE);
 }
 
 /// @brief Evict the cached template backing a ready template AssetHandle3D.
+/// @param asset_handle Ready, successful template-mode AssetHandle3D whose entry is targeted.
 void rt_game3d_assets_evict(void *asset_handle) {
     rt_game3d_asset_handle *handle =
         game3d_asset_handle_checked(asset_handle, "Game3D.Assets3D.Evict: invalid handle");
@@ -1230,6 +1415,8 @@ void rt_game3d_assets_evict(void *asset_handle) {
 }
 
 /// @brief True once the request has completed or been cancelled. See header.
+/// @param obj AssetHandle3D to service and query.
+/// @return 1 once the request is terminal, or 0 while work remains.
 int8_t rt_game3d_asset_handle_get_ready(void *obj) {
     rt_game3d_asset_handle *handle =
         game3d_asset_handle_checked(obj, "Game3D.AssetHandle3D.ready: invalid handle");
@@ -1238,6 +1425,8 @@ int8_t rt_game3d_asset_handle_get_ready(void *obj) {
 }
 
 /// @brief Terminal or in-flight loading progress. See header.
+/// @param obj AssetHandle3D to service and query.
+/// @return Sanitized progress in the range 0 through 1.
 double rt_game3d_asset_handle_get_progress(void *obj) {
     rt_game3d_asset_handle *handle =
         game3d_asset_handle_checked(obj, "Game3D.AssetHandle3D.progress: invalid handle");
@@ -1246,6 +1435,8 @@ double rt_game3d_asset_handle_get_progress(void *obj) {
 }
 
 /// @brief Return terminal error text, or "" on success / pending work. See header.
+/// @param obj AssetHandle3D to service and query.
+/// @return The current runtime error string, or the empty string when none is recorded.
 rt_string rt_game3d_asset_handle_get_error(void *obj) {
     rt_game3d_asset_handle *handle =
         game3d_asset_handle_checked(obj, "Game3D.AssetHandle3D.error: invalid handle");
@@ -1254,6 +1445,7 @@ rt_string rt_game3d_asset_handle_get_error(void *obj) {
 }
 
 /// @brief Cancel a pending request. Current completed handles intentionally no-op.
+/// @param obj AssetHandle3D whose pending worker or deferred request is cancelled.
 void rt_game3d_asset_handle_cancel(void *obj) {
     rt_game3d_asset_handle *handle =
         game3d_asset_handle_checked(obj, "Game3D.AssetHandle3D.cancel: invalid handle");
@@ -1269,6 +1461,8 @@ void rt_game3d_asset_handle_cancel(void *obj) {
 }
 
 /// @brief Return the entity result for entity-mode requests, or NULL. See header.
+/// @param obj AssetHandle3D to complete if deferred and query.
+/// @return The borrowed Entity3D result, or NULL while pending, cancelled, failed, or wrong-mode.
 void *rt_game3d_asset_handle_get_entity(void *obj) {
     rt_game3d_asset_handle *handle =
         game3d_asset_handle_checked(obj, "Game3D.AssetHandle3D.getEntity: invalid handle");
@@ -1280,6 +1474,8 @@ void *rt_game3d_asset_handle_get_entity(void *obj) {
 }
 
 /// @brief Return the template result for template-mode requests, or NULL. See header.
+/// @param obj AssetHandle3D to complete if deferred and query.
+/// @return The borrowed ModelTemplate result, or NULL while pending, cancelled, failed, or wrong-mode.
 void *rt_game3d_asset_handle_get_template(void *obj) {
     rt_game3d_asset_handle *handle =
         game3d_asset_handle_checked(obj, "Game3D.AssetHandle3D.getTemplate: invalid handle");
@@ -1291,6 +1487,7 @@ void *rt_game3d_asset_handle_get_template(void *obj) {
 }
 
 /// @brief Warm the cache by scheduling a filesystem template load. See header.
+/// @param path Runtime string containing the filesystem model path to preload.
 void rt_game3d_assets_preload(rt_string path) {
     rt_game3d_asset_handle *handle = game3d_asset_handle_pending(path, 0, 1);
     if (!handle)
@@ -1300,6 +1497,7 @@ void rt_game3d_assets_preload(rt_string path) {
 }
 
 /// @brief Warm the cache by scheduling a packed-asset template load. See header.
+/// @param path Runtime string containing the packed model path to preload.
 void rt_game3d_assets_preload_asset(rt_string path) {
     rt_game3d_asset_handle *handle = game3d_asset_handle_pending(path, 1, 1);
     if (!handle)

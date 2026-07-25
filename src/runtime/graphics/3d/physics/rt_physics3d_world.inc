@@ -3,6 +3,14 @@
 // File: src/runtime/graphics/3d/physics/rt_physics3d_world.inc  (#included from rt_physics3d.c; not
 // a standalone translation unit) Purpose: Physics3D World3D lifecycle, stepping, and integration
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements `World3D` ownership, transactional stepping, diagnostics, and registration.
+///
+/// This implementation fragment is included by `rt_physics3d.c`. It owns world construction
+/// and teardown, atomic variable/fixed stepping, body and joint membership, solver and CCD
+/// configuration, diagnostic counters, query capacity, gravity, and floating-origin rebasing.
+
 /*==========================================================================
  * World3D
  *=========================================================================*/
@@ -12,6 +20,7 @@
 /// Walks the body and joint arrays releasing each owned reference. The
 /// world has strong refs to its bodies/joints so dropping the world
 /// frees the entire simulation state.
+/// @param obj Owned `rt_world3d` runtime payload being finalized; null is a no-op.
 static void world3d_finalizer(void *obj) {
     rt_world3d *w = (rt_world3d *)obj;
     if (!w)
@@ -142,8 +151,10 @@ static void world3d_finalizer(void *obj) {
 /// start at production-sized defaults and grow on demand. Hooks the GC
 /// finalizer so dropping the world frees the simulation.
 ///
-/// @param gx,gy,gz Initial world gravity acceleration (m/s²).
-/// @return Owned `World3D` handle.
+/// @param gx Initial world-gravity x acceleration in metres per second squared.
+/// @param gy Initial world-gravity y acceleration in metres per second squared.
+/// @param gz Initial world-gravity z acceleration in metres per second squared.
+/// @return Owned `World3D` handle, or null after trapping on object or initial-storage failure.
 void *rt_world3d_new(double gx, double gy, double gz) {
     rt_world3d *w =
         (rt_world3d *)rt_obj_new_i64(RT_G3D_WORLD3D_CLASS_ID, (int64_t)sizeof(rt_world3d));
@@ -242,6 +253,7 @@ void *rt_world3d_new(double gx, double gy, double gz) {
 /// @details The simulation itself always performs one world integration/contact/
 ///   joint pass. `LastCcd*Substeps` now reports the largest local segment demand
 ///   and bounded segment count observed on any opted-in body.
+/// @param[in,out] w Borrowed world whose last-step diagnostic fields are reset.
 static void world3d_begin_ccd_diagnostics(rt_world3d *w) {
     if (!w)
         return;
@@ -280,6 +292,8 @@ static int32_t world3d_ccd_body_segment_count(rt_world3d *w, double move_length,
 }
 
 /// @brief Commit aggregate local-segmentation clamp telemetry after integration.
+/// @param[in,out] w Borrowed world whose per-step clamp count is accumulated into lifetime
+///        diagnostics. A null world or zero clamped bodies is a no-op.
 static void world3d_finish_ccd_diagnostics(rt_world3d *w) {
     int32_t clamped;
     if (!w || w->last_ccd_clamped_body_count <= 0)
@@ -299,6 +313,9 @@ static void world3d_finish_ccd_diagnostics(rt_world3d *w) {
 ///   radius `height/2`, and boxes/convexes/meshes use the half-diagonal of their
 ///   transformed world AABB. The AABB center also captures non-origin local
 ///   geometry. This cannot omit corners the former max-half-extent proxy missed.
+/// @param body Borrowed collision-capable body.
+/// @param[out] center Three-element destination for the proxy center in world coordinates.
+/// @param[out] radius Destination for the positive enclosing radius in world units.
 /// @return `1` with finite center/radius, otherwise `0`.
 static int world3d_ccd_body_proxy(const rt_body3d *body, double center[3], double *radius) {
     double bounds_min[3];
@@ -326,6 +343,11 @@ static int world3d_ccd_body_proxy(const rt_body3d *body, double center[3], doubl
 ///   the target-surface normal convention. Query fallbacks with the opposite
 ///   sign are flipped so relative approach velocity is negative before the
 ///   ordinary restitution/friction solver runs.
+/// @param w Borrowed world providing solver settings and frame-contact storage.
+/// @param[in,out] moving Borrowed CCD body whose velocity, grounding, and impulses may change.
+/// @param hit Borrowed sweep hit identifying the target body, collider, and contact point.
+/// @param[in,out] normal Three-element hit normal, flipped in place when required by the solver's
+///        target-to-moving-body convention.
 /// @return `1` on success, or `0` if frame-contact publication fails.
 static int world3d_resolve_ccd_hit(rt_world3d *w,
                                    rt_body3d *moving,
@@ -361,6 +383,7 @@ static int world3d_resolve_ccd_hit(rt_world3d *w,
 }
 
 /// @brief Clear one-shot force and torque accumulators from every registered body.
+/// @param[in,out] w Borrowed world whose non-null bodies are cleared after a committed step.
 static void world3d_clear_body_accumulators(rt_world3d *w) {
     if (!w)
         return;
@@ -469,6 +492,9 @@ static int world3d_step_transaction_add_region(
 /// @details Transaction arrays are plain snapshots and do not alter body or
 ///   collider ownership; contact entries hold borrowed references owned by the
 ///   world/body registries.
+/// @param[out] destination Snapshot array receiving the copied prefix.
+/// @param source Borrowed live contact or event array.
+/// @param count Number of initialized entries to copy; non-positive values are no-ops.
 static void world3d_step_transaction_copy_contacts(rt_contact3d *destination,
                                                    const rt_contact3d *source,
                                                    int32_t count) {
@@ -650,6 +676,8 @@ static void world3d_step_transaction_restore(rt_world3d *w,
 /// @details Scans only valid registered bodies and treats any enabled dynamic
 ///   body as needing the reusable sphere query collider, even if it is currently
 ///   asleep; this avoids a later wake introducing allocation after mutation.
+/// @param w Borrowed world whose registered bodies are scanned.
+/// @return `1` when at least one dynamic collision body has CCD enabled; otherwise `0`.
 static int world3d_step_needs_ccd_sweep(const rt_world3d *w) {
     if (!w)
         return 0;
@@ -967,6 +995,10 @@ void rt_world3d_step(void *obj, double dt) {
 ///   is subtracted only after `world3d_step_internal` commits successfully. A
 ///   failed step therefore remains queued for retry. Passing `dt == 0` drains
 ///   previously retained time without adding another frame.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param dt Frame duration in seconds to add to the accumulator; zero adds no time.
+/// @param fixed_dt Requested fixed quantum in seconds, sanitized to runtime limits.
+/// @param max_steps Maximum quanta committed in this call, clamped to supported bounds.
 /// @return Number of fixed steps committed during this call.
 int64_t rt_world3d_step_fixed(void *obj, double dt, double fixed_dt, int64_t max_steps) {
     rt_world3d *w = world3d_checked(obj);
@@ -1016,6 +1048,8 @@ int64_t rt_world3d_step_fixed(void *obj, double dt, double fixed_dt, int64_t max
 }
 
 /// @brief `World3D.FixedStepAlpha` — fixed-step accumulator interpolation fraction.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Sanitized interpolation fraction in `[0, 1)`, or zero for an invalid world/value.
 double rt_world3d_get_fixed_step_alpha(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     if (!w || !isfinite(w->fixed_step_alpha))
@@ -1028,6 +1062,8 @@ double rt_world3d_get_fixed_step_alpha(void *obj) {
 }
 
 /// @brief `World3D.DroppedFixedSteps` — fixed-step updates discarded by the spiral guard.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Non-negative cumulative discarded-step count, or zero for an invalid world.
 int64_t rt_world3d_get_dropped_fixed_steps(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return w && w->dropped_fixed_steps > 0 ? w->dropped_fixed_steps : 0;
@@ -1038,6 +1074,9 @@ int64_t rt_world3d_get_dropped_fixed_steps(void *obj) {
 ///   is stale, the helper falls back to a scan and repairs the cached index when
 ///   it finds the body. This keeps old objects coherent across swap-removes and
 ///   defensive count clamping.
+/// @param[in,out] w Borrowed world whose safe body count and cached owner index may be repaired.
+/// @param[in,out] body Borrowed body whose ownership metadata may be repaired or cleared.
+/// @return `1` when @p body is present in @p w; otherwise `0`.
 static int world3d_body_is_registered(rt_world3d *w, rt_body3d *body) {
     if (!w || !body)
         return 0;
@@ -1065,6 +1104,9 @@ static int world3d_body_is_registered(rt_world3d *w, rt_body3d *body) {
 ///   any world are also accepted for legacy/manual joint registration, while bodies
 ///   already owned by a different world are rejected so constraints cannot bridge
 ///   two independent simulations.
+/// @param w Borrowed destination world.
+/// @param[in,out] body Borrowed joint endpoint whose cached registration may be repaired.
+/// @return `1` when the body is registered in @p w or currently unowned; otherwise `0`.
 static int world3d_joint_body_allowed(rt_world3d *w, rt_body3d *body) {
     if (!w || !body)
         return 0;
@@ -1077,6 +1119,9 @@ static int world3d_joint_body_allowed(rt_world3d *w, rt_body3d *body) {
 ///
 /// Retains the joint and stores its type tag so `rt_joint3d_solve` can
 /// dispatch correctly. Storage grows on demand.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param joint Borrowed joint object retained by the world on successful first registration.
+/// @param joint_type Runtime joint-type tag used for validation and solver dispatch.
 void rt_world3d_add_joint(void *obj, void *joint, int64_t joint_type) {
     rt_world3d *w = world3d_checked(obj);
     void *joint_body_a = NULL;
@@ -1113,6 +1158,8 @@ void rt_world3d_add_joint(void *obj, void *joint, int64_t joint_type) {
 ///
 /// Linear scan; on hit, swaps in the last entry to compact the array
 /// and releases the world's reference. Silent no-op when not found.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param joint Borrowed joint object to unregister.
 void rt_world3d_remove_joint(void *obj, void *joint) {
     rt_world3d *w = world3d_checked(obj);
     if (!w || !joint)
@@ -1134,6 +1181,10 @@ void rt_world3d_remove_joint(void *obj, void *joint) {
 }
 
 /// @brief Return whether a concrete joint references @p body as either endpoint.
+/// @param joint Borrowed joint object.
+/// @param joint_type Concrete runtime joint-type tag.
+/// @param body Borrowed body to compare with both resolved endpoints.
+/// @return `1` when endpoint resolution succeeds and either endpoint equals @p body; otherwise `0`.
 static int world3d_joint_mentions_body(void *joint, int32_t joint_type, rt_body3d *body) {
     void *body_a = NULL;
     void *body_b = NULL;
@@ -1144,6 +1195,8 @@ static int world3d_joint_mentions_body(void *joint, int32_t joint_type, rt_body3
 /// @brief Remove and release every joint in @p w that references @p body.
 /// @details Called before body removal so a removed body is not retained by stale
 ///   constraints and the solver never sees a joint endpoint outside the world.
+/// @param[in,out] w Borrowed world whose joint arrays are compacted.
+/// @param body Borrowed body whose referencing joints are removed.
 static void world3d_purge_joints_for_body(rt_world3d *w, rt_body3d *body) {
     if (!w || !body)
         return;
@@ -1172,18 +1225,24 @@ static void world3d_purge_joints_for_body(rt_world3d *w, rt_body3d *body) {
 }
 
 /// @brief `World3D.JointCount` — number of registered joints (0 for NULL).
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Sanitized number of registered joints, or zero for an invalid world.
 int64_t rt_world3d_joint_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return world3d_joint_count_safe(w);
 }
 
 /// @brief `World3D.SolverIterations` — iterative constraint-solver pass count.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Clamped velocity-solver iteration count, or zero for an invalid world.
 int64_t rt_world3d_get_solver_iterations(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return w ? ph3d_clamp_solver_iterations(w->solver_iterations) : 0;
 }
 
 /// @brief `World3D.SolverIterations` setter — tune iterative solver passes.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param iterations Requested pass count, clamped to the supported solver range.
 void rt_world3d_set_solver_iterations(void *obj, int64_t iterations) {
     rt_world3d *w = world3d_checked(obj);
     if (w)
@@ -1191,12 +1250,16 @@ void rt_world3d_set_solver_iterations(void *obj, int64_t iterations) {
 }
 
 /// @brief `World3D.PositionIterations` — positional correction pass count.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Clamped positional-solver iteration count, or zero for an invalid world.
 int64_t rt_world3d_get_position_iterations(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return w ? ph3d_clamp_solver_iterations(w->position_iterations) : 0;
 }
 
 /// @brief `World3D.PositionIterations` setter — tune positional correction passes.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param iterations Requested pass count, clamped to the supported solver range.
 void rt_world3d_set_position_iterations(void *obj, int64_t iterations) {
     rt_world3d *w = world3d_checked(obj);
     if (w)
@@ -1204,12 +1267,16 @@ void rt_world3d_set_position_iterations(void *obj, int64_t iterations) {
 }
 
 /// @brief `World3D.ContactBeta` — Baumgarte positional recovery fraction.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Finite recovery fraction in `[0, 1]`, or zero for an invalid world.
 double rt_world3d_get_contact_beta(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return w ? ph3d_clamp_unit_finite(w->contact_beta, PH3D_DEFAULT_CONTACT_BETA) : 0.0;
 }
 
 /// @brief `World3D.ContactBeta` setter — clamp positional recovery to [0, 1].
+/// @param obj Borrowed `World3D` runtime object.
+/// @param beta Requested finite correction fraction; invalid values fall back to zero.
 void rt_world3d_set_contact_beta(void *obj, double beta) {
     rt_world3d *w = world3d_checked(obj);
     if (w)
@@ -1217,6 +1284,8 @@ void rt_world3d_set_contact_beta(void *obj, double beta) {
 }
 
 /// @brief `World3D.RestitutionThreshold` — minimum approach speed that bounces.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Finite non-negative threshold in metres per second, or zero for an invalid world.
 double rt_world3d_get_restitution_threshold(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return w ? ph3d_clamp_nonnegative_finite(w->restitution_threshold,
@@ -1225,6 +1294,8 @@ double rt_world3d_get_restitution_threshold(void *obj) {
 }
 
 /// @brief `World3D.RestitutionThreshold` setter — clamp to a finite non-negative speed.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param threshold Requested bounce threshold in metres per second; invalid values become zero.
 void rt_world3d_set_restitution_threshold(void *obj, double threshold) {
     rt_world3d *w = world3d_checked(obj);
     if (w)
@@ -1232,12 +1303,16 @@ void rt_world3d_set_restitution_threshold(void *obj, double threshold) {
 }
 
 /// @brief `World3D.LastSolverIslandCount` — max active contact islands in the last Step.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Non-negative maximum island count observed during the last committed step.
 int64_t rt_world3d_get_last_solver_island_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return (w && w->last_solver_island_count > 0) ? w->last_solver_island_count : 0;
 }
 
 /// @brief `World3D.LastSolverActiveBodyCount` — max awake bodies scheduled in contact islands.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Last maximum active-island body count, defensively capped by current membership.
 int64_t rt_world3d_get_last_solver_active_body_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     if (!w || w->last_solver_active_body_count <= 0)
@@ -1248,6 +1323,8 @@ int64_t rt_world3d_get_last_solver_active_body_count(void *obj) {
 }
 
 /// @brief `World3D.LastSolverContactCount` — max contacts scheduled through islands.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Last maximum scheduled-contact count, defensively capped by current contacts.
 int64_t rt_world3d_get_last_solver_contact_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     if (!w || w->last_solver_contact_count <= 0)
@@ -1261,6 +1338,10 @@ int64_t rt_world3d_get_last_solver_contact_count(void *obj) {
 /// @brief `World3D.Add(body)` — register a body.
 ///
 /// Retains the body and stores it in the growable bodies array.
+/// @param obj Borrowed destination `World3D` runtime object.
+/// @param body Borrowed `Body3D` retained on successful first registration.
+/// @return `1` when the body is already present or was added; `0` for invalid objects, conflicting
+///         world ownership, or storage allocation failure.
 int8_t rt_world3d_try_add(void *obj, void *body) {
     rt_world3d *w = world3d_checked(obj);
     rt_body3d *b = body3d_checked(body);
@@ -1285,16 +1366,24 @@ int8_t rt_world3d_try_add(void *obj, void *body) {
 }
 
 /// @brief Add a body to the world, ignoring the success flag (see rt_world3d_try_add).
+/// @param obj Borrowed destination `World3D` runtime object.
+/// @param body Borrowed `Body3D` to register.
 void rt_world3d_add(void *obj, void *body) {
     (void)rt_world3d_try_add(obj, body);
 }
 
 /// @brief Whether a contact references @p body as either participant.
+/// @param contact Borrowed contact to inspect.
+/// @param body Borrowed body to compare with both participants.
+/// @return `1` when both pointers are valid and either participant equals @p body; otherwise `0`.
 static int contact_mentions_body(const rt_contact3d *contact, const rt_body3d *body) {
     return contact && body && (contact->body_a == body || contact->body_b == body);
 }
 
 /// @brief Remove every contact mentioning @p body from a contact array, compacting it in place.
+/// @param[in,out] contacts Contact or event array compacted in place.
+/// @param[in,out] count Number of initialized entries, replaced with the retained count.
+/// @param body Borrowed body whose contacts are removed.
 static void world3d_purge_contact_array_for_body(rt_contact3d *contacts,
                                                  int32_t *count,
                                                  const rt_body3d *body) {
@@ -1315,6 +1404,8 @@ static void world3d_purge_contact_array_for_body(rt_contact3d *contacts,
 
 /// @brief Purge all of the world's contact/event arrays of contacts involving @p body.
 /// @details Called when a body leaves the world so stale contacts don't fire spurious events.
+/// @param[in,out] w Borrowed world whose contact, frame-contact, and event arrays are compacted.
+/// @param body Borrowed body being removed.
 static void world3d_purge_body_contacts(rt_world3d *w, const rt_body3d *body) {
     if (!w || !body)
         return;
@@ -1331,6 +1422,8 @@ static void world3d_purge_body_contacts(rt_world3d *w, const rt_body3d *body) {
 ///
 /// Same swap-with-last compaction as `RemoveJoint`. Releases the world's
 /// reference, which may free the body if no other holder remains.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param body Borrowed `Body3D` to unregister; a missing body is a no-op.
 void rt_world3d_remove(void *obj, void *body) {
     rt_world3d *w = world3d_checked(obj);
     rt_body3d *b = body3d_checked(body);
@@ -1361,12 +1454,17 @@ void rt_world3d_remove(void *obj, void *body) {
 }
 
 /// @brief `World3D.BodyCount` — number of registered bodies (0 for NULL).
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Sanitized number of registered bodies, or zero for an invalid world.
 int64_t rt_world3d_body_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return world3d_body_count_safe(w);
 }
 
 /// @brief Whether @p body is currently registered in the world.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param body Borrowed `Body3D` whose membership and cached owner index are checked.
+/// @return `1` when @p body is registered in @p obj; otherwise `0`.
 int8_t rt_world3d_contains_body(void *obj, void *body) {
     rt_world3d *w = world3d_checked(obj);
     rt_body3d *b = body3d_checked(body);
@@ -1376,6 +1474,8 @@ int8_t rt_world3d_contains_body(void *obj, void *body) {
 }
 
 /// @brief `World3D.LastCcdRequestedSubsteps` — largest unclamped local body-segment demand.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Positive largest requested segment count from the last step, or zero when unavailable.
 int64_t rt_world3d_get_last_ccd_requested_substeps(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     if (!w || w->last_ccd_requested_substeps <= 0)
@@ -1384,6 +1484,8 @@ int64_t rt_world3d_get_last_ccd_requested_substeps(void *obj) {
 }
 
 /// @brief `World3D.LastCcdSubsteps` — largest bounded local body-segment count used.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Largest applied segment count from the last step, capped at the runtime maximum.
 int64_t rt_world3d_get_last_ccd_substeps(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     if (!w || w->last_ccd_substeps <= 0)
@@ -1393,18 +1495,24 @@ int64_t rt_world3d_get_last_ccd_substeps(void *obj) {
 }
 
 /// @brief `World3D.CcdSubstepClampedCount` — frames where a body hit the segment cap.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Non-negative cumulative committed-step count containing at least one CCD clamp.
 int64_t rt_world3d_get_ccd_substep_clamped_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return (w && w->ccd_substep_clamped_count > 0) ? w->ccd_substep_clamped_count : 0;
 }
 
 /// @brief `World3D.LastCcdClampedBodyCount` — bodies capped by CCD in the last Step.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Non-negative number of bodies clamped during the last committed step.
 int64_t rt_world3d_get_last_ccd_clamped_body_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return (w && w->last_ccd_clamped_body_count > 0) ? w->last_ccd_clamped_body_count : 0;
 }
 
 /// @brief `World3D.CcdSubstepClampedBodyCount` — total bodies affected by CCD caps.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Non-negative cumulative body-clamp count across committed steps.
 int64_t rt_world3d_get_ccd_substep_clamped_body_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return (w && w->ccd_substep_clamped_body_count > 0) ? w->ccd_substep_clamped_body_count : 0;
@@ -1414,6 +1522,9 @@ int64_t rt_world3d_get_ccd_substep_clamped_body_count(void *obj) {
 /// @details Bounds how many hits `RaycastAll`/`OverlapSphere`/`OverlapAABB`
 ///          return (lists still report `TotalCount`/`Truncated`). Clamped to
 ///          16–4096; reallocates the world's scratch buffer on next use.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param max_hits Requested retained-result capacity, clamped to
+///        `[PH3D_QUERY_HITS_MIN, PH3D_QUERY_HITS_MAX]`.
 void rt_world3d_set_max_query_hits(void *obj, int64_t max_hits) {
     rt_world3d *w = world3d_checked(obj);
     if (!w)
@@ -1430,6 +1541,8 @@ void rt_world3d_set_max_query_hits(void *obj, int64_t max_hits) {
 }
 
 /// @brief `Physics3DWorld.MaxQueryHits` — current query result capacity.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Current retained-result capacity, or zero for an invalid world.
 int64_t rt_world3d_get_max_query_hits(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return w ? w->max_query_hits : 0;
@@ -1439,12 +1552,16 @@ int64_t rt_world3d_get_max_query_hits(void *obj) {
 /// @details Each count is one CCD body whose substep translation was clipped
 ///          at a static/kinematic surface by the swept pass (i.e. a tunnel
 ///          that substep subdivision alone would not have prevented exactly).
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Non-negative cumulative number of resolved time-of-impact clips.
 int64_t rt_world3d_get_ccd_toi_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return (w && w->ccd_toi_count > 0) ? w->ccd_toi_count : 0;
 }
 
 /// @brief `World3D.BroadphaseFallbackCount` — brute-force broadphase fallback count.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Non-negative cumulative committed broad-phase fallback count.
 int64_t rt_world3d_get_broadphase_fallback_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return (w && w->broadphase_fallback_count > 0) ? w->broadphase_fallback_count : 0;
@@ -1453,6 +1570,8 @@ int64_t rt_world3d_get_broadphase_fallback_count(void *obj) {
 /// @brief `World3D.QueryBroadphaseRebuildCount` — total query-broadphase rebuilds.
 /// @details Diagnostic for spatial-query cache health: with fat-AABB reuse, sub-margin
 ///          body movement keeps this flat; membership/shape changes and escapes bump it.
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Non-negative cumulative number of query-cache rebuilds.
 int64_t rt_world3d_get_query_broadphase_rebuild_count(void *obj) {
     rt_world3d *w = world3d_checked(obj);
     return (w && w->query_broadphase_rebuild_count > 0) ? w->query_broadphase_rebuild_count : 0;
@@ -1462,6 +1581,10 @@ int64_t rt_world3d_get_query_broadphase_rebuild_count(void *obj) {
 ///
 /// Takes effect on the next `Step`. Existing in-flight velocities are
 /// not modified.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param gx New gravity x acceleration in metres per second squared.
+/// @param gy New gravity y acceleration in metres per second squared.
+/// @param gz New gravity z acceleration in metres per second squared.
 void rt_world3d_set_gravity(void *obj, double gx, double gy, double gz) {
     rt_world3d *w = world3d_checked(obj);
     if (!w)
@@ -1473,6 +1596,8 @@ void rt_world3d_set_gravity(void *obj, double gx, double gy, double gz) {
 /// @brief Shift a contact's cached points by the floating-origin rebase @p delta.
 /// @details When the world recenters to keep coordinates near the origin, contact points must move
 ///          with it; saturates the shifted values to stay finite.
+/// @param[in,out] contact Contact whose primary point and bounded manifold points are shifted.
+/// @param delta Borrowed three-element world-origin displacement to subtract.
 static void contact3d_rebase_origin(rt_contact3d *contact, const double delta[3]) {
     if (!contact || !delta)
         return;
@@ -1492,6 +1617,9 @@ static void contact3d_rebase_origin(rt_contact3d *contact, const double delta[3]
 }
 
 /// @brief Apply a floating-origin rebase @p delta to every contact in an array.
+/// @param[in,out] contacts Contact or event array to shift.
+/// @param count Number of initialized contacts; non-positive values are no-ops.
+/// @param delta Borrowed three-element displacement subtracted from every cached point.
 static void world3d_rebase_contact_array(rt_contact3d *contacts,
                                          int32_t count,
                                          const double delta[3]) {
@@ -1502,6 +1630,13 @@ static void world3d_rebase_contact_array(rt_contact3d *contacts,
 }
 
 /// @brief `World3D.RebaseOrigin(dx, dy, dz)` — shift body/contact/query state by -delta.
+/// @details Saturates the requested displacement, moves all registered bodies and cached
+///          contact/event points, invalidates spatial-query acceleration, and drops cached boxed
+///          event views. Velocities and local collider geometry are unchanged.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param dx World-origin x displacement to subtract.
+/// @param dy World-origin y displacement to subtract.
+/// @param dz World-origin z displacement to subtract.
 void rt_world3d_rebase_origin(void *obj, double dx, double dy, double dz) {
     rt_world3d *w = world3d_checked(obj);
     if (!w)

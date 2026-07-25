@@ -16,9 +16,18 @@
 //     mode, and VP/camera (or forward, for ortho) are unchanged.
 //   - OOM on cache (re)allocation invalidates the cache rather than leaving a
 //     half-valid state.
+// Ownership/Lifetime:
+//   - Canvas3D owns the retained RGBA8 cache allocation.
+//   - Cubemap, camera state, and caller-provided destination buffers are borrowed.
 // Links: rt_canvas3d_internal.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements the cached CPU fallback for Canvas3D cubemap skyboxes.
+/// @details Software rendering samples a cubemap from cached camera rays into a
+///   bounded RGBA8 image, reuses it while its composite key remains valid, and
+///   scales it into the active frame destination during composition.
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
@@ -35,6 +44,8 @@
 
 /// @brief Free and reset the canvas's cached CPU-rendered skybox, forcing a re-render on the
 ///   next software skybox draw (call when the skybox texture or view parameters change).
+/// @param c Canvas whose owned cache allocation and key snapshot are cleared;
+///   `NULL` is accepted as a no-op.
 void rt_canvas3d_invalidate_skybox_cache(rt_canvas3d *c) {
     if (!c)
         return;
@@ -51,6 +62,12 @@ void rt_canvas3d_invalidate_skybox_cache(rt_canvas3d *c) {
 
 /// @brief True if two float arrays match element-wise within @p eps; any non-finite
 ///   element or NULL/negative input fails the comparison.
+/// @param a First array containing at least @p count floats.
+/// @param b Second array containing at least @p count floats.
+/// @param count Number of elements to compare; zero is a vacuous match.
+/// @param eps Maximum permitted absolute difference, expected to be nonnegative.
+/// @return Nonzero when both arrays are valid and all requested finite elements
+///   differ by no more than @p eps; zero otherwise.
 static int canvas3d_float_array_close(const float *a, const float *b, int32_t count, float eps) {
     if (!a || !b || count < 0)
         return 0;
@@ -65,9 +82,15 @@ static int canvas3d_float_array_close(const float *a, const float *b, int32_t co
 
 /// @brief Choose the retained CPU skybox cache dimensions for a destination size.
 /// @details Large software fallback targets do not need one cubemap sample per output pixel: the
-///          skybox is infinitely distant and bilinear upscaling is visually stable. This caps the
-///          largest cache axis while preserving aspect ratio and exact dimensions for small
-///          targets.
+///   skybox is infinitely distant and retained low-resolution sampling is visually
+///   stable. This caps the largest cache axis while preserving aspect ratio and
+///   exact dimensions for small targets.
+/// @param dst_w Destination width in pixels.
+/// @param dst_h Destination height in pixels.
+/// @param out_w Optional output receiving the positive capped cache width, or zero
+///   when either destination dimension is nonpositive.
+/// @param out_h Optional output receiving the positive capped cache height, or zero
+///   when either destination dimension is nonpositive.
 static void canvas3d_skybox_cpu_cache_dimensions(int32_t dst_w,
                                                  int32_t dst_h,
                                                  int32_t *out_w,
@@ -102,6 +125,13 @@ static void canvas3d_skybox_cpu_cache_dimensions(int32_t dst_w,
 }
 
 /// @brief Normalize a skybox sample direction, using @p fallback then -Z for malformed input.
+/// @details Scales in double precision before measuring length to avoid overflow
+///   for very large finite vectors. The candidate may alias @p out.
+/// @param candidate Optional three-element direction to normalize.
+/// @param fallback Optional three-element direction used when @p candidate is
+///   nonfinite or nearly zero.
+/// @param out Output three-element finite unit vector; receives `(0, 0, -1)` if
+///   neither source is usable.
 static void canvas3d_sanitize_skybox_dir(const float *candidate,
                                          const float *fallback,
                                          float out[3]) {
@@ -154,6 +184,11 @@ static void canvas3d_sanitize_skybox_dir(const float *candidate,
 ///   projection has no per-pixel ray divergence — all pixels see the same
 ///   skybox direction. This is the slow fallback path used when the GPU
 ///   backend can't render the skybox directly (e.g. the software renderer).
+/// @param c Canvas supplying a valid cubemap and cached camera state.
+/// @param dst_pixels Writable RGBA8 destination covering @p dst_h rows.
+/// @param dst_w Positive destination width in pixels.
+/// @param dst_h Positive destination height in pixels.
+/// @param dst_stride Byte distance between rows, validated for @p dst_w RGBA8 pixels.
 /// @return 1 on success, 0 when the VP matrix is non-invertible or inputs
 ///   are otherwise malformed.
 static int canvas3d_render_skybox_cpu(
@@ -249,6 +284,10 @@ static int canvas3d_render_skybox_cpu(
 ///   mode exists because ortho cameras fill the entire target with one
 ///   sampled direction, so only the forward vector needs to match — the VP
 ///   matrix can drift without affecting the rendered skybox.
+/// @param c Canvas containing the retained image and captured key state.
+/// @param w Expected cache width in pixels.
+/// @param h Expected cache height in pixels.
+/// @param generation Current nonzero cubemap content generation.
 /// @return 1 if the cache is valid for this frame, 0 if it must be re-rendered.
 static int canvas3d_skybox_cache_matches(const rt_canvas3d *c,
                                          int32_t w,
@@ -279,6 +318,9 @@ static int canvas3d_skybox_cache_matches(const rt_canvas3d *c,
 ///   cache key. OOM on reallocation invalidates the cache rather than leaving
 ///   it in a half-valid state. Also guards against `w * h * 4` overflow on
 ///   32-bit size_t targets.
+/// @param c Canvas owning the cache and supplying the cubemap/camera snapshot.
+/// @param w Positive final destination width used to select the capped cache size.
+/// @param h Positive final destination height used to select the capped cache size.
 /// @return 1 when a usable cache is ready, 0 on failure (caller should skip
 ///   the skybox for this frame rather than render garbage).
 int canvas3d_ensure_skybox_cpu_cache(rt_canvas3d *c, int32_t w, int32_t h) {
@@ -336,6 +378,11 @@ int canvas3d_ensure_skybox_cpu_cache(rt_canvas3d *c, int32_t w, int32_t h) {
 /// @details Performs no rendering — it assumes `canvas3d_ensure_skybox_cpu_cache`
 ///   has already refreshed the cache for this frame. Exact-size caches use row
 ///   copies; downsampled large-target caches are nearest-upscaled to the target.
+/// @param c Canvas containing a ready borrowed source cache.
+/// @param dst_pixels Writable RGBA8 destination covering @p dst_h rows.
+/// @param dst_w Positive destination width in pixels.
+/// @param dst_h Positive destination height in pixels.
+/// @param dst_stride Byte distance between destination rows, validated for RGBA8.
 void canvas3d_blit_skybox_cpu_cache(
     rt_canvas3d *c, uint8_t *dst_pixels, int32_t dst_w, int32_t dst_h, int32_t dst_stride) {
     int32_t src_stride;

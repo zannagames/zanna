@@ -24,6 +24,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements sanitized Physics3D ray intersections and mesh query acceleration.
+///
+/// Rays are dispatched to analytic primitive tests, triangle-mesh BVH traversal,
+/// heightfield sampling, or recursively posed compound children. World-level entry
+/// points reuse the query broad phase and either box the nearest results or fill
+/// borrowed caller storage without allocation.
+
 #include "rt_physics3d_query_internal.h"
 
 #include "rt_collider3d.h"
@@ -42,6 +50,15 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+/// @brief Populates and sanitizes a raw hit record from a confirmed ray intersection.
+/// @param body Borrowed body struck by the ray; may be null for a synthetic hit.
+/// @param distance Entry distance from @p origin in world units.
+/// @param max_distance Total ray extent used to derive the normalized hit fraction.
+/// @param origin Borrowed three-element world-space ray origin.
+/// @param dir Borrowed normalized ray direction.
+/// @param normal Optional borrowed hit normal; the opposite ray direction is used when absent.
+/// @param started Nonzero when the ray origin starts inside the intersected shape.
+/// @param[out] out_hit Destination record. A null destination makes this function a no-op.
 static void ray_fill_hit(rt_body3d *body,
                          double distance,
                          double max_distance,
@@ -72,8 +89,18 @@ static void ray_fill_hit(rt_body3d *body,
     query_sanitize_hit(out_hit, max_distance, dir);
 }
 
-/// @brief Ray vs sphere intersection (analytic quadratic solve).
-/// @return Non-zero on a hit with the entry distance written, 0 otherwise.
+/// @brief Intersects a normalized ray with a sphere using an analytic quadratic solve.
+/// @param origin Borrowed three-element ray origin.
+/// @param dir Borrowed normalized ray direction.
+/// @param center Borrowed three-element sphere center.
+/// @param radius Non-negative sphere radius in world units.
+/// @param max_distance Non-negative maximum accepted ray distance.
+/// @param[out] out_t Optional destination for entry distance, or zero for an interior start.
+/// @param[out] out_normal Optional three-element destination for the outward hit normal.
+/// @param[out] out_started Optional destination set to `1` for an interior start and `0` for an
+///        exterior entry.
+/// @return `1` when the origin is in the sphere or the ray enters it within @p max_distance;
+///         otherwise `0`.
 int raycast_sphere_raw(const double *origin,
                        const double *dir,
                        const double *center,
@@ -119,8 +146,17 @@ int raycast_sphere_raw(const double *origin,
     return 1;
 }
 
-/// @brief Ray vs axis-aligned box intersection (slab method).
-/// @return Non-zero on a hit with the entry distance written, 0 otherwise.
+/// @brief Intersects a ray with an axis-aligned box using the slab method.
+/// @param origin Borrowed three-element ray origin.
+/// @param dir Borrowed ray direction.
+/// @param mn Borrowed three-element inclusive minimum corner.
+/// @param mx Borrowed three-element inclusive maximum corner.
+/// @param max_distance Non-negative maximum accepted ray distance.
+/// @param[out] out_t Optional destination for entry distance, or zero for an interior start.
+/// @param[out] out_normal Optional destination for the entry-face normal; an interior start gets
+///        the nearest outward face normal.
+/// @param[out] out_started Optional destination set to `1` when @p origin is inside the box.
+/// @return `1` when the ray starts in or enters the box within @p max_distance; otherwise `0`.
 static int raycast_aabb_raw(const double *origin,
                             const double *dir,
                             const double *mn,
@@ -211,8 +247,18 @@ static int raycast_aabb_raw(const double *origin,
     return 1;
 }
 
-/// @brief Ray vs capsule intersection (cylinder body plus hemisphere caps).
-/// @return Non-zero on a hit with the entry distance written, 0 otherwise.
+/// @brief Intersects a normalized ray with a capsule's cylinder and hemispherical caps.
+/// @param origin Borrowed three-element ray origin.
+/// @param dir Borrowed normalized ray direction.
+/// @param a Borrowed first endpoint of the capsule axis.
+/// @param b Borrowed second endpoint of the capsule axis.
+/// @param radius Non-negative capsule radius in world units.
+/// @param max_distance Non-negative maximum accepted ray distance.
+/// @param[out] out_t Optional destination for the nearest entry distance.
+/// @param[out] out_normal Optional destination for the normalized surface normal.
+/// @param[out] out_started Optional destination set when the origin begins inside the capsule.
+/// @return `1` when any capsule component contains or is entered by the ray within the distance
+///         limit; otherwise `0`.
 static int raycast_capsule_raw(const double *origin,
                                const double *dir,
                                const double *a,
@@ -308,8 +354,18 @@ static int raycast_capsule_raw(const double *origin,
 
 /// @brief Raycast against a posed box (optionally Minkowski-expanded by @p expand_radius
 ///   for swept-sphere tests): transform the ray into box-local space and slab-test the
-///   AABB. Returns 1 on hit with distance @p out_t, world normal @p out_normal, and
-///   @p out_started set when the ray began already inside the box.
+///   AABB.
+/// @param box_collider Borrowed box collider supplying unscaled half-extents.
+/// @param pose Borrowed world pose and scale applied to the collider.
+/// @param origin Borrowed three-element world-space ray origin.
+/// @param dir Borrowed normalized world-space ray direction.
+/// @param max_distance Non-negative maximum accepted world-space distance.
+/// @param expand_radius Non-negative world-space Minkowski expansion, or zero for a plain ray.
+/// @param[out] out_t Optional destination for entry distance.
+/// @param[out] out_normal Optional destination for the normalized world-space hit normal.
+/// @param[out] out_started Optional destination set when the origin starts inside the expanded box.
+/// @return `1` when the ray starts in or enters the expanded posed box within the distance limit;
+///         otherwise `0`.
 int raycast_box_pose_raw(void *box_collider,
                          const rt_collider_pose *pose,
                          const double *origin,
@@ -364,6 +420,15 @@ int raycast_box_pose_raw(void *box_collider,
 /// @brief Möller-Trumbore ray/triangle intersection in world space. Returns 1 on a hit
 ///   within @p max_distance with distance @p out_t and the geometric face normal
 ///   @p out_normal, else 0 (including parallel rays and barycentric misses).
+/// @param origin Borrowed three-element ray origin.
+/// @param dir Borrowed ray direction.
+/// @param a Borrowed first triangle vertex.
+/// @param b Borrowed second triangle vertex.
+/// @param c Borrowed third triangle vertex.
+/// @param max_distance Non-negative maximum accepted ray distance.
+/// @param[out] out_t Optional destination for the intersection distance.
+/// @param[out] out_normal Optional destination for the geometric normal, oriented against the ray.
+/// @return `1` for an in-range intersection inside the triangle; otherwise `0`.
 static int raycast_triangle_world(const double *origin,
                                   const double *dir,
                                   const double *a,
@@ -407,6 +472,9 @@ static int raycast_triangle_world(const double *origin,
 }
 
 /// @brief Grow the AABB [mn, mx] in place to include point @p p.
+/// @param[in,out] mn Three-element minimum corner to decrease component-wise.
+/// @param[in,out] mx Three-element maximum corner to increase component-wise.
+/// @param p Borrowed three-element point to include.
 static void mesh_bvh_expand(float *mn, float *mx, const float *p) {
     for (int axis = 0; axis < 3; axis++) {
         if (p[axis] < mn[axis])
@@ -417,6 +485,8 @@ static void mesh_bvh_expand(float *mn, float *mx, const float *p) {
 }
 
 /// @brief Sanitize a mesh vertex coordinate before storing it in the physics BVH.
+/// @param value Candidate single-precision coordinate.
+/// @return Zero for a non-finite input; otherwise @p value clamped to the query coordinate range.
 static float mesh_bvh_sanitize_coord(float value) {
     if (!isfinite((double)value))
         return 0.0f;
@@ -428,6 +498,11 @@ static float mesh_bvh_sanitize_coord(float value) {
 }
 
 /// @brief Compute triangle @p tri's AABB (@p mn, @p mx) and centroid for BVH construction.
+/// @param mesh Borrowed mesh containing validated indexed triangle geometry.
+/// @param tri Triangle ordinal in the mesh index buffer.
+/// @param[out] mn Three-element destination for the sanitized minimum corner.
+/// @param[out] mx Three-element destination for the sanitized maximum corner.
+/// @param[out] centroid Three-element destination for the arithmetic vertex centroid.
 static void mesh_bvh_triangle_bounds(
     const rt_mesh3d *mesh, uint32_t tri, float *mn, float *mx, float *centroid) {
     uint32_t i0 = mesh->indices[tri * 3u + 0u];
@@ -452,7 +527,16 @@ static void mesh_bvh_triangle_bounds(
 /// @brief Recursively build a physics BVH node over a range of mesh triangles.
 /// @details Computes the node bounds, and if the range exceeds the leaf threshold, splits the
 ///          triangles by centroid along the widest axis and recurses into two children; otherwise
-///          stores a leaf. Returns the node index, or a negative value on allocation failure.
+///          stores a leaf. A child-capacity failure degrades the current node into a leaf so the
+///          represented triangle range remains queryable.
+/// @param mesh Borrowed mesh supplying indexed triangle vertices.
+/// @param[in,out] nodes Caller-owned preallocated node array.
+/// @param[in,out] node_count Number of initialized nodes; incremented as nodes are reserved.
+/// @param node_capacity Total writable entries in @p nodes.
+/// @param[in,out] tri_indices Triangle-ordinal array partitioned in place around centroid pivots.
+/// @param start First triangle-array position represented by this node.
+/// @param count Number of triangle ordinals represented by this node.
+/// @return The initialized node index, or `-1` when required inputs or node capacity are invalid.
 static int mesh_bvh_build_node(rt_mesh3d *mesh,
                                rt_physics_mesh_bvh_node *nodes,
                                int32_t *node_count,
@@ -528,10 +612,12 @@ static int mesh_bvh_build_node(rt_mesh3d *mesh,
 }
 
 /// @brief Rebuild the mesh's physics BVH acceleration structure for ray/shape queries.
-/// @details Allocates the node/index arrays and builds the tree from the current geometry; cached
-/// so
-///          repeated queries against an unchanged mesh skip the rebuild.
-/// @return 1 on success, 0 on allocation failure or empty geometry.
+/// @details Repairs and validates geometry counts, drops triangles with invalid vertex indices,
+///          and transactionally replaces the cached node and triangle-index arrays only after a
+///          complete build. An existing cache whose geometry revision is current is reused.
+/// @param[in,out] mesh Mesh whose world-independent local-space acceleration data is required.
+/// @return `1` when a non-empty current BVH is available; `0` for invalid or empty geometry,
+///         excessive triangle count, or allocation failure.
 int mesh_physics_bvh_rebuild(rt_mesh3d *mesh) {
     uint32_t tri_total;
     uint32_t vertex_count;
@@ -593,6 +679,11 @@ int mesh_physics_bvh_rebuild(rt_mesh3d *mesh) {
 /// @brief Transform a local-space AABB through a collider pose into a world-space AABB.
 /// @details Rotates and translates all eight corners and takes their min/max, so the result tightly
 ///          bounds the oriented box (a plain min/max of the rotated extents would over-grow it).
+/// @param pose Borrowed collider pose used to transform each corner.
+/// @param mn Borrowed three-element local minimum corner.
+/// @param mx Borrowed three-element local maximum corner.
+/// @param[out] out_min Three-element destination for the world-space minimum corner.
+/// @param[out] out_max Three-element destination for the world-space maximum corner.
 void transform_local_aabb_to_world(const rt_collider_pose *pose,
                                    const float *mn,
                                    const float *mx,
@@ -616,9 +707,20 @@ void transform_local_aabb_to_world(const rt_collider_pose *pose,
     }
 }
 
-/// @brief Raycast a posed triangle mesh by transforming each triangle to world space and
-///   keeping the nearest Möller-Trumbore hit within @p max_distance. Returns 1 on hit
-///   with @p out_t/@p out_normal; meshes are surfaces so @p out_started is always 0.
+/// @brief Finds the nearest ray intersection with a posed triangle mesh.
+/// @details The ray is transformed once into mesh-local space so its distance parameter remains
+///          the world-space parameter. A lazily rebuilt BVH prunes triangle tests; if traversal
+///          stack growth fails, an exhaustive scan preserves exact nearest-hit behavior.
+/// @param mesh Borrowed mutable mesh whose bounds and physics BVH may be refreshed.
+/// @param pose Borrowed world pose applied to the mesh.
+/// @param origin Borrowed three-element world-space ray origin.
+/// @param dir Borrowed normalized world-space ray direction.
+/// @param max_distance Maximum accepted intersection distance in world units.
+/// @param[out] out_t Optional destination for the nearest distance.
+/// @param[out] out_normal Optional destination for the normalized world-space face normal.
+/// @param[out] out_started Optional destination always set to `0` because triangle meshes are
+///        treated as surfaces.
+/// @return `1` when a valid indexed triangle is hit within @p max_distance; otherwise `0`.
 static int raycast_meshlike_pose_raw(rt_mesh3d *mesh,
                                      const rt_collider_pose *pose,
                                      const double *origin,
@@ -760,7 +862,20 @@ mesh_raycast_done:
 
 /// @brief Raycast a posed heightfield collider: clip the ray to the field AABB, then
 ///   march in local space sampling terrain height until the ray dips below the surface.
-///   Returns 1 on hit with @p out_t/@p out_normal (sampled surface normal), else 0.
+/// @details The local XZ interval is clipped to the finite grid when heightfield dimensions are
+///          available. March steps follow half-cell spacing and the first sign change in vertical
+///          clearance is refined by bisection.
+/// @param heightfield Borrowed heightfield collider.
+/// @param pose Borrowed world pose applied to the heightfield.
+/// @param origin Borrowed three-element world-space ray origin.
+/// @param dir Borrowed normalized world-space ray direction.
+/// @param max_distance Positive maximum accepted distance in world units.
+/// @param[out] out_t Optional destination for the sampled and refined hit distance.
+/// @param[out] out_normal Optional destination for the normalized world-space terrain normal.
+/// @param[out] out_started Optional destination set when the first sampled point is already at or
+///        below the terrain surface.
+/// @return `1` when the clipped ray crosses the sampled terrain within the distance and march
+///         budgets; otherwise `0`.
 static int raycast_heightfield_pose_raw(void *heightfield,
                                         const rt_collider_pose *pose,
                                         const double *origin,
@@ -918,8 +1033,18 @@ static int raycast_heightfield_pose_raw(void *heightfield,
 
 /// @brief Top-level raycast dispatch for any posed collider: routes by collider type to
 ///   the box/sphere/capsule/mesh/heightfield/compound raycast (recursing into compound
-///   children and returning the hit leaf via @p out_leaf). Returns 1 on the nearest hit
-///   within @p max_distance with @p out_t/@p out_normal/@p out_started filled.
+///   children and returning the hit leaf via @p out_leaf).
+/// @param collider Borrowed collider to dispatch; compound children are traversed recursively.
+/// @param pose Borrowed world pose of @p collider.
+/// @param origin Borrowed three-element world-space ray origin.
+/// @param dir Borrowed normalized world-space ray direction.
+/// @param max_distance Maximum accepted hit distance in world units.
+/// @param[out] out_t Optional destination for the nearest entry distance.
+/// @param[out] out_normal Optional destination for the normalized world-space normal.
+/// @param[out] out_started Optional destination set when the ray begins inside a solid primitive.
+/// @param[out] out_leaf Optional destination for the borrowed leaf collider that was hit.
+/// @return `1` when the collider or one of its compound leaves is hit within @p max_distance;
+///         otherwise `0`.
 static int raycast_collider_pose(void *collider,
                                  const rt_collider_pose *pose,
                                  const double *origin,
@@ -1040,6 +1165,14 @@ static int raycast_collider_pose(void *collider,
 ///   them too — otherwise bullets and line-of-sight pass through bodies that
 ///   block movement. Mirrors the shape semantics of `test_simple_collision`
 ///   (AABB shape is axis-aligned; capsules honor the body orientation).
+/// @param body Borrowed collider-less body with cached simple-shape dimensions.
+/// @param origin Borrowed three-element ray origin.
+/// @param dir Borrowed normalized ray direction.
+/// @param max_distance Maximum accepted distance in world units.
+/// @param[out] out_t Optional destination for the entry distance.
+/// @param[out] out_normal Optional destination for the normalized hit normal.
+/// @param[out] out_started Optional destination set when the origin starts inside the shape.
+/// @return `1` when the cached sphere, capsule, or AABB is hit; otherwise `0`.
 static int raycast_body_simple_shape(rt_body3d *body,
                                      const double *origin,
                                      const double *dir,
@@ -1071,7 +1204,13 @@ static int raycast_body_simple_shape(rt_body3d *body,
 /// @brief Ray vs a physics body: dispatches to the actual attached collider
 ///        shape, recursing through compound children and testing mesh triangles.
 ///        Collider-less bodies fall back to their cached simple shape.
-/// @return Non-zero on a hit (nearest distance written), 0 otherwise.
+/// @param body Borrowed body to test.
+/// @param origin Borrowed three-element ray origin.
+/// @param dir Borrowed normalized ray direction.
+/// @param max_distance Maximum accepted hit distance in world units.
+/// @param[out] out_hit Optional destination for a sanitized hit record. Compound hits identify
+///        the borrowed leaf collider.
+/// @return `1` when the body is hit within @p max_distance; otherwise `0`.
 static int raycast_body(rt_body3d *body,
                         const double *origin,
                         const double *dir,
@@ -1102,16 +1241,19 @@ static int raycast_body(rt_body3d *body,
     return 1;
 }
 
-/// @brief `World3D.Raycast(origin, direction, maxDistance, mask)` — first hit along a ray.
-///
-/// Uses collider-specific tests for boxes, spheres, capsules, meshes, hulls,
-/// compounds, and heightfields. Returns NULL when the direction is zero or
-/// `maxDistance <= 0`.
 /// @brief Closest-hit raycast core over sanitized raw components.
-/// @details `origin`/`dir` are mutated in place by sanitization. Returns 1 and
-///   fills @p out_hit with the nearest hit, or 0 for no hit / invalid input.
-///   Allocation-free — both the boxed public raycast and the raw closest-body
-///   entry share this loop.
+/// @details @p origin and @p dir are mutated in place by sanitization. The query broad phase
+///          rejects bodies outside the finite ray AABB, while allocation failure falls back to
+///          direct body iteration. The boxed public raycast and raw closest-body entry share this
+///          allocation-free narrow-phase loop.
+/// @param w Borrowed world containing the bodies to query.
+/// @param[in,out] origin Three-element ray origin to sanitize.
+/// @param[in,out] dir Three-element direction to sanitize and normalize.
+/// @param max_distance Positive maximum ray distance in world units.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @param ignore_body Optional borrowed body to exclude from the query.
+/// @param[out] out_hit Destination for the nearest sanitized hit.
+/// @return `1` when a selected body is hit; `0` for invalid input or no hit.
 static int world3d_raycast_closest_core(rt_world3d *w,
                                         double *origin,
                                         double *dir,
@@ -1159,6 +1301,16 @@ static int world3d_raycast_closest_core(rt_world3d *w,
     return found;
 }
 
+/// @brief Implements `World3D.Raycast` and returns the nearest hit along a ray.
+/// @details Collider-specific tests support simple primitives, mesh and convex-hull triangles,
+///          compound leaves, and heightfields. The direction is normalized internally and a
+///          non-positive maximum distance is rejected.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param origin_obj Borrowed `Vec3` ray origin in world coordinates.
+/// @param direction_obj Borrowed nonzero `Vec3` direction; its magnitude does not affect reach.
+/// @param max_distance Positive maximum ray distance in world units.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @return A newly boxed nearest `PhysicsHit3D`, or null for invalid inputs or a ray with no hit.
 void *rt_world3d_raycast(
     void *obj, void *origin_obj, void *direction_obj, double max_distance, int64_t mask) {
     rt_world3d *w = world3d_checked(obj);
@@ -1180,6 +1332,19 @@ void *rt_world3d_raycast(
 ///   Vec3 boxing and hit-object allocation entirely. Returns the closest hit
 ///   body (borrowed — do NOT release) and writes the hit distance to
 ///   @p out_distance when non-NULL, or returns NULL for no hit.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param ox World-space ray-origin x coordinate.
+/// @param oy World-space ray-origin y coordinate.
+/// @param oz World-space ray-origin z coordinate.
+/// @param dx Ray-direction x component.
+/// @param dy Ray-direction y component.
+/// @param dz Ray-direction z component.
+/// @param max_distance Positive maximum ray distance in world units.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @param ignore_body Optional borrowed body excluded from the query.
+/// @param[out] out_distance Optional destination initialized to `-1` and replaced with the hit
+///        distance on success.
+/// @return The borrowed nearest body, or null for invalid input or no hit.
 void *rt_world3d_raycast_closest_body_raw(void *obj,
                                           double ox,
                                           double oy,
@@ -1210,6 +1375,14 @@ void *rt_world3d_raycast_closest_body_raw(void *obj,
 /// @details `origin`/`dir` are mutated in place by sanitization. Returns the number of
 ///   hits kept in the scratch (bounded by the world's query capacity) and writes the
 ///   unbounded pierce count to @p out_total; returns -1 on invalid input.
+/// @param w Borrowed world containing bodies and the configured query capacity.
+/// @param[out] hits World-owned writable scratch array with capacity `w->max_query_hits`.
+/// @param[in,out] origin Three-element ray origin to sanitize.
+/// @param[in,out] dir Three-element direction to sanitize and normalize.
+/// @param max_distance Positive maximum ray distance in world units.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @param[out] out_total Optional destination for the logical unbounded hit count.
+/// @return The number of nearest-first records retained in @p hits, or `-1` for invalid input.
 static int32_t world3d_raycast_all_core(rt_world3d *w,
                                         rt_query_hit3d *hits,
                                         double *origin,
@@ -1264,6 +1437,13 @@ static int32_t world3d_raycast_all_core(rt_world3d *w,
 /// the ray pierces is recorded. Results come back sorted by distance.
 /// Bounded by the world's configurable query capacity
 /// (`Physics3DWorld.SetMaxQueryHits`, default 256).
+/// @param obj Borrowed `World3D` runtime object.
+/// @param origin_obj Borrowed `Vec3` ray origin in world coordinates.
+/// @param direction_obj Borrowed nonzero `Vec3` direction.
+/// @param max_distance Positive maximum ray distance in world units.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @return A newly boxed nearest-first `PhysicsHitList3D`, possibly empty or marked truncated;
+///         or null for invalid inputs or scratch allocation failure.
 void *rt_world3d_raycast_all(
     void *obj, void *origin_obj, void *direction_obj, double max_distance, int64_t mask) {
     rt_world3d *w = world3d_checked(obj);
@@ -1286,6 +1466,13 @@ void *rt_world3d_raycast_all(
 ///   pierces (nearest-first) into @p out_bodies as borrowed pointers, without boxing
 ///   a hit-list object or requiring Vec3 handles. Used by per-frame paths like the
 ///   third-person occluder fade.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param origin_in Borrowed three-element ray origin.
+/// @param direction_in Borrowed nonzero three-element ray direction.
+/// @param max_distance Positive maximum ray distance in world units.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @param[out] out_bodies Caller-owned array that receives borrowed non-trigger body pointers.
+/// @param out_cap Maximum number of pointers writable to @p out_bodies.
 /// @return Number of bodies written (bounded by @p out_cap), or 0 on invalid input.
 int32_t rt_world3d_raycast_all_bodies_raw(void *obj,
                                           const double *origin_in,

@@ -20,6 +20,13 @@
 //   docs/adr/0159-typed-scenenode-metadata-and-vscn-v6.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements Model3D storage, lifetime, scene cloning, and resource collection.
+/// @details This include fragment is compiled as part of `rt_model3d.c`. It repairs private
+///          count/capacity state before access, retains deduplicated imported resources, and
+///          deep-copies mutable node and metadata state for each model instance.
+
 typedef struct {
     rt_scene_node3d *root;
     char *name;
@@ -67,11 +74,17 @@ typedef struct {
 } rt_model3d;
 
 /// @brief Validate @p obj as a Model3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Candidate runtime object handle.
+/// @return Borrowed Model3D pointer, or NULL for invalid input.
 static rt_model3d *model3d_checked(void *obj) {
     return (rt_model3d *)rt_g3d_checked_or_null(obj, RT_G3D_MODEL3D_CLASS_ID);
 }
 
 /// @brief Clamp a runtime count to its backing capacity and pointer validity.
+/// @param arr Backing array pointer.
+/// @param count Stored logical count.
+/// @param capacity Stored allocation capacity.
+/// @return Safe non-negative count no greater than capacity, or zero without valid storage.
 static int32_t model_clamped_array_count(const void *arr, int32_t count, int32_t capacity) {
     if (count <= 0)
         return 0;
@@ -81,6 +94,10 @@ static int32_t model_clamped_array_count(const void *arr, int32_t count, int32_t
 }
 
 /// @brief Clamp and persist a private array count before mutating that array.
+/// @param arr Backing array pointer.
+/// @param count Address of the stored count to repair.
+/// @param capacity Stored allocation capacity.
+/// @return Repaired safe count.
 static int32_t model_repair_array_count(const void *arr, int32_t *count, int32_t capacity) {
     int32_t safe_count = count ? model_clamped_array_count(arr, *count, capacity) : 0;
     if (count)
@@ -89,18 +106,24 @@ static int32_t model_repair_array_count(const void *arr, int32_t *count, int32_t
 }
 
 /// @brief Return a safe child count for scene-node walkers.
+/// @param node Scene node whose child array is inspected.
+/// @return Safe child count, or zero for invalid storage.
 static int32_t model_node_child_count(const rt_scene_node3d *node) {
     return node ? model_clamped_array_count(node->children, node->child_count, node->child_capacity)
                 : 0;
 }
 
 /// @brief Return a safe LOD count for scene-node cloning/ref collection.
+/// @param node Scene node whose LOD array is inspected.
+/// @return Safe LOD-entry count, or zero for invalid storage.
 static int32_t model_node_lod_count(const rt_scene_node3d *node) {
     return node ? model_clamped_array_count(node->lod_levels, node->lod_count, node->lod_capacity)
                 : 0;
 }
 
 /// @brief Return a safe scene count for public scene accessors.
+/// @param model Model3D whose scene table is inspected.
+/// @return Safe scene-entry count, or zero for invalid storage.
 static int32_t model_scene_count(const rt_model3d *model) {
     return model
                ? model_clamped_array_count(model->scenes, model->scene_count, model->scene_capacity)
@@ -108,6 +131,8 @@ static int32_t model_scene_count(const rt_model3d *model) {
 }
 
 /// @brief Clamp and persist the scene count before mutating the scene table.
+/// @param model Model3D whose stored scene count is repaired.
+/// @return Repaired safe scene count.
 static int32_t model_repair_scene_count(rt_model3d *model) {
     int32_t safe_count = model_scene_count(model);
     if (model)
@@ -116,6 +141,8 @@ static int32_t model_repair_scene_count(rt_model3d *model) {
 }
 
 /// @brief Return a C string only when @p string is a valid runtime string handle.
+/// @param string Candidate runtime string.
+/// @return Borrowed NUL-terminated bytes, or NULL for an invalid handle.
 static const char *model_string_cstr_or_null(rt_string string) {
     if (!string || !rt_string_is_handle(string))
         return NULL;
@@ -123,6 +150,10 @@ static const char *model_string_cstr_or_null(rt_string string) {
 }
 
 /// @brief Convert an importer-reported int64 count into a runtime array count.
+/// @param count Imported count.
+/// @param out Receives the non-negative int32 count.
+/// @param trap_msg Optional trap message used when @p count exceeds `INT32_MAX`.
+/// @return One on successful conversion, or zero for invalid output or overflow.
 static int model_count_i64_to_i32(int64_t count, int32_t *out, const char *trap_msg) {
     if (!out)
         return 0;
@@ -142,6 +173,7 @@ static int model_count_i64_to_i32(int64_t count, int32_t *out, const char *trap_
 /// @brief Release the GC reference at `*slot` and clear the slot. NULL-safe both ways
 /// (`slot == NULL` or `*slot == NULL`). Frees the object only when the release drops the
 /// retain count to zero — bystander references stay alive.
+/// @param slot Address of the owned reference to release and clear.
 static void model_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
@@ -150,6 +182,8 @@ static void model_release_ref(void **slot) {
 /// @details Model3D assignment paths validate classes before retaining. If private state is later
 ///          corrupted to an unrelated object, clear it without releasing because the runtime cannot
 ///          prove the mismatched handle is owned by this slot.
+/// @param slot Address of the owned Graphics3D reference.
+/// @param class_id Expected runtime class identifier.
 static void model_release_class_ref(void **slot, int64_t class_id) {
     if (!slot || !*slot)
         return;
@@ -164,12 +198,17 @@ static void model_release_class_ref(void **slot, int64_t class_id) {
 /// re-parented and no longer need). Wrapper around `model_release_ref` that takes a value
 /// rather than a slot, so call sites can write `model_release_local(node)` instead of
 /// passing `&node` and worrying about the post-release zero.
+/// @param obj Nullable temporary owned reference to release.
 static void model_release_local(void *obj) {
     void *tmp = obj;
     model_release_ref(&tmp);
 }
 
 /// @brief Release every entry in an array whose elements are expected to share one class.
+/// @param arr Address of the owned array pointer, freed and cleared.
+/// @param count Address of the logical count, reset to zero.
+/// @param capacity Address of the capacity, reset to zero.
+/// @param class_id Expected class for owned entries.
 static void model_release_array_typed(void ***arr,
                                       int32_t *count,
                                       int32_t *capacity,
@@ -197,6 +236,7 @@ static void model_release_array_typed(void ***arr,
 }
 
 /// @brief Release every scene entry's root, name, and camera list (does not free the array itself).
+/// @param model Model3D whose scene table and entries are released.
 static void model_release_scenes(rt_model3d *model) {
     if (!model)
         return;
@@ -225,6 +265,7 @@ static void model_release_scenes(rt_model3d *model) {
 /// then walks each component list (meshes, materials, skeletons, animations) and releases
 /// every entry. Underlying assets that other live owners still reference remain alive;
 /// solo-owned assets get freed.
+/// @param obj Model3D instance being finalized.
 static void rt_model3d_finalize(void *obj) {
     rt_model3d *model = (rt_model3d *)obj;
     if (!model)
@@ -263,6 +304,7 @@ static void rt_model3d_finalize(void *obj) {
 /// @brief Allocate a zeroed `rt_model3d` with finalizer wired and a fresh template-root
 /// scene node attached. Traps with a user-visible message on either allocation failure;
 /// returns NULL only after trapping so the caller's `goto fail` paths can still run.
+/// @return New zeroed Model3D with an owned template root, or NULL on allocation failure.
 static rt_model3d *model_new(void) {
     rt_model3d *model =
         (rt_model3d *)rt_obj_new_i64(RT_G3D_MODEL3D_CLASS_ID, (int64_t)sizeof(rt_model3d));
@@ -284,6 +326,10 @@ static rt_model3d *model_new(void) {
 /// @brief Ensure `*arr` can hold at least `need` entries, doubling capacity (initial 4)
 /// when it grows. Returns 1 on success, 0 on realloc failure (existing array untouched so
 /// the caller can safely trap and bail).
+/// @param arr Address of the owned pointer array.
+/// @param cap Address of its capacity.
+/// @param need Minimum required entry capacity.
+/// @return One when capacity is available, or zero on invalid input, overflow, or allocation failure.
 static int model_grow_array(void ***arr, int32_t *cap, int32_t need) {
     int32_t new_cap;
     int32_t old_cap;
@@ -321,6 +367,9 @@ static int model_append_ref(
     void ***arr, int32_t *count, int32_t *cap, void *obj, const char *trap_msg);
 
 /// @brief Duplicate @p value, or @p fallback when @p value is NULL/empty (traps on alloc failure).
+/// @param value Preferred nullable source string.
+/// @param fallback Fallback source used for NULL or empty @p value.
+/// @return Newly allocated copy, or NULL after trapping on allocation failure.
 static char *model_strdup_or(const char *value, const char *fallback) {
     const char *src = (value && value[0] != '\0') ? value : fallback;
     size_t len;
@@ -342,6 +391,8 @@ static char *model_strdup_or(const char *value, const char *fallback) {
 }
 
 /// @brief Ensure the model's scene array holds at least @p need entries (zero-filled growth).
+/// @param model Model3D whose scene table may grow.
+/// @param need Minimum required entry capacity.
 /// @return 1 on success, 0 on overflow or reallocation failure.
 static int model_grow_scenes(rt_model3d *model, int32_t need) {
     model3d_scene_entry *grown;
@@ -380,6 +431,11 @@ static int model_grow_scenes(rt_model3d *model, int32_t need) {
 /// @brief Append a scene (retained @p root + name) to the model, synthesizing a name if empty.
 /// @details Uses "default" for the first scene, else "scene_N". Reports the new index via
 ///          @p out_index. Returns 0 and traps on growth or name-allocation failure.
+/// @param model Destination Model3D.
+/// @param name Nullable authored scene name.
+/// @param root Valid SceneNode3D root retained by the entry.
+/// @param out_index Optional destination for the new scene index.
+/// @return One on success, or zero for invalid input or allocation failure.
 static int model_append_scene_entry(rt_model3d *model,
                                     const char *name,
                                     rt_scene_node3d *root,
@@ -413,6 +469,9 @@ static int model_append_scene_entry(rt_model3d *model,
 }
 
 /// @brief Append a Camera3D to a scene entry's camera list (no-op for NULL args).
+/// @param scene Destination scene entry.
+/// @param camera Candidate Camera3D; NULL and wrong-class objects are ignored.
+/// @return One for a successful append or ignored input, or zero on allocation failure.
 static int model_append_scene_camera(model3d_scene_entry *scene, void *camera) {
     if (!scene || !camera)
         return 1;
@@ -429,6 +488,12 @@ static int model_append_scene_camera(model3d_scene_entry *scene, void *camera) {
 /// needed; traps with `trap_msg` and returns 0 on allocation failure. Always retains `obj`
 /// (NULL-safe via `rt_obj_retain_maybe`) so the model owns a stable count for the lifetime
 /// of the entry.
+/// @param arr Address of the retained-reference array.
+/// @param count Address of the logical count.
+/// @param cap Address of the allocation capacity.
+/// @param obj Nullable object to append and retain.
+/// @param trap_msg Allocation failure trap message.
+/// @return One on append or NULL no-op, or zero on invalid state or allocation failure.
 static int model_append_ref(
     void ***arr, int32_t *count, int32_t *cap, void *obj, const char *trap_msg) {
     int32_t safe_count;
@@ -452,6 +517,12 @@ static int model_append_ref(
 /// @brief Append `obj` only if the array does not already contain that exact pointer.
 /// Used for collecting unique mesh / material references off a scene-graph walk where the
 /// same asset may be referenced from many nodes. NULL `obj` is treated as success-noop.
+/// @param arr Address of the retained-reference array.
+/// @param count Address of the logical count.
+/// @param cap Address of the allocation capacity.
+/// @param obj Nullable object to deduplicate and retain.
+/// @param trap_msg Allocation failure trap message.
+/// @return One when already present, appended, or NULL; zero on invalid state or failure.
 static int model_append_unique_ref(
     void ***arr, int32_t *count, int32_t *cap, void *obj, const char *trap_msg) {
     int32_t safe_count;
@@ -471,6 +542,9 @@ static int model_append_unique_ref(
 /// @details Both references are deduplicated independently because a scene may reuse a mesh or
 ///          attach one skeleton to several meshes and LOD levels. Invalid mesh and skeleton
 ///          handles are ignored so a corrupt private scene node cannot poison public accessors.
+/// @param model Destination Model3D inventory.
+/// @param candidate Candidate Mesh3D handle.
+/// @return One when valid references are collected or ignored; zero on allocation failure.
 static int model_collect_mesh_refs(rt_model3d *model, void *candidate) {
     rt_mesh3d *mesh = (rt_mesh3d *)rt_g3d_checked_or_null(candidate, RT_G3D_MESH3D_CLASS_ID);
     void *skeleton =
@@ -491,6 +565,8 @@ static int model_collect_mesh_refs(rt_model3d *model, void *candidate) {
 /// @brief Recursively count nodes in the subtree rooted at `node`, including `node`
 /// itself. Used by `rt_model3d_get_node_count` (which subtracts 1 to exclude the synthetic
 /// template root from the user-visible count).
+/// @param node Subtree root.
+/// @return Node count including @p node, or zero for NULL, overflow, or traversal allocation failure.
 static int32_t model_count_subtree(const rt_scene_node3d *node) {
     const rt_scene_node3d **stack = NULL;
     int32_t stack_count = 0;
@@ -549,6 +625,8 @@ static int32_t model_count_subtree(const rt_scene_node3d *node) {
 /// — strips the directory prefix (handles both `/` and `\` separators so a Windows-authored
 /// path works on macOS/Linux) and the file extension. Falls back to a no-op when the
 /// resulting name would be empty. Truncates at 127 bytes to fit the local stack buffer.
+/// @param root Template root whose name is updated.
+/// @param path_cstr NUL-terminated source asset path.
 static void model_set_root_name(rt_scene_node3d *root, const char *path_cstr) {
     const char *name = path_cstr;
     const char *slash;
@@ -589,6 +667,9 @@ static void model_set_root_name(rt_scene_node3d *root, const char *path_cstr) {
 /// can diverge per instance. Children are cloned recursively and parented to the clone via
 /// `rt_scene_node3d_try_add_child`, then the caller's local reference is released so the parent
 /// owns the only retain.
+/// @param mesh Candidate source Mesh3D.
+/// @param out_mesh Optional destination for an owned clone when morph state requires isolation.
+/// @return One when no clone is needed or cloning succeeds; zero on cloning or validation failure.
 static int model_clone_mutable_mesh(void *mesh, void **out_mesh) {
     rt_mesh3d *src = (rt_mesh3d *)rt_g3d_checked_or_null(mesh, RT_G3D_MESH3D_CLASS_ID);
     void *mesh_clone;
@@ -612,11 +693,17 @@ static int model_clone_mutable_mesh(void *mesh, void **out_mesh) {
 }
 
 /// @brief Return `value` when finite, else `fallback` (float scalar sanitizer).
+/// @param value Candidate float scalar.
+/// @param fallback Replacement for non-finite input.
+/// @return Finite input or @p fallback.
 static float model_finite_float_or(float value, float fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Return `value` when finite and ≥ 0, else `fallback`.
+/// @param value Candidate double scalar.
+/// @param fallback Replacement for negative or non-finite input.
+/// @return Non-negative finite input or @p fallback.
 static double model_nonnegative_double_or(double value, double fallback) {
     if (!isfinite(value) || value < 0.0)
         return fallback;
@@ -625,6 +712,8 @@ static double model_nonnegative_double_or(double value, double fallback) {
 
 /// @brief Sanitize a cloned node's local AABB: keep the source bounds when finite and
 ///   well-ordered (min ≤ max on every axis), otherwise fall back to a safe default.
+/// @param dst Destination clone receiving sanitized bounds.
+/// @param src Source node providing authored bounds.
 static void model_clone_sanitize_bounds(rt_scene_node3d *dst, const rt_scene_node3d *src) {
     int valid = 1;
     if (!dst || !src)
@@ -651,6 +740,9 @@ static void model_clone_sanitize_bounds(rt_scene_node3d *dst, const rt_scene_nod
 }
 
 /// @brief Deep-copy one validated native gameplay-metadata table.
+/// @param dst Destination node receiving independently owned metadata.
+/// @param src Source node with sorted bounded metadata.
+/// @return One after complete copy, or zero for invalid metadata or allocation failure.
 static int model_clone_node_metadata(rt_scene_node3d *dst, const rt_scene_node3d *src) {
     if (!dst || !src || src->metadata_count < 0 || src->metadata_capacity < 0 ||
         src->metadata_count > src->metadata_capacity ||
@@ -713,6 +805,12 @@ static int model_clone_node_metadata(rt_scene_node3d *dst, const rt_scene_node3d
 }
 
 /// @brief Clone one node without its children. Returns NULL and releases partial state on OOM.
+/// @details Copies sanitized transforms, bounds, flags, metadata, variants, impostors, and LODs.
+///          Static resources are retained; cameras and morph-enabled meshes are cloned when
+///          mutable per-instance state is requested.
+/// @param src Source SceneNode3D.
+/// @param clone_mutable_meshes Nonzero to isolate morph meshes and camera state.
+/// @return New owned shallow node clone, or NULL on validation or allocation failure.
 static rt_scene_node3d *model_clone_node_shallow(const rt_scene_node3d *src,
                                                  int clone_mutable_meshes) {
     rt_scene_node3d *dst;
@@ -873,6 +971,9 @@ typedef struct model_clone_frame {
 } model_clone_frame;
 
 /// @brief Iterative deep-copy of a scene-node subtree.
+/// @param src Source subtree root.
+/// @param clone_mutable_meshes Nonzero to isolate mutable mesh and camera state.
+/// @return New owned subtree root, or NULL on validation, limit, or allocation failure.
 static rt_scene_node3d *model_clone_node(const rt_scene_node3d *src, int clone_mutable_meshes) {
     rt_scene_node3d *root;
     model_clone_frame *stack;
@@ -952,6 +1053,9 @@ static rt_scene_node3d *model_clone_node(const rt_scene_node3d *src, int clone_m
 /// to graft the imported scene's top-level children under the synthesized template root
 /// *without* copying the import's own root (which often carries loader-specific metadata
 /// we don't want to leak into the user-visible tree).
+/// @param dst_root Synthetic destination root receiving copied metadata and cloned children.
+/// @param src_root Imported source root.
+/// @return One after all children are attached, or zero on invalid input or cloning failure.
 static int model_clone_children_to_root(rt_scene_node3d *dst_root,
                                         const rt_scene_node3d *src_root) {
     if (!dst_root || !src_root)
@@ -983,6 +1087,8 @@ static int model_collect_scene_refs(rt_model3d *model, const rt_scene_node3d *no
 /// @details Delegates to `model_collect_scene_refs` for each immediate child so the template
 ///   root node itself is not registered (it is a synthetic container, not a content node).
 ///   Returns 1 on success, 0 if any registration step fails due to an allocation error.
+/// @param model Model3D whose retained inventories are populated.
+/// @return One after collection or for an empty template, or zero on allocation failure.
 static int model_collect_template_refs(rt_model3d *model) {
     if (!model || !model->template_root)
         return 1;
@@ -1006,6 +1112,8 @@ static int model_collect_template_refs(rt_model3d *model) {
 ///   released after binding because the root's `bound_animator` slot owns the retain. When an
 ///   importer produces more than one skeleton, the first valid skeleton is used for the default
 ///   controller so multi-skin assets still get a controllable default instead of no playback.
+/// @param model Model3D providing skeletons and animation clips.
+/// @param root Instantiated root receiving the controller when eligible.
 static void model_bind_default_animator(rt_model3d *model, rt_scene_node3d *root) {
     void *controller;
     int added_any = 0;
@@ -1081,6 +1189,8 @@ static void model_bind_default_animator(rt_model3d *model, rt_scene_node3d *root
 ///   the same auto-play convenience as `model_bind_default_animator` for skeletal animations.
 ///   No-op when a node animator is already bound or when no node-animation clips were loaded.
 ///   The animator's local reference is released after binding.
+/// @param model Model3D providing node-animation clips.
+/// @param root Instantiated root receiving the animator when eligible.
 static void model_bind_default_node_animator(rt_model3d *model, rt_scene_node3d *root) {
     void *animator;
     void **clips = NULL;
@@ -1129,6 +1239,9 @@ static void model_bind_default_node_animator(rt_model3d *model, rt_scene_node3d 
 /// Used after cloning imported scene-graph nodes so consumers can enumerate the assets
 /// without re-walking the tree. Recurses into every child; duplicates are skipped by
 /// `model_append_unique_ref`.
+/// @param model Destination Model3D inventory.
+/// @param node Source subtree root.
+/// @return One after collecting all valid unique references, or zero on limit/allocation failure.
 static int model_collect_scene_refs(rt_model3d *model, const rt_scene_node3d *node) {
     const rt_scene_node3d **stack = NULL;
     int32_t stack_count = 0;
@@ -1219,6 +1332,9 @@ static int model_collect_scene_refs(rt_model3d *model, const rt_scene_node3d *no
 }
 
 /// @brief Find a named node using Model3D's clamped child-count walker.
+/// @param root Subtree root to search.
+/// @param name Valid runtime string containing the exact name.
+/// @return Borrowed matching node, or NULL when absent, invalid, or traversal fails.
 static rt_scene_node3d *model_find_node_safe(rt_scene_node3d *root, rt_string name) {
     rt_scene_node3d **stack = NULL;
     int32_t stack_count = 0;
@@ -1286,6 +1402,9 @@ static rt_scene_node3d *model_find_node_safe(rt_scene_node3d *root, rt_string na
 /// (which must start with `.`), ignoring ASCII case. Used by `Model3D.Load` to pick the
 /// right importer (.scene3d/.vscn / .gltf / .glb / .fbx) without relying on
 /// platform-dependent filename normalization.
+/// @param path_cstr NUL-terminated candidate path.
+/// @param ext NUL-terminated extension beginning with a period.
+/// @return One for an ASCII case-insensitive suffix match; otherwise zero.
 static int model_has_ext(const char *path_cstr, const char *ext) {
     const char *dot;
     if (!path_cstr || !ext)
@@ -1307,6 +1426,9 @@ static int model_has_ext(const char *path_cstr, const char *ext) {
 /// parented under the template root, with material assignment: single shared material
 /// if the asset has exactly one, otherwise parallel indexing by mesh slot. No-op when
 /// the template root already has children (i.e. the importer gave us a real hierarchy).
+/// @param model Model3D whose empty template may receive synthetic mesh nodes.
+/// @return One when a hierarchy already exists or synthesis succeeds; zero on invalid input or
+///         allocation/parenting failure.
 static int model_build_synth_mesh_nodes(rt_model3d *model) {
     char name[64];
     if (!model || !model->template_root)
@@ -1359,11 +1481,15 @@ typedef struct {
 } model_obj_material_table;
 
 /// @brief Safe live entry count for the OBJ material table.
+/// @param table Material lookup table.
+/// @return Safe count bounded by valid storage and capacity.
 static int32_t model_obj_material_table_count(const model_obj_material_table *table) {
     return table ? model_clamped_array_count(table->entries, table->count, table->capacity) : 0;
 }
 
 /// @brief Clamp and persist the OBJ material table count before mutation.
+/// @param table Material table whose count is repaired.
+/// @return Repaired safe entry count.
 static int32_t model_obj_material_table_repair_count(model_obj_material_table *table) {
     int32_t count = model_obj_material_table_count(table);
     if (table)
@@ -1373,6 +1499,9 @@ static int32_t model_obj_material_table_repair_count(model_obj_material_table *t
 
 /// @brief Duplicate the substring [@p start, @p end), trimming leading/trailing ASCII
 ///   whitespace. Returns NULL on allocation failure.
+/// @param start First source byte, or NULL for an empty string.
+/// @param end One-past-end source pointer, or NULL to use the source terminator.
+/// @return Newly allocated trimmed string, or NULL on allocation failure.
 static char *model_strdup_range(const char *start, const char *end) {
     size_t len;
     char *copy;
@@ -1395,6 +1524,7 @@ static char *model_strdup_range(const char *start, const char *end) {
 
 /// @brief Free an OBJ material table: release each entry's name and material reference, then
 ///   the entry array, and zero the table.
+/// @param table Owned table to release; NULL is ignored.
 static void model_obj_material_table_free(model_obj_material_table *table) {
     if (!table)
         return;
@@ -1414,6 +1544,9 @@ static void model_obj_material_table_free(model_obj_material_table *table) {
 /// @brief Append a (name, material) entry, de-duplicating by name (on a duplicate, frees the
 ///   passed @p name and releases @p material). Takes ownership of @p name and the material
 ///   reference and grows the table as needed.
+/// @param table Destination material table.
+/// @param name Owned material-name allocation consumed by this call.
+/// @param material Owned Material3D reference consumed by this call.
 /// @return 1 on success or a harmless duplicate; 0 on allocation failure.
 static int model_obj_material_table_append(model_obj_material_table *table,
                                            char *name,
@@ -1456,6 +1589,9 @@ static int model_obj_material_table_append(model_obj_material_table *table,
 }
 
 /// @brief Find a material by name in the OBJ material table; NULL if absent.
+/// @param table Material lookup table.
+/// @param name Exact nonempty material name.
+/// @return Borrowed Material3D reference, or NULL when absent or invalid.
 static void *model_obj_material_lookup(const model_obj_material_table *table, const char *name) {
     if (!table || !name || !*name)
         return NULL;
@@ -1468,6 +1604,9 @@ static void *model_obj_material_lookup(const model_obj_material_table *table, co
 
 /// @brief Write the parent-directory portion of @p path (up to the last '/' or '\\') into
 ///   @p out; empty if @p path has no separator.
+/// @param out Destination character buffer.
+/// @param out_size Writable size of @p out.
+/// @param path Nullable source path.
 static void model_parent_dir(char *out, size_t out_size, const char *path) {
     const char *last;
     size_t len;
@@ -1493,6 +1632,8 @@ static void model_parent_dir(char *out, size_t out_size, const char *path) {
 }
 
 /// @brief True if @p path is absolute: a leading '/' or '\\', or a Windows drive letter ("C:").
+/// @param path Candidate NUL-terminated path.
+/// @return Nonzero for Unix-rooted, backslash-rooted, or drive-qualified paths.
 static int model_is_absolute_path(const char *path) {
     if (!path || !*path)
         return 0;
@@ -1504,6 +1645,9 @@ static int model_is_absolute_path(const char *path) {
 /// @brief Sanitize an asset reference into a safe relative path in @p out (path-traversal
 ///   guard): converts '\\' to '/', then rejects absolute paths, URI scheme separators, and any
 ///   ".." segment, collapsing "." and redundant slashes.
+/// @param src Untrusted asset reference.
+/// @param out Destination for the normalized relative path.
+/// @param out_size Writable size of @p out.
 /// @return Non-zero if a non-empty safe path was written; 0 if empty, unsafe, or overflowing.
 static int model_normalize_relative_asset_ref(const char *src, char *out, size_t out_size) {
     char normalized[MODEL3D_OBJ_MAX_PATH_BYTES];
@@ -1558,7 +1702,12 @@ static int model_normalize_relative_asset_ref(const char *src, char *out, size_t
 }
 
 /// @brief Join @p dir and @p leaf with a '/' separator into @p out (just @p leaf when @p dir
-///   is empty), bounds-checked. @return 1 on success, 0 on bad input or overflow.
+///   is empty), bounds-checked.
+/// @param out Destination character buffer.
+/// @param out_size Writable size of @p out.
+/// @param dir Nullable parent directory.
+/// @param leaf Nonempty relative leaf path.
+/// @return One on success, or zero on bad input or overflow.
 static int MODEL3D_UNUSED_PRIVATE model_join_path(char *out,
                                                   size_t out_size,
                                                   const char *dir,
@@ -1598,6 +1747,8 @@ static int MODEL3D_UNUSED_PRIVATE model_join_path(char *out,
 ///          exceed the legacy 1 KiB stack buffers. The result is capped at
 ///          MODEL3D_OBJ_MAX_PATH_BYTES so malformed assets cannot request unbounded
 ///          memory through a path directive.
+/// @param dir Nullable parent directory.
+/// @param leaf Nonempty relative leaf path.
 /// @return A malloc-owned joined path, or NULL on invalid input, overflow, or allocation failure.
 static char *model_join_path_alloc(const char *dir, const char *leaf) {
     size_t dir_len;
@@ -1633,6 +1784,12 @@ static char *model_join_path_alloc(const char *dir, const char *leaf) {
 /// @details The buffer grows geometrically and is NUL-terminated. Returns 1 for a
 ///          line, 0 for EOF before any bytes, -1 for allocation/input failure, and
 ///          -2 when the line exceeds @p max_bytes.
+/// @param f Open text stream.
+/// @param line Address of the reusable owned line buffer.
+/// @param cap Address of the buffer capacity.
+/// @param max_bytes Maximum line-buffer size including termination space.
+/// @return One for a line, zero for clean EOF, negative one for invalid/allocation failure, or
+///         negative two for an oversized line.
 static int model_read_text_line(FILE *f, char **line, size_t *cap, size_t max_bytes) {
     size_t len = 0;
     int ch;
@@ -1676,6 +1833,7 @@ static int model_read_text_line(FILE *f, char **line, size_t *cap, size_t max_by
 }
 
 /// @brief Advance past leading spaces and tabs in @p p (NULL-safe).
+/// @param p Nullable text cursor.
 /// @return The first non-blank character, or @p p unchanged when it is NULL.
 static const char *model_obj_skip_ws(const char *p) {
     while (p && (*p == ' ' || *p == '\t'))
@@ -1685,6 +1843,7 @@ static const char *model_obj_skip_ws(const char *p) {
 
 /// @brief Test whether the remainder of @p p (after leading blanks) carries no further tokens —
 ///   only trailing whitespace, a newline, or an OBJ/MTL "#" comment follows.
+/// @param p Nullable remainder cursor.
 /// @return Non-zero when the rest of the line is empty.
 static int model_obj_line_tail_done(const char *p) {
     p = model_obj_skip_ws(p);
@@ -1694,6 +1853,8 @@ static int model_obj_line_tail_done(const char *p) {
 /// @brief Parse one whitespace-delimited numeric token from *@p cursor into @p out, advancing
 ///   @p cursor past it. Rejects tokens that fill the 128-byte scratch buffer or parse to a
 ///   non-finite value.
+/// @param cursor Address of the source cursor, advanced past the token.
+/// @param out Receives the finite parsed value.
 /// @return Non-zero on success; 0 at end-of-line, on a "#" comment, or on a malformed/oversized
 /// token.
 static int model_obj_parse_double_token(const char **cursor, double *out) {
@@ -1719,6 +1880,8 @@ static int model_obj_parse_double_token(const char **cursor, double *out) {
 
 /// @brief Parse a line carrying exactly one double (e.g. an MTL scalar such as "Ns"/"d"): one
 ///   token followed only by blanks or a comment.
+/// @param p Source line remainder.
+/// @param a Receives the parsed value.
 /// @return Non-zero when @p a was read and nothing but trailing whitespace remains.
 static int model_obj_parse_double1(const char *p, double *a) {
     const char *cursor = p;
@@ -1727,6 +1890,10 @@ static int model_obj_parse_double1(const char *p, double *a) {
 
 /// @brief Parse a line carrying exactly three doubles (e.g. an OBJ "v"/"vn" position/normal or an
 ///   MTL "Kd"/"Ka"/"Ks" color triple).
+/// @param p Source line remainder.
+/// @param a Receives the first value.
+/// @param b Receives the second value.
+/// @param c Receives the third value.
 /// @return Non-zero when @p a, @p b and @p c were all read and nothing but trailing whitespace
 /// remains.
 static int model_obj_parse_double3(const char *p, double *a, double *b, double *c) {
@@ -1737,6 +1904,7 @@ static int model_obj_parse_double3(const char *p, double *a, double *b, double *
 
 /// @brief Clamp @p value into the [0, 1] range, mapping non-finite inputs to 0 (used for MTL
 ///   color/factor components that must stay normalized).
+/// @param value Candidate MTL component.
 /// @return The clamped value; 0.0 for NaN or infinity.
 static double model_obj_clamp01(double value) {
     if (!isfinite(value))
@@ -1808,6 +1976,7 @@ static const char *model_obj_skip_mtl_token(const char *p, const char *end) {
 /// @details Skips recognized `map_*` option tokens and their arguments, then returns the remaining
 ///          text as the path. Quoted paths have their quotes stripped; unquoted paths preserve
 ///          internal spaces so filenames such as `brick wall.png` survive option parsing.
+/// @param value Nullable directive remainder containing options and a filename.
 /// @return A malloc'd copy of the path, or NULL.
 static char *model_obj_extract_map_path(const char *value) {
     const char *start;

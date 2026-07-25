@@ -26,21 +26,42 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_fbx_loader_ascii.inc
+ * @brief Implements a bounded lexer and typed parser for ASCII FBX documents.
+ *
+ * The lexer operates entirely on explicit byte spans, preserves line endings
+ * for grammar decisions, skips semicolon comments, validates decimal syntax,
+ * and borrows token payloads from the input. The recursive parser converts
+ * those tokens into the same owned `fbx_node_t` and `fbx_prop_t` graph used by
+ * the binary reader while charging every retained allocation to the active
+ * load budget. This file is included by `rt_fbx_loader.c`.
+ */
 /*==========================================================================
  * Length-bounded ASCII tokenization
  *=========================================================================*/
 
 /// @brief Token categories recognized by the ASCII FBX lexer.
 typedef enum {
+    /// End of the bounded input span.
     FBX_ASCII_TOKEN_EOF = 0,
+    /// One logical CR, LF, or CRLF line ending.
     FBX_ASCII_TOKEN_EOL,
+    /// Unquoted nonnumeric payload.
     FBX_ASCII_TOKEN_IDENTIFIER,
+    /// Quoted payload with quote delimiters excluded.
     FBX_ASCII_TOKEN_STRING,
+    /// Strict signed decimal or exponent spelling.
     FBX_ASCII_TOKEN_NUMBER,
+    /// Colon punctuation.
     FBX_ASCII_TOKEN_COLON,
+    /// Comma punctuation.
     FBX_ASCII_TOKEN_COMMA,
+    /// Array-count asterisk.
     FBX_ASCII_TOKEN_STAR,
+    /// Opening child-scope brace.
     FBX_ASCII_TOKEN_LBRACE,
+    /// Closing child-scope brace.
     FBX_ASCII_TOKEN_RBRACE
 } fbx_ascii_token_kind_t;
 

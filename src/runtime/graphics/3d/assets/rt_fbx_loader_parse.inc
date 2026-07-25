@@ -16,21 +16,44 @@
 // Links: rt_fbx_loader.c, rt_fbx_loader_geometry.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_fbx_loader_parse.inc
+ * @brief Implements bounded FBX binary parsing, typed node storage, texture-source
+ *        decoding, path hardening, and indexed object lookup.
+ *
+ * Every binary cursor operation is bounds checked, property/node allocations are
+ * charged to the aggregate load context, and compressed arrays are decoded through
+ * the strict shared zlib implementation. Texture helpers reject unsafe relative paths
+ * and preserve supported encoded source containers. Parsed nodes own their property,
+ * child, name, and object-index allocations until recursive teardown.
+ */
+
 /*==========================================================================
  * Binary reader helpers
  *=========================================================================*/
 
+/// @brief Bounds-checked cursor and version state for an FBX binary byte stream.
 typedef struct {
+    /// Borrowed source byte buffer.
     const uint8_t *data;
+    /// Total readable source length.
     size_t len;
+    /// Current byte offset.
     size_t pos;
+    /// FBX file version read from the binary header.
     uint32_t version;
+    /// Non-zero for FBX 7500+ 64-bit node headers.
     int is_64bit; /* version >= 7500 */
+    /// Sticky malformed-input flag set by failed reads.
     int error;
+    /// Per-load budget and telemetry context.
     fbx_load_context_t *context;
 } fbx_reader_t;
 
 /// @brief Treat POSIX roots, UNC-style roots, and `C:` prefixes as absolute paths.
+/// @param path Candidate native or FBX-authored path.
+/// @return Non-zero when @p path has an absolute-root form; otherwise zero.
 static int fbx_is_absolute_path(const char *path) {
     if (!path || !*path)
         return 0;
@@ -39,7 +62,10 @@ static int fbx_is_absolute_path(const char *path) {
     return isalpha((unsigned char)path[0]) && path[1] == ':';
 }
 
-/// @brief Copy a path while normalising separators to `/`.
+/// @brief Copy a path while normalizing separators to `/`.
+/// @param[out] dst Destination buffer, always NUL-terminated when its size is nonzero.
+/// @param dst_size Capacity of @p dst in bytes.
+/// @param src Source path; NULL is treated as an empty string.
 static void fbx_normalize_path(char *dst, size_t dst_size, const char *src) {
     size_t di = 0;
     if (!dst || dst_size == 0)
@@ -56,6 +82,7 @@ static void fbx_normalize_path(char *dst, size_t dst_size, const char *src) {
 /// @brief Normalize a path into a malloc-owned string with `/` separators.
 /// @details Used by external texture resolution so long but valid FBX texture references are
 ///          bounded by `RT_FBX_MAX_TEXTURE_PATH_BYTES` instead of a small stack buffer.
+/// @param src Source path; NULL is normalized as an empty string.
 /// @return Malloc-owned normalized path, or NULL on allocation failure or overlong input.
 static char *fbx_normalize_path_alloc(const char *src) {
     size_t len;
@@ -72,7 +99,10 @@ static char *fbx_normalize_path_alloc(const char *src) {
     return out;
 }
 
-/// @brief Return the last path component inside @p path.
+/// @brief Return the final component of a path without allocating.
+/// @param path Path containing either slash style; NULL is accepted.
+/// @return Borrowed pointer within @p path after the final separator, or an empty
+///         static string when @p path is NULL.
 static const char *fbx_path_basename(const char *path) {
     const char *last = path;
     if (!path)
@@ -85,6 +115,7 @@ static const char *fbx_path_basename(const char *path) {
 }
 
 /// @brief Extract the directory portion of @p path into a malloc-owned string.
+/// @param path Source file path.
 /// @return Directory path using `/` separators, an empty string when no directory exists, or NULL.
 static char *fbx_parent_dir_alloc(const char *path) {
     char *normalized;
@@ -114,6 +145,8 @@ static char *fbx_parent_dir_alloc(const char *path) {
 }
 
 /// @brief Join a directory and leaf filename using `/` into a malloc-owned path.
+/// @param dir Directory prefix; NULL or empty returns a normalized copy of @p leaf.
+/// @param leaf Non-empty filename or relative path to append.
 /// @return Malloc-owned joined path, or NULL for empty/unsafe/overlong input.
 static char *fbx_join_path_alloc(const char *dir, const char *leaf) {
     char *clean_leaf;
@@ -168,6 +201,7 @@ static char *fbx_join_path_alloc(const char *dir, const char *leaf) {
 /// @brief Sanitize a texture reference into a safe malloc-owned relative path.
 /// @details Path-traversal guard: normalizes separators, rejects absolute paths, URI schemes, and
 ///          any `..` segment, then collapses `.` and redundant slashes into `/`-joined segments.
+/// @param src Untrusted texture reference from the FBX document.
 /// @return Malloc-owned safe relative path, or NULL if empty, unsafe, overlong, or unavailable.
 static char *fbx_normalize_relative_texture_ref_alloc(const char *src) {
     char *normalized;
@@ -244,6 +278,8 @@ static char *fbx_normalize_relative_texture_ref_alloc(const char *src) {
 
 /// @brief Return non-zero for URI-style paths such as file:/, http:, or data:.
 /// @details A Windows drive prefix (`C:`) is not a URI scheme and is handled as an absolute path.
+/// @param path Candidate path or URI string.
+/// @return Non-zero when a colon before the first separator forms a URI scheme.
 static int fbx_has_uri_scheme(const char *path) {
     const char *p;
     if (!path || !*path)
@@ -272,6 +308,10 @@ static int fbx_absolute_texture_paths_allowed(void) {
 static void *fbx_decode_texture_payload(const char *name, const uint8_t *data, size_t len);
 
 /// @brief Read one bounded external texture so its exact source bytes can survive import.
+/// @param path Native UTF-8 texture file path.
+/// @param[out] out_len Receives the exact source length; initialized to zero.
+/// @return Newly allocated byte buffer on success, or NULL for invalid input, I/O,
+///         size-limit, or read failure. Allocation exhaustion traps.
 static uint8_t *fbx_read_texture_bytes(const char *path, size_t *out_len) {
     FILE *file;
     int64_t file_size;
@@ -307,6 +347,9 @@ static uint8_t *fbx_read_texture_bytes(const char *path, size_t *out_len) {
 }
 
 /// @brief Decode a bounded external texture while retaining its exact source container.
+/// @param path Native UTF-8 texture path used for reading and codec hints.
+/// @return Newly allocated Pixels/TextureAsset3D object on success, or NULL when the
+///         file cannot be decoded.
 static void *fbx_texture_load_cstr(const char *path) {
     uint8_t *data;
     size_t data_len = 0;
@@ -325,7 +368,14 @@ static void *fbx_texture_load_cstr(const char *path) {
     return pixels;
 }
 
-/// @brief Try a local texture reference, then fall back to its basename beside the FBX file.
+/// @brief Resolve and load a local texture reference with a basename fallback.
+/// @details URI references are rejected. Absolute references are used only under the
+///          explicit environment opt-in; safe relative paths are resolved beside the FBX,
+///          followed by a basename-only exporter-compatibility attempt.
+/// @param fbx_path Source FBX path whose directory anchors relative references.
+/// @param texture_ref Untrusted texture path authored in the FBX.
+/// @return Newly allocated decoded texture object on success, or NULL when resolution
+///         or decoding fails.
 static void *fbx_try_load_texture_path(const char *fbx_path, const char *texture_ref) {
     char *raw_ref = NULL;
     char *normalized_ref = NULL;
@@ -393,6 +443,9 @@ done:
 }
 
 /// @brief Case-insensitive test (ASCII) for whether @p text ends with @p suffix.
+/// @param text Candidate NUL-terminated ASCII string.
+/// @param suffix Suffix to compare.
+/// @return Non-zero on a case-insensitive suffix match; otherwise zero.
 static int fbx_ascii_ends_with_i(const char *text, const char *suffix) {
     size_t text_len;
     size_t suffix_len;
@@ -410,7 +463,10 @@ static int fbx_ascii_ends_with_i(const char *text, const char *suffix) {
     return 1;
 }
 
-/// @brief Case-insensitive ASCII substring search.
+/// @brief Perform a case-insensitive ASCII substring search.
+/// @param text Haystack string.
+/// @param needle Substring to locate; an empty string always matches.
+/// @return Non-zero when @p needle occurs in @p text; otherwise zero.
 static int fbx_ascii_contains_i(const char *text, const char *needle) {
     size_t needle_len;
     if (!text || !needle)
@@ -429,7 +485,10 @@ static int fbx_ascii_contains_i(const char *text, const char *needle) {
     return 0;
 }
 
-/// @brief Case-insensitive ASCII string equality (NULL operands compare unequal).
+/// @brief Compare two ASCII strings case-insensitively.
+/// @param a First string.
+/// @param b Second string.
+/// @return Non-zero when both non-NULL strings are equal ignoring ASCII case.
 static int fbx_ascii_equals_i(const char *a, const char *b) {
     if (!a || !b)
         return 0;
@@ -443,7 +502,12 @@ static int fbx_ascii_equals_i(const char *a, const char *b) {
 }
 
 /// @brief Build a Pixels object from a width×height RGBA32 buffer (copied), with
-///   overflow-checked sizing. Returns NULL on bad dimensions or allocation failure.
+///   overflow-checked sizing.
+/// @param rgba32 Source packed RGBA pixel buffer.
+/// @param width Positive image width in pixels.
+/// @param height Positive image height in pixels.
+/// @return Newly allocated Pixels object on success, or NULL for invalid dimensions,
+///         arithmetic overflow, or allocation failure.
 static void *fbx_pixels_from_rgba32(uint32_t *rgba32, int64_t width, int64_t height) {
     rt_pixels_impl *pixels;
     size_t pixel_count;
@@ -467,23 +531,36 @@ static void *fbx_pixels_from_rgba32(uint32_t *rgba32, int64_t width, int64_t hei
     return pixels;
 }
 
-/// @brief Sniff a PNG payload by its 8-byte signature.
+/// @brief Sniff a PNG payload by its eight-byte signature.
+/// @param data Candidate encoded bytes.
+/// @param len Number of readable bytes.
+/// @return Non-zero when the PNG signature matches.
 static int fbx_payload_looks_png(const uint8_t *data, size_t len) {
     static const uint8_t sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
     return data && len >= sizeof(sig) && memcmp(data, sig, sizeof(sig)) == 0;
 }
 
 /// @brief Sniff a JPEG payload by its 0xFFD8 start-of-image marker.
+/// @param data Candidate encoded bytes.
+/// @param len Number of readable bytes.
+/// @return Non-zero when the JPEG start-of-image marker matches.
 static int fbx_payload_looks_jpeg(const uint8_t *data, size_t len) {
     return data && len >= 2u && data[0] == 0xff && data[1] == 0xd8;
 }
 
 /// @brief Sniff a GIF payload by its "GIF87a"/"GIF89a" header.
+/// @param data Candidate encoded bytes.
+/// @param len Number of readable bytes.
+/// @return Non-zero when a supported GIF version header matches.
 static int fbx_payload_looks_gif(const uint8_t *data, size_t len) {
     return data && len >= 6u && (memcmp(data, "GIF87a", 6) == 0 || memcmp(data, "GIF89a", 6) == 0);
 }
 
-/// @brief Identify supported encoded texture bytes independently of an untrusted filename hint.
+/// @brief Identify supported encoded texture bytes independently of filename hints.
+/// @param data Candidate encoded bytes.
+/// @param len Number of readable bytes.
+/// @return Static lowercase container name for KTX2, PNG, JPEG, GIF, or BMP;
+///         otherwise NULL.
 static const char *fbx_texture_container_kind(const uint8_t *data, size_t len) {
     static const uint8_t ktx2_magic[12] = {
         0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
@@ -500,7 +577,15 @@ static const char *fbx_texture_container_kind(const uint8_t *data, size_t len) {
     return NULL;
 }
 
-/// @brief Wrap decoded Pixels with exact encoded bytes, consuming the Pixels reference.
+/// @brief Wrap decoded Pixels with exact encoded source bytes.
+/// @details When @p kind is known, consumes the caller's @p pixels reference whether
+///          wrapping succeeds or fails. With an unknown kind, returns @p pixels unchanged.
+/// @param pixels Decoded Pixels object.
+/// @param data Original encoded payload bytes.
+/// @param len Encoded payload length.
+/// @param kind Static container identifier, or NULL.
+/// @return Newly allocated TextureAsset3D wrapper, the original Pixels object when
+///         @p kind is NULL, or NULL on wrapper failure.
 static void *fbx_preserve_texture_source(void *pixels,
                                          const uint8_t *data,
                                          size_t len,
@@ -518,8 +603,12 @@ static void *fbx_preserve_texture_source(void *pixels,
 }
 
 /// @brief Decode an embedded texture payload into a Pixels object, selecting the codec by
-///   magic bytes or by @p name's extension (PNG/JPEG/GIF/...). NULL if unrecognized or
-///   undecodable.
+///   magic bytes or by @p name's extension.
+/// @param name Optional untrusted filename hint used only when signatures are insufficient.
+/// @param data Encoded image payload.
+/// @param len Number of encoded bytes.
+/// @return Newly allocated Pixels or TextureAsset3D object on success, or NULL when
+///         the container is unsupported or decoding fails.
 static void *fbx_decode_texture_payload(const char *name, const uint8_t *data, size_t len) {
     uint32_t *rgba32 = NULL;
     int64_t width = 0;
@@ -565,12 +654,18 @@ static void *fbx_decode_texture_payload(const char *name, const uint8_t *data, s
 // assets do not surface as partially imported runtime content.
 // ---------------------------------------------------------------------------
 
-/// @brief True if the cursor has consumed the entire input.
+/// @brief Test whether a reader cursor has consumed the entire input.
+/// @param r Reader state.
+/// @return Non-zero when @p r is positioned at or beyond its source length.
 static int fbx_eof(const fbx_reader_t *r) {
     return r->pos >= r->len;
 }
 
-/// @brief Ensure `n` bytes remain in the stream; sets the error flag and seeks to EOF if not.
+/// @brief Ensure a requested byte count remains in the reader.
+/// @param[in,out] r Reader whose sticky error/cursor state is updated on failure.
+/// @param n Number of bytes required from the current cursor.
+/// @return Non-zero when the bytes are available; otherwise zero after marking an error
+///         and moving the cursor to EOF.
 static int fbx_require(fbx_reader_t *r, size_t n) {
     if (!r || r->error)
         return 0;
@@ -582,14 +677,18 @@ static int fbx_require(fbx_reader_t *r, size_t n) {
     return 1;
 }
 
-/// @brief Read one unsigned byte; marks the reader malformed at EOF.
+/// @brief Read one unsigned byte.
+/// @param[in,out] r Reader cursor.
+/// @return Decoded byte, or zero after marking a short read.
 static uint8_t fbx_u8(fbx_reader_t *r) {
     if (!fbx_require(r, 1))
         return 0;
     return r->data[r->pos++];
 }
 
-/// @brief Read a little-endian uint16; marks the reader malformed at short input.
+/// @brief Read a little-endian unsigned 16-bit integer.
+/// @param[in,out] r Reader cursor.
+/// @return Decoded value, or zero after marking a short read.
 static uint16_t fbx_u16(fbx_reader_t *r) {
     if (!fbx_require(r, 2))
         return 0;
@@ -598,7 +697,9 @@ static uint16_t fbx_u16(fbx_reader_t *r) {
     return v;
 }
 
-/// @brief Read a little-endian uint32; marks the reader malformed at short input.
+/// @brief Read a little-endian unsigned 32-bit integer.
+/// @param[in,out] r Reader cursor.
+/// @return Decoded value, or zero after marking a short read.
 static uint32_t fbx_u32(fbx_reader_t *r) {
     if (!fbx_require(r, 4))
         return 0;
@@ -608,12 +709,16 @@ static uint32_t fbx_u32(fbx_reader_t *r) {
     return v;
 }
 
-/// @brief Read a little-endian int32; 0 at short input.
+/// @brief Read a little-endian signed 32-bit integer.
+/// @param[in,out] r Reader cursor.
+/// @return Decoded value, or zero after marking a short read.
 static int32_t fbx_i32(fbx_reader_t *r) {
     return (int32_t)fbx_u32(r);
 }
 
 /// @brief Read a little-endian uint64 (composed of two u32 halves).
+/// @param[in,out] r Reader cursor.
+/// @return Decoded value, or zero after marking a short read.
 static uint64_t fbx_u64(fbx_reader_t *r) {
     if (!fbx_require(r, 8))
         return 0;
@@ -623,11 +728,15 @@ static uint64_t fbx_u64(fbx_reader_t *r) {
 }
 
 /// @brief Read a little-endian int64.
+/// @param[in,out] r Reader cursor.
+/// @return Decoded value, or zero after marking a short read.
 static int64_t fbx_i64(fbx_reader_t *r) {
     return (int64_t)fbx_u64(r);
 }
 
 /// @brief Read an IEEE 754 single-precision float (memcpy bit-pattern; safe for aliasing).
+/// @param[in,out] r Reader cursor.
+/// @return Decoded float bit pattern, or positive zero after marking a short read.
 static float fbx_f32(fbx_reader_t *r) {
     uint32_t bits = fbx_u32(r);
     float f;
@@ -636,6 +745,8 @@ static float fbx_f32(fbx_reader_t *r) {
 }
 
 /// @brief Read an IEEE 754 double-precision float.
+/// @param[in,out] r Reader cursor.
+/// @return Decoded double bit pattern, or positive zero after marking a short read.
 static double fbx_f64(fbx_reader_t *r) {
     uint64_t bits = fbx_u64(r);
     double d;
@@ -643,7 +754,9 @@ static double fbx_f64(fbx_reader_t *r) {
     return d;
 }
 
-/// @brief Advance the cursor by `n` bytes, marking malformed if it would overrun.
+/// @brief Advance a reader cursor by a checked byte count.
+/// @param[in,out] r Reader cursor and sticky error state.
+/// @param n Number of bytes to skip.
 static void fbx_skip(fbx_reader_t *r, size_t n) {
     if (!fbx_require(r, n))
         return;
@@ -661,30 +774,49 @@ static void fbx_skip(fbx_reader_t *r, size_t n) {
 #define FBX_MAX_COMPRESSED_ARRAY_BYTES (256u * 1024u * 1024u)
 #define FBX_MAX_DECOMPRESSED_ARRAY_BYTES (256u * 1024u * 1024u)
 
+/// @brief Owned typed value for one parsed FBX node property.
 typedef struct {
+    /// FBX scalar/string/raw/array type code.
     char type; /* C/Y/I/L/F/D/S/R/b/i/l/f/d */
 
+    /// Storage selected by @ref type.
     union {
+        /// Boolean (`C`) scalar.
         int8_t bool_val;
+        /// Signed 16-bit (`Y`) scalar.
         int16_t i16;
+        /// Signed 32-bit (`I`) scalar.
         int32_t i32;
+        /// Signed 64-bit (`L`) scalar.
         int64_t i64;
+        /// Single-precision (`F`) scalar.
         float f32;
+        /// Double-precision (`D`) scalar.
         double f64;
 
+        /// Owned string (`S`) payload and explicit byte length.
         struct {
+            /// NUL-terminated allocation; embedded NUL bytes may precede the terminator.
             char *str;
+            /// Authored payload length, excluding the synthesized terminator.
             uint32_t len;
         } string;
 
+        /// Owned untyped raw (`R`) payload.
         struct {
+            /// Exact raw bytes, or NULL for an empty payload.
             uint8_t *data;
+            /// Number of raw bytes.
             uint32_t len;
         } raw;
 
+        /// Owned decoded lowercase-array payload.
         struct {
+            /// Native-endian element buffer.
             void *data;
+            /// Number of elements.
             uint32_t count;
+            /// Original lowercase FBX element-type code.
             char elem_type;
         } array;
     } v;
@@ -692,15 +824,25 @@ typedef struct {
 
 struct fbx_object_index;
 
+/// @brief Owned parsed FBX node with growable typed properties and child nodes.
 typedef struct fbx_node {
+    /// NUL-terminated structural node name.
     char *name;
+    /// Exact structural-name byte length.
     uint32_t name_len;
+    /// Owned property array.
     fbx_prop_t *props;
+    /// Number of initialized properties.
     int32_t prop_count;
+    /// Allocated property capacity.
     int32_t prop_capacity;
+    /// Owned child-node array.
     struct fbx_node *children;
+    /// Number of initialized children.
     int32_t child_count;
+    /// Allocated child capacity.
     int32_t child_capacity;
+    /// Optional object-ID hash index owned by the top-level `Objects` node.
     struct fbx_object_index *object_index;
 } fbx_node_t;
 
@@ -826,6 +968,11 @@ static int fbx_node_reserve_property(fbx_node_t *node, fbx_load_context_t *conte
 /// FBX wraps array data in standard zlib. The shared decoder validates CMF/FLG,
 /// dictionary prohibition, exact DEFLATE consumption/output length, and Adler-32,
 /// while writing directly into the one budgeted destination allocation.
+/// @param data Compressed zlib-wrapped bytes.
+/// @param comp_len Number of compressed bytes.
+/// @param count Declared element count.
+/// @param elem_size Byte width of one decoded element.
+/// @param[in,out] context Loader context charged for the exact output buffer.
 /// @return Newly-allocated buffer (caller `free`s) or NULL on failure.
 static void *fbx_decompress_array(const uint8_t *data,
                                   uint32_t comp_len,
@@ -867,7 +1014,10 @@ static void *fbx_decompress_array(const uint8_t *data,
 /// Arrays carry a (count, encoding, compressed_len) header before
 /// the data; if `encoding == 1` we hand the bytes to
 /// `fbx_decompress_array`.
-/// @return 1 on success, 0 on malformed property / unknown type.
+/// @param[in,out] r Binary reader positioned at the property type byte.
+/// @param[out] prop Zeroed destination that takes ownership of any decoded allocation.
+/// @return Zero on success, or -1 for malformed input, an unknown type, budget
+///         rejection, or allocation/decompression failure.
 static int fbx_parse_property(fbx_reader_t *r, fbx_prop_t *prop) {
     if (fbx_eof(r))
         return -1;
@@ -997,7 +1147,8 @@ static int fbx_parse_property(fbx_reader_t *r, fbx_prop_t *prop) {
  * Node parsing (recursive)
  *=========================================================================*/
 
-/// @brief Release any heap allocations owned by a property (string/raw/array buffers).
+/// @brief Release any heap allocation owned by a parsed property.
+/// @param[in,out] p Property whose string, raw, or array payload is released.
 static void fbx_free_prop(fbx_prop_t *p) {
     switch (p->type) {
         case 'S':
@@ -1018,7 +1169,9 @@ static void fbx_free_prop(fbx_prop_t *p) {
     }
 }
 
-/// @brief Recursively free an FBX node tree (props + children).
+/// @brief Recursively release an FBX node tree and reset its root node.
+/// @param[in,out] n Node whose properties, children, name, and object index are released;
+///                  NULL is accepted as a no-op.
 static void fbx_free_node(fbx_node_t *n) {
     if (!n)
         return;
@@ -1040,7 +1193,11 @@ static void fbx_free_node(fbx_node_t *n) {
 /// recurse on child nodes until we reach the sentinel "null record"
 /// (an all-zero header). The `is_64bit` flag widens the offset
 /// fields from 4 to 8 bytes for FBX 7500+.
-/// @return 1 on success, 0 if the buffer is malformed.
+/// @param[in,out] r Reader positioned at a non-sentinel node header.
+/// @param[out] node Destination node, initialized before parsing.
+/// @param depth Current recursion depth used to enforce @ref FBX_MAX_NODE_DEPTH.
+/// @return Zero on success, or -1 when the node is malformed, exceeds limits/budget,
+///         or cannot be allocated.
 static int fbx_parse_node(fbx_reader_t *r, fbx_node_t *node, int depth) {
     uint8_t encoded_name_len;
     uint64_t props_start;
@@ -1153,6 +1310,9 @@ static int fbx_parse_node(fbx_reader_t *r, fbx_node_t *node, int depth) {
 
 /// @brief Linear-search `parent->children` for the first child named `name`.
 /// FBX node trees are small (few hundred nodes) so the O(n) cost is fine.
+/// @param parent Parent node whose direct children are searched.
+/// @param name Exact case-sensitive structural name.
+/// @return Borrowed pointer to the first matching child, or NULL.
 static fbx_node_t *fbx_find_child(fbx_node_t *parent, const char *name) {
     if (!parent || !name)
         return NULL;
@@ -1162,7 +1322,10 @@ static fbx_node_t *fbx_find_child(fbx_node_t *parent, const char *name) {
     return NULL;
 }
 
-/// @brief Coerce property `idx` of `node` to int64 (handles Y/I/L variants).
+/// @brief Coerce an integer-like property to signed 64-bit.
+/// @param node Node containing the property.
+/// @param idx Zero-based property index.
+/// @return Converted `Y`, `I`, `L`, or `C` value, or zero for invalid input/type.
 static int64_t fbx_prop_i64(fbx_node_t *node, int idx) {
     if (!node || idx < 0 || idx >= node->prop_count)
         return 0;
@@ -1181,7 +1344,10 @@ static int64_t fbx_prop_i64(fbx_node_t *node, int idx) {
     }
 }
 
-/// @brief Coerce property `idx` of `node` to double (handles F/D variants).
+/// @brief Coerce a numeric property to double.
+/// @param node Node containing the property.
+/// @param idx Zero-based property index.
+/// @return Converted scalar value, or zero for invalid input/type.
 static double fbx_prop_f64(fbx_node_t *node, int idx) {
     if (!node || idx < 0 || idx >= node->prop_count)
         return 0.0;
@@ -1206,6 +1372,9 @@ static const char *fbx_prop_str(fbx_node_t *node, int idx);
 /// @brief Coerce property `idx` of `node` to a boolean-like value.
 /// @details FBX exporters encode flags as `C`, integer, or occasionally float properties inside
 ///   `Properties70`. Treats non-zero numeric values and string "true"/"1" as enabled.
+/// @param node Node containing the property.
+/// @param idx Zero-based property index.
+/// @return Non-zero when the supported numeric/string encoding is truthy; otherwise zero.
 static int fbx_prop_truthy(fbx_node_t *node, int idx) {
     fbx_prop_t *p;
     const char *text;
@@ -1231,7 +1400,10 @@ static int fbx_prop_truthy(fbx_node_t *node, int idx) {
     }
 }
 
-/// @brief Borrowed C-string view of property `idx` (S/R type). NULL otherwise.
+/// @brief Obtain a borrowed C-string view of a string property.
+/// @param node Node containing the property.
+/// @param idx Zero-based property index.
+/// @return Borrowed NUL-terminated string for an `S` property, or an empty static string.
 static const char *fbx_prop_str(fbx_node_t *node, int idx) {
     if (!node || idx < 0 || idx >= node->prop_count)
         return "";
@@ -1248,6 +1420,9 @@ static const char *fbx_prop_str(fbx_node_t *node, int idx) {
 /// colons in a sub-namespace still strip correctly. NULL-safe (treats NULL input as
 /// empty), output is always NUL-terminated, truncates when the stripped name doesn't
 /// fit in `out_size`.
+/// @param raw_name NUL-terminated authored object name; NULL is treated as empty.
+/// @param[out] out Destination buffer for the decoded display name.
+/// @param out_size Capacity of @p out in bytes.
 static void fbx_decode_object_name(const char *raw_name, char *out, size_t out_size) {
     const char *start = raw_name ? raw_name : "";
     const char *end = start;
@@ -1328,15 +1503,21 @@ static rt_string fbx_object_name_string(fbx_node_t *node, int property_index) {
 
 /// @brief One open-addressed numeric object-id slot.
 typedef struct {
+    /// Numeric FBX object identifier.
     int64_t id;
+    /// Borrowed direct child of the indexed `Objects` node.
     fbx_node_t *node;
+    /// Non-zero when this slot terminates neither an empty probe nor initialization.
     int8_t occupied;
 } fbx_object_index_slot_t;
 
 /// @brief Load-local numeric object-id index owned by the parsed `Objects` node.
 struct fbx_object_index {
+    /// Owned power-of-two open-addressing table.
     fbx_object_index_slot_t *slots;
+    /// Number of allocated slots.
     size_t capacity;
+    /// Borrowed load context used for lookup-probe telemetry.
     fbx_load_context_t *context;
 };
 
@@ -1353,7 +1534,8 @@ static uint64_t fbx_hash_object_id(int64_t id) {
     return value;
 }
 
-/// @brief Release an object-id index without touching the nodes it borrows.
+/// @brief Release an object-ID index without touching the nodes it borrows.
+/// @param[in,out] index Index allocation to release; NULL is accepted as a no-op.
 static void fbx_free_object_index(struct fbx_object_index *index) {
     if (!index)
         return;

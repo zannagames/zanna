@@ -14,6 +14,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_trs.c
+ * @brief Implements glTF node transform conversion and local-matrix construction.
+ * @details Provides column-major to row-major conversion, robust matrix decomposition,
+ *          quaternion-based TRS composition, Gram-Schmidt basis repair, reflection-aware scale
+ *          extraction, and bounded JSON-node transform lookup for the glTF scene importer.
+ */
+
 #include "rt_gltf.h"
 #include "rt_asset.h"
 #include "rt_canvas3d.h"
@@ -45,6 +53,10 @@
 #include "rt_object.h"
 #include "rt_gltf_internal.h"
 
+/// @brief Write identity transform components to any provided output arrays.
+/// @param[out] pos Optional three-component translation set to zero.
+/// @param[out] quat Optional four-component quaternion set to `(0, 0, 0, 1)`.
+/// @param[out] scale Optional three-component scale set to one.
 static void gltf_write_identity_trs(double *pos, double *quat, double *scale) {
     if (pos) {
         pos[0] = 0.0;
@@ -65,6 +77,8 @@ static void gltf_write_identity_trs(double *pos, double *quat, double *scale) {
 }
 
 /// @brief Square root guarded against non-finite or negative input (returns 0.0 for those).
+/// @param value Candidate squared magnitude or trace term.
+/// @return Square root of a positive finite value; zero otherwise.
 static double gltf_sqrt_nonnegative(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 0.0;
@@ -72,12 +86,17 @@ static double gltf_sqrt_nonnegative(double value) {
 }
 
 /// @brief Dot product of two 3-component double vectors.
+/// @param[in] a First three-component vector.
+/// @param[in] b Second three-component vector.
+/// @return Scalar dot product of @p a and @p b.
 static double gltf_vec3_dot_local(const double *a, const double *b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
 /// @brief Normalize a 3-vector in place.
-/// @return 1 on success; 0 (leaving @p v unchanged) for NULL, non-finite, or near-zero length.
+/// @param[in,out] v Three-component vector to normalize.
+/// @return Non-zero on success; zero, leaving @p v unchanged, for `NULL`, non-finite,
+///         or near-zero input.
 static int gltf_vec3_normalize_local(double *v) {
     double len;
     if (!v)
@@ -94,6 +113,9 @@ static int gltf_vec3_normalize_local(double *v) {
 }
 
 /// @brief Cross product out = a × b of two 3-component double vectors.
+/// @param[in] a First three-component vector.
+/// @param[in] b Second three-component vector.
+/// @param[out] out Three-component cross product; must not alias either input.
 static void gltf_vec3_cross_local(const double *a, const double *b, double *out) {
     out[0] = a[1] * b[2] - a[2] * b[1];
     out[1] = a[2] * b[0] - a[0] * b[2];
@@ -102,6 +124,9 @@ static void gltf_vec3_cross_local(const double *a, const double *b, double *out)
 
 /// @brief Gram-Schmidt orthonormalize three basis columns in place, substituting canonical
 ///   axes for any degenerate (non-normalizable) column so the result is always orthonormal.
+/// @param[in,out] c0 First basis column, normalized or replaced with the X axis.
+/// @param[in,out] c1 Second basis column, made orthogonal to @p c0 and normalized.
+/// @param[out] c2 Third basis column rebuilt as the normalized cross product of the first two.
 static void gltf_orthonormalize_columns(double *c0, double *c1, double *c2) {
     double dot01;
     if (!gltf_vec3_normalize_local(c0)) {
@@ -149,6 +174,10 @@ static void gltf_orthonormalize_columns(double *c0, double *c1, double *c2) {
 /// (largest-trace pivot) for the rotation extraction. Sheared authoring matrices
 /// are reduced to the closest orthonormal rotation basis by Gram-Schmidt so
 /// unsupported shear does not appear as a spurious node rotation.
+/// @param[in] m Sixteen-element row-major transform matrix.
+/// @param[out] pos Three-element translation vector.
+/// @param[out] quat Four-element normalized quaternion in `(x, y, z, w)` order.
+/// @param[out] scale Three-element scale vector, including one reflected axis when needed.
 void gltf_matrix_to_trs(const double *m, double *pos, double *quat, double *scale) {
     double r00, r01, r02;
     double r10, r11, r12;
@@ -285,6 +314,9 @@ void gltf_matrix_to_trs(const double *m, double *pos, double *quat, double *scal
 }
 
 /// @brief Convert a glTF column-major matrix array into Zanna's row-major matrix layout.
+/// @param[in] src Sixteen-element source matrix in glTF column-major order.
+/// @param[out] dst Sixteen-element destination matrix in runtime row-major order.
+/// @note @p src and @p dst must not alias because conversion is performed directly.
 void gltf_matrix_column_major_to_row_major(const double *src, double *dst) {
     if (!src || !dst)
         return;
@@ -302,10 +334,10 @@ void gltf_matrix_column_major_to_row_major(const double *src, double *dst) {
 ///   bottom row is `[0, 0, 0, 1]`. This is the inverse of `gltf_matrix_to_trs` — it rebuilds
 ///   the TRS matrix after decomposition so we can accumulate world-space transforms during
 ///   the node-graph traversal.
-/// @param pos   3-element translation vector `[tx, ty, tz]`.
-/// @param quat  4-element unit quaternion `[x, y, z, w]`.
-/// @param scale 3-element scale vector `[sx, sy, sz]`.
-/// @param out   Caller-supplied 16-element array that receives the row-major matrix.
+/// @param[in] pos Three-element translation vector `[tx, ty, tz]`.
+/// @param[in] quat Four-element quaternion `[x, y, z, w]`, normalized internally.
+/// @param[in] scale Three-element scale vector `[sx, sy, sz]`.
+/// @param[out] out Caller-supplied sixteen-element row-major matrix.
 static void gltf_build_trs_matrix(const double *pos,
                                   const double *quat,
                                   const double *scale,
@@ -351,10 +383,10 @@ static void gltf_build_trs_matrix(const double *pos,
 ///   the three TRS arrays are read (defaulting to identity when absent) and reassembled into a
 ///   matrix by `gltf_build_trs_matrix`. Returns 1 on success, 0 if the node index is out of
 ///   range or required data is missing.
-/// @param nodes_arr  JSON array of glTF node objects.
-/// @param node_idx   Zero-based node index.
-/// @param out        Caller-supplied 16-element double array for the row-major result matrix.
-/// @return 1 on success, 0 if the node is inaccessible or @p out is NULL.
+/// @param[in] nodes_arr JSON array of glTF node objects.
+/// @param node_idx Zero-based node index.
+/// @param[out] out Caller-supplied sixteen-element row-major result matrix.
+/// @return Non-zero on success; zero if the node is inaccessible or @p out is `NULL`.
 int gltf_node_local_matrix(void *nodes_arr, int32_t node_idx, double *out) {
     void *node_json;
     void *matrix_arr;

@@ -25,6 +25,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements CubeMap3D construction, sampling, HDR import, and IBL preparation.
+/// @details This module validates and retains six-face cubemaps, performs
+///   topology-aware CPU filtering, decodes Radiance panoramas, generates SH-9
+///   irradiance and GGX specular data, and manages canvas/material references.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_asset.h"
@@ -56,16 +62,23 @@ extern int64_t rt_pixels_height(void *pixels);
 extern int64_t rt_pixels_get(void *pixels, int64_t x, int64_t y);
 
 /// @brief Validate that @p pixels is a live `Zanna.Graphics.Pixels` handle.
+/// @param pixels Candidate runtime object handle.
+/// @return Nonzero when runtime validation resolves a live Pixels implementation.
 static int cubemap_pixels_valid(void *pixels) {
     return rt_pixels_checked_impl_or_null(pixels) != NULL;
 }
 
 /// @brief Validate that @p cm is still a live CubeMap3D handle before dereferencing it.
+/// @param cm Candidate cubemap pointer.
+/// @return Nonzero when @p cm is non-null and has the CubeMap3D runtime class.
 static int cubemap_handle_valid(const rt_cubemap3d *cm) {
     return cm && rt_g3d_has_class((void *)(uintptr_t)cm, RT_G3D_CUBEMAP3D_CLASS_ID);
 }
 
 /// @brief Return a checked Pixels face implementation, or NULL for stale/corrupt slots.
+/// @param pixels Candidate face handle.
+/// @return Borrowed implementation with nonempty addressable dimensions and pixel
+///   storage, or `NULL` when validation fails.
 static rt_pixels_impl *cubemap_face_pixels_impl(void *pixels) {
     rt_pixels_impl *pv = rt_pixels_checked_impl_or_null(pixels);
     if (!pv || !pv->data || pv->width <= 0 || pv->height <= 0 || pv->width > INT_MAX ||
@@ -79,6 +92,9 @@ static uint64_t g_next_cubemap_cache_identity = 1;
 #define CUBEMAP3D_MAX_FACE_SIZE 32768
 
 /// @brief Validate the full six-face cubemap invariant before sampling.
+/// @param cm Candidate cubemap to inspect.
+/// @return Nonzero when the handle, identity, declared size, and all six square
+///   live Pixels faces are mutually consistent.
 static int cubemap_faces_valid(const rt_cubemap3d *cm) {
     int64_t face_size;
     if (!cubemap_handle_valid(cm))
@@ -95,6 +111,8 @@ static int cubemap_faces_valid(const rt_cubemap3d *cm) {
 }
 
 /// @brief True if the cubemap has all six faces present, square, and at a consistent face size.
+/// @param cubemap Candidate CubeMap3D runtime handle.
+/// @return `1` for a complete sampleable cubemap; `0` for null, stale, or malformed input.
 int rt_cubemap3d_is_complete(void *cubemap) {
     return cubemap_faces_valid((const rt_cubemap3d *)cubemap) ? 1 : 0;
 }
@@ -102,11 +120,15 @@ int rt_cubemap3d_is_complete(void *cubemap) {
 /// @brief Drop a GC-managed reference held in a `**slot` and null the slot.
 /// @details Idempotent — safe to call on already-null slots. Used by the
 ///          finalizer to release each of the six cached face Pixels.
+/// @param slot Address of an owned runtime-reference slot to release and clear.
 static void cubemap_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Release a cubemap face only when it still points at a Pixels object.
+/// @details Stale or corrupt non-null values are cleared without attempting a
+///   reference-count operation; valid Pixels values relinquish the owned reference.
+/// @param slot Address of a face-reference slot; null and empty slots are ignored.
 static void cubemap_release_face_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -118,6 +140,8 @@ static void cubemap_release_face_slot(void **slot) {
 }
 
 /// @brief Return a process-unique nonzero cache identity for skybox/env-map invalidation.
+/// @return Next identity obtained with relaxed atomic increment, skipping the
+///   reserved zero value even across counter wrap.
 static uint64_t cubemap_next_cache_identity(void) {
     uint64_t id =
         rt_atomic_fetch_add_u64(&g_next_cubemap_cache_identity, UINT64_C(1), __ATOMIC_RELAXED);
@@ -130,11 +154,16 @@ static uint64_t cubemap_next_cache_identity(void) {
 }
 
 /// @brief Return a finite scalar, falling back to @p fallback for NaN/Inf.
+/// @param value Candidate scalar.
+/// @param fallback Value returned when @p value is nonfinite.
+/// @return @p value when finite, otherwise @p fallback.
 static float cubemap_finite_or(float value, float fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Clamp extreme face UVs while preserving small out-of-face edge taps.
+/// @param value Candidate face coordinate; nonfinite values become `0.5`.
+/// @return Coordinate clamped to `[-2, 3]`, allowing one-face-neighbor filtering.
 static float cubemap_limited_uv(float value) {
     value = cubemap_finite_or(value, 0.5f);
     if (value < -2.0f)
@@ -145,6 +174,11 @@ static float cubemap_limited_uv(float value) {
 }
 
 /// @brief Normalize a direction with max-component scaling to avoid float overflow.
+/// @param dx In/out X component.
+/// @param dy In/out Y component.
+/// @param dz In/out Z component.
+/// @return Nonzero when a finite unit vector was written; zero for null,
+///   nonfinite, or nearly zero input, leaving components unmodified.
 static int cubemap_normalize_direction(float *dx, float *dy, float *dz) {
     double x;
     double y;
@@ -182,6 +216,7 @@ static int cubemap_normalize_direction(float *dx, float *dy, float *dz) {
 ///          of faces (e.g. a 3-face placeholder during streaming) don't
 ///          trip a null-deref in the inner release. Prefiltered IBL mip
 ///          faces (owned creation references) are released the same way.
+/// @param obj CubeMap3D payload being finalized; `NULL` is ignored.
 static void cubemap_finalize(void *obj) {
     rt_cubemap3d *cm = (rt_cubemap3d *)obj;
     if (!cm)
@@ -209,6 +244,12 @@ static void cubemap_finalize(void *obj) {
 ///          Floor at `1e-8` on the major axis prevents division by
 ///          zero when a direction component is exactly zero (e.g.
 ///          sampling straight down (0,-1,0)).
+/// @param dx Direction X component.
+/// @param dy Direction Y component.
+/// @param dz Direction Z component.
+/// @param out_face Output face index in `0..5`.
+/// @param out_u Output horizontal face coordinate, normally in `[0, 1]`.
+/// @param out_v Output vertical face coordinate, normally in `[0, 1]`.
 static void cubemap_direction_to_face_uv(
     float dx, float dy, float dz, int *out_face, float *out_u, float *out_v) {
     float ax;
@@ -274,6 +315,12 @@ static void cubemap_direction_to_face_uv(
 /// @details Same major-axis projection as @ref cubemap_direction_to_face_uv, but skips the
 ///          defensive normalization step. This is for CPU hot paths that have already sanitized
 ///          each direction and would otherwise pay a second square root per sample.
+/// @param dx Expected unit direction X component.
+/// @param dy Expected unit direction Y component.
+/// @param dz Expected unit direction Z component.
+/// @param out_face Output face index in `0..5`.
+/// @param out_u Output horizontal face coordinate.
+/// @param out_v Output vertical face coordinate.
 static void cubemap_unit_direction_to_face_uv(
     float dx, float dy, float dz, int *out_face, float *out_u, float *out_v) {
     float ax;
@@ -344,6 +391,12 @@ static void cubemap_unit_direction_to_face_uv(
 ///          the fixed major axis for the face, then normalize. The
 ///          `1e-8` floor on the length avoids a NaN if the inputs
 ///          collapsed to zero.
+/// @param face Face index; values outside `0..5` use the negative-Z face.
+/// @param u Horizontal face coordinate; extreme or nonfinite values are limited.
+/// @param v Vertical face coordinate; extreme or nonfinite values are limited.
+/// @param out_dx Output unit direction X component.
+/// @param out_dy Output unit direction Y component.
+/// @param out_dz Output unit direction Z component.
 static void cubemap_face_uv_to_direction(
     int face, float u, float v, float *out_dx, float *out_dy, float *out_dz) {
     float uu;
@@ -420,6 +473,11 @@ static void cubemap_face_uv_to_direction(
 ///          Returns 0 (transparent black) for null cubemaps or empty
 ///          faces. Used by skybox backgrounds and environment-map
 ///          reflection in Material.reflectivity > 0 draws.
+/// @param cm Borrowed complete cubemap.
+/// @param dx Sample direction X component.
+/// @param dy Sample direction Y component.
+/// @param dz Sample direction Z component.
+/// @return Packed nearest texel, or zero for an invalid cubemap or direction.
 static uint32_t cubemap_sample_nearest_rgba(const rt_cubemap3d *cm, float dx, float dy, float dz) {
     int face = 0;
     float u = 0.5f;
@@ -467,25 +525,15 @@ static uint32_t cubemap_sample_nearest_rgba(const rt_cubemap3d *cm, float dx, fl
     return pv->data[(int64_t)yi * pv->width + xi];
 }
 
-/// @brief Create a cube map from six square face textures.
-/// @details The six Pixels objects represent the +X, -X, +Y, -Y, +Z, -Z faces
-///          of a cube. All must be square and the same dimensions. The cube map
-///          retains the face textures so skybox and reflection sampling remain
-///          valid even if the caller drops its references. Used
-///          for skyboxes and environment-map reflections.
-/// @param px Positive-X face (right).
-/// @param nx Negative-X face (left).
-/// @param py Positive-Y face (top).
-/// @param ny Negative-Y face (bottom).
-/// @param pz Positive-Z face (front).
-/// @param nz Negative-Z face (back).
-/// @return Opaque cube map handle, or NULL on validation failure.
 //=============================================================================
 // Radiance .hdr panorama loading (from-scratch RGBE decoder)
 //=============================================================================
 
 /// @brief Exact power of two via IEEE-754 bit construction (no ldexpf: the
 ///   native-link runtime symbol set excludes it).
+/// @param n Integer binary exponent.
+/// @return `2` raised to @p n, including subnormal values; exponents below
+///   `-149` become zero and values above `127` saturate at `2` raised to `127`.
 static float cubemap_hdr_exp2i(int n) {
     uint32_t bits;
     float f;
@@ -503,6 +551,8 @@ static float cubemap_hdr_exp2i(int n) {
 }
 
 /// @brief One RGBE quadruple to linear float RGB (Radiance shared-exponent form).
+/// @param rgbe Four-byte Radiance red, green, blue, shared-exponent sample.
+/// @param out_rgb Output array of three linear float channels.
 static void cubemap_hdr_rgbe_to_float(const uint8_t rgbe[4], float *out_rgb) {
     if (rgbe[3] == 0) {
         out_rgb[0] = out_rgb[1] = out_rgb[2] = 0.0f;
@@ -519,6 +569,12 @@ static void cubemap_hdr_rgbe_to_float(const uint8_t rgbe[4], float *out_rgb) {
 /// @brief Parse the Radiance header; returns the offset of the pixel data and
 ///   the image dimensions, or 0 on malformed input. Only the standard "-Y H +X W"
 ///   row order is accepted (top-down rows, left-to-right columns).
+/// @param data Borrowed encoded byte buffer.
+/// @param size Number of readable bytes in @p data.
+/// @param out_w Output width, written only after a valid resolution line.
+/// @param out_h Output height, written only after a valid resolution line.
+/// @return Byte offset of the first scanline, or zero for a malformed,
+///   unsupported, truncated, or oversized header.
 static size_t cubemap_hdr_parse_header(const uint8_t *data, size_t size, int *out_w, int *out_h) {
     size_t pos = 0;
     int saw_format = 0;
@@ -574,7 +630,13 @@ static size_t cubemap_hdr_parse_header(const uint8_t *data, size_t size, int *ou
 }
 
 /// @brief Decode the RGBE scanlines (new RLE, old RLE, and flat forms) into a
-///   linear float RGB image. @return malloc-owned w*h*3 floats, or NULL.
+///   linear float RGB image.
+/// @param data Borrowed complete Radiance file bytes.
+/// @param size Number of readable bytes in @p data.
+/// @param out_w Output decoded width, written on success.
+/// @param out_h Output decoded height, written on success.
+/// @return `malloc`-owned row-major `width * height * 3` float channels, or
+///   `NULL` for malformed data, overflow, or allocation failure.
 static float *cubemap_hdr_decode(const uint8_t *data, size_t size, int *out_w, int *out_h) {
     int w = 0;
     int h = 0;
@@ -668,6 +730,11 @@ fail:
 
 /// @brief Bilinear sample of the equirectangular panorama along @p dir
 ///   (u wraps around the seam, v clamps at the poles).
+/// @param rgb Borrowed row-major linear RGB panorama with @p w by @p h pixels.
+/// @param w Positive panorama width.
+/// @param h Positive panorama height.
+/// @param dir Three-element sample direction; its Y component is clamped for `acos`.
+/// @param out_rgb Output array of three bilinearly filtered channels.
 static void cubemap_hdr_sample_panorama(
     const float *rgb, int w, int h, const float dir[3], float *out_rgb) {
     float u = 0.5f + atan2f(dir[0], dir[2]) * (float)(1.0 / (2.0 * 3.14159265358979323846));
@@ -698,15 +765,12 @@ static void cubemap_hdr_sample_panorama(
     }
 }
 
-/// @brief Load a Radiance .hdr equirectangular panorama as a CubeMap3D.
-/// @details The panorama decodes to linear float RGB, projects onto the six
-///   cube faces through the engine's own face basis, and range-compresses with
-///   `x' = e*x / (1 + e*x)` (Reinhard, e = @p exposure) into the 8-bit face
-///   storage the IBL pipeline consumes. Exposure defaults to 1 when
-///   non-positive. Asset resolution follows the asset manager (embedded ->
-///   mounted packs -> filesystem).
 /// @brief Read an entire file from the plain filesystem (LoadHdrPanorama accepts
 ///   direct paths like SceneAsset.Load; the asset manager is the fallback).
+/// @param path Null-terminated filesystem path.
+/// @param out_size Output byte count, reset to zero before opening.
+/// @return `malloc`-owned file bytes, including a one-byte allocation for an
+///   empty file, or `NULL` on open/seek/read/allocation failure.
 static uint8_t *cubemap_hdr_read_file(const char *path, size_t *out_size) {
     FILE *f = fopen(path, "rb");
     long len;
@@ -733,6 +797,17 @@ static uint8_t *cubemap_hdr_read_file(const char *path, size_t *out_size) {
     return data;
 }
 
+/// @brief Load a Radiance `.hdr` equirectangular panorama as a CubeMap3D.
+/// @details Reads a direct filesystem path first and then the asset manager,
+///   decodes linear RGBE, projects it onto six faces, and Reinhard-compresses
+///   exposed values into 8-bit Pixels. Face size is a power of two from 16
+///   through 512 based on panorama width. Temporary faces and decode storage
+///   are released on every exit path.
+/// @param path Runtime string naming a direct file or asset-manager resource.
+/// @param exposure Positive linear exposure multiplier; nonfinite or
+///   nonpositive values use `1.0`.
+/// @return New GC-managed cubemap retaining its generated faces, or `NULL` after
+///   reporting an unavailable or invalid source or if construction fails.
 void *rt_cubemap3d_load_hdr_panorama(rt_string path, double exposure) {
     size_t size = 0;
     const char *cpath = rt_string_cstr(path);
@@ -806,6 +881,19 @@ done:
     return cubemap;
 }
 
+/// @brief Create a cube map from six square face textures.
+/// @details Faces are ordered positive X, negative X, positive Y, negative Y,
+///   positive Z, negative Z. Every argument must be a live Pixels object with
+///   the same supported square dimension. Construction retains one reference
+///   to each face and initializes an empty lazy IBL payload.
+/// @param px Positive-X face.
+/// @param nx Negative-X face.
+/// @param py Positive-Y face.
+/// @param ny Negative-Y face.
+/// @param pz Positive-Z face.
+/// @param nz Negative-Z face.
+/// @return New GC-managed cubemap handle, or `NULL` after reporting validation
+///   or allocation failure. Caller ownership of all inputs is unchanged on failure.
 void *rt_cubemap3d_new(void *px, void *nx, void *py, void *ny, void *pz, void *nz) {
     void *faces[6] = {px, nx, py, ny, pz, nz};
 
@@ -873,7 +961,13 @@ void *rt_cubemap3d_new(void *px, void *nx, void *py, void *ny, void *pz, void *n
 ///   adjacent faces. That avoids the "seam" artifacts a simple per-face clamp
 ///   would introduce at cube edges. Zero-length directions and null cubemaps
 ///   produce black output so callers can skip explicit guards.
-/// @param out_r,out_g,out_b Output color channels in normalized [0.0, 1.0].
+/// @param cm Borrowed complete cubemap.
+/// @param dx World-space sample direction X component.
+/// @param dy World-space sample direction Y component.
+/// @param dz World-space sample direction Z component.
+/// @param out_r Output normalized red channel.
+/// @param out_g Output normalized green channel.
+/// @param out_b Output normalized blue channel.
 void rt_cubemap_sample(const rt_cubemap3d *cm,
                        float dx,
                        float dy,
@@ -967,7 +1061,15 @@ void rt_cubemap_sample(const rt_cubemap3d *cm,
 /// @brief Bilinearly sample a cubemap along a pre-normalized direction vector.
 /// @details Internal Canvas3D hot-path variant of @ref rt_cubemap_sample. It preserves the same
 ///          cross-face bilinear tap behavior but skips the defensive input normalization because
-///          callers have already sanitized the direction.
+///          callers have already sanitized the direction. Invalid near-zero or
+///          nonfinite components defensively map to the negative-Z direction.
+/// @param cm Borrowed complete cubemap.
+/// @param dx Expected unit direction X component.
+/// @param dy Expected unit direction Y component.
+/// @param dz Expected unit direction Z component.
+/// @param out_r Output normalized red channel.
+/// @param out_g Output normalized green channel.
+/// @param out_b Output normalized blue channel.
 void rt_cubemap_sample_unit(const rt_cubemap3d *cm,
                             float dx,
                             float dy,
@@ -1069,7 +1171,14 @@ void rt_cubemap_sample_unit(const rt_cubemap3d *cm,
 ///   approximation of the split-sum / prefiltered environment map trick used
 ///   by physically-based renderers and avoids the need to precompute per-mip
 ///   convolutions.
+/// @param cm Borrowed complete cubemap.
+/// @param dx Reflection direction X component.
+/// @param dy Reflection direction Y component.
+/// @param dz Reflection direction Z component.
 /// @param roughness Surface roughness in [0, 1]; 0 = mirror, 1 = fully diffuse.
+/// @param out_r Output normalized red channel.
+/// @param out_g Output normalized green channel.
+/// @param out_b Output normalized blue channel.
 void rt_cubemap_sample_roughness(const rt_cubemap3d *cm,
                                  float dx,
                                  float dy,
@@ -1193,6 +1302,10 @@ typedef struct cubemap_ibl_source {
 } cubemap_ibl_source;
 
 /// @brief Cache all six already-validated source faces for one IBL bake.
+/// @param cm Borrowed cubemap whose face slots have already passed whole-map validation.
+/// @param out Output view receiving borrowed Pixels implementations.
+/// @return Nonzero when all six implementations were resolved; zero for invalid
+///   input or a stale face. Output may be partially populated on failure.
 static int cubemap_ibl_source_init(const rt_cubemap3d *cm, cubemap_ibl_source *out) {
     if (!cm || !out)
         return 0;
@@ -1208,6 +1321,12 @@ static int cubemap_ibl_source_init(const rt_cubemap3d *cm, cubemap_ibl_source *o
 /// @details Cubemap face selection depends only on component ratios, so the
 ///   cross-face bilinear taps do not need the square root performed by the
 ///   public face-to-unit-direction helper.
+/// @param face Face index in `0..5`; other values select negative Z.
+/// @param u Horizontal face coordinate.
+/// @param v Vertical face coordinate.
+/// @param out_dx Output unnormalized direction X component.
+/// @param out_dy Output unnormalized direction Y component.
+/// @param out_dz Output unnormalized direction Z component.
 static void cubemap_ibl_face_uv_to_vector(
     int face, float u, float v, float *out_dx, float *out_dy, float *out_dz) {
     float uu = u * 2.0f - 1.0f;
@@ -1248,6 +1367,11 @@ static void cubemap_ibl_face_uv_to_vector(
 }
 
 /// @brief Trusted nearest fetch from a prevalidated IBL source.
+/// @param source Borrowed source with six non-null valid face implementations.
+/// @param dx Expected unit direction X component.
+/// @param dy Expected unit direction Y component.
+/// @param dz Expected unit direction Z component.
+/// @return Packed nearest face texel.
 static uint32_t cubemap_ibl_nearest_rgba(const cubemap_ibl_source *source,
                                          float dx,
                                          float dy,
@@ -1281,6 +1405,13 @@ static uint32_t cubemap_ibl_nearest_rgba(const cubemap_ibl_source *source,
 /// @brief Cross-face bilinear sample from a prevalidated IBL source.
 /// @details This matches `rt_cubemap_sample`'s topology-aware four-tap filter,
 ///   while omitting redundant object validation and direction normalisation.
+/// @param source Borrowed source with six valid face implementations.
+/// @param dx Expected unit direction X component.
+/// @param dy Expected unit direction Y component.
+/// @param dz Expected unit direction Z component.
+/// @param out_r Output normalized red channel.
+/// @param out_g Output normalized green channel.
+/// @param out_b Output normalized blue channel.
 static void cubemap_ibl_sample(const cubemap_ibl_source *source,
                                float dx,
                                float dy,
@@ -1348,6 +1479,11 @@ static void cubemap_ibl_sample(const cubemap_ibl_source *source,
 /// @brief Nearest RGBA fetch from an arbitrary six-face Pixels array (no
 ///   whole-cubemap validation — used by the prefiltered IBL chain whose faces
 ///   are internally constructed and guaranteed square).
+/// @param faces Borrowed six-element Pixels-handle array.
+/// @param dx Sample direction X component.
+/// @param dy Sample direction Y component.
+/// @param dz Sample direction Z component.
+/// @return Packed nearest texel, or zero for invalid direction selection or face storage.
 static uint32_t cubemap_faces_nearest_rgba(void *const faces[6], float dx, float dy, float dz) {
     int face = 0;
     float u = 0.5f;
@@ -1387,6 +1523,13 @@ static uint32_t cubemap_faces_nearest_rgba(void *const faces[6], float dx, float
 /// @details Same topology-aware tap scheme as rt_cubemap_sample: the four
 ///   bilinear taps are re-projected to directions so edge taps wrap onto
 ///   adjacent faces without seams.
+/// @param faces Borrowed six-element Pixels-handle array.
+/// @param dx Sample direction X component.
+/// @param dy Sample direction Y component.
+/// @param dz Sample direction Z component.
+/// @param out_r Output normalized red channel, initialized to zero.
+/// @param out_g Output normalized green channel, initialized to zero.
+/// @param out_b Output normalized blue channel, initialized to zero.
 static void cubemap_faces_bilinear(
     void *const faces[6], float dx, float dy, float dz, float *out_r, float *out_g, float *out_b) {
     int face = 0;
@@ -1449,6 +1592,10 @@ static void cubemap_faces_bilinear(
 /// @brief Evaluate the nine real SH basis functions at unit direction (x, y, z).
 /// @details Order: Y00, Y1-1, Y10, Y11, Y2-2, Y2-1, Y20, Y21, Y22 — the same
 ///   order the projection and shader evaluation use.
+/// @param x Unit direction X component.
+/// @param y Unit direction Y component.
+/// @param z Unit direction Z component.
+/// @param out_basis Output array of nine basis values in the documented order.
 static void cubemap_sh9_basis(float x, float y, float z, float out_basis[9]) {
     out_basis[0] = 0.282095f;
     out_basis[1] = 0.488603f * y;
@@ -1468,6 +1615,8 @@ static void cubemap_sh9_basis(float x, float y, float z, float out_basis[9]) {
 ///   an exact DC term), then fold the cosine-lobe convolution factors A_l and
 ///   the Lambertian 1/pi so the stored coefficients evaluate directly to
 ///   "reflected color per unit albedo".
+/// @param source Borrowed validated radiance source.
+/// @param out_sh Output array of 27 interleaved RGB coefficients.
 static void cubemap_project_sh9(const cubemap_ibl_source *source, float out_sh[27]) {
     /* A_l / pi: l=0 -> 1, l=1 -> 2/3, l=2 -> 1/4 */
     static const float k_al_over_pi[9] = {
@@ -1526,6 +1675,13 @@ static void cubemap_project_sh9(const cubemap_ibl_source *source, float out_sh[2
 }
 
 /// @brief Evaluate stored SH-9 irradiance coefficients along a unit normal.
+/// @details Normalizes the supplied normal, evaluates all nine bases, and clamps
+///   negative or nonfinite output channels to zero. Invalid input yields black.
+/// @param sh Borrowed array of 27 interleaved RGB SH coefficients; may be `NULL`.
+/// @param nx Normal X component.
+/// @param ny Normal Y component.
+/// @param nz Normal Z component.
+/// @param out_rgb Output array of three nonnegative irradiance channels.
 void rt_sh9_eval_irradiance(const float sh[27], float nx, float ny, float nz, float *out_rgb) {
     float basis[9];
 
@@ -1549,6 +1705,8 @@ void rt_sh9_eval_irradiance(const float sh[27], float nx, float ny, float nz, fl
 }
 
 /// @brief Van der Corput radical inverse for the deterministic Hammersley set.
+/// @param bits Unsigned sample index whose bit order is reversed.
+/// @return Base-two radical inverse in `[0, 1)`.
 static float cubemap_radical_inverse(uint32_t bits) {
     bits = (bits << 16u) | (bits >> 16u);
     bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
@@ -1574,6 +1732,8 @@ typedef struct cubemap_prefilter_face_task {
 /// @details Tasks read only the pinned source faces and write disjoint output
 ///   faces, so six faces may execute concurrently without locks while retaining
 ///   bit-identical per-texel sampling order.
+/// @param arg Pointer to a fully initialized `cubemap_prefilter_face_task`;
+///   null or incomplete tasks are ignored.
 static void cubemap_prefilter_face(void *arg) {
     cubemap_prefilter_face_task *task = (cubemap_prefilter_face_task *)arg;
     const cubemap_ibl_source *source;
@@ -1690,6 +1850,14 @@ static void cubemap_prefilter_face(void *arg) {
 ///   half vectors from a deterministic Hammersley sequence. Roughness 0 is a
 ///   plain bilinear resample (perfect mirror). Returns 1 on success; on
 ///   failure all allocated faces are released and 0 is returned.
+/// @param source Borrowed validated source used throughout synchronous work.
+/// @param roughness Mip roughness controlling GGX sample count and distribution.
+/// @param out_size Positive square output-face dimension.
+/// @param out_faces Output six-element array receiving owned Pixels creation references.
+/// @param worker_pool Optional retained-compatible thread pool used to dispatch
+///   six disjoint tasks; all submitted work is joined before return.
+/// @return Nonzero when all six faces were allocated and filtered; zero after
+///   releasing every partial output allocation.
 static int cubemap_prefilter_level(const cubemap_ibl_source *source,
                                    float roughness,
                                    int out_size,
@@ -1757,6 +1925,10 @@ static int cubemap_prefilter_level(const cubemap_ibl_source *source,
 ///   path so toggling IBL or swapping skyboxes remains cheap. Cost is bounded by
 ///   the fixed 128-base prefilter chain and the 32x32 SH projection grid,
 ///   independent of the source face size.
+/// @param cubemap Candidate complete CubeMap3D handle to prepare in place.
+/// @return Nonzero when an existing or newly generated payload is ready; zero
+///   for invalid faces or generation failure. Partial outputs are released and
+///   SH coefficients cleared on failure.
 int rt_cubemap3d_ensure_ibl(void *cubemap) {
     rt_cubemap3d *cm = (rt_cubemap3d *)cubemap;
     cubemap_ibl_source source;
@@ -1807,6 +1979,17 @@ int rt_cubemap3d_ensure_ibl(void *cubemap) {
 }
 
 /// @brief Sample the prefiltered specular chain with trilinear roughness blending.
+/// @details Falls back to the runtime roughness sampler when no prepared IBL
+///   chain exists. Otherwise normalizes direction, maps clamped roughness across
+///   adjacent mip levels, and bilinearly samples each selected cube level.
+/// @param cm Borrowed cubemap.
+/// @param dx Reflection direction X component.
+/// @param dy Reflection direction Y component.
+/// @param dz Reflection direction Z component.
+/// @param roughness Desired roughness, clamped to `[0, 1]`.
+/// @param out_r Output normalized red channel.
+/// @param out_g Output normalized green channel.
+/// @param out_b Output normalized blue channel.
 void rt_cubemap_sample_ibl(const rt_cubemap3d *cm,
                            float dx,
                            float dy,
@@ -1868,6 +2051,9 @@ void rt_cubemap_sample_ibl(const rt_cubemap3d *cm,
 /// @brief Defensively validate a canvas's skybox slot: clear it (and invalidate the skybox
 ///   cache) when the cubemap handle is invalid or the cubemap is incomplete. Returns 1 if
 ///   it cleared the slot, else 0.
+/// @param c Canvas whose possibly owned skybox slot is repaired.
+/// @return Nonzero when a stale or incomplete slot was cleared; zero when the
+///   canvas has no skybox, is null, or already contains a complete cubemap.
 static int canvas3d_repair_skybox_slot(rt_canvas3d *c) {
     if (!c || !c->skybox)
         return 0;
@@ -1885,6 +2071,11 @@ static int canvas3d_repair_skybox_slot(rt_canvas3d *c) {
 }
 
 /// @brief Set a cube map as the canvas skybox (drawn behind all geometry).
+/// @details Repairs stale existing state, ignores incomplete non-null input,
+///   retains the new cubemap before releasing the old one, and invalidates the
+///   CPU skybox cache. Passing `NULL` clears a valid existing skybox.
+/// @param canvas Canvas3D receiver or supported stack-wrapper handle.
+/// @param cubemap Complete CubeMap3D handle to retain, or `NULL` to clear.
 void rt_canvas3d_set_skybox(void *canvas, void *cubemap) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     if (!c)
@@ -1902,6 +2093,8 @@ void rt_canvas3d_set_skybox(void *canvas, void *cubemap) {
 }
 
 /// @brief Remove the skybox from the canvas (reverts to solid clear color).
+/// @param canvas Canvas3D receiver or supported stack-wrapper handle; invalid
+///   receivers are ignored.
 void rt_canvas3d_clear_skybox(void *canvas) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     if (!c)
@@ -1920,11 +2113,18 @@ void rt_canvas3d_clear_skybox(void *canvas) {
 //=============================================================================
 
 /// @brief Assign a cube map as the environment reflection map for a material.
+/// @details Delegates runtime validation and retain/release handling to the
+///   checked material reference-slot assignment helper.
+/// @param obj Material3D receiver.
+/// @param cubemap Complete CubeMap3D handle or `NULL`, subject to checked assignment.
 void rt_material3d_set_env_map(void *obj, void *cubemap) {
     rt_material3d_assign_env_map_checked(obj, cubemap);
 }
 
 /// @brief Set the environment reflection strength for a material (0.0–1.0).
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param r Requested strength; nonfinite values become zero and finite values
+///   are clamped to `[0, 1]`.
 void rt_material3d_set_reflectivity(void *obj, double r) {
     rt_material3d *mat = (rt_material3d *)rt_g3d_checked_or_null(obj, RT_G3D_MATERIAL3D_CLASS_ID);
     if (!mat)
@@ -1939,6 +2139,9 @@ void rt_material3d_set_reflectivity(void *obj, double r) {
 }
 
 /// @brief Get the current environment reflection strength of a material.
+/// @param obj Material3D receiver.
+/// @return Stored finite strength clamped to `[0, 1]`, or zero for an invalid
+///   receiver or nonfinite state.
 double rt_material3d_get_reflectivity(void *obj) {
     rt_material3d *mat = (rt_material3d *)rt_g3d_checked_or_null(obj, RT_G3D_MATERIAL3D_CLASS_ID);
     double value;

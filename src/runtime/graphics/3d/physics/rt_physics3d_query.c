@@ -25,6 +25,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements bounded spatial overlap and sweep queries for Physics3D worlds.
+///
+/// This translation unit owns the lazy query broad-phase cache, reusable transient
+/// query colliders, sanitized hit construction, and the public sphere, AABB, and
+/// capsule query entry points. Query inputs are constrained to finite runtime-safe
+/// ranges before they reach the collision routines, and multi-hit results preserve
+/// the world's configured capacity while reporting their untruncated logical count.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_collider3d.h"
@@ -45,7 +54,10 @@
 
 #define PH3D_QUERY_DISTANCE_MAX 1000000000.0
 
-/// @brief Clamp query coordinates to the same broad finite range used by body state.
+/// @brief Clamps one query coordinate to the finite range accepted by body state.
+/// @param value Coordinate supplied by a public or internal query caller.
+/// @return Zero for a non-finite input; otherwise @p value clamped to
+///         `[-PH3D_QUERY_COORD_ABS_MAX, PH3D_QUERY_COORD_ABS_MAX]`.
 double query_saturate_coord(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -56,7 +68,11 @@ double query_saturate_coord(double value) {
     return value;
 }
 
-/// @brief Read a public Vec3 argument, rejecting NaN/Inf and capping extreme finite values.
+/// @brief Reads and sanitizes a public `Vec3` query argument.
+/// @param obj Borrowed runtime object expected to contain a graphics `Vec3`.
+/// @param[out] out Three-element destination that receives finite, range-limited coordinates.
+/// @return `1` when @p obj is a `Vec3` with finite components and @p out was populated;
+///         otherwise `0`, leaving the destination unspecified.
 int query_read_vec3(void *obj, double out[3]) {
     double raw[3];
     if (!out || !rt_g3d_is_vec3(obj))
@@ -72,14 +88,20 @@ int query_read_vec3(void *obj, double out[3]) {
     return 1;
 }
 
-/// @brief Clamp a finite public query distance/radius to a runtime-safe range.
+/// @brief Sanitizes a public query distance or radius.
+/// @param value Candidate distance in world units.
+/// @return Zero when @p value is non-finite or non-positive; otherwise the value capped at
+///         `PH3D_QUERY_DISTANCE_MAX`.
 double query_sanitize_distance(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 0.0;
     return value > PH3D_QUERY_DISTANCE_MAX ? PH3D_QUERY_DISTANCE_MAX : value;
 }
 
-/// @brief Normalize a direction vector in place, returning 0 for invalid/zero vectors.
+/// @brief Sanitizes and normalizes a query direction in place.
+/// @param[in,out] dir Three-element direction vector to normalize.
+/// @return `1` when the sanitized vector has usable length and was normalized; `0` for a
+///         null, non-finite, or effectively zero direction.
 int query_normalize_direction(double dir[3]) {
     if (!ph3d_vec3_all_finite(dir))
         return 0;
@@ -87,7 +109,10 @@ int query_normalize_direction(double dir[3]) {
     return vec3_normalize_in_place(dir) > 1e-12;
 }
 
-/// @brief Clamp a vector's length to the query distance cap, preserving direction.
+/// @brief Caps a displacement vector's magnitude while preserving its direction.
+/// @param[in,out] v Three-element displacement to sanitize and, when necessary, scale down.
+/// @return The finite post-cap magnitude in world units, or zero when @p v is invalid or has
+///         no usable length.
 static double query_cap_vector_length(double v[3]) {
     double len;
     if (!ph3d_vec3_all_finite(v))
@@ -106,7 +131,10 @@ static double query_cap_vector_length(double v[3]) {
     return len;
 }
 
-/// @brief Normalize a hit normal with a fallback opposite the ray/sweep direction.
+/// @brief Produces a normalized, finite hit normal with deterministic fallbacks.
+/// @param[in,out] normal Three-element candidate normal to sanitize and normalize.
+/// @param fallback_dir Optional borrowed ray or sweep direction. Its negation is used when
+///        @p normal is degenerate; `(0, 1, 0)` is used if both vectors are unusable.
 void query_normalize_normal(double normal[3], const double *fallback_dir) {
     ph3d_vec3_sanitize_state(normal);
     if (vec3_normalize_in_place(normal) > 1e-12)
@@ -120,7 +148,13 @@ void query_normalize_normal(double normal[3], const double *fallback_dir) {
     vec3_set(normal, 0.0, 1.0, 0.0);
 }
 
-/// @brief Validate and sanitize a raw query hit before it is boxed or sorted.
+/// @brief Validates and sanitizes a raw query hit before boxing or sorting it.
+/// @param[in,out] hit Hit record whose scalar fields and vectors are normalized in place.
+/// @param max_distance Maximum permitted hit distance in world units. A positive value clamps
+///        both the distance and any derived fraction to the query extent.
+/// @param fallback_dir Optional borrowed direction used to repair a degenerate hit normal.
+/// @return `1` when the record has a finite non-negative distance and was sanitized; `0` when
+///         @p hit is null or its distance is invalid.
 int query_sanitize_hit(rt_query_hit3d *hit, double max_distance, const double *fallback_dir) {
     if (!hit || !isfinite(hit->distance) || hit->distance < 0.0)
         return 0;
@@ -145,6 +179,11 @@ int query_sanitize_hit(rt_query_hit3d *hit, double max_distance, const double *f
 ///
 /// O(n) insertion (linear shift). Acceptable because `RaycastAll` /
 /// `OverlapAll` queries are bounded by `PH3D_MAX_QUERY_HITS` (256).
+/// @param[in,out] hits Writable array with space for the existing entries and one new entry.
+/// @param count Number of initialized, ascending-distance entries already in @p hits.
+/// @param hit Borrowed candidate record; the inserted copy is sanitized before comparison.
+/// @return @p count plus one when the candidate is valid, or the unchanged count for invalid
+///         storage or hit data.
 static int query_hit_insert_sorted(rt_query_hit3d *hits, int32_t count, const rt_query_hit3d *hit) {
     int32_t pos = count;
     rt_query_hit3d clean;
@@ -165,7 +204,14 @@ static int query_hit_insert_sorted(rt_query_hit3d *hits, int32_t count, const rt
 /// nearest).
 /// @details Below capacity it inserts in order; when full, a hit nearer than the current farthest
 ///          displaces it (bounded insertion sort), so the array always holds the K closest results.
-/// @return The new hit count.
+/// @param[in,out] hits Writable array containing @p count sorted entries and storage for
+///        @p capacity records.
+/// @param count Current number of initialized entries.
+/// @param capacity Maximum number of entries that may be retained.
+/// @param hit Borrowed candidate record; a sanitized copy is inserted if it belongs among the
+///        nearest results.
+/// @return The retained hit count, never greater than @p capacity. Invalid arguments or a
+///         farther-than-capacity candidate leave the count unchanged.
 int query_hit_insert_sorted_bounded(rt_query_hit3d *hits,
                                     int32_t count,
                                     int32_t capacity,
@@ -193,6 +239,9 @@ int query_hit_insert_sorted_bounded(rt_query_hit3d *hits,
 /// @brief Return the O(1) revision key for the world's query broadphase cache.
 /// @details Body transforms/colliders and body add/remove paths bump the world revision as they
 ///   mutate bounds. Spatial queries can therefore validate the cache without hashing every body.
+/// @param w Borrowed world whose broad-phase revision is requested.
+/// @return Zero for a null world; otherwise its nonzero cache signature, using `1` as the
+///         initial sentinel before the first explicit revision.
 static uint64_t world3d_query_broadphase_signature(rt_world3d *w) {
     if (!w)
         return 0;
@@ -204,6 +253,7 @@ static uint64_t world3d_query_broadphase_signature(rt_world3d *w) {
 ///          build, recomputes the true AABB and tests containment against the cached
 ///          fattened bounds. Bodies that stayed inside are restamped (so later validates
 ///          skip them); the first escape aborts — the caller must rebuild.
+/// @param w Borrowed world with a previously built query broad-phase cache.
 /// @return 1 if the cache is still usable, 0 if any body escaped its fat bounds.
 static int world3d_query_broadphase_contains_moved_bodies(rt_world3d *w) {
     for (int32_t i = 0; i < w->query_broadphase_count; ++i) {
@@ -231,7 +281,10 @@ static int world3d_query_broadphase_contains_moved_bodies(rt_world3d *w) {
 ///          it valid while every moved body stays inside its fat bounds. Fat entries are a
 ///          conservative candidate filter, so query results remain exact — every consumer
 ///          narrow-tests live body state.
-/// @return The number of broadphase entries.
+/// @param w Borrowed world whose cache should be validated or rebuilt.
+/// @return The number of cached collision-geometry entries, or `-1` for a null world or
+///         scratch-storage allocation failure. On failure callers may fall back to direct body
+///         iteration.
 int32_t world3d_build_query_broadphase(rt_world3d *w) {
     int32_t entry_count = 0;
     int32_t geometry_count = 0;
@@ -288,7 +341,11 @@ int32_t world3d_build_query_broadphase(rt_world3d *w) {
     return entry_count;
 }
 
-/// @brief Whether a broadphase entry's AABB overlaps the query's AABB on all three axes.
+/// @brief Tests a broad-phase entry against a query AABB on all three axes.
+/// @param entry Borrowed broad-phase entry containing inclusive minimum and maximum bounds.
+/// @param query_min Borrowed three-element inclusive minimum corner.
+/// @param query_max Borrowed three-element inclusive maximum corner.
+/// @return `1` when all pointers are valid and the two AABBs overlap or touch; otherwise `0`.
 int query_entry_overlaps_bounds(const ph3d_broadphase_entry *entry,
                                 const double *query_min,
                                 const double *query_max) {
@@ -303,6 +360,9 @@ int query_entry_overlaps_bounds(const ph3d_broadphase_entry *entry,
 /// Static motion mode (so impulse code never touches it), identity
 /// orientation, and the supplied position. `make_temp_sphere` is the
 /// sphere-only variant used elsewhere; this is the general form.
+/// @param[out] body Caller-owned stack body to clear and initialize.
+/// @param collider Borrowed collider assigned to the transient body for the duration of a query.
+/// @param position Optional borrowed three-element world position; null leaves the zero position.
 static void init_temp_query_body(rt_body3d *body, void *collider, const double *position) {
     rt_body3d zero = {0};
     *body = zero;
@@ -369,6 +429,11 @@ static void *world3d_query_box_collider(rt_world3d *w, const double half[3]) {
 ///
 /// Used by overlap queries — fills `out_hit` with `started_penetrating=1`
 /// since the query body starts already touching the other body.
+/// @param query_body Borrowed transient body describing the query volume.
+/// @param other Borrowed registered body to narrow-phase test.
+/// @param[out] out_hit Optional destination for the zero-distance overlap record. The record
+///        borrows its body and collider pointers from @p other.
+/// @return `1` when the bodies overlap, even if @p out_hit is null; otherwise `0`.
 static int overlap_query_body_against_body(rt_body3d *query_body,
                                            rt_body3d *other,
                                            rt_query_hit3d *out_hit) {
@@ -394,7 +459,16 @@ static int overlap_query_body_against_body(rt_body3d *query_body,
     return 1;
 }
 
-/// @brief Populate a query-hit record (body, point, normal, distance) for a sphere-sweep result.
+/// @brief Populates a sanitized query-hit record for a sphere-sweep result.
+/// @param body Borrowed body struck by the sweep; may be null for a synthetic result.
+/// @param start_center Borrowed three-element sphere center at the start of the sweep.
+/// @param dir Borrowed normalized sweep direction.
+/// @param radius Sphere radius in world units.
+/// @param distance Travel distance from @p start_center to contact.
+/// @param max_distance Total sweep length used to derive the normalized hit fraction.
+/// @param normal Optional borrowed contact normal; the direction fallback is used when absent
+///        or degenerate.
+/// @param[out] out_hit Destination record. A null destination makes this function a no-op.
 static void sweep_sphere_fill_hit(rt_body3d *body,
                                   const double *start_center,
                                   const double *dir,
@@ -429,7 +503,17 @@ static void sweep_sphere_fill_hit(rt_body3d *body,
     query_sanitize_hit(out_hit, max_distance, dir);
 }
 
-/// @brief Exact fast paths for common sphere sweeps before the generic sampler runs.
+/// @brief Attempts exact sphere-sweep fast paths before the generic sampler runs.
+/// @details Sphere targets are tested as an expanded sphere and simple box targets as an expanded
+///          oriented box. Initial penetrations are intentionally rejected because the generic
+///          path reports those with the appropriate overlap semantics.
+/// @param start_center Borrowed three-element sphere center at the start of the sweep.
+/// @param radius Swept sphere radius in world units.
+/// @param delta Borrowed finite displacement vector.
+/// @param other Borrowed target body.
+/// @param max_distance Magnitude of @p delta in world units.
+/// @param[out] out_hit Optional destination for the first non-penetrating hit.
+/// @return `1` when an exact fast path produced a hit; otherwise `0`.
 static int sweep_sphere_against_simple_body(const double *start_center,
                                             double radius,
                                             const double *delta,
@@ -490,6 +574,15 @@ static int sweep_sphere_against_simple_body(const double *start_center,
 /// in radius/body-feature-relative increments looking for the first overlap,
 /// and refines the impact `t` via bisection. There is deliberately no fixed
 /// world-unit minimum step: tiny spheres must still detect thin geometry.
+/// @param sphere_collider Borrowed reusable collider already sized to @p radius.
+/// @param start_center Borrowed three-element starting center in world coordinates.
+/// @param radius Swept sphere radius in world units.
+/// @param delta Borrowed displacement for the complete sweep.
+/// @param other Borrowed target body to test.
+/// @param max_distance Sanitized magnitude of @p delta used for hit distances and fractions.
+/// @param[out] out_hit Optional destination for the earliest hit, including an initial overlap.
+/// @return `1` when the sphere starts overlapping or reaches @p other during the sweep;
+///         otherwise `0`.
 static int sweep_sphere_against_body(void *sphere_collider,
                                      const double *start_center,
                                      double radius,
@@ -607,6 +700,15 @@ static int sweep_sphere_against_body(void *sphere_collider,
 ///
 /// Approximates the capsule sweep as adaptive sphere-sweeps sampled
 /// along the axis. Picks the closest hit.
+/// @param a Borrowed three-element first endpoint of the capsule axis.
+/// @param b Borrowed three-element second endpoint of the capsule axis.
+/// @param radius Capsule radius in world units.
+/// @param sphere_collider Borrowed reusable sphere collider sized to @p radius.
+/// @param delta Borrowed displacement for the complete sweep.
+/// @param other Borrowed target body.
+/// @param max_distance Sanitized magnitude of @p delta.
+/// @param[out] out_hit Optional destination for the nearest sampled-sphere hit.
+/// @return `1` when any sampled sphere overlaps or sweeps into @p other; otherwise `0`.
 static int sweep_capsule_against_body(const double *a,
                                       const double *b,
                                       double radius,
@@ -653,8 +755,15 @@ static int sweep_capsule_against_body(const double *a,
 ///
 /// Builds a transient sphere collider, then tests every world body
 /// (after layer/mask filter) for overlap. Returns up to
-/// the configured query cap as a `PhysicsHitList3D`. The
-/// transient collider is released before returning.
+/// the configured query cap as a `PhysicsHitList3D`. The query body is
+/// stack-local while its collider is reusable storage owned by the world.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param center_obj Borrowed `Vec3` containing the query center in world coordinates.
+/// @param radius Non-negative sphere radius in world units.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @return A newly boxed `PhysicsHitList3D`, possibly empty and marked truncated when the logical
+///         result exceeds the configured capacity; or null for an invalid world/vector/radius or
+///         scratch-collider allocation failure.
 void *rt_world3d_overlap_sphere(void *obj, void *center_obj, double radius, int64_t mask) {
     rt_world3d *w = world3d_checked(obj);
     rt_query_hit3d *hits = world3d_query_hits_scratch(w);
@@ -703,6 +812,13 @@ void *rt_world3d_overlap_sphere(void *obj, void *center_obj, double radius, int6
 /// Same pattern as `OverlapSphere` but uses a transient box collider
 /// sized from the (min, max) corners. The half-extents are derived
 /// from the corner spread; the center is the midpoint.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param min_obj Borrowed `Vec3` containing one AABB corner.
+/// @param max_obj Borrowed `Vec3` containing the opposite AABB corner. Corner order does not
+///        matter because absolute component spreads determine the half-extents.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @return A newly boxed `PhysicsHitList3D`, possibly empty or truncated; or null for invalid
+///         runtime objects, non-finite coordinates, or scratch-collider allocation failure.
 void *rt_world3d_overlap_aabb(void *obj, void *min_obj, void *max_obj, int64_t mask) {
     rt_world3d *w = world3d_checked(obj);
     rt_query_hit3d *hits = world3d_query_hits_scratch(w);
@@ -758,6 +874,14 @@ void *rt_world3d_overlap_aabb(void *obj, void *min_obj, void *max_obj, int64_t m
 /// Returns the closest hit as a `PhysicsHit3D`, or NULL if the sweep
 /// reaches `delta` without contact. Used for trajectory predictions
 /// and projectile collision.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param center_obj Borrowed `Vec3` containing the starting center.
+/// @param radius Non-negative swept sphere radius in world units.
+/// @param delta_obj Borrowed `Vec3` displacement; extreme magnitudes are capped in place in the
+///        local query copy.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @return A newly boxed nearest `PhysicsHit3D`, including an initial-penetration hit, or null
+///         when the query is invalid, scratch allocation fails, or no selected body is hit.
 void *rt_world3d_sweep_sphere(
     void *obj, void *center_obj, double radius, void *delta_obj, int64_t mask) {
     rt_world3d *w = world3d_checked(obj);
@@ -807,6 +931,12 @@ void *rt_world3d_sweep_sphere(
     return found ? physics_hit3d_new(&best_hit) : NULL;
 }
 
+/// @brief Returns the world's reusable bounded query-hit scratch array.
+/// @details The configured capacity is first constrained to the supported minimum and maximum.
+///          Storage is allocated lazily and remains owned by the world; callers may populate at
+///          most `w->max_query_hits` records and must not retain the pointer after world teardown.
+/// @param w Borrowed world that owns the scratch allocation.
+/// @return Borrowed writable hit storage, or null for a null world or allocation failure.
 rt_query_hit3d *world3d_query_hits_scratch(rt_world3d *w) {
     if (!w)
         return NULL;
@@ -820,6 +950,25 @@ rt_query_hit3d *world3d_query_hits_scratch(rt_world3d *w) {
     return (rt_query_hit3d *)w->query_hits_scratch;
 }
 
+/// @brief Finds the earliest blocking body along one raw CCD sphere sweep.
+/// @details Candidates are read directly from the world instead of the lazily cached query
+///          broad phase because dynamic poses can change during each integration substep.
+///          Dynamic targets use relative displacement, mutual collision layers are enforced,
+///          triggers and sleeping dynamic targets are skipped, and initial penetrations are
+///          left to the persistent-contact solver.
+/// @param w Borrowed world containing candidate bodies and the reusable sphere collider.
+/// @param center Borrowed three-element starting center in world coordinates.
+/// @param radius Positive swept sphere radius in world units.
+/// @param delta Borrowed moving body's displacement for this substep.
+/// @param ignore_body Optional borrowed moving body to exclude from candidates and use for
+///        layer/mask and CCD-opt-in checks.
+/// @param sub_dt Substep duration in seconds, used to convert a dynamic target's velocity into
+///        relative displacement when positive and finite.
+/// @param[out] out_t Optional destination for the earliest time-of-impact fraction in `[0, 1]`.
+/// @param[out] out_normal Optional three-element destination for the normalized hit normal.
+/// @param[out] out_hit Optional destination for the complete borrowed-pointer hit record.
+/// @return `1` when a non-trigger blocking hit is found; `0` for invalid inputs, scratch-collider
+///         allocation failure, or a sweep with no qualifying contact.
 int world3d_ccd_sweep_sphere_raw(rt_world3d *w,
                                  const double *center,
                                  double radius,
@@ -923,7 +1072,19 @@ int world3d_ccd_sweep_sphere_raw(rt_world3d *w,
     return 1;
 }
 
-/// @brief Record every trigger crossed by one conservative local CCD segment.
+/// @brief Records every trigger crossed by one conservative local CCD segment.
+/// @details Each qualifying trigger is swept using displacement relative to its dynamic motion.
+///          A synthetic trigger contact is oriented to the solver's body-A-to-body-B convention
+///          and appended uniquely to the frame-contact list. Invalid or effectively stationary
+///          segments are successful no-ops.
+/// @param w Borrowed world containing trigger candidates and frame-contact storage.
+/// @param center Borrowed three-element starting center of the moving sphere.
+/// @param radius Positive sphere radius in world units.
+/// @param delta Borrowed displacement of @p moving_body over the segment.
+/// @param moving_body Borrowed body whose trigger crossings are being recorded.
+/// @param segment_dt Segment duration in seconds, used for relative motion and contact speed.
+/// @return `1` when all crossings were recorded or the segment is a no-op; `0` when reusable
+///         collider allocation or frame-contact growth fails.
 int world3d_ccd_record_trigger_crossings(rt_world3d *w,
                                          const double *center,
                                          double radius,
@@ -991,6 +1152,14 @@ int world3d_ccd_record_trigger_crossings(rt_world3d *w,
 ///
 /// Like `SweepSphere` but for capsule queries — primary use case is
 /// character-controller motion against world geometry.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param a_obj Borrowed `Vec3` containing the first starting axis endpoint.
+/// @param b_obj Borrowed `Vec3` containing the second starting axis endpoint.
+/// @param radius Non-negative capsule radius in world units.
+/// @param delta_obj Borrowed `Vec3` displacement applied to the entire capsule.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @return A newly boxed nearest `PhysicsHit3D`, or null for invalid arguments, scratch-collider
+///         allocation failure, or a sweep with no selected contact.
 void *rt_world3d_sweep_capsule(
     void *obj, void *a_obj, void *b_obj, double radius, void *delta_obj, int64_t mask) {
     rt_world3d *w = world3d_checked(obj);
@@ -1040,9 +1209,6 @@ void *rt_world3d_sweep_capsule(
     }
     return found ? physics_hit3d_new(&best_hit) : NULL;
 }
-
-/// @brief Populate a ray-hit result record (body, distance, world point, and
-///        normal) from a confirmed intersection at @p distance along the ray.
 
 #else
 typedef int rt_physics3d_query_core_disabled_tu_guard;

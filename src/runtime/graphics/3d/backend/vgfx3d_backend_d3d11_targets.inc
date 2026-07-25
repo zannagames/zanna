@@ -17,12 +17,27 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file vgfx3d_backend_d3d11_targets.inc
+/// @brief Implements D3D11 render-target allocation, validation, replacement,
+///   readback synchronization, and destruction.
+/// @details Target creation is transactional: new COM resource sets are validated
+///   and completed before replacing live context state. All resources remain owned
+///   by the including backend context.
+
 /// @brief Allocate a render-target color texture (with optional shader-readable SRV).
 ///
 /// Defaults to single-sample, MipLevels=1. Format chosen by the
 /// caller-supplied `format_class`. If `out_srv` is non-NULL, also adds
 /// `D3D11_BIND_SHADER_RESOURCE` so post-FX passes can sample the
 /// rendered scene.
+/// @param[in] ctx Active D3D11 context and device owner.
+/// @param[in] width Texture width in pixels.
+/// @param[in] height Texture height in pixels.
+/// @param[in] format_class Internal UNORM8 or HDR16F color class.
+/// @param[out] out_tex Receives the created texture.
+/// @param[out] out_rtv Receives its render-target view.
+/// @param[out] out_srv Optional receiver for a shader-resource view.
+/// @return `S_OK` on success, `E_INVALIDARG` for invalid inputs, or a D3D11 failure.
 static HRESULT d3d11_create_color_target(d3d11_context_t *ctx,
                                          int32_t width,
                                          int32_t height,
@@ -95,6 +110,14 @@ static HRESULT d3d11_create_color_target(d3d11_context_t *ctx,
 /// Uses TYPELESS storage when `shader_readable` is set so the texture
 /// can be aliased as both DSV (D32_FLOAT) and SRV (R32_FLOAT) — this
 /// pattern lets shadow maps and SSAO read the depth buffer.
+/// @param[in] ctx Active D3D11 context and device owner.
+/// @param[in] width Texture width in pixels.
+/// @param[in] height Texture height in pixels.
+/// @param[in] shader_readable Nonzero to permit an R32_FLOAT SRV alias.
+/// @param[out] out_tex Receives the created depth texture.
+/// @param[out] out_dsv Receives its D32_FLOAT depth-stencil view.
+/// @param[out] out_srv Optional receiver for its shader-resource view.
+/// @return `S_OK` on success, `E_INVALIDARG` for invalid inputs, or a D3D11 failure.
 static HRESULT d3d11_create_depth_target(d3d11_context_t *ctx,
                                          int32_t width,
                                          int32_t height,
@@ -166,6 +189,12 @@ static HRESULT d3d11_create_depth_target(d3d11_context_t *ctx,
 /// @brief Allocate a CPU-readable staging texture for `Map(READ)`-based readback.
 ///
 /// Used by color readback and by the one-row R32 typeless depth-probe strip.
+/// @param[in] ctx Active D3D11 context and device owner.
+/// @param[in] width Texture width in pixels.
+/// @param[in] height Texture height in pixels.
+/// @param[in] format Supported color or typeless depth format.
+/// @param[out] out_tex Receives the CPU-readable staging texture.
+/// @return `S_OK` on success, `E_INVALIDARG` for invalid inputs, or a D3D11 failure.
 static HRESULT d3d11_create_staging_texture(d3d11_context_t *ctx,
                                             int32_t width,
                                             int32_t height,
@@ -204,6 +233,7 @@ static HRESULT d3d11_create_staging_texture(d3d11_context_t *ctx,
 ///
 /// @details The RTT path owns its own staging texture because its lifetime is tied to the active
 ///          RenderTarget3D. This helper handles the generic screenshot/readback staging surface.
+/// @param[in,out] ctx Context whose reusable staging texture and metadata are cleared.
 static void d3d11_release_readback_staging_texture(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -218,6 +248,11 @@ static void d3d11_release_readback_staging_texture(d3d11_context_t *ctx) {
 /// @details Reuses the existing staging texture when dimensions and format match, avoiding a
 ///          CreateTexture2D/Release pair for every screenshot or readback. Size/format changes
 ///          stage a replacement before releasing the last usable surface.
+/// @param[in,out] ctx Context that owns the reusable staging texture.
+/// @param[in] width Required texture width.
+/// @param[in] height Required texture height.
+/// @param[in] format Required staging format.
+/// @return `S_OK` when a matching texture is ready, or a validation/allocation failure.
 static HRESULT d3d11_ensure_readback_staging_texture(d3d11_context_t *ctx,
                                                      int32_t width,
                                                      int32_t height,
@@ -243,6 +278,10 @@ static HRESULT d3d11_ensure_readback_staging_texture(d3d11_context_t *ctx,
 }
 
 /// @brief Allocate/reuse the default-usage texture that snapshots the final swapchain image.
+/// @param[in,out] ctx Context that owns the snapshot texture.
+/// @param[in] width Required snapshot width.
+/// @param[in] height Required snapshot height.
+/// @return `S_OK` when a matching texture is ready, or a validation/allocation failure.
 static HRESULT d3d11_ensure_presented_snapshot_texture(d3d11_context_t *ctx,
                                                        int32_t width,
                                                        int32_t height) {
@@ -278,6 +317,8 @@ static HRESULT d3d11_ensure_presented_snapshot_texture(d3d11_context_t *ctx,
 }
 
 /// @brief Capture the current swapchain backbuffer before Present invalidates it.
+/// @param[in,out] ctx Context receiving the captured snapshot and validity state.
+/// @return One when the backbuffer is copied successfully; otherwise zero.
 static int d3d11_snapshot_backbuffer_for_readback(d3d11_context_t *ctx) {
     ID3D11Texture2D *back_buffer = NULL;
     D3D11_TEXTURE2D_DESC back_buffer_desc;
@@ -332,6 +373,7 @@ static int d3d11_snapshot_backbuffer_for_readback(d3d11_context_t *ctx) {
 /// @details The native-size overlay is intentionally preserved. This lets a render-scale change
 ///   stage a replacement scene while retaining both the last usable scene and overlay until every
 ///   allocation needed for the new route has succeeded.
+/// @param[in,out] ctx Context whose scene-route resources are released.
 static void d3d11_destroy_scene_route_targets(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -379,6 +421,7 @@ static void d3d11_destroy_scene_route_targets(d3d11_context_t *ctx) {
 /// @brief Release every offscreen target used by the window-scene route.
 /// @details Full teardown is used on resize and context destruction. Scene-only replacement uses
 ///   d3d11_destroy_scene_route_targets so a valid native-size overlay survives transactionally.
+/// @param[in,out] ctx Context whose scene and overlay resources are released.
 static void d3d11_destroy_scene_targets(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -395,6 +438,10 @@ static void d3d11_destroy_scene_targets(d3d11_context_t *ctx) {
 /// Builds three targets: scene color (HDR-capable), motion vectors
 /// (LDR), and depth (R32). A complete replacement is staged before the
 /// live scene/dependent targets are retired; allocation failure preserves them.
+/// @param[in,out] ctx Context that owns the scene target set.
+/// @param[in] width Required scene width.
+/// @param[in] height Required scene height.
+/// @return `S_OK` when a complete matching set is ready, or the first failure.
 static HRESULT d3d11_ensure_scene_targets(d3d11_context_t *ctx, int32_t width, int32_t height) {
     ID3D11Texture2D *new_color_tex = NULL;
     ID3D11RenderTargetView *new_color_rtv = NULL;
@@ -468,6 +515,10 @@ fail:
 ///
 /// Single color target — overlay doesn't need its own depth (it's
 /// drawn 2D on top of the composited scene).
+/// @param[in,out] ctx Context that owns the overlay target.
+/// @param[in] width Required overlay width.
+/// @param[in] height Required overlay height.
+/// @return `S_OK` when a matching target is ready, or a validation/allocation failure.
 static HRESULT d3d11_ensure_overlay_target(d3d11_context_t *ctx, int32_t width, int32_t height) {
     ID3D11Texture2D *new_tex = NULL;
     ID3D11RenderTargetView *new_rtv = NULL;
@@ -513,6 +564,9 @@ static HRESULT d3d11_ensure_overlay_target(d3d11_context_t *ctx, int32_t width, 
 /// @details Skips reallocation when an existing target already matches @p width × @p height.
 ///          On a size change (or first call), creates a complete scene-format replacement before
 ///          unbinding and releasing the prior color SRV/RTV/texture.
+/// @param[in,out] ctx Context that owns the primary post-FX target.
+/// @param[in] width Required target width.
+/// @param[in] height Required target height.
 /// @return S_OK on success; E_INVALIDARG for a null context or non-positive dimensions;
 ///         the D3D11 HRESULT from d3d11_create_color_target on allocation failure.
 static HRESULT d3d11_ensure_postfx_target(d3d11_context_t *ctx, int32_t width, int32_t height) {
@@ -550,6 +604,10 @@ static HRESULT d3d11_ensure_postfx_target(d3d11_context_t *ctx, int32_t width, i
 }
 
 /// @brief Ensure the secondary post-FX scratch target used for non-destructive ping-pong.
+/// @param[in,out] ctx Context that owns the scratch target.
+/// @param[in] width Required target width.
+/// @param[in] height Required target height.
+/// @return `S_OK` when a matching target is ready, or a validation/allocation failure.
 static HRESULT d3d11_ensure_postfx_scratch_target(d3d11_context_t *ctx,
                                                   int32_t width,
                                                   int32_t height) {
@@ -587,6 +645,7 @@ static HRESULT d3d11_ensure_postfx_scratch_target(d3d11_context_t *ctx,
 }
 
 /// @brief Release the Plan 05 bloom mip-chain textures/RTVs/SRVs.
+/// @param[in,out] ctx Context whose bloom resources and metadata are cleared.
 static void d3d11_destroy_bloom_targets(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -605,6 +664,10 @@ static void d3d11_destroy_bloom_targets(d3d11_context_t *ctx) {
 }
 
 /// @brief Whether the cached bloom target chain is complete for the requested scene size.
+/// @param[in] ctx Context containing the cached bloom chain.
+/// @param[in] width Required base scene width.
+/// @param[in] height Required base scene height.
+/// @return One when every cached mip resource and extent is complete.
 static int d3d11_bloom_targets_complete(const d3d11_context_t *ctx, int32_t width, int32_t height) {
     if (!ctx || !vgfx3d_d3d11_is_valid_bloom_mip_count(ctx->bloom_mip_count) ||
         ctx->bloom_base_width != width || ctx->bloom_base_height != height)
@@ -621,6 +684,10 @@ static int d3d11_bloom_targets_complete(const d3d11_context_t *ctx, int32_t widt
 /// @details Level 0 starts at half-res clamped to at least 1px; deeper levels halve
 ///          until the next level would drop below 8px on either axis (at most 6 levels).
 ///          Rebuilt only when the scene size changes.
+/// @param[in,out] ctx Context that owns the bloom mip chain.
+/// @param[in] width Base scene width.
+/// @param[in] height Base scene height.
+/// @return `S_OK` when a complete matching chain is ready, or the first failure.
 static HRESULT d3d11_ensure_bloom_targets(d3d11_context_t *ctx, int32_t width, int32_t height) {
     ID3D11Texture2D *new_tex[VGFX3D_D3D11_BLOOM_MIP_COUNT_MAX] = {NULL};
     ID3D11RenderTargetView *new_rtv[VGFX3D_D3D11_BLOOM_MIP_COUNT_MAX] = {NULL};
@@ -679,6 +746,7 @@ fail:
 }
 
 /// @brief Release the Plan 05 TAA ping-pong history textures/RTVs/SRVs.
+/// @param[in,out] ctx Context whose temporal-history targets are cleared.
 static void d3d11_destroy_taa_targets(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -695,6 +763,10 @@ static void d3d11_destroy_taa_targets(d3d11_context_t *ctx) {
 }
 
 /// @brief Whether both cached TAA history targets are complete for the requested scene size.
+/// @param[in] ctx Context containing the cached history pair.
+/// @param[in] width Required history width.
+/// @param[in] height Required history height.
+/// @return One when both target triplets exist at the requested size.
 static int d3d11_taa_targets_complete(const d3d11_context_t *ctx, int32_t width, int32_t height) {
     if (!ctx || ctx->taa_history_width != width || ctx->taa_history_height != height)
         return 0;
@@ -706,6 +778,10 @@ static int d3d11_taa_targets_complete(const d3d11_context_t *ctx, int32_t width,
 }
 
 /// @brief Build the Plan 05 TAA ping-pong history pair (RGBA16F, scene-sized).
+/// @param[in,out] ctx Context that owns the temporal-history pair.
+/// @param[in] width Required history width.
+/// @param[in] height Required history height.
+/// @return `S_OK` when a complete matching pair is ready, or the first failure.
 static HRESULT d3d11_ensure_taa_targets(d3d11_context_t *ctx, int32_t width, int32_t height) {
     ID3D11Texture2D *new_tex[2] = {NULL, NULL};
     ID3D11RenderTargetView *new_rtv[2] = {NULL, NULL};
@@ -750,6 +826,7 @@ fail:
 }
 
 /// @brief Release the Plan 10 SSR output target.
+/// @param[in,out] ctx Context whose SSR resources and metadata are cleared.
 static void d3d11_destroy_ssr_target(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -762,12 +839,20 @@ static void d3d11_destroy_ssr_target(d3d11_context_t *ctx) {
 }
 
 /// @brief Whether the cached SSR target is complete for the requested scene size.
+/// @param[in] ctx Context containing the cached SSR target.
+/// @param[in] width Required target width.
+/// @param[in] height Required target height.
+/// @return One when texture, RTV, and SRV exist at the requested size.
 static int d3d11_ssr_target_complete(const d3d11_context_t *ctx, int32_t width, int32_t height) {
     return ctx && ctx->ssr_width == width && ctx->ssr_height == height && ctx->ssr_tex &&
            ctx->ssr_rtv && ctx->ssr_srv;
 }
 
 /// @brief Build the Plan 10 SSR output target (scene color format, scene-sized).
+/// @param[in,out] ctx Context that owns the SSR target.
+/// @param[in] width Required target width.
+/// @param[in] height Required target height.
+/// @return `S_OK` when a complete matching target is ready, or the first failure.
 static HRESULT d3d11_ensure_ssr_target(d3d11_context_t *ctx, int32_t width, int32_t height) {
     ID3D11Texture2D *new_tex = NULL;
     ID3D11RenderTargetView *new_rtv = NULL;
@@ -802,6 +887,9 @@ static HRESULT d3d11_ensure_ssr_target(d3d11_context_t *ctx, int32_t width, int3
 ///   D3D11 backend copies the bound `rtt_color_tex` through a staging texture (CPU-readable),
 ///   maps it, and writes the pixels into `target->color_pixels` using `rt_pixels` layout.
 ///   Returns 0 when preconditions fail so the caller can fall back to the last cached copy.
+/// @param[in,out] ctx_ptr Opaque pointer to the D3D11 context owning the RTT resources.
+/// @param[in,out] target Runtime render target whose CPU mirrors receive current pixels.
+/// @return One when readback completes and the dirty flag is cleared; otherwise zero.
 static int d3d11_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *target) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     D3D11_TEXTURE2D_DESC color_desc;
@@ -954,6 +1042,7 @@ cleanup:
 ///
 /// `rtt_target` is the user-visible RT object — we set it to NULL so
 /// the next bind cycle doesn't think the targets are still live.
+/// @param[in,out] ctx Context whose RTT resources and borrowed target association are cleared.
 static void d3d11_destroy_rtt_targets(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -993,6 +1082,9 @@ static void d3d11_destroy_rtt_targets(d3d11_context_t *ctx) {
 ///
 /// Sets `rtt_active` so subsequent bind calls route to the RTT instead
 /// of the swapchain. The staging texture is for CPU readback.
+/// @param[in,out] ctx Context that owns the RTT resource set.
+/// @param[in,out] rt Runtime target descriptor to bind and attach to the sync callback.
+/// @return `S_OK` when a complete matching target set is active, or the first failure.
 static HRESULT d3d11_ensure_rtt_targets(d3d11_context_t *ctx, vgfx3d_rendertarget_t *rt) {
     HRESULT hr;
     vgfx3d_d3d11_color_format_t color_format;
@@ -1074,6 +1166,7 @@ fail:
 }
 
 /// @brief Release shadow-map depth target resources.
+/// @param[in,out] ctx Context whose per-slot and atlas resources are released.
 static void d3d11_destroy_shadow_targets(d3d11_context_t *ctx) {
     if (!ctx)
         return;
@@ -1106,6 +1199,8 @@ static void d3d11_destroy_shadow_targets(d3d11_context_t *ctx) {
 ///   a depth texture while a shader-resource view of the same texture is still
 ///   visible to the pixel shader. If the slot is currently being rendered, the
 ///   output-merger is also detached and the active shadow-pass marker is cleared.
+/// @param[in,out] ctx Context owning the shadow slot.
+/// @param[in] slot Slot index to release.
 static void d3d11_release_shadow_slot(d3d11_context_t *ctx, int32_t slot) {
     if (!ctx || slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS)
         return;
@@ -1127,6 +1222,7 @@ static void d3d11_release_shadow_slot(d3d11_context_t *ctx, int32_t slot) {
 /// @details The shader receives `shadowCount` and validates each light's
 ///   `shadowIndex` against it. Recomputing after allocation failures prevents a
 ///   stale count from making an empty slot sample a NULL SRV.
+/// @param[in,out] ctx Context whose advertised contiguous slot count is recomputed.
 static void d3d11_recompute_shadow_count(d3d11_context_t *ctx) {
     int complete[VGFX3D_MAX_SHADOW_LIGHTS] = {0};
 
@@ -1149,6 +1245,11 @@ static void d3d11_recompute_shadow_count(d3d11_context_t *ctx) {
 /// @brief Allocate the shadow-map depth target at the requested size.
 ///
 /// Always shader-readable so the main pass can sample shadows.
+/// @param[in,out] ctx Context that owns the shadow slot.
+/// @param[in] slot Slot index to allocate.
+/// @param[in] width Required shadow-map width.
+/// @param[in] height Required shadow-map height.
+/// @return `S_OK` when a matching target exists, or a validation/allocation failure.
 static HRESULT d3d11_ensure_shadow_targets(d3d11_context_t *ctx,
                                            int32_t slot,
                                            int32_t width,
@@ -1183,6 +1284,10 @@ static HRESULT d3d11_ensure_shadow_targets(d3d11_context_t *ctx,
 /// @brief Allocate (or resize) the shared shadow atlas for slots >= VGFX3D_CSM_SLOTS.
 /// @details One depth target holding the fixed tile grid at the per-slot resolution;
 ///   the main pass samples it at t17 through static per-tile UV rects.
+/// @param[in,out] ctx Context that owns the shared atlas.
+/// @param[in] tile_w Per-slot tile width.
+/// @param[in] tile_h Per-slot tile height.
+/// @return `S_OK` when a matching atlas exists, or a validation/allocation failure.
 static HRESULT d3d11_ensure_shadow_atlas(d3d11_context_t *ctx, int32_t tile_w, int32_t tile_h) {
     HRESULT hr;
     int32_t atlas_w;

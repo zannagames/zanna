@@ -20,6 +20,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Canvas3D clear, overlay, camera-begin, and mesh-draw entry points.
+/// @details This implementation fragment is included by `rt_canvas3d.c`. It snapshots or retains
+/// every payload needed after a draw call returns, so queued backend commands never depend on
+/// caller mutation or temporary geometry lifetime.
+
 /*==========================================================================
  * Rendering — dispatches through backend vtable
  *=========================================================================*/
@@ -30,6 +36,8 @@
 ///          the window's CPU framebuffer on every `Clear` only burns memory bandwidth. Custom
 ///          non-software backends without readback still get the mirror for compatibility with
 ///          `Screenshot` fallback behavior.
+/// @param c Borrowed canvas whose backend and render-target mode are inspected.
+/// @return Non-zero only for a windowed non-software backend without native readback.
 static int canvas3d_clear_needs_cpu_window_mirror(const rt_canvas3d *c) {
     return c && c->backend && c->backend != &vgfx3d_software_backend && !c->render_target &&
            !c->backend->readback_rgba;
@@ -38,6 +46,10 @@ static int canvas3d_clear_needs_cpu_window_mirror(const rt_canvas3d *c) {
 /// @brief Clear the framebuffer and depth buffer with the given background color.
 /// @details Must be called at the start of each frame before Begin. Fog and
 ///          ambient light persist until explicitly changed.
+/// @param obj Borrowed Canvas3D handle.
+/// @param r Normalized red clear channel.
+/// @param g Normalized green clear channel.
+/// @param b Normalized blue clear channel.
 void rt_canvas3d_clear(void *obj, double r, double g, double b) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -78,6 +90,8 @@ void rt_canvas3d_clear(void *obj, double r, double g, double b) {
 }
 
 /// @brief Decide which deferred pass owns 2D screen-space draws based on canvas mode.
+/// @param c Borrowed canvas.
+/// @return Main pass during an explicit 2D frame; otherwise final screen-overlay pass.
 static deferred_pass_t canvas3d_screen_pass_kind(const rt_canvas3d *c) {
     return (c && c->frame_is_2d) ? DEFERRED_PASS_MAIN : DEFERRED_PASS_SCREEN_OVERLAY;
 }
@@ -159,6 +173,17 @@ static uint8_t *canvas3d_alloc_screen_geometry_block(rt_canvas3d *c,
 /// and `canvas3d_queue_screen_line`. Manages the auto-grow of the
 /// command buffer and decides whether the geometry lands in the
 /// pre-3D, post-3D, or HUD pass via `canvas3d_screen_pass_kind`.
+/// @param c Canvas with an active compatible frame.
+/// @param vertices Borrowed source vertex array copied into frame-owned storage.
+/// @param vertex_count Positive number of vertices.
+/// @param indices Borrowed source triangle-index array copied into frame-owned storage.
+/// @param index_count Positive number of indices.
+/// @param r Red tint channel stored in the queued vertex payload.
+/// @param g Green tint channel.
+/// @param b Blue tint channel.
+/// @param a Alpha channel and command opacity.
+/// @return Non-zero when the geometry was published with correct frame ownership; zero on invalid
+/// input, overflow, allocation, tracking, or queue failure.
 static int canvas3d_queue_screen_geometry(rt_canvas3d *c,
                                           const vgfx3d_vertex_t *vertices,
                                           int32_t vertex_count,
@@ -250,6 +275,11 @@ static int canvas3d_queue_screen_geometry(rt_canvas3d *c,
 }
 
 /// @brief Intersect a screen-space rect with the overlay clip rect (Plan 08).
+/// @param c Borrowed canvas providing the optional clip rectangle.
+/// @param[in,out] x Rectangle left edge, trimmed in place.
+/// @param[in,out] y Rectangle top edge, trimmed in place.
+/// @param[in,out] w Rectangle width, trimmed in place.
+/// @param[in,out] h Rectangle height, trimmed in place.
 /// @return 0 when the rect is fully clipped away, 1 when (possibly trimmed) drawable.
 static int canvas3d_overlay_clip_rect(
     const rt_canvas3d *c, float *x, float *y, float *w, float *h) {
@@ -472,6 +502,16 @@ static int canvas3d_queue_clipped_round_rect_geometry(rt_canvas3d *c,
 }
 
 /// @brief Convenience wrapper: queue a screen-space rectangle as two triangles.
+/// @param c Canvas with an active compatible frame.
+/// @param x Left edge in screen pixels.
+/// @param y Top edge in screen pixels.
+/// @param w Width in screen pixels.
+/// @param h Height in screen pixels.
+/// @param r Red vertex-color channel.
+/// @param g Green vertex-color channel.
+/// @param b Blue vertex-color channel.
+/// @param a Alpha vertex-color channel.
+/// @return Non-zero on successful queueing or complete clipping; zero on invalid input/failure.
 int canvas3d_queue_screen_rect(
     rt_canvas3d *c, float x, float y, float w, float h, float r, float g, float b, float a) {
     vgfx3d_vertex_t verts[4];
@@ -504,6 +544,17 @@ int canvas3d_queue_screen_rect(
 ///          edges and fans around the rect center — convex, so the fan is exact. The
 ///          radius clamps to half the smaller dimension. When an overlay clip rect is active,
 ///          generated triangles are clipped edge-exactly before queueing.
+/// @param c Canvas with an active compatible frame.
+/// @param x Left edge in screen pixels.
+/// @param y Top edge in screen pixels.
+/// @param w Positive width in screen pixels.
+/// @param h Positive height in screen pixels.
+/// @param radius Corner radius in screen pixels, sanitized and clamped.
+/// @param r Red vertex-color channel.
+/// @param g Green vertex-color channel.
+/// @param b Blue vertex-color channel.
+/// @param a Alpha vertex-color channel.
+/// @return Non-zero on successful queueing or complete clipping; zero on invalid input/failure.
 int canvas3d_queue_screen_round_rect(rt_canvas3d *c,
                                      float x,
                                      float y,
@@ -578,6 +629,10 @@ int canvas3d_queue_screen_round_rect(rt_canvas3d *c,
 ///          end-of-frame temp-object sweep, so textured overlay draws need their
 ///          backing material kept alive separately. Released in
 ///          `canvas3d_clear_final_overlay` once the overlay has replayed.
+/// @param c Canvas owning the final-overlay retention list.
+/// @param obj Non-NULL GC-managed object to retain.
+/// @return Non-zero when the retain was recorded; zero on invalid input, overflow, or allocation
+/// failure.
 int canvas3d_track_final_overlay_temp_object(rt_canvas3d *c, void *obj) {
     if (!c || !obj)
         return 0;
@@ -630,6 +685,18 @@ void canvas3d_release_tracked_final_overlay_temp_object(rt_canvas3d *c, void *ob
 ///          upload/sampling is identical across backends. The material is retained for
 ///          the frame (or until the final overlay replays, for HUD draws) so the
 ///          deferred command's resolved texture stays valid through submission.
+/// @param c Canvas with an active compatible frame.
+/// @param x Destination left edge in screen pixels.
+/// @param y Destination top edge in screen pixels.
+/// @param w Positive destination width.
+/// @param h Positive destination height.
+/// @param pixels Borrowed supported texture source retained through a transient material.
+/// @param u0 Source U coordinate at the left edge.
+/// @param v0 Source V coordinate at the top edge.
+/// @param u1 Source U coordinate at the right edge.
+/// @param v1 Source V coordinate at the bottom edge.
+/// @return Non-zero on successful queueing or complete clipping; zero on invalid input or any
+/// allocation, retention, tracking, or queue failure.
 int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
                                    float x,
                                    float y,
@@ -798,6 +865,13 @@ int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
 }
 
 /// @brief Queue a screen-space textured quad sampling `pixels` over the full UV range.
+/// @param c Canvas with an active compatible frame.
+/// @param x Destination left edge in screen pixels.
+/// @param y Destination top edge in screen pixels.
+/// @param w Positive destination width.
+/// @param h Positive destination height.
+/// @param pixels Borrowed supported texture source.
+/// @return Same success/failure contract as `canvas3d_queue_screen_image_uv`.
 int canvas3d_queue_screen_image(rt_canvas3d *c, float x, float y, float w, float h, void *pixels) {
     return canvas3d_queue_screen_image_uv(c, x, y, w, h, pixels, 0.0f, 0.0f, 1.0f, 1.0f);
 }
@@ -807,6 +881,18 @@ int canvas3d_queue_screen_image(rt_canvas3d *c, float x, float y, float w, float
 /// Width is in screen pixels. The endpoints define the centerline;
 /// the quad is built by extruding by `width/2` perpendicular to
 /// the segment direction. Properly aligned for sub-pixel positions.
+/// @param c Canvas with an active compatible frame.
+/// @param x0 Start X in screen pixels.
+/// @param y0 Start Y in screen pixels.
+/// @param x1 End X in screen pixels.
+/// @param y1 End Y in screen pixels.
+/// @param thickness Positive line width, sanitized and capped in screen pixels.
+/// @param r Red vertex-color channel.
+/// @param g Green vertex-color channel.
+/// @param b Blue vertex-color channel.
+/// @param a Alpha vertex-color channel.
+/// @return Non-zero on successful queueing or complete clipping; zero on invalid coordinates or
+/// queue failure.
 int canvas3d_queue_screen_line(rt_canvas3d *c,
                                float x0,
                                float y0,
@@ -903,6 +989,7 @@ int canvas3d_queue_screen_line(rt_canvas3d *c,
 /// queue into the post-3D HUD pass, which renders after the 3D
 /// scene, postFX, and tonemapping. Pair with `rt_canvas3d_end`
 /// to finish the overlay pass.
+/// @param obj Borrowed Canvas3D handle not already inside a frame.
 void rt_canvas3d_begin_2d(void *obj) {
     vgfx3d_camera_params_t params = {0};
 
@@ -967,6 +1054,9 @@ void rt_canvas3d_begin_2d(void *obj) {
 }
 
 /// @brief Begin recording a final overlay pass that is composited after post-FX.
+/// @details Unlike Begin2D, this records retained commands without immediately opening a backend
+/// frame. It traps if a frame is active or finalization already completed.
+/// @param obj Borrowed Canvas3D handle.
 void rt_canvas3d_begin_overlay(void *obj) {
     vgfx3d_camera_params_t params;
 
@@ -1007,6 +1097,7 @@ void rt_canvas3d_begin_overlay(void *obj) {
 }
 
 /// @brief Finish recording a final overlay pass.
+/// @param obj Borrowed Canvas3D handle; a non-recording canvas is unchanged.
 void rt_canvas3d_end_overlay(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -1019,6 +1110,7 @@ void rt_canvas3d_end_overlay(void *obj) {
 }
 
 /// @brief Discard recorded final-overlay commands for the current frame.
+/// @param obj Borrowed Canvas3D handle whose retained overlay resources are released.
 void rt_canvas3d_clear_overlay(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -1028,6 +1120,12 @@ void rt_canvas3d_clear_overlay(void *obj) {
 
 /// @brief Draw a filled rectangle through the 3D pipeline (screen-space coords).
 /// Must be called between Begin2D/End or Begin/End.
+/// @param obj Borrowed Canvas3D handle with an active frame.
+/// @param x Left edge in screen pixels.
+/// @param y Top edge in screen pixels.
+/// @param w Positive width in screen pixels.
+/// @param h Positive height in screen pixels.
+/// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_rect_3d(
     void *obj, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color) {
     float r;
@@ -1050,6 +1148,12 @@ void rt_canvas3d_draw_rect_3d(
 /// @brief Draw text through the 3D pipeline using the 5×7 bitmap font at a size multiplier.
 /// Each character's "on" pixels are rendered as (2×user_scale)² quads batched into one
 /// mesh; dots are clipped against the overlay clip rect at emission time (Plan 08).
+/// @param obj Borrowed Canvas3D handle with an active frame.
+/// @param x Left text origin in screen pixels.
+/// @param y Top text origin in screen pixels.
+/// @param text Borrowed runtime string.
+/// @param color Packed RGB runtime color.
+/// @param user_scale Positive size multiplier; invalid values use one and large values are capped.
 void rt_canvas3d_draw_text_3d_scaled(
     void *obj, int64_t x, int64_t y, rt_string text, int64_t color, double user_scale) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
@@ -1219,6 +1323,11 @@ void rt_canvas3d_draw_text_3d_scaled(
 }
 
 /// @brief Draw text through the 3D pipeline using the 5×7 bitmap font at the default size.
+/// @param obj Borrowed Canvas3D handle with an active frame.
+/// @param x Left text origin in screen pixels.
+/// @param y Top text origin in screen pixels.
+/// @param text Borrowed runtime string.
+/// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_text_3d(void *obj, int64_t x, int64_t y, rt_string text, int64_t color) {
     rt_canvas3d_draw_text_3d_scaled(obj, x, y, text, color, 1.0);
 }
@@ -1229,6 +1338,12 @@ void rt_canvas3d_draw_text_3d(void *obj, int64_t x, int64_t y, rt_string text, i
 ///   weapon geometry never depth-clips against world walls yet self-occludes
 ///   correctly. A positive @p fov_override_deg replaces the camera's vertical
 ///   FOV terms in the perspective projection (world FOV stays independent).
+/// @param obj Borrowed Canvas3D handle that is not already inside a frame.
+/// @param camera Borrowed live Camera3D providing the view and projection state.
+/// @param fov_override_deg Positive vertical field-of-view override in degrees;
+///   a non-positive value preserves the camera's configured field of view.
+/// @param view_model_pass Non-zero to preserve scene color and begin with fresh
+///   depth for view-model rendering; zero to begin the main scene pass.
 static void canvas3d_begin_camera_pass(void *obj,
                                        void *camera,
                                        double fov_override_deg,
@@ -1460,6 +1575,10 @@ void rt_canvas3d_begin(void *obj, void *camera) {
 ///   draws never depth-clip against world geometry, still self-occlude, use the
 ///   canvas light set, and neither cast shadows nor redraw the skybox. Close
 ///   the pass with `End` before HUD overlay drawing.
+/// @param obj Borrowed Canvas3D handle after the main scene pass has ended.
+/// @param camera Borrowed Camera3D supplying the view and clipping planes.
+/// @param fov_y_degrees Positive vertical field of view in degrees for the
+///   view-model pass; a non-positive value preserves the camera field of view.
 void rt_canvas3d_begin_view_model(void *obj, void *camera, double fov_y_degrees) {
     canvas3d_begin_camera_pass(obj, camera, fov_y_degrees, 1);
 }
@@ -1468,12 +1587,20 @@ void rt_canvas3d_begin_view_model(void *obj, void *camera, double fov_y_degrees)
 ///
 /// Resources keyed off `(canvas, serial)` know they're stale when
 /// their cached serial is older than the canvas's current value.
+/// @param obj Borrowed Canvas3D handle.
+/// @return The positive current frame serial, or zero for an invalid canvas or
+///   before the first frame has begun.
 int64_t rt_canvas3d_get_frame_serial(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return (c && c->frame_serial > 0) ? c->frame_serial : 0;
 }
 
 /// @brief Internal opt-in used by Game3D floating origin to keep backend floats near the camera.
+/// @details Changing the mode invalidates accumulated occlusion history. Turning
+///   it off also clears the stored camera-relative origin.
+/// @param obj Borrowed Canvas3D handle.
+/// @param enabled Non-zero to rebase backend uploads around the per-frame camera
+///   origin; zero to upload absolute coordinates.
 void rt_canvas3d_set_camera_relative_upload(void *obj, int8_t enabled) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     int8_t next;
@@ -1494,6 +1621,32 @@ void rt_canvas3d_set_camera_relative_upload(void *obj, int8_t enabled) {
 /// `sort_key` is used by the deferred renderer to depth-sort
 /// translucent draws back-to-front before flushing. Opaque
 /// objects ignore it (the depth buffer handles their order).
+/// @details Valid inputs are captured into a deferred draw for the current
+///   frame. Heap-backed mesh, material, texture, and splat resources are
+///   retained through replay; mutable geometry and prior animation arrays are
+///   snapshotted when required. Invalid handles, an inactive frame, an
+///   unavailable backend, or empty/non-resident geometry cause no draw.
+/// @param obj Borrowed Canvas3D handle with an active 3D pass.
+/// @param mesh_obj Borrowed live Mesh3D whose geometry is queued or snapshotted.
+/// @param model_matrix Borrowed array of 16 row-major doubles; its value is
+///   converted and captured before this function returns.
+/// @param material_obj Borrowed live Material3D; resources needed by the queued
+///   command are retained through frame cleanup.
+/// @param motion_key Optional stable instance identity used for previous-model
+///   history and deterministic transparent ordering; may be `NULL`.
+/// @param prev_bone_palette Optional borrowed previous-frame bone palette used
+///   for motion data; may be `NULL`.
+/// @param prev_morph_weights Optional borrowed previous-frame morph-weight array
+///   used for motion data; may be `NULL`.
+/// @param explicit_local_bounds_min Optional three-component local-space AABB
+///   minimum; used only when paired with a valid @p explicit_local_bounds_max.
+/// @param explicit_local_bounds_max Optional three-component local-space AABB
+///   maximum; used only when paired with a valid @p explicit_local_bounds_min.
+/// @param conservative_bounds Non-zero to mark bounds as conservative when
+///   finalizing visibility and culling policy.
+/// @param disable_occlusion Non-zero to exclude this draw from occlusion culling.
+/// @param culling_pad Non-negative world-space padding added for culling;
+///   non-finite or negative values are treated as zero.
 void rt_canvas3d_draw_mesh_matrix_keyed_bounds(void *obj,
                                                void *mesh_obj,
                                                const double *model_matrix,
@@ -1782,6 +1935,21 @@ fail_after_refs:
 /// `sort_key` is used by the deferred renderer to depth-sort
 /// translucent draws back-to-front before flushing. Opaque
 /// objects ignore it (the depth buffer handles their order).
+/// @details Uses mesh-derived local bounds, normal culling policy, and no
+///   culling padding. Resource lifetime and invalid-input behavior match
+///   rt_canvas3d_draw_mesh_matrix_keyed_bounds().
+/// @param obj Borrowed Canvas3D handle with an active 3D pass.
+/// @param mesh_obj Borrowed live Mesh3D to queue.
+/// @param model_matrix Borrowed array of 16 row-major doubles captured for the
+///   deferred command.
+/// @param material_obj Borrowed live Material3D whose required resources are
+///   retained through frame cleanup.
+/// @param motion_key Optional stable instance identity for motion history and
+///   transparent ordering; may be `NULL`.
+/// @param prev_bone_palette Optional borrowed previous-frame bone palette; may
+///   be `NULL`.
+/// @param prev_morph_weights Optional borrowed previous-frame morph weights; may
+///   be `NULL`.
 void rt_canvas3d_draw_mesh_matrix_keyed(void *obj,
                                         void *mesh_obj,
                                         const double *model_matrix,
@@ -1804,6 +1972,12 @@ void rt_canvas3d_draw_mesh_matrix_keyed(void *obj,
 }
 
 /// @brief Convenience: queue a mesh draw without an explicit sort key (uses default).
+/// @param obj Borrowed Canvas3D handle with an active 3D pass.
+/// @param mesh_obj Borrowed live Mesh3D to queue.
+/// @param model_matrix Borrowed array of 16 row-major doubles captured for the
+///   deferred command.
+/// @param material_obj Borrowed live Material3D whose required resources are
+///   retained through frame cleanup.
 /// @see rt_canvas3d_draw_mesh_matrix_keyed
 void rt_canvas3d_draw_mesh_matrix(void *obj,
                                   void *mesh_obj,
@@ -1815,8 +1989,14 @@ void rt_canvas3d_draw_mesh_matrix(void *obj,
 /// @brief Submit a mesh for drawing with the given transform and material.
 /// @details Defers the draw into the per-frame queue. Actual rendering happens
 ///          in End(), which sorts opaque draws front-to-back and transparent draws
-///          back-to-front for correct alpha blending. The mesh, transform, and
-///          material pointers are borrowed (not retained).
+///          back-to-front for correct alpha blending. Inputs are borrowed at the
+///          call boundary; the deferred command retains or snapshots every
+///          resource it needs through frame cleanup.
+/// @param obj Borrowed Canvas3D handle with an active 3D pass.
+/// @param mesh_obj Borrowed live Mesh3D to submit.
+/// @param transform_obj Borrowed Mat4 whose matrix is read during submission and
+///   whose identity contributes to per-instance motion history.
+/// @param material_obj Borrowed live Material3D applied to the draw.
 void rt_canvas3d_draw_mesh(void *obj, void *mesh_obj, void *transform_obj, void *material_obj) {
     mat4_impl *transform = canvas3d_mat4_checked(transform_obj);
     uintptr_t motion_key;
@@ -1831,9 +2011,16 @@ void rt_canvas3d_draw_mesh(void *obj, void *mesh_obj, void *transform_obj, void 
 
 /// @brief Apply a height-weighted XZ wind sway to a mesh's vertices in place.
 /// @details Base vertices (lowest local-Y) stay planted; displacement scales with
-///   (normalized height)^2 along (dir_x, dir_z), modulated by sin(phase) with a smaller
+///   the square of normalized height along (dir_x, dir_z), modulated by sin(phase) with a smaller
 ///   perpendicular flutter. Only the XZ position changes (height is preserved). Marks the
 ///   mesh geometry dirty so cached bounds/tangents/upload refresh. NULL/degenerate-safe.
+/// @param mesh Mutable Mesh3D to deform; `NULL`, empty, or vertically degenerate
+///   meshes are left unchanged.
+/// @param dir_x X component of the horizontal sway direction.
+/// @param dir_z Z component of the horizontal sway direction.
+/// @param strength Maximum displacement scale; non-positive values leave the
+///   mesh unchanged.
+/// @param phase Animation phase in radians used by the sway and flutter waves.
 void canvas3d_deform_mesh_wind(
     rt_mesh3d *mesh, double dir_x, double dir_z, double strength, double phase) {
     uint32_t n;
@@ -1888,6 +2075,16 @@ void canvas3d_deform_mesh_wind(
 ///   so neighbouring meshes move out of step. Works on every backend because it
 ///   deforms geometry before submission rather than relying on a vertex shader.
 ///   `strength <= 0` (or a degenerate mesh) falls back to a plain DrawMesh.
+/// @param obj Borrowed Canvas3D handle with an active 3D pass.
+/// @param mesh_obj Borrowed live Mesh3D that is cloned before deformation.
+/// @param transform_obj Borrowed Mat4 used to place the submitted clone.
+/// @param material_obj Borrowed live Material3D applied to the submitted clone.
+/// @param dir_x X component of the horizontal sway direction.
+/// @param dir_z Z component of the horizontal sway direction.
+/// @param strength Maximum wind displacement scale; non-positive values bypass
+///   cloning and queue the original mesh.
+/// @param phase Animation phase in radians; vary it per instance to decorrelate
+///   neighboring motion.
 void rt_canvas3d_draw_mesh_wind(void *obj,
                                 void *mesh_obj,
                                 void *transform_obj,

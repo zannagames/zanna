@@ -16,6 +16,18 @@
 // Links: vgfx3d_backend_sw.c, vgfx3d_backend_sw_vertex.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file vgfx3d_backend_sw_raster.inc
+ * @brief Implements edge-function triangle rasterization and per-fragment shading for the
+ *        software Graphics3D backend.
+ *
+ * The fragment performs perspective-correct attribute interpolation, texture and terrain-splat
+ * sampling, PBR or legacy lighting, environment reflections, shadowing, fog, alpha handling,
+ * depth testing, and top-left-rule framebuffer coverage. Scissored entry points allow independent
+ * worker jobs to shade disjoint tile regions deterministically.
+ */
+
 /*==========================================================================
  * Edge-function triangle rasterizer
  *=========================================================================*/
@@ -64,11 +76,28 @@ static void sw_apply_environment_reflection(const vgfx3d_draw_cmd_t *cmd,
 // would dominate the cost.
 
 /// @brief 3-vector dot product (six args, avoids array packing overhead).
+/// @param ax First vector X component.
+/// @param ay First vector Y component.
+/// @param az First vector Z component.
+/// @param bx Second vector X component.
+/// @param by Second vector Y component.
+/// @param bz Second vector Z component.
+/// @return Scalar dot product of the two vectors.
 static inline float dot3f(float ax, float ay, float az, float bx, float by, float bz) {
     return ax * bx + ay * by + az * bz;
 }
 
 /// @brief Convert screen-space barycentrics into perspective-correct attribute weights.
+/// @param b0 First screen-space barycentric coordinate.
+/// @param b1 Second screen-space barycentric coordinate.
+/// @param b2 Third screen-space barycentric coordinate.
+/// @param inv_w0 Reciprocal clip-space W for the first vertex.
+/// @param inv_w1 Reciprocal clip-space W for the second vertex.
+/// @param inv_w2 Reciprocal clip-space W for the third vertex.
+/// @param out_b0 Receives the corrected first weight.
+/// @param out_b1 Receives the corrected second weight.
+/// @param out_b2 Receives the corrected third weight.
+/// @return Non-zero when finite normalized weights were written, otherwise zero.
 static int sw_perspective_attribute_weights(float b0,
                                             float b1,
                                             float b2,
@@ -99,6 +128,9 @@ static int sw_perspective_attribute_weights(float b0,
 }
 
 /// @brief In-place 3-vector normalization (no-op for zero-length vectors).
+/// @param x In/out X component.
+/// @param y In/out Y component.
+/// @param z In/out Z component.
 static inline void normalize3f(float *x, float *y, float *z) {
     (void)sw_normalize3(x, y, z, 0.0f, 0.0f, 0.0f);
 }
@@ -112,6 +144,13 @@ static inline void normalize3f(float *x, float *y, float *z) {
 ///   The result is renormalized because subtle floating-point error in
 ///   the subtraction can drift the magnitude away from 1.0 enough to
 ///   affect specular highlight shape.
+/// @param ctx Borrowed software context containing camera pose and projection type.
+/// @param wx World-space point X coordinate.
+/// @param wy World-space point Y coordinate.
+/// @param wz World-space point Z coordinate.
+/// @param out_vx Receives the normalized view-direction X component.
+/// @param out_vy Receives the normalized view-direction Y component.
+/// @param out_vz Receives the normalized view-direction Z component.
 static inline void sw_compute_view_vector(const sw_context_t *ctx,
                                           float wx,
                                           float wy,
@@ -150,6 +189,12 @@ static inline void sw_compute_view_vector(const sw_context_t *ctx,
 ///   euclidean distance to the eye, giving the familiar radial fog
 ///   falloff. Null context returns 0 so missed-setup paths produce no
 ///   fog rather than crashing.
+/// @param ctx Borrowed software context containing camera pose and projection type.
+/// @param wx World-space point X coordinate.
+/// @param wy World-space point Y coordinate.
+/// @param wz World-space point Z coordinate.
+/// @return Non-negative forward depth for orthographic cameras or Euclidean eye distance for
+///         perspective cameras; zero for a null context.
 static inline float sw_compute_fog_distance(const sw_context_t *ctx, float wx, float wy, float wz) {
     if (!ctx)
         return 0.0f;
@@ -177,6 +222,24 @@ static inline float sw_compute_fog_distance(const sw_context_t *ctx, float wx, f
 ///   zero reflectivity, no valid view) leave `inout_rgb` untouched so
 ///   the caller can invoke this unconditionally and not pay for
 ///   reflection work on surfaces that don't want it.
+/// @param cmd Borrowed draw command containing environment and material settings.
+/// @param normal_map Optional borrowed normal-map view.
+/// @param metallic_roughness_map Optional borrowed PBR material-map view.
+/// @param attr_b0 Perspective-correct first attribute weight.
+/// @param attr_b1 Perspective-correct second attribute weight.
+/// @param attr_b2 Perspective-correct third attribute weight.
+/// @param uv_b0 First screen-space weight used by slot-specific UV interpolation.
+/// @param uv_b1 Second screen-space weight used by slot-specific UV interpolation.
+/// @param uv_b2 Third screen-space weight used by slot-specific UV interpolation.
+/// @param v0 Borrowed first triangle vertex.
+/// @param v1 Borrowed second triangle vertex.
+/// @param v2 Borrowed third triangle vertex.
+/// @param ctx Borrowed software context containing camera state.
+/// @param precomputed_world_normal Optional borrowed normalized shading normal from the main pass.
+/// @param precomputed_uvs Optional borrowed slot UVs from the main shading pass.
+/// @param inout_r In/out fragment red component.
+/// @param inout_g In/out fragment green component.
+/// @param inout_b In/out fragment blue component.
 static void sw_apply_environment_reflection(const vgfx3d_draw_cmd_t *cmd,
                                             const sw_pixels_view *normal_map,
                                             const sw_pixels_view *metallic_roughness_map,
@@ -358,6 +421,9 @@ static void sw_apply_environment_reflection(const vgfx3d_draw_cmd_t *cmd,
 /// `(α² / (π · ((N·H)² · (α² - 1) + 1)²))` with `α = roughness²`.
 /// Standard formula from "Microfacet Models for Refraction" (Walter
 /// et al, 2007). Used in the Cook-Torrance specular term.
+/// @param ndh Clamped dot product between surface normal and half vector.
+/// @param roughness Perceptual material roughness.
+/// @return GGX normal-distribution value with a small denominator guard.
 static inline float pbr_distribution_ggx(float ndh, float roughness) {
     const float kPi = 3.14159265358979323846f;
     float a = roughness * roughness;
@@ -371,6 +437,9 @@ static inline float pbr_distribution_ggx(float ndh, float roughness) {
 /// `N·V / (N·V · (1 - k) + k)` with k = (roughness+1)²/8 (per-direction
 /// k; pairs with `pbr_geometry_smith` to combine view + light). Models
 /// microfacet self-shadowing/masking.
+/// @param ndv Clamped normal-direction dot product.
+/// @param roughness Perceptual material roughness.
+/// @return Schlick-GGX single-direction visibility term.
 static inline float pbr_geometry_schlick_ggx(float ndv, float roughness) {
     float r = roughness + 1.0f;
     float k = (r * r) / 8.0f;
@@ -378,6 +447,10 @@ static inline float pbr_geometry_schlick_ggx(float ndv, float roughness) {
 }
 
 /// @brief PBR G term: Smith geometry — combines view and light G1 contributions.
+/// @param ndv Clamped normal-view dot product.
+/// @param ndl Clamped normal-light dot product.
+/// @param roughness Perceptual material roughness.
+/// @return Product of the view and light Schlick-GGX visibility terms.
 static inline float pbr_geometry_smith(float ndv, float ndl, float roughness) {
     return pbr_geometry_schlick_ggx(ndv, roughness) * pbr_geometry_schlick_ggx(ndl, roughness);
 }
@@ -431,6 +504,17 @@ typedef struct {
 ///   the base-color texture, the optional terrain-splat layer blend, and the
 ///   legacy emissive map. Writes the albedo to (*fr,*fg,*fb_c) and the per-texel
 ///   base-color alpha to *tex_alpha.
+/// @param fc Borrowed per-triangle fragment context.
+/// @param attr_b0 Perspective-correct first attribute weight.
+/// @param attr_b1 Perspective-correct second attribute weight.
+/// @param attr_b2 Perspective-correct third attribute weight.
+/// @param uv_b0 First screen-space weight used for slot UV interpolation.
+/// @param uv_b1 Second screen-space weight used for slot UV interpolation.
+/// @param uv_b2 Third screen-space weight used for slot UV interpolation.
+/// @param fr Receives the pre-lighting red component.
+/// @param fg Receives the pre-lighting green component.
+/// @param fb_c Receives the pre-lighting blue component.
+/// @param tex_alpha Receives sampled base-color alpha.
 static void sw_shade_resolve_albedo(const sw_fragment_ctx *fc,
                                     float attr_b0,
                                     float attr_b1,
@@ -545,6 +629,15 @@ static void sw_shade_resolve_albedo(const sw_fragment_ctx *fc,
 /// @brief Interpolate the world-space vertex normal and, when a normal map is
 ///   bound and the tangent is non-degenerate, perturb it through the TBN basis.
 ///   Writes the final shading normal to (*out_nx,*out_ny,*out_nz).
+/// @param fc Borrowed per-triangle fragment context.
+/// @param b0 Perspective-correct first attribute weight.
+/// @param b1 Perspective-correct second attribute weight.
+/// @param b2 Perspective-correct third attribute weight.
+/// @param normal_u U coordinate for the normal-map slot.
+/// @param normal_v V coordinate for the normal-map slot.
+/// @param out_nx Receives the normalized world-space X component.
+/// @param out_ny Receives the normalized world-space Y component.
+/// @param out_nz Receives the normalized world-space Z component.
 static void sw_shade_perturb_normal(const sw_fragment_ctx *fc,
                                     float b0,
                                     float b1,
@@ -629,6 +722,15 @@ static void sw_shade_perturb_normal(const sw_fragment_ctx *fc,
 }
 
 /// @brief Preserve the historical punctual-light path and its cross-compiler snapshots.
+/// @param lt Borrowed sanitized light.
+/// @param wx World-space receiver X coordinate.
+/// @param wy World-space receiver Y coordinate.
+/// @param wz World-space receiver Z coordinate.
+/// @param llx Receives the fragment-to-light X component.
+/// @param lly Receives the fragment-to-light Y component.
+/// @param llz Receives the fragment-to-light Z component.
+/// @param la Receives scalar attenuation.
+/// @return Non-zero only when @p lt produces directional BRDF lighting at the receiver.
 static int sw_eval_light_dir(const vgfx3d_light_params_t *lt,
                              float wx,
                              float wy,
@@ -644,6 +746,12 @@ static int sw_eval_light_dir(const vgfx3d_light_params_t *lt,
 ///   (*fr,*fg,*fb_c) and overwrites it with the lit color. Samples the
 ///   metallic-roughness, AO, and emissive maps; accumulates ambient, per-light
 ///   direct, and emissive contributions; applies the toon/emissive shading models.
+/// @param fc Borrowed per-triangle fragment context containing material, maps, and lights.
+/// @param g Borrowed per-fragment world-space geometry.
+/// @param uv Borrowed perspective-correct UVs for each material texture slot.
+/// @param fr In/out linear red component.
+/// @param fg In/out linear green component.
+/// @param fb_c In/out linear blue component.
 static void sw_shade_lighting_pbr(const sw_fragment_ctx *fc,
                                   const sw_shade_geom *g,
                                   const sw_slot_uvs *uv,
@@ -960,6 +1068,12 @@ static void sw_shade_lighting_pbr(const sw_fragment_ctx *fc,
 ///   albedo from (*fr,*fg,*fb_c) and overwrites it with the lit color. Samples the
 ///   specular map; accumulates ambient, per-light diffuse+specular, and emissive
 ///   contributions; applies the toon/emissive shading models.
+/// @param fc Borrowed per-triangle fragment context containing material, maps, and lights.
+/// @param g Borrowed per-fragment world-space geometry.
+/// @param uv Borrowed perspective-correct UVs for each material texture slot.
+/// @param fr In/out red component.
+/// @param fg In/out green component.
+/// @param fb_c In/out blue component.
 static void sw_shade_lighting_phong(const sw_fragment_ctx *fc,
                                     const sw_shade_geom *g,
                                     const sw_slot_uvs *uv,
@@ -1087,6 +1201,16 @@ static void sw_shade_lighting_phong(const sw_fragment_ctx *fc,
 
 /// @brief Blend the fragment color toward the fog color by interpolated camera
 ///   distance. Caller guards on fog_ctx->fog_enabled.
+/// @param fog_ctx Borrowed software context containing distance and height-fog settings.
+/// @param b0 Perspective-correct first attribute weight.
+/// @param b1 Perspective-correct second attribute weight.
+/// @param b2 Perspective-correct third attribute weight.
+/// @param v0 Borrowed first triangle vertex.
+/// @param v1 Borrowed second triangle vertex.
+/// @param v2 Borrowed third triangle vertex.
+/// @param fr In/out red component.
+/// @param fg In/out green component.
+/// @param fb_c In/out blue component.
 static void sw_shade_apply_fog(const sw_context_t *fog_ctx,
                                float b0,
                                float b1,
@@ -1166,6 +1290,10 @@ static void sw_shade_apply_fog(const sw_context_t *fog_ctx,
 /// @brief Convert an interpolated NDC depth (sz, GL-style [-1,1]) to view-space
 ///   depth using the frame's clip planes. Out-of-range/empty (FLT_MAX) inputs
 ///   clamp to the far plane so "nothing behind" reads as maximally distant.
+/// @param ctx Borrowed software context containing near/far planes and projection type.
+/// @param ndc_z Normalized-device depth to linearize.
+/// @return Positive view-space depth, the far plane for cleared input, or zero when clip planes
+///         are invalid.
 static float sw_linearize_ndc_depth(const sw_context_t *ctx, float ndc_z) {
     float zn = ctx->cam_znear;
     float zf = ctx->cam_zfar;
@@ -1183,6 +1311,20 @@ static float sw_linearize_ndc_depth(const sw_context_t *ctx, float ndc_z) {
 /// @brief Apply alpha mode (mask/opaque/blend), the shading_model==4 fresnel-alpha
 ///   term, then write or blend the fragment into the framebuffer (with optional
 ///   depth write). Returns 1 if a pixel was written, 0 if discarded.
+/// @param fc Borrowed per-triangle context containing framebuffer, depth, and material state.
+/// @param x Destination pixel X coordinate.
+/// @param y Destination pixel Y coordinate.
+/// @param idx Linear index into the depth buffer.
+/// @param z Interpolated normalized-device depth.
+/// @param b0 Perspective-correct first attribute weight.
+/// @param b1 Perspective-correct second attribute weight.
+/// @param b2 Perspective-correct third attribute weight.
+/// @param fr Shaded red component.
+/// @param fg Shaded green component.
+/// @param fb_c Shaded blue component.
+/// @param tex_alpha Sampled base-color alpha.
+/// @param pixel_ndv Clamped normal-view dot product used by Fresnel alpha.
+/// @return 1 when an opaque or blended pixel is written, otherwise 0 when discarded.
 static int sw_blend_and_write(const sw_fragment_ctx *fc,
                               int x,
                               int y,
@@ -1280,8 +1422,13 @@ static int sw_blend_and_write(const sw_fragment_ctx *fc,
 ///   mapping and PBR or Phong lighting with shadows, environment reflection,
 ///   distance fog, and alpha-mode-aware blending into the framebuffer.
 /// @param fc Per-triangle invariants (see sw_fragment_ctx).
-/// @param x,y Pixel coordinates; idx the z-buffer index; z the interpolated depth.
-/// @param b0,b1,b2 Barycentric weights of the pixel within the triangle.
+/// @param x Destination pixel X coordinate.
+/// @param y Destination pixel Y coordinate.
+/// @param idx Linear depth-buffer index for the pixel.
+/// @param z Interpolated normalized-device depth.
+/// @param b0 First screen-space barycentric weight.
+/// @param b1 Second screen-space barycentric weight.
+/// @param b2 Third screen-space barycentric weight.
 /// @return 1 if a pixel was written (opaque or blended), 0 if discarded.
 static int sw_shade_fragment(
     const sw_fragment_ctx *fc, int x, int y, size_t idx, float z, float b0, float b1, float b2) {
@@ -1459,6 +1606,9 @@ typedef struct {
 ///          do not both shade it or both leave a crack. The software backend uses screen-space
 ///          coordinates after viewport transform, so this deterministic ownership rule is based on
 ///          the final rasterized edge direction.
+/// @param a Borrowed oriented edge start vertex.
+/// @param b Borrowed oriented edge end vertex.
+/// @return Non-zero when the edge is top or left under the rasterizer's screen-space convention.
 static int sw_edge_is_top_left(const screen_vert_t *a, const screen_vert_t *b) {
     float dx;
     float dy;
@@ -1470,6 +1620,9 @@ static int sw_edge_is_top_left(const screen_vert_t *a, const screen_vert_t *b) {
 }
 
 /// @brief Test one edge function value using top-left sample ownership.
+/// @param value Signed half-space edge-function value at the sample.
+/// @param top_left Non-zero when exact-zero samples belong to this edge.
+/// @return Non-zero when the sample lies inside or on an owned edge.
 static int sw_edge_accepts_sample(float value, uint8_t top_left) {
     return value > 0.0f || (top_left && value == 0.0f);
 }
@@ -1478,6 +1631,16 @@ static int sw_edge_accepts_sample(float value, uint8_t top_left) {
 ///   compute the bounding box + half-space edge functions. Returns 1 with *g
 ///   filled when the triangle should be rasterized, or 0 (emitting the matching
 ///   reject debug line when emit_debug is set) when it is rejected.
+/// @param v0 Borrowed first screen-space vertex.
+/// @param v1 Borrowed second screen-space vertex.
+/// @param v2 Borrowed third screen-space vertex.
+/// @param fb_w Positive framebuffer width in pixels.
+/// @param fb_h Positive framebuffer height in pixels.
+/// @param backface_cull Non-zero to reject back-facing triangles.
+/// @param emit_debug Non-zero to print a bounded diagnostic for rejected geometry.
+/// @param debug_tri_count Optional in/out diagnostic counter.
+/// @param g Receives reordered vertices, clipped bounds, and edge-function increments.
+/// @return 1 when @p g describes a rasterizable triangle, otherwise 0.
 static int sw_raster_prepare(const screen_vert_t *v0,
                              const screen_vert_t *v1,
                              const screen_vert_t *v2,
@@ -1606,13 +1769,45 @@ static int sw_raster_prepare(const screen_vert_t *v0,
     return 1;
 }
 
-/// @brief Rasterize one screen-space triangle into the framebuffer with depth testing and
-///   per-pixel shading, sampling the bound albedo/emissive/normal/specular/metallic-roughness/
-///   AO maps. This is the software backend's inner fill loop.
+/// @brief Advance an edge-function accumulator by a signed number of steps.
+/// @param value Edge-function value at the starting sample.
+/// @param delta Per-step edge-function increment.
+/// @param steps Signed number of pixel or scanline steps.
+/// @return The advanced edge-function value.
 static float sw_advance_edge_value(float value, float delta, int steps) {
     return value + delta * (float)steps;
 }
 
+/// @brief Rasterize and shade one triangle within an inclusive pixel scissor rectangle.
+/// @details Prepares top-left-rule edge functions once, resolves triangle-constant texture views,
+///          and walks only the intersection of the triangle bounds, framebuffer, and supplied
+///          scissor. The caller must ensure parallel jobs use disjoint scissor regions.
+/// @param pixels Borrowed mutable RGBA8 framebuffer.
+/// @param zbuf Borrowed mutable linear depth buffer matching @p fb_w and @p fb_h.
+/// @param fb_w Positive framebuffer width in pixels.
+/// @param fb_h Positive framebuffer height in pixels.
+/// @param stride Framebuffer row stride in bytes.
+/// @param v0 Borrowed first screen-space vertex.
+/// @param v1 Borrowed second screen-space vertex.
+/// @param v2 Borrowed third screen-space vertex.
+/// @param tex Optional borrowed base-color texture view.
+/// @param emissive_tex Optional borrowed emissive texture view.
+/// @param emissive_color Borrowed three-component legacy emissive multiplier.
+/// @param normal_map Optional borrowed tangent-space normal-map view.
+/// @param specular_map Optional borrowed legacy specular-map view.
+/// @param metallic_roughness_map Optional borrowed PBR metallic-roughness-map view.
+/// @param ao_map Optional borrowed ambient-occlusion-map view.
+/// @param lightmap Optional borrowed baked-lightmap view.
+/// @param cmd Borrowed sanitized draw command.
+/// @param lights Optional borrowed sanitized light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Borrowed three-component ambient-light color.
+/// @param backface_cull Non-zero to reject back-facing triangles.
+/// @param fog_ctx Borrowed software context containing camera, fog, shadow, and debug state.
+/// @param clip_min_x Inclusive scissor minimum X coordinate.
+/// @param clip_min_y Inclusive scissor minimum Y coordinate.
+/// @param clip_max_x Inclusive scissor maximum X coordinate.
+/// @param clip_max_y Inclusive scissor maximum Y coordinate.
 static void raster_triangle_scissored(uint8_t *pixels,
                                       float *zbuf,
                                       int32_t fb_w,
@@ -1790,6 +1985,31 @@ static void raster_triangle_scissored(uint8_t *pixels,
     }
 }
 
+/// @brief Rasterize and shade one triangle across the complete framebuffer.
+/// @details Convenience wrapper around @c raster_triangle_scissored() using the full framebuffer
+///          bounds.
+/// @param pixels Borrowed mutable RGBA8 framebuffer.
+/// @param zbuf Borrowed mutable linear depth buffer matching @p fb_w and @p fb_h.
+/// @param fb_w Positive framebuffer width in pixels.
+/// @param fb_h Positive framebuffer height in pixels.
+/// @param stride Framebuffer row stride in bytes.
+/// @param v0 Borrowed first screen-space vertex.
+/// @param v1 Borrowed second screen-space vertex.
+/// @param v2 Borrowed third screen-space vertex.
+/// @param tex Optional borrowed base-color texture view.
+/// @param emissive_tex Optional borrowed emissive texture view.
+/// @param emissive_color Borrowed three-component legacy emissive multiplier.
+/// @param normal_map Optional borrowed tangent-space normal-map view.
+/// @param specular_map Optional borrowed legacy specular-map view.
+/// @param metallic_roughness_map Optional borrowed PBR metallic-roughness-map view.
+/// @param ao_map Optional borrowed ambient-occlusion-map view.
+/// @param lightmap Optional borrowed baked-lightmap view.
+/// @param cmd Borrowed sanitized draw command.
+/// @param lights Optional borrowed sanitized light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Borrowed three-component ambient-light color.
+/// @param backface_cull Non-zero to reject back-facing triangles.
+/// @param fog_ctx Borrowed software context containing camera, fog, shadow, and debug state.
 static void raster_triangle(uint8_t *pixels,
                             float *zbuf,
                             int32_t fb_w,

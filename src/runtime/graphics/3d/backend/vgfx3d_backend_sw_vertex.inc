@@ -16,6 +16,17 @@
 // Links: vgfx3d_backend_sw.c, vgfx3d_backend_sw_raster.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file vgfx3d_backend_sw_vertex.inc
+ * @brief Implements software-backend vertex scratch management, homogeneous clipping, and
+ *        Gouraud lighting.
+ *
+ * Source vertices are transformed into context-owned pipeline storage, clipped against the six
+ * homogeneous view-frustum planes while preserving all interpolants, and optionally lit per
+ * vertex for the legacy software shading path.
+ */
+
 /*==========================================================================
  * Pipeline vertex
  *=========================================================================*/
@@ -36,6 +47,10 @@ struct pipe_vert {
 ///   waste cycles on memory-only work, so the context caches the largest buffer ever
 ///   needed; subsequent smaller draws reuse it free. Returns the scratch pointer or
 ///   `NULL` on overflow / allocation failure.
+/// @param ctx Borrowed software context that owns the reusable scratch allocation.
+/// @param count Positive number of pipeline vertices required by the draw.
+/// @return Context-owned storage for at least @p count vertices, or null on invalid input,
+///         arithmetic overflow, or allocation failure.
 static pipe_vert_t *sw_acquire_pipe_vertices(sw_context_t *ctx, uint32_t count) {
     if (!ctx || count == 0)
         return NULL;
@@ -57,6 +72,7 @@ static pipe_vert_t *sw_acquire_pipe_vertices(sw_context_t *ctx, uint32_t count) 
 /// Set the env var to anything non-zero to enable per-draw debug
 /// output (vertex counts, shader paths, etc.). Cached on first call
 /// to avoid repeated `getenv` overhead in the hot path.
+/// @return Non-zero when software Graphics3D debug tracing is enabled.
 static int sw_debug_enabled(void) {
     /* 0 = uninitialized, 1 = one thread is reading the environment, 2 = disabled,
      * 3 = enabled. This is a real once gate rather than a racy "benign" cache: the C
@@ -86,6 +102,10 @@ static int sw_debug_enabled(void) {
 /// Used during clipping to construct intersection vertices on the
 /// frustum boundary. Interpolates clip pos, world pos, normal,
 /// tangent, UV, and color.
+/// @param a Borrowed edge-start pipeline vertex.
+/// @param b Borrowed edge-end pipeline vertex.
+/// @param t Interpolation parameter, conventionally in `[0, 1]`.
+/// @param out Receives all interpolated pipeline attributes.
 static void pipe_lerp(const pipe_vert_t *a, const pipe_vert_t *b, float t, pipe_vert_t *out) {
     float s = 1.0f - t;
     for (int i = 0; i < 4; i++)
@@ -114,6 +134,9 @@ static void pipe_lerp(const pipe_vert_t *a, const pipe_vert_t *b, float t, pipe_
 ///   0: left   (-x <= w  →  x+w >= 0)    1: right (x <= w  →  w-x >= 0)
 ///   2: bottom (-y <= w  →  y+w >= 0)    3: top   (y <= w  →  w-y >= 0)
 ///   4: near   (-z <= w  →  z+w >= 0)    5: far   (z <= w  →  w-z >= 0)
+/// @param v Borrowed pipeline vertex containing homogeneous clip coordinates.
+/// @param plane Frustum-plane index from zero through five.
+/// @return Signed homogeneous distance, non-negative on the plane's inside half-space.
 static float clip_dist(const pipe_vert_t *v, int plane) {
     float x = v->clip[0], y = v->clip[1], z = v->clip[2], w = v->clip[3];
     switch (plane) {
@@ -141,6 +164,11 @@ static float clip_dist(const pipe_vert_t *v, int plane) {
 /// polygon in `out`. Bounded by `MAX_CLIP_VERTS` (9) — extra
 /// intersections beyond that are dropped (won't happen for one
 /// triangle clipped against six planes).
+/// @param in Borrowed input polygon.
+/// @param in_count Number of valid input vertices.
+/// @param out Receives the clipped polygon with capacity for @c MAX_CLIP_VERTS vertices.
+/// @param plane Frustum-plane index to clip against.
+/// @return Number of output vertices, or zero when no polygon remains.
 static int clip_poly_plane(const pipe_vert_t *in, int in_count, pipe_vert_t *out, int plane) {
     if (in_count < 1)
         return 0;
@@ -175,6 +203,9 @@ static int clip_poly_plane(const pipe_vert_t *in, int in_count, pipe_vert_t *out
 /// @brief Clip a triangle against all 6 frustum planes, producing a convex polygon.
 /// Uses double-buffer ping-pong (buf_a ↔ buf_b) to avoid allocation.
 /// Returns vertex count (>= 3) or 0 if fully clipped.
+/// @param tri Borrowed array of three pipeline vertices.
+/// @param out Receives the clipped polygon with capacity for @c MAX_CLIP_VERTS vertices.
+/// @return Clipped vertex count of at least three, or zero when fully outside.
 static int clip_triangle(const pipe_vert_t *tri, pipe_vert_t *out) {
     pipe_vert_t buf_a[MAX_CLIP_VERTS], buf_b[MAX_CLIP_VERTS];
     memcpy(buf_a, tri, 3 * sizeof(pipe_vert_t));
@@ -204,6 +235,12 @@ static int clip_triangle(const pipe_vert_t *tri, pipe_vert_t *out) {
 /// their closest analytic point; volume lights add isotropic local irradiance.
 /// Shaded color is later interpolated across triangle pixels (Gouraud).
 /// Materials with `unlit` flag bypass lighting entirely.
+/// @param v Mutable pipeline vertex whose color is replaced by the material/light result.
+/// @param ctx Borrowed software context containing camera state.
+/// @param cmd Borrowed sanitized draw command containing material properties.
+/// @param lights Optional borrowed sanitized light array.
+/// @param light_count Number of entries supplied in @p lights.
+/// @param ambient Optional borrowed three-component ambient color; null means black.
 static void compute_lighting(pipe_vert_t *v,
                              const sw_context_t *ctx,
                              const vgfx3d_draw_cmd_t *cmd,

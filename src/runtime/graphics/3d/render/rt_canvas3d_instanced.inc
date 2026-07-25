@@ -20,16 +20,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @brief Queue an instanced draw — render `instance_count` copies of `mesh` with per-instance
-/// transforms.
+/// @file
+/// @brief Implements Canvas3D instanced mesh and compact-particle submission.
+/// @details This fragment snapshots mutable instance data, retains referenced
+///   render resources, selects hardware or per-instance fallback paths, and
+///   partitions spatially wide batches for useful aggregate culling.
 ///
-/// One draw call instead of `instance_count` separate calls.
-/// Used for foliage, debris, particle clouds, and any scene with
-/// many copies of the same mesh. The matrix array is owned by the
-/// caller for the duration of the frame; the canvas keeps a
-/// reference until the deferred queue flushes.
 /// @brief Owned per-batch references for an instanced draw, so the many failure
 ///        exits release the tracked mesh/material temp-objects through one helper.
+/// @details The structure borrows the validated canvas, mesh, and material
+///   objects while recording only the references newly acquired by one
+///   submission attempt for transactional rollback.
 typedef struct {
     rt_canvas3d *c;
     rt_mesh3d *mesh;
@@ -41,6 +42,9 @@ typedef struct {
 } canvas3d_instanced_batch_t;
 
 /// @brief Release the batch's tracked mesh/material temp-object references (material then mesh).
+/// @details The helper is safe for a `NULL` descriptor. It releases exactly the
+///   resources recorded by this submission attempt and does not free @p b.
+/// @param b Borrowed batch descriptor whose newly tracked references are released.
 static void canvas3d_instanced_release_refs(const canvas3d_instanced_batch_t *b) {
     if (!b)
         return;
@@ -48,6 +52,14 @@ static void canvas3d_instanced_release_refs(const canvas3d_instanced_batch_t *b)
 }
 
 /// @brief Populate the shared base draw command from a mesh's geometry/skin/morph state.
+/// @details Initializes @p base_cmd to an identity-model draw, validates the
+///   mesh's safe geometry counts, flattens material and image-based-lighting
+///   state, binds shared animation data, and records full-resolution texture
+///   streaming demand for the spatially distributed batch.
+/// @param mesh Borrowed validated Mesh3D supplying geometry and animation state.
+/// @param mat Borrowed validated Material3D to flatten into the command.
+/// @param canvas Borrowed Canvas3D supplying frame lighting and texture-stream state.
+/// @param base_cmd Non-`NULL` output command overwritten in full.
 static void canvas3d_build_instanced_base_cmd(rt_mesh3d *mesh,
                                               rt_material3d *mat,
                                               rt_canvas3d *canvas,
@@ -73,6 +85,13 @@ static void canvas3d_build_instanced_base_cmd(rt_mesh3d *mesh,
 /// @details Extras such as vegetation can expand local bounds for shader-like deformation without
 ///   mutating the shared mesh. Invalid explicit bounds are ignored and the mesh/snapshot AABB is
 ///   used instead.
+/// @param mesh Borrowed Mesh3D providing cached or computable local bounds.
+/// @param vertices Borrowed vertex stream used when bounds must be recomputed.
+/// @param explicit_min Optional three-component caller-provided AABB minimum.
+/// @param explicit_max Optional three-component caller-provided AABB maximum;
+///   both explicit arrays must form a valid bound to be selected.
+/// @param out_min Non-`NULL` three-component output receiving the selected minimum.
+/// @param out_max Non-`NULL` three-component output receiving the selected maximum.
 static void canvas3d_select_instanced_local_bounds(const rt_mesh3d *mesh,
                                                    const vgfx3d_vertex_t *vertices,
                                                    const float *explicit_min,
@@ -92,6 +111,24 @@ static void canvas3d_select_instanced_local_bounds(const rt_mesh3d *mesh,
 ///   growth is split into bounded 65,536-instance reservations, but the global instance index is
 ///   retained across chunks so transform order and motion-history identity remain stable. No
 ///   instance is omitted merely because the request crosses a chunk boundary.
+/// @param b Borrowed validated batch descriptor whose references cover queued commands.
+/// @param base_cmd Borrowed command template copied once for each instance.
+/// @param instance_matrices Borrowed array of @p instance_count row-major 4-by-4 matrices.
+/// @param instance_count Number of matrices and fallback draws to process.
+/// @param prev_instance_matrices Optional borrowed array of previous-frame matrices.
+/// @param has_prev_instance_matrices Non-zero when @p prev_instance_matrices
+///   contains one matrix per current instance.
+/// @param rebase_positions64_instances Non-zero to rebase each mesh snapshot
+///   independently for camera-relative double-precision geometry.
+/// @param generate_rebased_tangents Non-zero to generate tangents on each
+///   rebased snapshot when the material needs normal mapping.
+/// @param explicit_local_bounds_min Optional local-space AABB minimum paired
+///   with @p explicit_local_bounds_max.
+/// @param explicit_local_bounds_max Optional local-space AABB maximum paired
+///   with @p explicit_local_bounds_min.
+/// @param conservative_bounds Non-zero to mark the selected bounds conservative.
+/// @param disable_occlusion Non-zero to disable occlusion culling for each
+///   generated draw.
 static void canvas3d_queue_instanced_fallback(const canvas3d_instanced_batch_t *b,
                                               const vgfx3d_draw_cmd_t *base_cmd,
                                               const float *instance_matrices,
@@ -260,6 +297,17 @@ static void canvas3d_queue_instanced_fallback(const canvas3d_instanced_batch_t *
 ///   canvas3d_compute_deferred_world_bounds_uncached), so append never has to rescan the
 ///   matrices for world bounds. @p out_has_world_bounds is set when at least one instance
 ///   contributed a finite bound.
+/// @param c Borrowed Canvas3D providing camera-relative matrix conversion and counters.
+/// @param matrices Borrowed source array containing @p instance_count matrices.
+/// @param instance_count Positive number of matrices to copy.
+/// @param trap_message Optional diagnostic used for overflow, allocation, or
+///   conversion failure; a default instancing diagnostic is used when `NULL`.
+/// @param union_local_min Optional local AABB minimum for accumulating world bounds.
+/// @param union_local_max Optional local AABB maximum for accumulating world bounds.
+/// @param out_world_min Optional three-component aggregate world minimum output.
+/// @param out_world_max Optional three-component aggregate world maximum output.
+/// @param out_has_world_bounds Optional flag set to one when at least one finite
+///   transformed bound contributes, and initialized to zero otherwise.
 /// @return The snapshot buffer, or NULL for invalid arguments.
 static float *canvas3d_alloc_instance_matrix_snapshot(rt_canvas3d *c,
                                                       const float *matrices,
@@ -331,6 +379,26 @@ static float *canvas3d_alloc_instance_matrix_snapshot(rt_canvas3d *c,
 ///          sub-batches pass the ORIGINAL batch pointer/count and an index remap so each
 ///          instance keeps the same motion key it had before the split; unsplit batches
 ///          pass NULL / the live arguments.
+/// @param b Borrowed validated batch descriptor whose retained resources back the command.
+/// @param base_cmd Mutable command template updated with previous-instance storage.
+/// @param instance_matrices Borrowed array of @p instance_count current row-major matrices.
+/// @param instance_count Positive number of instances in this hardware draw.
+/// @param prev_instance_matrices Optional borrowed previous-frame matrix array.
+/// @param has_prev_instance_matrices Non-zero when @p prev_instance_matrices
+///   supplies one matrix per current instance.
+/// @param explicit_local_bounds_min Optional local-space AABB minimum paired
+///   with @p explicit_local_bounds_max.
+/// @param explicit_local_bounds_max Optional local-space AABB maximum paired
+///   with @p explicit_local_bounds_min.
+/// @param conservative_bounds Non-zero to mark the selected bounds conservative.
+/// @param disable_occlusion Non-zero to disable CPU occlusion; multi-instance
+///   aggregate draws also disable it automatically.
+/// @param motion_indices Optional mapping from sub-batch positions to original
+///   instance indices; `NULL` selects consecutive local indices.
+/// @param motion_batch_obj Borrowed identity of the original matrix batch used
+///   when generating stable per-instance motion keys.
+/// @param motion_batch_count Original unsplit instance count participating in
+///   motion-key generation.
 static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *b,
                                               vgfx3d_draw_cmd_t *base_cmd,
                                               const float *instance_matrices,
@@ -477,6 +545,20 @@ static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *
 #define CANVAS3D_INSTANCED_SPLIT_MAX_CELLS 4
 
 /// @brief Partition a wide opaque instanced batch into XZ-grid sub-batches and queue each.
+/// @details Batches below the size or spatial-extent thresholds remain intact.
+///   Temporary bucket storage is released before return; allocation failure
+///   requests the ordinary single hardware draw rather than dropping the batch.
+/// @param b Borrowed validated batch descriptor shared by every generated cell.
+/// @param base_cmd Mutable command template copied into each hardware sub-batch.
+/// @param instance_matrices Borrowed array of current row-major instance matrices.
+/// @param instance_count Number of current matrices available.
+/// @param prev_instance_matrices Optional borrowed previous-frame matrix array.
+/// @param has_prev_instance_matrices Non-zero when the previous matrix array is present.
+/// @param explicit_local_bounds_min Optional local-space AABB minimum for each instance.
+/// @param explicit_local_bounds_max Optional local-space AABB maximum paired
+///   with @p explicit_local_bounds_min.
+/// @param conservative_bounds Non-zero to mark each cell's bounds conservative.
+/// @param disable_occlusion Non-zero to disable occlusion for every generated cell.
 /// @return 1 when the batch was split and queued (or split was attempted and trapped),
 ///         0 when the batch is compact enough to queue as a single hardware draw.
 static int canvas3d_queue_instanced_split(const canvas3d_instanced_batch_t *b,
@@ -610,6 +692,26 @@ static int canvas3d_queue_instanced_split(const canvas3d_instanced_batch_t *b,
 ///   instance with instance id 0, which would pose every copy from the first palette. In that
 ///   case the function queues nothing and returns 0 so the caller can fall back to individual
 ///   skinned draws.
+/// @param canvas_obj Borrowed Canvas3D handle with an active 3D frame.
+/// @param mesh_obj Borrowed live Mesh3D used as shared base geometry.
+/// @param material_obj Borrowed live Material3D shared by every instance.
+/// @param instance_matrices Borrowed array of @p instance_count current row-major matrices.
+/// @param instance_count Number of instances; non-positive requests are legitimate no-ops.
+/// @param prev_instance_matrices Optional borrowed array of previous-frame matrices.
+/// @param has_prev_instance_matrices Non-zero when the previous matrix pointer
+///   is required and contains @p instance_count matrices.
+/// @param explicit_local_bounds_min Optional local-space AABB minimum paired
+///   with @p explicit_local_bounds_max.
+/// @param explicit_local_bounds_max Optional local-space AABB maximum paired
+///   with @p explicit_local_bounds_min.
+/// @param conservative_bounds Non-zero to mark the selected bounds conservative.
+/// @param disable_occlusion Non-zero to disable occlusion culling.
+/// @param override_palette Optional packed per-instance bone matrices replacing
+///   the mesh-shared skinning palette.
+/// @param override_prev_palette Optional packed previous-frame palette matching
+///   @p override_palette; invalid data is treated as absent.
+/// @param override_bone_count Total number of matrices across all override palettes.
+/// @param instance_bone_stride Number of bone matrices assigned to each instance.
 /// @return 1 when the draw was queued (or legitimately dropped), 0 when a per-instance-skinned
 ///   draw could not take the hardware path.
 static int canvas3d_queue_instanced_batch_common(void *canvas_obj,
@@ -799,6 +901,21 @@ static int canvas3d_queue_instanced_batch_common(void *canvas_obj,
 
 /// @brief Queue an instanced-mesh draw (mesh + material + @p instance_count transforms, with
 ///   optional previous-frame matrices for motion vectors) into the canvas's deferred draw queue.
+/// @details Mutable matrix inputs are snapshotted before return. Explicit bounds
+///   override mesh bounds only when both arrays form a valid local-space AABB.
+/// @param canvas_obj Borrowed Canvas3D handle with an active 3D frame.
+/// @param mesh_obj Borrowed live Mesh3D used as shared base geometry.
+/// @param material_obj Borrowed live Material3D shared by every instance.
+/// @param instance_matrices Borrowed array of @p instance_count current row-major matrices.
+/// @param instance_count Number of instances to submit.
+/// @param prev_instance_matrices Optional borrowed array of previous-frame matrices.
+/// @param has_prev_instance_matrices Non-zero when @p prev_instance_matrices
+///   contains one matrix per current instance.
+/// @param explicit_local_bounds_min Optional three-component local AABB minimum.
+/// @param explicit_local_bounds_max Optional three-component local AABB maximum
+///   paired with @p explicit_local_bounds_min.
+/// @param conservative_bounds Non-zero to mark bounds conservative.
+/// @param disable_occlusion Non-zero to disable occlusion culling for the batch.
 void rt_canvas3d_queue_instanced_batch_bounds(void *canvas_obj,
                                               void *mesh_obj,
                                               void *material_obj,
@@ -832,6 +949,15 @@ void rt_canvas3d_queue_instanced_batch_bounds(void *canvas_obj,
 ///   @p instance_bone_stride bones each (total_bone_count matrices overall, at most
 ///   VGFX3D_MAX_BONES). Palette storage must stay valid until the frame flushes —
 ///   callers snapshot into canvas temp buffers.
+/// @param canvas_obj Borrowed Canvas3D handle with an active 3D frame.
+/// @param mesh_obj Borrowed live skinned Mesh3D used as shared geometry.
+/// @param material_obj Borrowed live Material3D shared by every instance.
+/// @param instance_matrices Borrowed array of @p instance_count current matrices.
+/// @param instance_count Number of skinned instances in the hardware chunk.
+/// @param bone_palettes Borrowed packed current-pose bone matrices, grouped by instance.
+/// @param prev_bone_palettes Optional borrowed packed previous-pose matrices.
+/// @param total_bone_count Total number of matrices in @p bone_palettes.
+/// @param instance_bone_stride Number of consecutive matrices belonging to each instance.
 /// @return 1 when queued, 0 when the draw cannot take the hardware-instanced path
 ///   (the caller must fall back to individual skinned draws).
 int rt_canvas3d_queue_instanced_batch_skinned(void *canvas_obj,
@@ -861,6 +987,14 @@ int rt_canvas3d_queue_instanced_batch_skinned(void *canvas_obj,
 }
 
 /// @brief Queue an instanced-mesh draw using the mesh's authored local bounds.
+/// @param canvas_obj Borrowed Canvas3D handle with an active 3D frame.
+/// @param mesh_obj Borrowed live Mesh3D used as shared base geometry.
+/// @param material_obj Borrowed live Material3D shared by every instance.
+/// @param instance_matrices Borrowed array of @p instance_count current row-major matrices.
+/// @param instance_count Number of instances to submit.
+/// @param prev_instance_matrices Optional borrowed previous-frame matrix array.
+/// @param has_prev_instance_matrices Non-zero when @p prev_instance_matrices
+///   contains one matrix per current instance.
 void rt_canvas3d_queue_instanced_batch(void *canvas_obj,
                                        void *mesh_obj,
                                        void *material_obj,
@@ -885,6 +1019,15 @@ void rt_canvas3d_queue_instanced_batch(void *canvas_obj,
 /// @details Used by InstanceBatch3D's double-matrix camera-relative path. It reuses the normal
 ///          instanced queueing pipeline but suppresses the queue's translation rebase so the
 ///          already-rebased matrices are not shifted twice.
+/// @param canvas_obj Borrowed Canvas3D handle with an active 3D frame.
+/// @param mesh_obj Borrowed live Mesh3D used as shared base geometry.
+/// @param material_obj Borrowed live Material3D shared by every instance.
+/// @param instance_matrices Borrowed array of current matrices already expressed
+///   in the frame's render-space coordinate system.
+/// @param instance_count Number of instances to submit.
+/// @param prev_instance_matrices Optional borrowed previous-frame matrices in
+///   the same frame-render coordinate space.
+/// @param has_prev_instance_matrices Non-zero when @p prev_instance_matrices is present.
 void rt_canvas3d_queue_instanced_batch_frame_matrices(void *canvas_obj,
                                                       void *mesh_obj,
                                                       void *material_obj,
@@ -984,6 +1127,9 @@ static int canvas3d_accumulate_particle_instance_bounds(const vgfx3d_particle_in
 /// @brief Report whether the active Canvas3D backend accepts compact particle instances.
 /// @details The explicit vtable capability avoids backend-name branching and prevents the software
 ///   instanced fallback from receiving a payload whose vertices have not been CPU-expanded.
+/// @param canvas_obj Borrowed Canvas3D handle to query.
+/// @return Non-zero only when the canvas has a backend that advertises compact
+///   particle records and provides hardware instanced submission.
 int rt_canvas3d_supports_particle_instancing(void *canvas_obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas_obj);
     return c && c->backend && c->backend->particle_instancing && c->backend->submit_draw_instanced;
@@ -994,6 +1140,14 @@ int rt_canvas3d_supports_particle_instancing(void *canvas_obj) {
 ///   its scratch buffer. The material and its texture dependencies are retained transactionally;
 ///   every failure before enqueue releases only references acquired by this call. Aggregate bounds
 ///   permit frustum rejection, while CPU occlusion is disabled for the spatially distributed batch.
+/// @param canvas_obj Borrowed Canvas3D handle with an active 3D frame and compact
+///   particle-instancing support.
+/// @param material_obj Borrowed live Material3D retained with its texture
+///   dependencies through deferred replay.
+/// @param instances Borrowed array of compact particle records copied before return.
+/// @param instance_count Positive number of records in @p instances.
+/// @return One when the validated batch is queued; zero for unsupported or
+///   invalid state and for any validation, allocation, tracking, or queue failure.
 int rt_canvas3d_queue_particle_batch(void *canvas_obj,
                                      void *material_obj,
                                      const vgfx3d_particle_instance_t *instances,
@@ -1089,7 +1243,3 @@ int rt_canvas3d_queue_particle_batch(void *canvas_obj,
         &((deferred_draw_t *)c->draw_cmds)[c->draw_count - 1], 1, 1);
     return 1;
 }
-
-/// @brief Recompute the canvas's pending/active texture-upload byte counters for this frame.
-/// @details Aggregates the streaming upload state of referenced textures so the caller can budget
-///          GPU upload bandwidth.

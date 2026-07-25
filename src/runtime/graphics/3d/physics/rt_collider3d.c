@@ -33,6 +33,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_collider3d.c
+ * @brief Implements reusable primitive, mesh, compound, and heightfield colliders.
+ *
+ * Collider3D owns shape-specific geometry, maintains a revisioned local-space
+ * AABB, and exposes sanitized raw accessors used by broadphase and narrow-phase
+ * physics. Compound nodes retain acyclic child trees with local transforms;
+ * mesh-backed and heightfield shapes are marked static-only where required.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_collider3d.h"
@@ -57,10 +67,13 @@
 
 static volatile uint64_t g_collider3d_geometry_epoch = 1u;
 
+/// @brief Atomically advance the process-wide collider-geometry change epoch.
 static void collider3d_note_global_geometry_change(void) {
     (void)rt_atomic_fetch_add_u64(&g_collider3d_geometry_epoch, UINT64_C(1), __ATOMIC_RELEASE);
 }
 
+/// @brief Read the process-wide epoch used to invalidate cached collider-dependent structures.
+/// @return Current atomically published geometry epoch.
 uint64_t rt_collider3d_global_geometry_epoch(void) {
     return rt_atomic_load_u64(&g_collider3d_geometry_epoch, __ATOMIC_ACQUIRE);
 }
@@ -108,14 +121,23 @@ typedef struct {
 } rt_collider3d;
 
 /// @brief Safe-cast an opaque handle to rt_collider3d, or NULL if not one.
+/// @param obj Candidate runtime handle.
+/// @return Borrowed collider payload, or NULL when the handle has a different class.
 static rt_collider3d *collider3d_checked(void *obj) {
     return (rt_collider3d *)rt_g3d_checked_or_null(obj, RT_G3D_COLLIDER3D_CLASS_ID);
 }
 
+/// @brief Check whether an integer is a recognized Collider3D shape discriminator.
+/// @param type Candidate shape discriminator.
+/// @return Nonzero when @p type lies in the supported contiguous enum range.
 static int collider3d_type_is_valid(int32_t type) {
     return type >= RT_COLLIDER3D_TYPE_BOX && type <= RT_COLLIDER3D_TYPE_HEIGHTFIELD;
 }
 
+/// @brief Derive a bounded child count from a compound's allocation invariants.
+/// @param collider Compound collider to inspect.
+/// @param require_transforms Nonzero to require the parallel transform array.
+/// @return Safe number of readable child slots, or zero for invalid storage.
 static int32_t collider3d_safe_child_count(const rt_collider3d *collider, int require_transforms) {
     if (!collider || collider->type != RT_COLLIDER3D_TYPE_COMPOUND || !collider->children ||
         collider->child_count <= 0 || collider->child_capacity <= 0)
@@ -126,6 +148,9 @@ static int32_t collider3d_safe_child_count(const rt_collider3d *collider, int re
                                                             : collider->child_capacity;
 }
 
+/// @brief Validate and borrow the Mesh3D retained by a mesh-backed collider.
+/// @param collider Collider whose mesh slot is inspected.
+/// @return Borrowed Mesh3D payload, or NULL for an absent or invalid mesh handle.
 static rt_mesh3d *collider3d_mesh_or_null(const rt_collider3d *collider) {
     if (!collider || !collider->mesh)
         return NULL;
@@ -141,7 +166,11 @@ typedef struct {
     int8_t dirty;
 } rt_transform3d_view;
 
-/// @brief Initialize a 3-component vector with the given x/y/z components.
+/// @brief Initialize a 3-component vector with bounded finite x/y/z components.
+/// @param dst Three-component destination; a null pointer is ignored.
+/// @param x Candidate X component.
+/// @param y Candidate Y component.
+/// @param z Candidate Z component.
 static void vec3_set(double *dst, double x, double y, double z) {
     if (!dst)
         return;
@@ -156,7 +185,9 @@ static void vec3_set(double *dst, double x, double y, double z) {
     }
 }
 
-/// @brief Copy a 3-component vector (`dst[0..2] = src[0..2]`).
+/// @brief Copy and sanitize a three-component vector.
+/// @param dst Three-component destination.
+/// @param src Optional source; NULL produces the origin.
 static void vec3_copy(double *dst, const double *src) {
     if (!src) {
         vec3_set(dst, 0.0, 0.0, 0.0);
@@ -166,6 +197,10 @@ static void vec3_copy(double *dst, const double *src) {
 }
 
 /// @brief Clamp a `double` to the inclusive range `[lo, hi]`.
+/// @param value Value to clamp.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @return @p value limited to the supplied range.
 static double clampd(double value, double lo, double hi) {
     if (value < lo)
         return lo;
@@ -175,6 +210,8 @@ static double clampd(double value, double lo, double hi) {
 }
 
 /// @brief Return a positive finite extent; invalid or near-zero values fall back to 1.0.
+/// @param value Candidate extent, interpreted by absolute magnitude.
+/// @return Sanitized extent in `(0, COLLIDER3D_EXTENT_MAX]`.
 static double collider3d_extent_or_unit(double value) {
     if (!isfinite(value))
         return 1.0;
@@ -186,6 +223,8 @@ static double collider3d_extent_or_unit(double value) {
 
 /// @brief Return the absolute value of a finite scale, clamped to 1.0 for near-zero or non-finite
 /// values.
+/// @param value Candidate scale component.
+/// @return Sanitized positive scale in `(0, COLLIDER3D_EXTENT_MAX]`.
 static double collider3d_scale_or_unit(double value) {
     if (!isfinite(value))
         return 1.0;
@@ -197,6 +236,9 @@ static double collider3d_scale_or_unit(double value) {
 
 /// @brief Return `value` if finite, otherwise return `fallback`; used to sanitize transform fields
 /// read from Zia objects.
+/// @param value Candidate transform component.
+/// @param fallback Replacement for a non-finite candidate.
+/// @return Finite component clamped to the supported coordinate magnitude.
 static double collider3d_transform_component_or(double value, double fallback) {
     value = isfinite(value) ? value : fallback;
     if (!isfinite(value))
@@ -212,6 +254,7 @@ static double collider3d_transform_component_or(double value, double fallback) {
 /// @details Layout is `(x, y, z, w)` with `w` as the scalar part. Used
 ///          to initialize child transforms before reading from a real
 ///          Transform3D source.
+/// @param q Four-component XYZW destination.
 static void quat_identity(double *q) {
     q[0] = 0.0;
     q[1] = 0.0;
@@ -221,6 +264,7 @@ static void quat_identity(double *q) {
 
 /// @brief Normalize a quaternion in-place; replaces with identity if length is near-zero or
 /// non-finite.
+/// @param q Four-component XYZW quaternion to normalize; a null pointer is ignored.
 static void quat_normalize_local(double *q) {
     if (!q)
         return;
@@ -245,6 +289,9 @@ static void quat_normalize_local(double *q) {
 ///          equivalent to rotating first by `b`, then by `a`. The
 ///          formula expanded here is the standard `(s, v)` form
 ///          inlined for the (x, y, z, w) memory layout this file uses.
+/// @param a Left-hand XYZW quaternion.
+/// @param b Right-hand XYZW quaternion.
+/// @param out Receives the XYZW Hamilton product.
 static void quat_mul(const double *a, const double *b, double *out) {
     out[0] = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
     out[1] = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
@@ -258,6 +305,8 @@ static void quat_mul(const double *a, const double *b, double *out) {
 ///          Cheaper than computing the true inverse `(conj/||q||²)` so
 ///          long as the input is normalized (which all rotations here
 ///          are).
+/// @param q Input XYZW quaternion.
+/// @param out Receives its XYZW conjugate.
 static void quat_conjugate(const double *q, double *out) {
     out[0] = -q[0];
     out[1] = -q[1];
@@ -272,6 +321,9 @@ static void quat_conjugate(const double *q, double *out) {
 ///          to a vector. Slightly slower than the optimized
 ///          "two-cross-product" form but easier to verify against
 ///          first principles.
+/// @param q Unit XYZW rotation quaternion.
+/// @param v Three-component input vector.
+/// @param out Receives the rotated vector.
 static void quat_rotate_vec3(const double *q, const double *v, double *out) {
     double qv[4] = {v[0], v[1], v[2], 0.0};
     double q_conj[4];
@@ -291,6 +343,11 @@ static void quat_rotate_vec3(const double *q, const double *v, double *out) {
 ///          order would produce a different (and usually wrong) result
 ///          since rotation around the origin is not commutative with
 ///          translation.
+/// @param position Three-component translation.
+/// @param rotation Unit XYZW rotation quaternion.
+/// @param scale Three-component scale.
+/// @param local_point Point in the source local space.
+/// @param out Receives the transformed and sanitized point.
 static void transform_point_raw(const double *position,
                                 const double *rotation,
                                 const double *scale,
@@ -311,6 +368,13 @@ static void transform_point_raw(const double *position,
 ///          AABB is the tightest axis-aligned box that contains it
 ///          (8 corners is the minimum needed — the OBB extrema sit at
 ///          corners, not edge midpoints).
+/// @param bounds_min Source AABB minimum corner.
+/// @param bounds_max Source AABB maximum corner.
+/// @param position Destination-frame translation.
+/// @param rotation Destination-frame unit XYZW rotation.
+/// @param scale Destination-frame per-axis scale.
+/// @param out_min Receives the transformed AABB minimum.
+/// @param out_max Receives the transformed AABB maximum.
 static void transform_bounds_raw(const double *bounds_min,
                                  const double *bounds_max,
                                  const double *position,
@@ -363,6 +427,7 @@ static void collider3d_recompute_bounds(rt_collider3d *collider);
 ///          the dense child / child-transform arrays and the
 ///          heightfield-heights buffer. Nulled pointers prevent
 ///          double-free if the GC sweeps twice during shutdown.
+/// @param obj Collider payload whose retained references and owned allocations are released.
 static void collider3d_finalizer(void *obj) {
     rt_collider3d *collider = (rt_collider3d *)obj;
     if (!collider)
@@ -389,6 +454,9 @@ static void collider3d_finalizer(void *obj) {
 ///          ownership setup. Bounds default to a degenerate `(0,0,0)`
 ///          AABB; each shape's constructor fills them in via
 ///          `recompute_bounds`.
+/// @param type Valid Collider3D shape discriminator to install.
+/// @return Initialized runtime-managed collider payload, or NULL after reporting allocation
+/// failure.
 static rt_collider3d *collider3d_alloc(int32_t type) {
     rt_collider3d *collider =
         (rt_collider3d *)rt_obj_new_i64(RT_G3D_COLLIDER3D_CLASS_ID, (int64_t)sizeof(rt_collider3d));
@@ -414,6 +482,8 @@ static rt_collider3d *collider3d_alloc(int32_t type) {
 ///          origin. The cast to `rt_transform3d_view` is safe because
 ///          `rt_transform3d` and the view share the prefix layout for
 ///          (vptr, position, rotation, scale).
+/// @param dst Child-transform record to initialize.
+/// @param transform_obj Optional Transform3D-compatible object; NULL selects identity.
 static void collider3d_set_from_transform(rt_collider3d_child *dst, void *transform_obj) {
     vec3_set(dst->position, 0.0, 0.0, 0.0);
     quat_identity(dst->rotation);
@@ -443,8 +513,11 @@ static void collider3d_set_from_transform(rt_collider3d_child *dst, void *transf
 
 /// @brief Recursively check whether `needle` appears in a compound tree within the public depth
 ///   contract.
+/// @param root Candidate compound subtree to search.
+/// @param needle Collider identity whose presence would form a cycle.
 /// @param depth One-based compound depth the candidate would have after attachment.
 /// @param too_deep Set when the candidate subtree would exceed the nesting limit.
+/// @return One when @p needle is found, otherwise zero.
 static int collider3d_contains_child(rt_collider3d *root,
                                      rt_collider3d *needle,
                                      int32_t depth,
@@ -481,6 +554,8 @@ static int collider3d_contains_child(rt_collider3d *root,
 ///          Called after any geometry mutation (set radius, add child,
 ///          rebuild heights) so subsequent broadphase queries use the
 ///          current bounds.
+/// @param collider Collider whose local bounds are refreshed in place.
+/// @param depth Current one-based compound traversal depth.
 static void collider3d_recompute_bounds_at_depth(rt_collider3d *collider, int32_t depth) {
     if (!collider)
         return;
@@ -636,12 +711,17 @@ static void collider3d_recompute_bounds_at_depth(rt_collider3d *collider, int32_
 }
 
 /// @brief Refresh local bounds with a bounded compound-tree traversal.
+/// @param collider Collider whose cached local AABB and revision are updated.
 static void collider3d_recompute_bounds(rt_collider3d *collider) {
     collider3d_recompute_bounds_at_depth(collider, 1);
 }
 
 /// @brief Construct an axis-aligned box collider with half-extents (hx, hy, hz). Negative
 /// values are taken as their absolute value. Box AABB is fully cached for fast queries.
+/// @param hx X-axis half-extent.
+/// @param hy Y-axis half-extent.
+/// @param hz Z-axis half-extent.
+/// @return Newly allocated box collider, or NULL on allocation failure.
 void *rt_collider3d_new_box(double hx, double hy, double hz) {
     rt_collider3d *collider = collider3d_alloc(RT_COLLIDER3D_TYPE_BOX);
     if (!collider)
@@ -654,6 +734,8 @@ void *rt_collider3d_new_box(double hx, double hy, double hz) {
 }
 
 /// @brief Construct a sphere collider centered on the local origin with the given `radius`.
+/// @param radius Sphere radius, sanitized to a positive supported extent.
+/// @return Newly allocated sphere collider, or NULL on allocation failure.
 void *rt_collider3d_new_sphere(double radius) {
     rt_collider3d *collider = collider3d_alloc(RT_COLLIDER3D_TYPE_SPHERE);
     if (!collider)
@@ -665,6 +747,9 @@ void *rt_collider3d_new_sphere(double radius) {
 
 /// @brief Construct a Y-axis capsule collider with total `height` including hemispherical caps.
 /// Values below the capsule diameter collapse to a sphere-like capsule.
+/// @param radius Capsule radius, sanitized to a positive supported extent.
+/// @param height Total tip-to-tip height, floored to twice the sanitized radius.
+/// @return Newly allocated capsule collider, or NULL on allocation failure.
 void *rt_collider3d_new_capsule(double radius, double height) {
     rt_collider3d *collider = collider3d_alloc(RT_COLLIDER3D_TYPE_CAPSULE);
     if (!collider)
@@ -686,6 +771,9 @@ void *rt_collider3d_new_capsule(double radius, double height) {
 ///   subsequent mesh mutation (vertex edits) doesn't dangle through this
 ///   collider, and recomputes local-space AABB bounds immediately so
 ///   broadphase queries see a valid envelope.
+/// @param mesh Mesh3D handle retained as the shape's geometry.
+/// @param type Convex-hull or triangle-mesh collider discriminator.
+/// @param static_only Nonzero to forbid use on dynamic bodies.
 /// @return Retained collider pointer or NULL after `rt_trap` on missing mesh.
 static void *collider3d_new_mesh_like(void *mesh, int32_t type, int8_t static_only) {
     rt_collider3d *collider;
@@ -706,6 +794,9 @@ static void *collider3d_new_mesh_like(void *mesh, int32_t type, int8_t static_on
 
 /// @brief Wrap a Mesh3D as a *convex hull* collider — the mesh's vertex set is treated as a
 /// convex polytope (caller's responsibility to ensure convexity). Suitable for dynamic bodies.
+/// @param mesh Mesh3D handle retained as convex support geometry.
+/// @return Newly allocated convex-hull collider, or NULL after invalid input or allocation
+/// failure.
 void *rt_collider3d_new_convex_hull(void *mesh) {
     return collider3d_new_mesh_like(mesh, RT_COLLIDER3D_TYPE_CONVEX_HULL, 0);
 }
@@ -719,6 +810,10 @@ void *rt_collider3d_new_convex_hull(void *mesh) {
 ///   raycasts against the collider keep working) that the collider owns.
 ///   Clamps @p max_verts to 8–255. Traps on a null or degenerate (flat /
 ///   collinear) mesh.
+/// @param mesh Source Mesh3D whose vertex cloud is hulled.
+/// @param max_verts Requested maximum hull vertices, clamped to the inclusive range 8 through 255.
+/// @return Newly allocated convex-hull collider owning a reduced mesh, or NULL after failure is
+/// reported.
 void *rt_collider3d_new_convex_hull_reduced(void *mesh, int64_t max_verts) {
     rt_mesh3d *mesh_impl = (rt_mesh3d *)rt_g3d_checked_or_null(mesh, RT_G3D_MESH3D_CLASS_ID);
     if (!mesh_impl) {
@@ -829,6 +924,9 @@ void *rt_collider3d_new_convex_hull_reduced(void *mesh, int64_t max_verts) {
 
 /// @brief Wrap a Mesh3D as a *triangle-mesh* collider — uses every triangle for collision tests.
 /// Marked static-only: cannot be attached to dynamic rigid bodies (use the mesh as level geometry).
+/// @param mesh Mesh3D handle retained as triangle geometry.
+/// @return Newly allocated static-only mesh collider, or NULL after invalid input or allocation
+/// failure.
 void *rt_collider3d_new_mesh(void *mesh) {
     return collider3d_new_mesh_like(mesh, RT_COLLIDER3D_TYPE_MESH, 1);
 }
@@ -837,6 +935,12 @@ void *rt_collider3d_new_mesh(void *mesh) {
 /// precision (R = high byte, G = low byte) into [0, 1] then scaled by `scale_y`. `scale_x` and
 /// `scale_z` are the per-cell spacing in world units. Static-only. Traps on invalid heightmap
 /// (< 2×2 or null buffer).
+/// @param heightmap Pixels handle containing at least a two-by-two 16-bit RG height grid.
+/// @param scale_x X-axis spacing between adjacent samples.
+/// @param scale_y Height multiplier applied to decoded normalized samples.
+/// @param scale_z Z-axis spacing between adjacent samples.
+/// @return Newly allocated static-only heightfield collider, or NULL after invalid input or
+/// allocation failure is reported.
 void *rt_collider3d_new_heightfield(void *heightmap,
                                     double scale_x,
                                     double scale_y,
@@ -908,6 +1012,7 @@ void *rt_collider3d_new_heightfield(void *heightmap,
 
 /// @brief Construct an empty compound collider — a container holding child colliders, each
 /// with its own local transform. Use `_add_child` to populate, then attach to a rigid body.
+/// @return Newly allocated empty compound collider, or NULL on allocation failure.
 void *rt_collider3d_new_compound(void) {
     rt_collider3d *collider = collider3d_alloc(RT_COLLIDER3D_TYPE_COMPOUND);
     if (!collider)
@@ -954,6 +1059,10 @@ static int collider3d_grow_compound_children(rt_collider3d *compound, int32_t ne
 /// Children are retained for the compound's lifetime. Recomputes the compound's AABB to enclose
 /// the new child. Traps if the parent isn't compound, child is null, or self-reference is
 /// attempted.
+/// @param compound_obj Compound Collider3D handle to modify.
+/// @param child_obj Collider3D handle retained in the next child slot.
+/// @param local_transform Optional Transform3D defining child-to-compound position, rotation, and
+/// scale.
 void rt_collider3d_add_child(void *compound_obj, void *child_obj, void *local_transform) {
     rt_collider3d *compound = collider3d_checked(compound_obj);
     rt_collider3d *child = collider3d_checked(child_obj);
@@ -1009,6 +1118,8 @@ void rt_collider3d_add_child(void *compound_obj, void *child_obj, void *local_tr
 }
 
 /// @brief Return the collider's discriminator (RT_COLLIDER3D_TYPE_BOX, _SPHERE, ...). -1 if NULL.
+/// @param collider Collider3D handle to inspect.
+/// @return Valid shape discriminator, or -1 for an invalid handle or corrupt type.
 int64_t rt_collider3d_get_type(void *collider) {
     rt_collider3d *shape = collider3d_checked(collider);
     return (shape && collider3d_type_is_valid(shape->type)) ? shape->type : -1;
@@ -1016,6 +1127,9 @@ int64_t rt_collider3d_get_type(void *collider) {
 
 /// @brief Return the AABB minimum corner in *local* space as a fresh Vec3. Returns origin
 /// for a NULL handle. Re-derives the bounds from the underlying shape data first.
+/// @param collider Collider3D handle to query.
+/// @return Newly allocated Vec3 containing the refreshed local minimum, or the origin for an
+/// invalid handle.
 void *rt_collider3d_get_local_bounds_min(void *collider) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape)
@@ -1025,6 +1139,9 @@ void *rt_collider3d_get_local_bounds_min(void *collider) {
 }
 
 /// @brief Return the AABB maximum corner in *local* space as a fresh Vec3.
+/// @param collider Collider3D handle to query.
+/// @return Newly allocated Vec3 containing the refreshed local maximum, or the origin for an
+/// invalid handle.
 void *rt_collider3d_get_local_bounds_max(void *collider) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape)
@@ -1035,6 +1152,9 @@ void *rt_collider3d_get_local_bounds_max(void *collider) {
 
 /// @brief Internal: write the local AABB into the two raw double[3] arrays. Faster than the
 /// Vec3-returning getters when the physics core needs the bounds many times per frame.
+/// @param collider Collider3D handle to query.
+/// @param min_out Required three-component destination for the local minimum.
+/// @param max_out Required three-component destination for the local maximum.
 void rt_collider3d_get_local_bounds_raw(void *collider, double *min_out, double *max_out) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!min_out || !max_out) {
@@ -1053,6 +1173,8 @@ void rt_collider3d_get_local_bounds_raw(void *collider, double *min_out, double 
 /// @brief Return the collider's bounds revision counter (recomputing bounds first if stale).
 /// @details The counter changes whenever the world AABB changes, letting the broadphase detect
 ///          movement without re-reading the bounds themselves.
+/// @param collider Collider3D handle to inspect.
+/// @return Refreshed nonzero bounds revision, or zero for an invalid handle.
 uint64_t rt_collider3d_get_bounds_revision_raw(void *collider) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape)
@@ -1064,6 +1186,12 @@ uint64_t rt_collider3d_get_bounds_revision_raw(void *collider) {
 /// @brief Internal: transform the local AABB by (position, rotation quat, scale) and write the
 /// resulting world-space AABB into `min_out` / `max_out`. Defaults: zero pos, identity rotation,
 /// unit scale when individual params are NULL.
+/// @param collider Collider3D handle whose local bounds are transformed.
+/// @param position Optional three-component world translation.
+/// @param rotation Optional unit XYZW world rotation.
+/// @param scale Optional three-component world scale.
+/// @param min_out Required output receiving the world-space AABB minimum.
+/// @param max_out Required output receiving the world-space AABB maximum.
 void rt_collider3d_compute_world_aabb_raw(void *collider,
                                           const double *position,
                                           const double *rotation,
@@ -1100,12 +1228,16 @@ void rt_collider3d_compute_world_aabb_raw(void *collider,
 }
 
 /// @brief Internal: 1 if the collider can only be used on static bodies (mesh, heightfield).
+/// @param collider Collider3D handle to inspect.
+/// @return One for a valid static-only collider, otherwise zero.
 int8_t rt_collider3d_is_static_only_raw(void *collider) {
     rt_collider3d *shape = collider3d_checked(collider);
     return (shape && shape->static_only) ? 1 : 0;
 }
 
 /// @brief Internal: fill `half_extents_out[3]` with the box's half-extents. Zeros for non-box.
+/// @param collider Collider3D handle to inspect.
+/// @param half_extents_out Required three-component output.
 void rt_collider3d_get_box_half_extents_raw(void *collider, double *half_extents_out) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!half_extents_out) {
@@ -1122,6 +1254,10 @@ void rt_collider3d_get_box_half_extents_raw(void *collider, double *half_extents
 }
 
 /// @brief Reset an existing box collider's dimensions for reusable internal query shapes.
+/// @param collider Box Collider3D handle to mutate.
+/// @param hx Replacement X-axis half-extent.
+/// @param hy Replacement Y-axis half-extent.
+/// @param hz Replacement Z-axis half-extent.
 void rt_collider3d_reset_box_raw(void *collider, double hx, double hy, double hz) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape || shape->type != RT_COLLIDER3D_TYPE_BOX)
@@ -1133,6 +1269,8 @@ void rt_collider3d_reset_box_raw(void *collider, double hx, double hy, double hz
 }
 
 /// @brief Internal: sphere/capsule radius. Returns 0 for unsupported shapes.
+/// @param collider Collider3D handle to inspect.
+/// @return Sanitized radius for a sphere or capsule, otherwise zero.
 double rt_collider3d_get_radius_raw(void *collider) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape)
@@ -1143,6 +1281,8 @@ double rt_collider3d_get_radius_raw(void *collider) {
 }
 
 /// @brief Reset an existing sphere collider's radius for reusable internal query shapes.
+/// @param collider Sphere Collider3D handle to mutate.
+/// @param radius Replacement radius.
 void rt_collider3d_reset_sphere_raw(void *collider, double radius) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape || shape->type != RT_COLLIDER3D_TYPE_SPHERE)
@@ -1154,6 +1294,9 @@ void rt_collider3d_reset_sphere_raw(void *collider, double radius) {
 /// @brief Reset an existing capsule collider's radius/height and cached bounds
 ///        (crouch/stand resizes and reusable internal query shapes). Height
 ///        includes both hemispherical caps and is floored to 2*radius.
+/// @param collider Capsule Collider3D handle to mutate.
+/// @param radius Replacement radius.
+/// @param height Replacement total tip-to-tip height.
 void rt_collider3d_reset_capsule_raw(void *collider, double radius, double height) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape || shape->type != RT_COLLIDER3D_TYPE_CAPSULE)
@@ -1166,6 +1309,8 @@ void rt_collider3d_reset_capsule_raw(void *collider, double radius, double heigh
 }
 
 /// @brief Internal: capsule total height including hemispherical caps. 0 for non-capsule.
+/// @param collider Collider3D handle to inspect.
+/// @return Sanitized capsule height, or zero for any other shape.
 double rt_collider3d_get_height_raw(void *collider) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape)
@@ -1177,6 +1322,8 @@ double rt_collider3d_get_height_raw(void *collider) {
 
 /// @brief Internal: borrow the underlying Mesh3D for convex-hull / triangle-mesh colliders.
 /// Returns NULL for primitive shapes. Caller must NOT release — collider retains ownership.
+/// @param collider Collider3D handle to inspect.
+/// @return Borrowed Mesh3D payload for a valid mesh-backed shape, otherwise NULL.
 void *rt_collider3d_get_mesh_raw(void *collider) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape)
@@ -1187,6 +1334,8 @@ void *rt_collider3d_get_mesh_raw(void *collider) {
 }
 
 /// @brief Internal: number of child colliders in a compound. 0 for non-compound shapes.
+/// @param collider Collider3D handle to inspect.
+/// @return Safely bounded child count, or zero for a non-compound or invalid shape.
 int64_t rt_collider3d_get_child_count_raw(void *collider) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (!shape || shape->type != RT_COLLIDER3D_TYPE_COMPOUND)
@@ -1195,6 +1344,9 @@ int64_t rt_collider3d_get_child_count_raw(void *collider) {
 }
 
 /// @brief Internal: borrow the i-th child collider from a compound. NULL if out of range.
+/// @param collider Compound Collider3D handle to inspect.
+/// @param index Zero-based child index.
+/// @return Borrowed child collider payload, or NULL when unavailable.
 void *rt_collider3d_get_child_raw(void *collider, int64_t index) {
     rt_collider3d *shape = collider3d_checked(collider);
     int32_t child_count;
@@ -1208,6 +1360,11 @@ void *rt_collider3d_get_child_raw(void *collider, int64_t index) {
 
 /// @brief Internal: copy the i-th compound child's local TRS into the output buffers
 /// (position_out[3], rotation_out[4] quaternion, scale_out[3]). Outputs default to identity.
+/// @param compound Compound Collider3D handle to inspect.
+/// @param index Zero-based child index.
+/// @param position_out Optional three-component position output.
+/// @param rotation_out Optional four-component XYZW rotation output.
+/// @param scale_out Optional three-component scale output.
 void rt_collider3d_get_child_transform_raw(
     void *compound, int64_t index, double *position_out, double *rotation_out, double *scale_out) {
     rt_collider3d *shape = collider3d_checked(compound);
@@ -1245,6 +1402,10 @@ void rt_collider3d_get_child_transform_raw(
 ///   sampler that wraps this helper never produces a discontinuity at the
 ///   heightfield boundary — it just extends the rim height outward. Null
 ///   colliders or uninitialized heightfields return 0.0 as a safe fallback.
+/// @param collider Heightfield collider to sample.
+/// @param x Integer sample-column index, clamped to the nearest edge.
+/// @param z Integer sample-row index, clamped to the nearest edge.
+/// @return Stored normalized height, or zero for unavailable storage.
 static double collider3d_heightfield_height_at(const rt_collider3d *collider,
                                                int32_t x,
                                                int32_t z) {
@@ -1262,14 +1423,14 @@ static double collider3d_heightfield_height_at(const rt_collider3d *collider,
     return collider->heightfield_heights[z * collider->heightfield_width + x];
 }
 
-/// @brief Internal: bilinearly sample a heightfield at local-space (local_x, local_z), writing
-/// the world-Y height (scaled) and surface normal (central difference) to the out-pointers.
-/// Returns 1 if the sample was inside the field, 0 otherwise (out-pointers default to safe
-/// fallback values: y=0, normal=(0,1,0)).
 /// @brief Install (or clear) a heightfield hole bitmask (bit per cell, row-major).
 /// @details The mask is copied. Cell dimensions must match the heightfield's
 ///   (width-1) x (depth-1) grid; a NULL mask clears holes. Internal handoff from
 ///   Terrain3D.SetHole via rt_terrain3d_get_hole_mask_raw.
+/// @param collider Heightfield Collider3D handle to modify.
+/// @param mask Optional packed row-major cell bits to copy; NULL clears all holes.
+/// @param cells_x Number of cell columns represented by @p mask.
+/// @param cells_z Number of cell rows represented by @p mask.
 /// @return 1 on success, 0 for a non-heightfield collider or dimension mismatch.
 int8_t rt_collider3d_heightfield_set_holes_raw(void *collider,
                                                const uint8_t *mask,
@@ -1297,6 +1458,8 @@ int8_t rt_collider3d_heightfield_set_holes_raw(void *collider,
 }
 
 /// @brief Per-collider friction override (-1 = unset: the body's friction applies).
+/// @param obj Collider3D handle to modify.
+/// @param friction Non-negative override capped at 16; negative or non-finite values clear it.
 void rt_collider3d_set_friction(void *obj, double friction) {
     rt_collider3d *shape = collider3d_checked(obj);
     if (!shape)
@@ -1308,12 +1471,16 @@ void rt_collider3d_set_friction(void *obj, double friction) {
 }
 
 /// @brief Per-collider friction override, or -1 when unset.
+/// @param obj Collider3D handle to inspect.
+/// @return Stored friction override, or -1 when unset or invalid.
 double rt_collider3d_get_friction(void *obj) {
     rt_collider3d *shape = collider3d_checked(obj);
     return shape ? shape->material_friction : -1.0;
 }
 
 /// @brief Per-collider restitution override (-1 = unset: the body's value applies).
+/// @param obj Collider3D handle to modify.
+/// @param restitution Override clamped to `[0,1]`; negative or non-finite values clear it.
 void rt_collider3d_set_restitution(void *obj, double restitution) {
     rt_collider3d *shape = collider3d_checked(obj);
     if (!shape)
@@ -1325,12 +1492,16 @@ void rt_collider3d_set_restitution(void *obj, double restitution) {
 }
 
 /// @brief Per-collider restitution override, or -1 when unset.
+/// @param obj Collider3D handle to inspect.
+/// @return Stored restitution override, or -1 when unset or invalid.
 double rt_collider3d_get_restitution(void *obj) {
     rt_collider3d *shape = collider3d_checked(obj);
     return shape ? shape->material_restitution : -1.0;
 }
 
 /// @brief Surface-type tag (Game3D.Surfaces registry id; 0 = untyped).
+/// @param obj Collider3D handle to modify.
+/// @param surface_type Registry identifier; negative values normalize to zero.
 void rt_collider3d_set_surface_type(void *obj, int64_t surface_type) {
     rt_collider3d *shape = collider3d_checked(obj);
     if (shape)
@@ -1338,12 +1509,17 @@ void rt_collider3d_set_surface_type(void *obj, int64_t surface_type) {
 }
 
 /// @brief Surface-type tag, 0 when untyped or invalid.
+/// @param obj Collider3D handle to inspect.
+/// @return Non-negative surface registry identifier, or zero when invalid or untyped.
 int64_t rt_collider3d_get_surface_type(void *obj) {
     rt_collider3d *shape = collider3d_checked(obj);
     return shape ? shape->surface_type : 0;
 }
 
 /// @brief Internal: effective friction for one contact side (collider override or body).
+/// @param collider Collider3D handle whose material override is consulted.
+/// @param body_friction Body-level fallback friction.
+/// @return Collider override when set, otherwise @p body_friction.
 double rt_collider3d_effective_friction_raw(void *collider, double body_friction) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (shape && shape->material_friction >= 0.0)
@@ -1352,6 +1528,9 @@ double rt_collider3d_effective_friction_raw(void *collider, double body_friction
 }
 
 /// @brief Internal: effective restitution for one contact side.
+/// @param collider Collider3D handle whose material override is consulted.
+/// @param body_restitution Body-level fallback restitution.
+/// @return Collider override when set, otherwise @p body_restitution.
 double rt_collider3d_effective_restitution_raw(void *collider, double body_restitution) {
     rt_collider3d *shape = collider3d_checked(collider);
     if (shape && shape->material_restitution >= 0.0)
@@ -1359,6 +1538,16 @@ double rt_collider3d_effective_restitution_raw(void *collider, double body_resti
     return body_restitution;
 }
 
+/// @brief Bilinearly sample a heightfield at a local-space XZ position.
+/// @details The scaled height and non-uniform-scale-correct surface normal are written to optional
+/// outputs. Out-of-bounds, holed, invalid, or non-finite queries return zero after initializing
+/// outputs to height zero and the upward unit normal.
+/// @param collider Heightfield Collider3D handle to sample.
+/// @param local_x Local-space X coordinate.
+/// @param local_z Local-space Z coordinate.
+/// @param height_out Optional output receiving the scaled local Y height.
+/// @param normal_out Optional three-component output receiving the unit surface normal.
+/// @return One when the query lies on a non-holed heightfield cell, otherwise zero.
 int8_t rt_collider3d_sample_heightfield_raw(
     void *collider, double local_x, double local_z, double *height_out, double *normal_out) {
     rt_collider3d *shape = collider3d_checked(collider);
@@ -1472,6 +1661,10 @@ int8_t rt_collider3d_sample_heightfield_raw(
 }
 
 /// @brief Report a heightfield collider's grid width, depth, and horizontal scale.
+/// @param collider Heightfield Collider3D handle to inspect.
+/// @param width_out Optional output receiving sample-column count.
+/// @param depth_out Optional output receiving sample-row count.
+/// @param scale_out Optional three-component output receiving sanitized sample scale.
 /// @return 1 with the out-params set, or 0 if the collider is not a heightfield.
 int8_t rt_collider3d_get_heightfield_info_raw(void *collider,
                                               int32_t *width_out,

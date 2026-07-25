@@ -31,6 +31,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_navmesh3d.c
+ * @brief Defines NavMesh3D storage and assembles its build, bake, and query implementations.
+ *
+ * A NavMesh3D owns copied navigation geometry, filtered triangle topology, off-mesh links, dynamic
+ * obstacles, area metadata, an XZ query grid, voxel-bake state, and a bounded pool of independent
+ * A* workspaces. The implementation is split into focused include units that share these private
+ * types: rt_navmesh3d_build.inc, rt_navmesh3d_bake.inc, and rt_navmesh3d_query.inc.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_navmesh3d.h"

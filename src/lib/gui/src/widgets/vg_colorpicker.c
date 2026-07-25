@@ -341,7 +341,9 @@ static void colorpicker_arrange(vg_widget_t *widget, float x, float y, float wid
     widget->width = width;
     widget->height = height;
 
-    float current_y = y + 4.0f;
+    // Children are stored parent-relative: painters and screen-bounds queries
+    // add this picker's origin, so child coordinates must not include (x, y).
+    float current_y = 4.0f;
     float padding = 4.0f;
     float slider_height = 24.0f;
     float label_width = picker->show_labels ? 20.0f : 0;
@@ -351,7 +353,7 @@ static void colorpicker_arrange(vg_widget_t *widget, float x, float y, float wid
     if (picker->preview) {
         float swatch_size = 48.0f;
         vg_widget_arrange(&picker->preview->base,
-                          x + width - swatch_size - padding,
+                          width - swatch_size - padding,
                           current_y,
                           swatch_size,
                           swatch_size);
@@ -364,7 +366,7 @@ static void colorpicker_arrange(vg_widget_t *widget, float x, float y, float wid
     // Arrange R slider
     if (picker->slider_r) {
         vg_widget_arrange(&picker->slider_r->base,
-                          x + padding + label_width,
+                          padding + label_width,
                           current_y,
                           slider_width,
                           slider_height);
@@ -374,7 +376,7 @@ static void colorpicker_arrange(vg_widget_t *widget, float x, float y, float wid
     // Arrange G slider
     if (picker->slider_g) {
         vg_widget_arrange(&picker->slider_g->base,
-                          x + padding + label_width,
+                          padding + label_width,
                           current_y,
                           slider_width,
                           slider_height);
@@ -384,7 +386,7 @@ static void colorpicker_arrange(vg_widget_t *widget, float x, float y, float wid
     // Arrange B slider
     if (picker->slider_b) {
         vg_widget_arrange(&picker->slider_b->base,
-                          x + padding + label_width,
+                          padding + label_width,
                           current_y,
                           slider_width,
                           slider_height);
@@ -394,7 +396,7 @@ static void colorpicker_arrange(vg_widget_t *widget, float x, float y, float wid
     // Arrange A slider if visible
     if (picker->slider_a && picker->show_alpha) {
         vg_widget_arrange(&picker->slider_a->base,
-                          x + padding + label_width,
+                          padding + label_width,
                           current_y,
                           slider_width,
                           slider_height);
@@ -407,7 +409,7 @@ static void colorpicker_arrange(vg_widget_t *widget, float x, float y, float wid
         float palette_width = width - padding * 2;
         float palette_height = 2 * 20.0f + 2.0f; // 2 rows
         vg_widget_arrange(
-            &picker->palette->base, x + padding, current_y, palette_width, palette_height);
+            &picker->palette->base, padding, current_y, palette_width, palette_height);
     }
 }
 
@@ -430,11 +432,14 @@ static void colorpicker_paint(vg_widget_t *widget, void *canvas) {
         int channel_count = picker->show_alpha ? 4 : 3;
         vg_font_metrics_t metrics;
         vg_font_get_metrics(picker->font, picker->font_size, &metrics);
+        // Paint runs with widget->x/y translated to screen space while the
+        // child sliders keep parent-relative layout coordinates; offset them
+        // by the picker's screen origin so labels stay beside their sliders.
         for (int channel = 0; channel < channel_count; channel++) {
             vg_slider_t *slider = sliders[channel];
             if (!slider)
                 continue;
-            float baseline = slider->base.y +
+            float baseline = widget->y + slider->base.y +
                              (slider->base.height - (float)metrics.line_height) * 0.5f +
                              metrics.ascent;
             uint32_t text_color = channel == picker->active_channel ? theme->colors.accent_primary
@@ -454,7 +459,7 @@ static void colorpicker_paint(vg_widget_t *widget, void *canvas) {
                 vg_font_draw_text(canvas,
                                   picker->font,
                                   picker->font_size,
-                                  slider->base.x + slider->base.width + 6.0f,
+                                  widget->x + slider->base.x + slider->base.width + 6.0f,
                                   baseline,
                                   value,
                                   text_color);

@@ -25,6 +25,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_joints3d_math.c
+ * @brief Implements sanitized vector, quaternion, inertia, and anchor-constraint math.
+ *
+ * The helpers in this translation unit are allocation-free and deliberately
+ * defensive: they bound force and coordinate magnitudes, reject non-finite
+ * runtime values, preserve normalized orientations, and distribute joint
+ * corrections by inverse mass or effective world-space inertia.
+ */
+
 #include "rt_joints3d.h"
 #include "rt_joints3d_internal.h"
 #include "rt_graphics3d_ids.h"
@@ -45,6 +55,8 @@ extern double rt_vec3_z(void *v);
 //=============================================================================
 
 /// @brief Clamp a joint parameter to `[0, RT_JOINT3D_MAX_PARAM]`; non-finite maps to 0.
+/// @param value Candidate parameter.
+/// @return Sanitized non-negative value.
 double joint3d_sanitize_nonnegative(double value) {
     if (!isfinite(value) || value < 0.0)
         return 0.0;
@@ -52,6 +64,8 @@ double joint3d_sanitize_nonnegative(double value) {
 }
 
 /// @brief Clamp a force/impulse magnitude to `±RT_JOINT3D_MAX_FORCE`; non-finite maps to 0.
+/// @param value Candidate force, impulse, or velocity correction.
+/// @return Sanitized signed value within the solver envelope.
 double joint3d_clamp_force(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -63,6 +77,8 @@ double joint3d_clamp_force(double value) {
 }
 
 /// @brief Clamp a coordinate-like value to the joint runtime envelope.
+/// @param value Candidate position or positional correction.
+/// @return Finite signed value bounded by `RT_JOINT3D_MAX_COORD`.
 double joint3d_clamp_coord(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -74,6 +90,8 @@ double joint3d_clamp_coord(double value) {
 }
 
 /// @brief Clamp a timestep to a finite positive range used by joint force integration.
+/// @param dt Candidate duration in seconds.
+/// @return Duration in `[0, RT_JOINT3D_MAX_DT]`.
 double joint3d_sanitize_dt(double dt) {
     if (!isfinite(dt) || dt <= 0.0)
         return 0.0;
@@ -81,11 +99,14 @@ double joint3d_sanitize_dt(double dt) {
 }
 
 /// @brief Whether @p v is non-NULL and all three components are finite.
+/// @param v Three-component vector.
+/// @return One when every component is finite, otherwise zero.
 int joint3d_vec3_all_finite(const double *v) {
     return v && isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]);
 }
 
 /// @brief Clamp a raw 3-vector in place.
+/// @param v Three-component vector to sanitize; a null pointer is ignored.
 void joint3d_vec3_sanitize(double *v) {
     if (!v)
         return;
@@ -95,6 +116,10 @@ void joint3d_vec3_sanitize(double *v) {
 }
 
 /// @brief Set a 3-vector to (x, y, z) (no-op if @p dst is NULL).
+/// @param dst Three-component destination.
+/// @param x Candidate X component.
+/// @param y Candidate Y component.
+/// @param z Candidate Z component.
 void joint3d_vec3_set(double *dst, double x, double y, double z) {
     if (!dst)
         return;
@@ -104,6 +129,9 @@ void joint3d_vec3_set(double *dst, double x, double y, double z) {
 }
 
 /// @brief Component-wise difference out = a - b for 3-vectors.
+/// @param a Optional left-hand vector; NULL is the origin.
+/// @param b Optional right-hand vector; NULL is the origin.
+/// @param out Receives the sanitized difference.
 void joint3d_vec3_sub(const double *a, const double *b, double *out) {
     if (!out)
         return;
@@ -113,6 +141,9 @@ void joint3d_vec3_sub(const double *a, const double *b, double *out) {
 }
 
 /// @brief Dot product of two 3-vectors.
+/// @param a Optional first vector; NULL is the origin.
+/// @param b Optional second vector; NULL is the origin.
+/// @return Finite scalar dot product, or zero on overflow.
 double joint3d_vec3_dot(const double *a, const double *b) {
     double ax = joint3d_clamp_coord(a ? a[0] : 0.0);
     double ay = joint3d_clamp_coord(a ? a[1] : 0.0);
@@ -126,6 +157,10 @@ double joint3d_vec3_dot(const double *a, const double *b) {
 
 /// @brief Euclidean length of the vector (x, y, z); returns INFINITY for non-finite inputs
 ///   or overflow so callers can reject degenerate joint geometry.
+/// @param x X component.
+/// @param y Y component.
+/// @param z Z component.
+/// @return Robust Euclidean magnitude, zero at the origin, or infinity for unusable input.
 double joint3d_len3(double x, double y, double z) {
     double max_abs;
     double sx;
@@ -149,12 +184,16 @@ double joint3d_len3(double x, double y, double z) {
 }
 
 /// @brief Euclidean length of a 3-vector.
+/// @param v Three-component vector.
+/// @return Robust Euclidean magnitude, or infinity for a null vector.
 double joint3d_vec3_len(const double *v) {
     return v ? joint3d_len3(v[0], v[1], v[2]) : INFINITY;
 }
 
 /// @brief Normalize a 3-vector in place; returns 0 (leaving it unchanged) if non-finite or
 /// near-zero.
+/// @param v Three-component vector to normalize.
+/// @return One on success, otherwise zero.
 int joint3d_vec3_normalize(double *v) {
     double max_abs;
     double x;
@@ -182,6 +221,9 @@ int joint3d_vec3_normalize(double *v) {
 
 /// @brief Read a boxed Vec3 handle into @p out; returns 0 if not a Vec3 or any component is
 /// non-finite.
+/// @param obj Candidate runtime Vec3 handle.
+/// @param out Receives three sanitized coordinates.
+/// @return One for a valid finite Vec3, otherwise zero.
 int joint3d_read_vec3(void *obj, double *out) {
     if (!out || !rt_g3d_is_vec3(obj))
         return 0;
@@ -195,6 +237,8 @@ int joint3d_read_vec3(void *obj, double *out) {
 }
 
 /// @brief Swap any min/max pair where min > max so each axis' [min, max] limit is well-ordered.
+/// @param min_v In/out three-component lower bounds.
+/// @param max_v In/out three-component upper bounds.
 void joint3d_canonicalize_limits(double *min_v, double *max_v) {
     if (!min_v || !max_v)
         return;
@@ -210,6 +254,8 @@ void joint3d_canonicalize_limits(double *min_v, double *max_v) {
 }
 
 /// @brief Validate @p obj as a Mat4 payload and return its typed view (NULL on mismatch).
+/// @param obj Candidate runtime handle.
+/// @return Borrowed Mat4 payload view, or NULL on class mismatch.
 joint3d_mat4_view *joint3d_mat4_checked(void *obj) {
     if (!obj || !rt_heap_is_payload(obj) || rt_obj_class_id(obj) != RT_MAT4_CLASS_ID)
         return NULL;
@@ -217,6 +263,9 @@ joint3d_mat4_view *joint3d_mat4_checked(void *obj) {
 }
 
 /// @brief Extract the translation column from a Mat4 handle; returns 0 if invalid or non-finite.
+/// @param obj Candidate Mat4 handle.
+/// @param out Receives the sanitized three-component translation.
+/// @return One when the handle and translation are finite, otherwise zero.
 int joint3d_read_mat4_translation(void *obj, double *out) {
     joint3d_mat4_view *m = joint3d_mat4_checked(obj);
     if (!m || !out)
@@ -232,6 +281,9 @@ int joint3d_read_mat4_translation(void *obj, double *out) {
 }
 
 /// @brief Hamilton product out = a * b (apply b then a) for (x,y,z,w) quaternions.
+/// @param a Optional left-hand quaternion; invalid components use identity defaults.
+/// @param b Optional right-hand quaternion; invalid components use identity defaults.
+/// @param out Receives the XYZW product.
 void joint3d_quat_mul(const double *a, const double *b, double *out) {
     double ax = a && isfinite(a[0]) ? a[0] : 0.0;
     double ay = a && isfinite(a[1]) ? a[1] : 0.0;
@@ -250,6 +302,8 @@ void joint3d_quat_mul(const double *a, const double *b, double *out) {
 }
 
 /// @brief Quaternion conjugate (negated vector part) — the inverse for a unit quaternion.
+/// @param q Optional XYZW quaternion; NULL produces identity.
+/// @param out Receives a normalized conjugate.
 void joint3d_quat_conjugate(const double *q, double *out) {
     if (!out)
         return;
@@ -266,6 +320,7 @@ void joint3d_quat_conjugate(const double *q, double *out) {
 }
 
 /// @brief Normalize a quaternion in place, falling back to identity for invalid values.
+/// @param q XYZW quaternion to normalize; a null pointer is ignored.
 void joint3d_quat_normalize(double *q) {
     double max_abs;
     double x;
@@ -312,6 +367,9 @@ void joint3d_quat_normalize(double *q) {
 }
 
 /// @brief Build a quaternion from a normalized world axis and an angle in radians.
+/// @param axis Finite normalized three-component rotation axis.
+/// @param angle Rotation angle in radians, reduced modulo one turn.
+/// @param out Receives the normalized XYZW quaternion or identity.
 void joint3d_quat_from_axis_angle(const double *axis, double angle, double *out) {
     double half;
     double s;
@@ -337,6 +395,9 @@ void joint3d_quat_from_axis_angle(const double *axis, double angle, double *out)
 }
 
 /// @brief Prepend a world-axis rotation to an orientation quaternion.
+/// @param orientation In/out XYZW orientation.
+/// @param axis Three-component world-space rotation axis.
+/// @param angle Rotation angle in radians.
 void joint3d_quat_prepend_axis_angle(double *orientation, const double *axis, double angle) {
     double delta[4];
     double out[4];
@@ -349,6 +410,8 @@ void joint3d_quat_prepend_axis_angle(double *orientation, const double *axis, do
 }
 
 /// @brief Convert a quaternion delta into a shortest-arc rotation vector.
+/// @param q Input XYZW quaternion delta.
+/// @param out Receives axis multiplied by shortest signed angle in radians.
 void joint3d_quat_to_rotation_vector(const double *q, double *out) {
     double qn[4];
     double v_len;
@@ -382,6 +445,9 @@ void joint3d_quat_to_rotation_vector(const double *q, double *out) {
 }
 
 /// @brief Rotate vector @p v by quaternion @p q (out = q * v * q⁻¹).
+/// @param q Optional XYZW rotation; NULL copies @p v.
+/// @param v Optional input vector; NULL is the origin.
+/// @param out Receives the sanitized rotated vector.
 void joint3d_quat_rotate_vec3(const double *q, const double *v, double *out) {
     double qn[4];
     double vv[3] = {v ? v[0] : 0.0, v ? v[1] : 0.0, v ? v[2] : 0.0};
@@ -410,6 +476,9 @@ void joint3d_quat_rotate_vec3(const double *q, const double *v, double *out) {
 
 /// @brief Transform a body-local anchor point into world space (rotate by orientation, add
 /// position).
+/// @param body Body3D kinematic pose.
+/// @param local_anchor Three-component local anchor.
+/// @param out Receives the world-space anchor or origin fallback.
 void joint3d_world_anchor(const rt_body3d_kinematics *body,
                                  const double *local_anchor,
                                  double *out) {
@@ -427,6 +496,9 @@ void joint3d_world_anchor(const rt_body3d_kinematics *body,
 }
 
 /// @brief Transform a world-space point into a body's local frame (subtract position, unrotate).
+/// @param body Body3D kinematic pose.
+/// @param world_point Three-component world point.
+/// @param out Receives the sanitized local-space point.
 void joint3d_local_from_world(const rt_body3d_kinematics *body,
                                      const double *world_point,
                                      double *out) {
@@ -445,6 +517,9 @@ void joint3d_local_from_world(const rt_body3d_kinematics *body,
 
 /// @brief Rotate a body-local axis into world space and normalize it (defaults to +Y if
 /// degenerate).
+/// @param body Body3D kinematic pose.
+/// @param local_axis Three-component local axis.
+/// @param out Receives the normalized world axis or +Y fallback.
 void joint3d_world_axis_from_local(const rt_body3d_kinematics *body,
                                           const double *local_axis,
                                           double *out) {
@@ -462,6 +537,9 @@ void joint3d_world_axis_from_local(const rt_body3d_kinematics *body,
 /// @details Mirrors body3d_world_inv_inertia_mul: rotate the vector into the body's
 ///          principal-axis frame, scale by the diagonal inverse inertia, rotate back.
 ///          Angular constraints must weight by this, not by inverse mass.
+/// @param body Body3D orientation and principal inverse inertia.
+/// @param v Three-component world-space vector.
+/// @param out Receives the finite world-space tensor product.
 void joint3d_world_inv_inertia_mul(const rt_body3d_kinematics *body,
                                    const double *v,
                                    double *out) {
@@ -486,6 +564,9 @@ void joint3d_world_inv_inertia_mul(const rt_body3d_kinematics *body,
 /// @brief Scalar effective inverse inertia of @p body about the (unit) world @p axis.
 /// @details axis · (I^-1 axis); the rotational analogue of inverse mass along a
 ///          direction. Zero for static/kinematic bodies (inv_inertia all zero).
+/// @param body Body3D orientation and principal inverse inertia.
+/// @param axis Unit world-space axis.
+/// @return Positive effective inverse inertia, or zero for unusable or immovable state.
 double joint3d_effective_inv_inertia_about_axis(const rt_body3d_kinematics *body,
                                                 const double *axis) {
     double inv_i_axis[3];
@@ -500,6 +581,8 @@ double joint3d_effective_inv_inertia_about_axis(const rt_body3d_kinematics *body
 /// @brief Build the 3x3 world-space inverse inertia tensor (row-major) of @p body.
 /// @details Columns are I^-1 applied to each world basis vector; the tensor is
 ///          symmetric, so this equals R * diag(inv_inertia) * R^T.
+/// @param body Body3D orientation and principal inverse inertia.
+/// @param m Receives the nine-element row-major tensor.
 static void joint3d_world_inv_inertia_tensor(const rt_body3d_kinematics *body, double m[9]) {
     int c;
     for (c = 0; c < 9; c++)
@@ -518,6 +601,9 @@ static void joint3d_world_inv_inertia_tensor(const rt_body3d_kinematics *body, d
 }
 
 /// @brief Solve the 3x3 system @p m * x = @p rhs via the cofactor inverse.
+/// @param m Nine-element row-major coefficient matrix.
+/// @param rhs Three-component right-hand side.
+/// @param x Receives the finite solution on success.
 /// @return 1 with @p x set on success, 0 if @p m is singular (leaving x untouched).
 static int joint3d_solve3(const double m[9], const double *rhs, double *x) {
     double c00 = m[4] * m[8] - m[5] * m[7];
@@ -546,6 +632,11 @@ static int joint3d_solve3(const double m[9], const double *rhs, double *x) {
 /// constraint).
 /// @details Splits the anchor gap between the bodies in inverse-mass proportion, scaled by
 ///          @p stiffness (clamped to (0, 1]). No-op for non-finite bodies or two immovable bodies.
+/// @param body_a First Body3D endpoint.
+/// @param body_b Second Body3D endpoint.
+/// @param local_anchor_a Anchor expressed in body A's local frame.
+/// @param local_anchor_b Anchor expressed in body B's local frame.
+/// @param stiffness Correction fraction, normalized to the inclusive range zero to one.
 void joint3d_correct_anchor_pair(rt_body3d_kinematics *body_a,
                                         rt_body3d_kinematics *body_b,
                                         const double *local_anchor_a,
@@ -589,6 +680,12 @@ void joint3d_correct_anchor_pair(rt_body3d_kinematics *body_a,
 /// @details Like joint3d_correct_anchor_pair but the constraint is a box: an axis within its
 ///          linear limits is left free; only the limit overshoot is projected out (inverse-mass
 ///          split).
+/// @param body_a First Body3D endpoint.
+/// @param body_b Second Body3D endpoint.
+/// @param local_anchor_a Anchor expressed in body A's local frame.
+/// @param local_anchor_b Anchor expressed in body B's local frame.
+/// @param linear_min Three-component world-space lower bounds.
+/// @param linear_max Three-component world-space upper bounds.
 void joint3d_correct_anchor_pair_limited(rt_body3d_kinematics *body_a,
                                                 rt_body3d_kinematics *body_b,
                                                 const double *local_anchor_a,
@@ -638,6 +735,9 @@ void joint3d_correct_anchor_pair_limited(rt_body3d_kinematics *body_a,
 }
 
 /// @brief Cancel @p amount (0..1) of the bodies' relative linear velocity, inverse-mass weighted.
+/// @param body_a First Body3D endpoint.
+/// @param body_b Second Body3D endpoint.
+/// @param amount Fraction of relative velocity to remove.
 void joint3d_remove_relative_linear_velocity(rt_body3d_kinematics *body_a,
                                                     rt_body3d_kinematics *body_b,
                                                     double amount) {
@@ -666,6 +766,10 @@ void joint3d_remove_relative_linear_velocity(rt_body3d_kinematics *body_a,
 }
 
 /// @brief Fully cancel relative linear velocity only along locked axes (those with min == max).
+/// @param body_a First Body3D endpoint.
+/// @param body_b Second Body3D endpoint.
+/// @param linear_min Three-component world-space lower bounds.
+/// @param linear_max Three-component world-space upper bounds.
 void joint3d_remove_relative_linear_velocity_locked_axes(rt_body3d_kinematics *body_a,
                                                                 rt_body3d_kinematics *body_b,
                                                                 const double *linear_min,
@@ -699,6 +803,13 @@ void joint3d_remove_relative_linear_velocity_locked_axes(rt_body3d_kinematics *b
 ///   computed there, and the correction is rotated back to world before the
 ///   inverse-mass split — so a slider constrained along "local X" keeps tracking
 ///   body A's X as it rotates. NULL @p frame_quat means world axes.
+/// @param body_a First Body3D endpoint.
+/// @param body_b Second Body3D endpoint.
+/// @param local_anchor_a Anchor expressed in body A's local frame.
+/// @param local_anchor_b Anchor expressed in body B's local frame.
+/// @param linear_min Three-component lower frame-space bounds.
+/// @param linear_max Three-component upper frame-space bounds.
+/// @param frame_quat Optional XYZW quaternion rotating frame vectors to world space.
 void joint3d_correct_anchor_pair_limited_frame(rt_body3d_kinematics *body_a,
                                                rt_body3d_kinematics *body_b,
                                                const double *local_anchor_a,
@@ -764,6 +875,11 @@ void joint3d_correct_anchor_pair_limited_frame(rt_body3d_kinematics *body_a,
 
 /// @brief joint3d_remove_relative_linear_velocity_locked_axes, but with the locked
 ///   axes expressed in the joint frame given by @p frame_quat. NULL means world axes.
+/// @param body_a First Body3D endpoint.
+/// @param body_b Second Body3D endpoint.
+/// @param linear_min Three-component lower frame-space bounds.
+/// @param linear_max Three-component upper frame-space bounds.
+/// @param frame_quat Optional XYZW quaternion rotating frame axes to world space.
 void joint3d_remove_relative_linear_velocity_locked_axes_frame(rt_body3d_kinematics *body_a,
                                                                rt_body3d_kinematics *body_b,
                                                                const double *linear_min,
@@ -818,6 +934,9 @@ void joint3d_remove_relative_linear_velocity_locked_axes_frame(rt_body3d_kinemat
 /// @details Implements a hinge's angular constraint: spin about the hinge axis is preserved while
 ///          all off-axis relative rotation is removed (inverse-mass weighted). A NULL axis removes
 ///          all.
+/// @param body_a First Body3D endpoint.
+/// @param body_b Second Body3D endpoint.
+/// @param allowed_axis Optional normalized world axis whose relative spin is preserved.
 void joint3d_remove_relative_angular_velocity(rt_body3d_kinematics *body_a,
                                                      rt_body3d_kinematics *body_b,
                                                      const double *allowed_axis) {

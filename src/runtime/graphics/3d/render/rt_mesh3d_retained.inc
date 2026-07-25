@@ -21,6 +21,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements immutable Mesh3D geometry revisions and tangent-variant caching.
+/// @details This include fragment is compiled as part of `rt_mesh3d.c`. Retained revisions own
+///          transactional copies of authored geometry so queued Canvas3D commands remain stable
+///          across later mesh mutations, with atomic references spanning mesh and frame owners.
+
 /// @brief Acquire one reference to an immutable retained geometry revision.
 /// @details The process-wide renderer can hand revisions between a mesh and one or more canvases;
 /// an atomic count keeps destruction well-defined even when frame cleanup occurs on a different

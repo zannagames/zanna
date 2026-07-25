@@ -4,11 +4,24 @@
 // not a standalone translation unit) Purpose: Mesh3D skinning extensions and Canvas3D
 // DrawMeshSkinned
 //===----------------------------------------------------------------------===//
+/**
+ * @file rt_skeleton3d_skinning.inc
+ * @brief Connects skeleton palettes to mesh weights and Canvas3D draw paths.
+ *
+ * This implementation fragment owns mesh-to-skeleton binding, four-influence
+ * vertex weight normalization, partitioned palette gathering, GPU-versus-CPU
+ * skinning selection, temporal previous-pose forwarding, and packed
+ * per-instance crowd submission. It is included by `rt_skeleton3d.c` and is
+ * not a standalone translation unit.
+ */
 /*==========================================================================
  * Mesh3D extensions
  *=========================================================================*/
 
 /// @brief Recompute the highest positively weighted bone referenced by a mesh.
+/// @param[in] m Mesh whose readable vertices are scanned.
+/// @return One greater than the largest referenced index, or zero when the mesh
+/// has no readable positively weighted influence.
 static int32_t mesh3d_recompute_weight_bone_count(const rt_mesh3d *m) {
     int32_t max_bone = -1;
     uint32_t vertex_count = rt_mesh3d_safe_vertex_count(m);
@@ -25,6 +38,13 @@ static int32_t mesh3d_recompute_weight_bone_count(const rt_mesh3d *m) {
 }
 
 /// @brief Bind a skeleton to a mesh so its per-vertex `bone_indices/weights` can drive skinning.
+/// @param[in,out] mesh Runtime mesh whose retained skeleton slot is replaced.
+/// @param[in] skeleton Runtime skeleton to retain, or `NULL` to unbind.
+/// @details Binding freezes skeleton topology and, for an ordinary mesh,
+/// derives the palette count from the skeleton capped at the 256-bone draw
+/// limit. Partitioned meshes preserve their local remapped palette size.
+/// Unbinding clears the count, and every successful change invalidates cached
+/// geometry state.
 void rt_mesh3d_set_skeleton(void *mesh, void *skeleton) {
     rt_mesh3d *m = (rt_mesh3d *)rt_g3d_checked_or_null(mesh, RT_G3D_MESH3D_CLASS_ID);
     rt_skeleton3d *s =
@@ -50,9 +70,24 @@ void rt_mesh3d_set_skeleton(void *mesh, void *skeleton) {
 
 /// @brief Attach the per-vertex bone influence data (4 indices + 4 weights per vertex) to a mesh.
 ///
-/// Required for any skinned draw call. The arrays are referenced
-/// (not copied), so the caller must keep them alive for the
-/// lifetime of the mesh.
+/// Each call overwrites the four influence slots of one existing vertex.
+/// Valid finite positive weights are normalized to sum to one; nonpositive,
+/// non-finite, or collectively negligible weights become zero.
+///
+/// @param[in,out] obj Mesh containing the target vertex.
+/// @param[in] vertex_index Zero-based vertex index.
+/// @param[in] b0 First bone index.
+/// @param[in] w0 First influence weight.
+/// @param[in] b1 Second bone index.
+/// @param[in] w1 Second influence weight.
+/// @param[in] b2 Third bone index.
+/// @param[in] w2 Third influence weight.
+/// @param[in] b3 Fourth bone index.
+/// @param[in] w3 Fourth influence weight.
+/// @details Bone indices must be in `[0, 255]`; invalid index/weight pairs are
+/// cleared. A valid index is preserved even when its weight becomes zero so
+/// imported joint attributes can round-trip. The mesh's derived bone count and
+/// geometry generation are updated after a successful vertex lookup.
 void rt_mesh3d_set_bone_weights(void *obj,
                                 int64_t vertex_index,
                                 int64_t b0,
@@ -134,6 +169,24 @@ void rt_mesh3d_set_bone_weights(void *obj,
 ///   draw with the matching one in the previous frame. `prev_bone_palette`
 ///   supplies the previous-frame palette for per-vertex motion vectors —
 ///   without it, skinned motion blur falls back to object-space smearing.
+///
+/// @param[in,out] canvas Canvas receiving the deferred draw.
+/// @param[in,out] mesh_obj Mesh whose vertices and influence data are used.
+/// @param[in] model_matrix Row-major double-precision model transform.
+/// @param[in] material Material for the draw.
+/// @param[in] motion_key Stable identity used to correlate temporal draws.
+/// @param[in] bone_palette Current row-major skinning matrices.
+/// @param[in] prev_bone_palette Optional previous-frame matrices.
+/// @param[in] bone_count Number of matrices supplied in each palette.
+/// @param[in] local_bounds_min Optional three-float local lower bound.
+/// @param[in] local_bounds_max Optional three-float local upper bound.
+/// @param[in] conservative_bounds Nonzero when the bounds conservatively cover
+/// animated motion.
+/// @param[in] disable_occlusion Nonzero to bypass occlusion culling.
+/// @details Partitioned meshes gather their remapped subset into frame-arena
+/// storage before backend selection. GPU-capable paths attach the palettes to
+/// a shallow mesh view; other paths skin a frame-owned vertex copy on the CPU.
+/// Bone counts are capped at the renderer's 256-matrix palette limit.
 void rt_canvas3d_draw_mesh_matrix_skinned_keyed_bounds(void *canvas,
                                                        void *mesh_obj,
                                                        const double *model_matrix,
@@ -263,6 +316,16 @@ void rt_canvas3d_draw_mesh_matrix_skinned_keyed_bounds(void *canvas,
 }
 
 /// @brief Draw a skinned mesh using an explicit model matrix and keyed bone palette.
+/// @param[in,out] canvas Canvas receiving the draw.
+/// @param[in,out] mesh_obj Mesh to skin.
+/// @param[in] model_matrix Row-major double-precision model transform.
+/// @param[in] material Material for the draw.
+/// @param[in] motion_key Stable temporal identity.
+/// @param[in] bone_palette Current skinning matrices.
+/// @param[in] prev_bone_palette Optional previous-frame matrices.
+/// @param[in] bone_count Number of matrices in each palette.
+/// @details Delegates to the bounds-aware path with no explicit local bounds
+/// and with conservative-bounds and occlusion overrides disabled.
 void rt_canvas3d_draw_mesh_matrix_skinned_keyed(void *canvas,
                                                 void *mesh_obj,
                                                 const double *model_matrix,
@@ -289,6 +352,16 @@ void rt_canvas3d_draw_mesh_matrix_skinned_keyed(void *canvas,
 /// @details Accepts either a raw `AnimPlayer3D` or an `AnimController3D`. For a
 ///   controller, the state-machine's computed final/previous bone palettes and
 ///   skeleton drive the skinning, so idle/walk states and crossfades render directly.
+/// @param[in,out] canvas Canvas receiving the draw.
+/// @param[in,out] mesh Mesh to skin and draw.
+/// @param[in] transform Runtime Mat4 supplying the model transform and stable
+/// temporal motion key.
+/// @param[in] material Material for the draw.
+/// @param[in,out] anim_player `AnimPlayer3D` or `AnimController3D` supplying
+/// the skeleton palettes.
+/// @details The animator is retained temporarily by the canvas so its palette
+/// remains live until submission. Player paths rotate temporal snapshots at
+/// most once for the current canvas frame.
 void rt_canvas3d_draw_mesh_skinned(
     void *canvas, void *mesh, void *transform, void *material, void *anim_player) {
     rt_mesh3d *m;
@@ -364,8 +437,22 @@ void rt_canvas3d_draw_mesh_skinned(
 ///   cannot take the hardware path (software backend, blending materials, extra influences,
 ///   partitioned bone maps) fall back to one skinned draw per instance, which preserves the
 ///   exact single-draw pose semantics on every backend.
-/// @param bone_palettes Packed palettes: instance_count * bone_count * 16 floats.
-/// @param prev_bone_palettes Optional previous-frame palettes with the same layout, or NULL.
+/// @param[in,out] canvas Canvas receiving the instance draws; it must be inside
+/// an active frame with a backend.
+/// @param[in,out] mesh_obj Mesh shared by every instance.
+/// @param[in] material Material shared by every instance.
+/// @param[in] instance_matrices Packed row-major float model matrices, one per
+/// instance.
+/// @param[in] instance_count Number of model/palette records.
+/// @param[in] bone_palettes Packed palettes:
+/// `instance_count * bone_count * 16` floats.
+/// @param[in] prev_bone_palettes Optional previous-frame palettes with the same
+/// layout, or `NULL`.
+/// @param[in] bone_count Matrices per instance palette, in `[1, 256]`.
+/// @details Hardware submission requires a mesh without partition remapping or
+/// extra influences and chunks instances so each draw fits the shared palette.
+/// Otherwise each instance is submitted through the ordinary bounds-aware
+/// skinned path.
 void rt_canvas3d_draw_mesh_instanced_skinned(void *canvas,
                                              void *mesh_obj,
                                              void *material,
@@ -474,6 +561,15 @@ void rt_canvas3d_draw_mesh_instanced_skinned(void *canvas,
 ///   instance; every animator must drive a skeleton with the same bone count. Palettes are
 ///   packed into one contiguous block and submitted through
 ///   rt_canvas3d_draw_mesh_instanced_skinned.
+/// @param[in,out] canvas Canvas receiving the crowd draw; it must be inside an
+/// active frame.
+/// @param[in] batch InstanceBatch3D supplying mesh, material, model matrices,
+/// and instance count.
+/// @param[in] players Runtime sequence containing exactly one compatible
+/// player or controller per instance.
+/// @details All current palettes are copied into one temporary instance-major
+/// block. Previous palettes are supplied only when every animator has one, so
+/// temporal data remains consistently shaped for the entire batch.
 void rt_canvas3d_draw_instanced_skinned(void *canvas, void *batch, void *players) {
     rt_canvas3d *c;
     void *mesh;

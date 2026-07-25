@@ -22,6 +22,8 @@
 
 module scene_camera_lighting_2d;
 
+bind "inspector_rows";
+
 bind GUI = Zanna.GUI;
 bind SceneDocument = Zanna.Game2D.SceneDocument;
 bind Fmt = Zanna.Text.Fmt;
@@ -96,8 +98,7 @@ class SceneCameraLighting2D {
             + "Blank fields stay absent.");
         cameraSummary.SetWordWrap(true);
 
-        var modeRow = GUI.HBox.New();
-        modeRow.SetSpacing(4.0);
+        var modeRow = inspector_rows.NewWrapRow();
         cameraGroup.AddChild(modeRow);
         GUI.Label.New(modeRow, "Mode");
         cameraModeDropdown = GUI.Dropdown.New(modeRow);
@@ -108,8 +109,7 @@ class SceneCameraLighting2D {
         cameraModeDropdown.SetSelected(CAMERA_MODE_UNSET);
 
         GUI.Label.New(cameraGroup, "Bounds (world px: minX, minY, maxX, maxY)");
-        var boundsRow = GUI.HBox.New();
-        boundsRow.SetSpacing(4.0);
+        var boundsRow = inspector_rows.NewWrapRow();
         cameraGroup.AddChild(boundsRow);
         cameraMinXInput = BoundsInput(boundsRow, "Camera bounds min X");
         cameraMinYInput = BoundsInput(boundsRow, "Camera bounds min Y");
@@ -117,8 +117,7 @@ class SceneCameraLighting2D {
         cameraMaxYInput = BoundsInput(boundsRow, "Camera bounds max Y");
 
         GUI.Label.New(cameraGroup, "Deadzone (w, h) / follow lerp % / zoom %");
-        var tuningRow = GUI.HBox.New();
-        tuningRow.SetSpacing(4.0);
+        var tuningRow = inspector_rows.NewWrapRow();
         cameraGroup.AddChild(tuningRow);
         cameraDeadzoneWidthInput = BoundsInput(tuningRow, "Camera deadzone width");
         cameraDeadzoneHeightInput =
@@ -126,8 +125,7 @@ class SceneCameraLighting2D {
         cameraLerpInput = BoundsInput(tuningRow, "Camera follow lerp percent");
         cameraZoomInput = BoundsInput(tuningRow, "Camera zoom percent");
 
-        var cameraActions = GUI.HBox.New();
-        cameraActions.SetSpacing(4.0);
+        var cameraActions = inspector_rows.NewWrapRow();
         cameraGroup.AddChild(cameraActions);
         cameraApplyButton = GUI.Button.New(cameraActions, "Apply Camera");
         cameraApplyButton.SetTooltip(
@@ -145,8 +143,7 @@ class SceneCameraLighting2D {
 
         GUI.Label.New(
             lightingGroup, "Darkness 0-255 / tint ARGB / radius px / color ARGB");
-        var lightingRow = GUI.HBox.New();
-        lightingRow.SetSpacing(4.0);
+        var lightingRow = inspector_rows.NewWrapRow();
         lightingGroup.AddChild(lightingRow);
         lightingDarknessInput = BoundsInput(lightingRow, "Lighting darkness");
         lightingTintInput = BoundsInput(lightingRow, "Lighting tint color");
@@ -155,8 +152,7 @@ class SceneCameraLighting2D {
         lightingPlayerColorInput =
             BoundsInput(lightingRow, "Player light color");
 
-        var lightingActions = GUI.HBox.New();
-        lightingActions.SetSpacing(4.0);
+        var lightingActions = inspector_rows.NewWrapRow();
         lightingGroup.AddChild(lightingActions);
         lightingApplyButton = GUI.Button.New(lightingActions, "Apply Lighting");
         lightingApplyButton.SetTooltip(
@@ -253,7 +249,7 @@ class SceneCameraLighting2D {
     }
 
     /// @brief Build one compact numeric draft input.
-    hide func BoundsInput(row: GUI.HBox, accessibleName: String) -> GUI.TextInput {
+    hide func BoundsInput(row: GUI.Flex, accessibleName: String) -> GUI.TextInput {
         var input = GUI.TextInput.New(row);
         input.SetAccessibleName(accessibleName);
         input.SetPlaceholder("—");

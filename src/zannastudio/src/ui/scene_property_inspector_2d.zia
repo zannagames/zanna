@@ -20,6 +20,8 @@
 
 module scene_property_inspector_2d;
 
+bind "inspector_rows";
+
 bind GUI = Zanna.GUI;
 bind SceneDocument = Zanna.Game2D.SceneDocument;
 bind Seq = Zanna.Collections.Seq;
@@ -91,8 +93,7 @@ class ScenePropertyInspector2D {
         keyInput.SetAccessibleName("Scene property key");
         keyInput.SetPlaceholder("Property key");
 
-        var valueRow = GUI.HBox.New();
-        valueRow.SetSpacing(4.0);
+        var valueRow = inspector_rows.NewWrapRow();
         group.AddChild(valueRow);
         typeDropdown = GUI.Dropdown.New(valueRow);
         typeDropdown.SetAccessibleName("Scene property type");
@@ -107,8 +108,7 @@ class ScenePropertyInspector2D {
         valueInput.SetPlaceholder("Property value");
         valueInput.SetFlex(1.0);
 
-        var actions = GUI.HBox.New();
-        actions.SetSpacing(4.0);
+        var actions = inspector_rows.NewWrapRow();
         group.AddChild(actions);
         newButton = GUI.Button.New(actions, "New");
         newButton.SetTooltip("Clear the fields to add a scene property");

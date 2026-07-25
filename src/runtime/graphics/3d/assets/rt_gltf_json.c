@@ -19,6 +19,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_json.c
+ * @brief Implements an allocation-light, length-bounded JSON scanner for glTF preload work.
+ * @details The scanner validates and navigates raw `(pointer, length)` JSON without building a
+ *          runtime object graph. It recognizes complete JSON grammar, decodes strings on demand,
+ *          returns half-open byte spans for nested values, and applies glTF-specific exact-integer
+ *          checks to fields whose schema forbids fractional or exponential spellings. All offsets
+ *          are relative to the caller-owned immutable buffer.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_gltf_json.h"
@@ -30,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// Maximum nested object/array depth accepted by recursive JSON validation.
 #define GLTF_JSON_MAX_DEPTH 512
 
 /// @brief Decode one hexadecimal JSON escape digit.
@@ -113,6 +124,10 @@ static int gltf_json_literal_ends_cleanly(const char *json, size_t token_end, si
 }
 
 /// @brief Advance @p pos past JSON whitespace (space/tab/CR/LF) in the raw byte scanner.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param pos Starting byte offset.
+/// @return First offset at or after @p pos that is not JSON whitespace, or @p len.
 size_t gltf_json_skip_ws(const char *json, size_t len, size_t pos) {
     while (pos < len) {
         char c = json[pos];
@@ -124,6 +139,9 @@ size_t gltf_json_skip_ws(const char *json, size_t len, size_t pos) {
 }
 
 /// @brief Skip a quoted JSON string (honoring backslash escapes) starting at @p pos.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param pos Offset of the opening quote.
 /// @return Index just past the closing quote, or SIZE_MAX if @p pos isn't a string or it's
 /// unterminated.
 size_t gltf_json_skip_string_raw(const char *json, size_t len, size_t pos) {
@@ -169,6 +187,10 @@ size_t gltf_json_skip_string_raw(const char *json, size_t len, size_t pos) {
 /// @brief Read and unescape a quoted JSON string at @p pos into a malloc'd C string (caller frees).
 /// @details Decodes the standard JSON escape set (\" \\ \/ \b \f \n \r \t); rejects any other
 ///          escape. Sets @p out_next past the closing quote on success.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param pos Offset of the opening quote.
+/// @param out_next Optional destination for the offset following the closing quote.
 /// @return The decoded string, or NULL on a malformed/unterminated string or allocation failure.
 char *gltf_json_read_string_alloc(const char *json, size_t len, size_t pos, size_t *out_next) {
     char *out;
@@ -262,6 +284,12 @@ char *gltf_json_read_string_alloc(const char *json, size_t len, size_t pos, size
 
 /// @brief Whether the JSON string at @p pos equals @p key, advancing @p out_next past it either
 /// way.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param pos Offset of the candidate string's opening quote.
+/// @param key NUL-terminated decoded key to compare.
+/// @param out_next Optional destination for the offset after the candidate string.
+/// @return Non-zero when the decoded JSON string exactly equals @p key.
 int gltf_json_key_matches(
     const char *json, size_t len, size_t pos, const char *key, size_t *out_next) {
     size_t key_len;
@@ -447,11 +475,17 @@ int gltf_json_validate_document(const char *json, size_t len) {
     return gltf_json_skip_ws(json, len, end) == len;
 }
 
+/// @brief Schema context controlling which raw JSON numeric tokens must be exact integers.
 typedef enum gltf_json_integral_walk_mode {
+    /// Ordinary recursive glTF object/value validation.
     GLTF_JSON_INTEGRAL_WALK_NORMAL = 0,
+    /// Array whose numeric elements are required to be integers.
     GLTF_JSON_INTEGRAL_WALK_INTEGER_ARRAY = 1,
+    /// Attribute semantic map whose numeric property values are accessor indices.
     GLTF_JSON_INTEGRAL_WALK_ATTRIBUTE_OBJECT = 2,
+    /// Morph-target array whose entries are attribute semantic maps.
     GLTF_JSON_INTEGRAL_WALK_TARGET_ARRAY = 3,
+    /// Extension object where only explicitly supported extension payloads are interpreted.
     GLTF_JSON_INTEGRAL_WALK_EXTENSION_MAP = 4
 } gltf_json_integral_walk_mode;
 
@@ -663,6 +697,16 @@ static int gltf_json_validate_integral_value(const char *json,
     return pos < end && json[pos] == '}';
 }
 
+/**
+ * @brief Validate every schema-recognized integral and boolean token in a glTF JSON document.
+ * @details First validates complete JSON structure, then walks supported glTF fields and
+ *          extensions. Numeric tokens in integer positions must be exact decimal integers;
+ *          numeric boolean spellings must be exactly zero or one. Opaque `extras` and unsupported
+ *          extension payloads remain syntactically validated but are not schema-interpreted.
+ * @param json Exact glTF JSON bytes.
+ * @param len Exact byte length of @p json.
+ * @return Non-zero when the document is structurally valid and every recognized token conforms.
+ */
 int gltf_json_validate_gltf_integral_tokens(const char *json, size_t len) {
     size_t start;
     size_t end;
@@ -678,6 +722,11 @@ int gltf_json_validate_gltf_integral_tokens(const char *json, size_t len) {
 
 /// @brief Find the index just past the bracket that closes the @p open_ch at @p pos.
 /// @details Tracks nesting and skips quoted strings so brackets inside strings don't miscount.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param pos Offset of the opening delimiter.
+/// @param open_ch Opening object or array delimiter to count.
+/// @param close_ch Matching closing delimiter.
 /// @return Index after the matching @p close_ch, or SIZE_MAX if unbalanced.
 size_t gltf_json_find_matching(
     const char *json, size_t len, size_t pos, char open_ch, char close_ch) {
@@ -709,6 +758,11 @@ size_t gltf_json_find_matching(
 /// @brief Locate a top-level array property @p key in the root object, by raw byte scan.
 /// @details Only matches keys at object depth 1 (true top level), then returns the byte range
 ///          of the '['..']' array value via @p out_start / @p out_end.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param key Root property name to locate.
+/// @param out_start Optional destination for the array's opening-bracket offset.
+/// @param out_end Optional destination for the offset following its closing bracket.
 /// @return 1 if found (range set), 0 otherwise.
 int gltf_json_find_top_level_array(
     const char *json, size_t len, const char *key, size_t *out_start, size_t *out_end) {
@@ -766,6 +820,11 @@ int gltf_json_find_top_level_array(
 
 /// @brief Read a direct string property @p key from the object spanning [obj_start, obj_end).
 /// @details Only the object's own (depth-1) keys are considered; nested objects are skipped.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param obj_start Offset of the object's opening brace.
+/// @param obj_end Offset immediately after the object's closing brace.
+/// @param key Direct property name to locate.
 /// @return The unescaped value (caller frees), or NULL if absent or not a string.
 char *gltf_json_object_get_string(
     const char *json, size_t len, size_t obj_start, size_t obj_end, const char *key) {
@@ -850,6 +909,16 @@ static int gltf_json_parse_unsigned_integer_span(const char *json,
     return 1;
 }
 
+/**
+ * @brief Read a direct object property as an exact non-negative `size_t`.
+ * @param json Source JSON byte buffer.
+ * @param len Exact source byte length.
+ * @param obj_start Offset of the object's opening brace.
+ * @param obj_end Offset immediately after the object's closing brace.
+ * @param key Direct property name to locate.
+ * @param fallback Value returned for absence, invalid syntax, or overflow.
+ * @return Parsed non-negative integer or @p fallback.
+ */
 size_t gltf_json_object_get_size(const char *json,
                                  size_t len,
                                  size_t obj_start,
@@ -915,6 +984,16 @@ static int gltf_json_parse_int_span(const char *json, size_t start, size_t end, 
     return 1;
 }
 
+/**
+ * @brief Read a direct object property as an exact signed `int`.
+ * @param json Source JSON byte buffer.
+ * @param len Exact source byte length.
+ * @param obj_start Offset of the object's opening brace.
+ * @param obj_end Offset immediately after the object's closing brace.
+ * @param key Direct property name to locate.
+ * @param fallback Value returned for absence, invalid syntax, or overflow.
+ * @return Parsed signed integer or @p fallback.
+ */
 int gltf_json_object_get_int(
     const char *json, size_t len, size_t obj_start, size_t obj_end, const char *key, int fallback) {
     size_t value_start;
@@ -930,6 +1009,13 @@ int gltf_json_object_get_int(
 /// @brief Find the byte range of a direct property @p key's value within an object.
 /// @details Reports the [out_start, out_end) span of the raw value (any JSON type) for the
 ///          caller to parse further. Only depth-1 keys match.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param obj_start Offset of the object's opening brace.
+/// @param obj_end Offset immediately after the object's closing brace.
+/// @param key Direct property name to locate.
+/// @param out_start Optional destination for the value's first byte.
+/// @param out_end Optional destination for the offset immediately following the value.
 /// @return 1 if found (range set), 0 otherwise.
 int gltf_json_object_find_value(const char *json,
                                 size_t len,
@@ -990,6 +1076,13 @@ int gltf_json_object_find_value(const char *json,
 
 /// @brief Find the byte range of the @p item_index-th element of a JSON array.
 /// @details Walks comma-separated values (skipping each whole) until it reaches the index.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param array_start Offset of the array's opening bracket.
+/// @param array_end Offset immediately after the array's closing bracket.
+/// @param item_index Zero-based element index.
+/// @param out_start Optional destination for the element's first byte.
+/// @param out_end Optional destination for the offset immediately following the element.
 /// @return 1 with [out_start, out_end) set, or 0 if the index is out of range or input malformed.
 int gltf_json_array_item_range(const char *json,
                                size_t len,
@@ -1040,6 +1133,13 @@ int gltf_json_array_item_range(const char *json,
 
 /// @brief Read the @p item_index-th array element as a C-locale double (@p fallback otherwise).
 /// @details Rejects string/object/array elements and non-finite results, returning @p fallback.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param array_start Offset of the array's opening bracket.
+/// @param array_end Offset immediately after the array's closing bracket.
+/// @param item_index Zero-based element index.
+/// @param fallback Value returned for absence, invalid syntax, or non-finite output.
+/// @return Parsed finite number or @p fallback.
 double gltf_json_array_get_number(const char *json,
                                   size_t len,
                                   size_t array_start,
@@ -1074,6 +1174,13 @@ double gltf_json_array_get_number(const char *json,
 
 /// @brief Read the @p item_index-th array element as an unescaped string (caller frees; NULL if not
 /// a string).
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param array_start Offset of the array's opening bracket.
+/// @param array_end Offset immediately after the array's closing bracket.
+/// @param item_index Zero-based element index.
+/// @return Heap-allocated decoded string, or NULL when the element is absent, malformed, or not a
+///         string.
 char *gltf_json_array_get_string_alloc(
     const char *json, size_t len, size_t array_start, size_t array_end, int item_index) {
     size_t value_start;
@@ -1088,6 +1195,12 @@ char *gltf_json_array_get_string_alloc(
 }
 
 /// @brief Read a property @p key as a boolean, accepting literal true/false or a nonzero number.
+/// @param json Source JSON byte buffer.
+/// @param len Exact source byte length.
+/// @param obj_start Offset of the object's opening brace.
+/// @param obj_end Offset immediately after the object's closing brace.
+/// @param key Direct property name to locate.
+/// @param fallback Value returned when the property is absent or invalid.
 /// @return 1 for true/nonzero, 0 for false/zero, or @p fallback if the key is absent.
 int gltf_json_object_get_boolish(
     const char *json, size_t len, size_t obj_start, size_t obj_end, const char *key, int fallback) {

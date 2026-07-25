@@ -13,19 +13,37 @@
 //   - Alpha slices (odd ETC1S slices) merge their green channel into A per the spec.
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_textureasset3d_basislz.inc
+ * @brief Implements bounded clean-room BasisLZ/ETC1S decoding for KTX2 textures.
+ * @details This TextureAsset3D fragment reads canonical Huffman codebooks, endpoint and selector
+ *          tables, predictive slice streams, and optional alpha slices; converts every mip
+ *          directly to RGBA8 Pixels; and captures canonical uncompressed backing for later
+ *          residency reconstruction without retaining decoder-specific state.
+ */
+
 #define BASISLZ_HUFF_MAX_CODE_SIZE 16
 #define BASISLZ_HUFF_MAX_SYMS (1 << 14)
 #define BASISLZ_MAX_SELECTOR_HISTORY 64u
 
 /// @brief LSB-first bit reader over a bounded byte range.
 typedef struct {
+    /// Borrowed encoded byte range.
     const uint8_t *data;
+    /// Number of readable bytes in @ref data.
     size_t size;
+    /// Current byte offset.
     size_t byte_pos;
+    /// Number of already consumed low bits in the current byte.
     uint32_t bit_pos; /* bits consumed within data[byte_pos] */
+    /// Sticky flag raised after any out-of-bounds read.
     int failed;
 } basislz_bit_reader;
 
+/// @brief Initialize a bounded BasisLZ bit reader at the start of a byte range.
+/// @param[out] br Reader state to initialize.
+/// @param[in] data Borrowed encoded bytes.
+/// @param size Number of readable bytes at @p data.
 static void basislz_bits_init(basislz_bit_reader *br, const uint8_t *data, size_t size) {
     br->data = data;
     br->size = size;
@@ -35,6 +53,10 @@ static void basislz_bits_init(basislz_bit_reader *br, const uint8_t *data, size_
 }
 
 /// @brief Read @p count bits (LSB-first within each byte, LSB-first assembly).
+/// @param[in,out] br Bounded bit reader advanced by consumed bits.
+/// @param count Number of bits to read.
+/// @return Assembled unsigned value, or zero after raising the reader's failure flag
+///         when input ends.
 static uint32_t basislz_get_bits(basislz_bit_reader *br, uint32_t count) {
     uint32_t value = 0;
     for (uint32_t i = 0; i < count; i++) {
@@ -56,19 +78,31 @@ static uint32_t basislz_get_bits(basislz_bit_reader *br, uint32_t count) {
 
 /// @brief Canonical Huffman decoding table (RFC 1951 §3.2.2 code assignment).
 typedef struct {
+    /// Number of symbols assigned to each code length.
     int32_t counts[BASISLZ_HUFF_MAX_CODE_SIZE + 1];
+    /// First canonical code for each length.
     int32_t base_code[BASISLZ_HUFF_MAX_CODE_SIZE + 1];
+    /// First symbol-table index for each length.
     int32_t base_index[BASISLZ_HUFF_MAX_CODE_SIZE + 1];
+    /// Owned symbols ordered by code length and symbol value.
     uint16_t *sorted_syms; /* symbols ordered by (code length, symbol) */
+    /// Total number of nonzero-length codes.
     int32_t total_codes;
 } basislz_huff_table;
 
+/// @brief Release a Huffman table's owned symbol ordering and clear its state.
+/// @param[in,out] table Table to dispose.
 static void basislz_huff_free(basislz_huff_table *table) {
     free(table->sorted_syms);
     memset(table, 0, sizeof(*table));
 }
 
 /// @brief Build a canonical decoding table from per-symbol code lengths (0 = unused).
+/// @param[out] table Destination table, reset before construction.
+/// @param[in] lengths Per-symbol canonical code lengths.
+/// @param num_syms Number of entries in @p lengths.
+/// @return Non-zero when a nonempty, non-oversubscribed table is built; zero on an
+///         invalid length or allocation failure.
 static int basislz_huff_build(basislz_huff_table *table,
                               const uint8_t *lengths,
                               uint32_t num_syms) {
@@ -109,6 +143,10 @@ static int basislz_huff_build(basislz_huff_table *table,
 }
 
 /// @brief Decode one Huffman symbol (bit-by-bit canonical walk; -1 on failure).
+/// @param[in,out] br Encoded bit reader advanced through the code.
+/// @param[in] table Canonical decoding table.
+/// @return Decoded nonnegative symbol, or -1 after raising failure for an invalid or
+///         truncated code.
 static int32_t basislz_huff_decode(basislz_bit_reader *br, const basislz_huff_table *table) {
     uint32_t code = 0;
     for (int len = 1; len <= BASISLZ_HUFF_MAX_CODE_SIZE; len++) {
@@ -127,6 +165,10 @@ static int32_t basislz_huff_decode(basislz_bit_reader *br, const basislz_huff_ta
 
 /// @brief Read one compressed Huffman table (spec section 6.0: RLE + Huffman coded
 ///        code lengths, Deflate-style, with the 21-entry reordered length table).
+/// @param[in,out] br Encoded bit reader advanced past the table.
+/// @param[out] out_table Destination canonical table, cleared before decoding.
+/// @return Non-zero when both code-length and final symbol tables decode successfully;
+///         zero on malformed input or allocation failure.
 static int basislz_read_huff_table(basislz_bit_reader *br, basislz_huff_table *out_table) {
     static const uint8_t reorder[21] = {17, 18, 19, 20, 0,  8, 7,  9, 6,  10, 5,
                                         11, 4,  12, 3,  13, 2, 14, 1, 15, 16};
@@ -187,16 +229,25 @@ fail:
 
 /// @brief One ETC1S endpoint codebook entry: 5-bit base color + intensity table index.
 typedef struct {
+    /// Five-bit red, green, and blue base components.
     uint8_t color5[3];
+    /// Three-bit ETC1 intensity-table index.
     uint8_t inten5;
 } basislz_endpoint;
 
 /// @brief One ETC1S selector codebook entry: 4x4 2-bit selectors, row-major.
 typedef struct {
+    /// Selector indices addressed as `[row][column]`.
     uint8_t selectors[4][4]; /* [y][x] */
 } basislz_selector;
 
 /// @brief Decode the endpoint codebook (spec section 7.0).
+/// @param[in] data Encoded endpoint-codebook bytes.
+/// @param size Number of readable bytes at @p data.
+/// @param num_endpoints Number of endpoint records to decode.
+/// @param[out] endpoints Caller-allocated endpoint table.
+/// @return Non-zero when every endpoint is decoded; zero on malformed Huffman data,
+///         truncation, or allocation failure.
 static int basislz_decode_endpoints(const uint8_t *data,
                                     size_t size,
                                     uint32_t num_endpoints,
@@ -253,6 +304,12 @@ done:
 }
 
 /// @brief Decode the selector codebook (spec section 8.0: raw or byte-wise DPCM).
+/// @param[in] data Encoded selector-codebook bytes.
+/// @param size Number of readable bytes at @p data.
+/// @param num_selectors Number of selector records to decode.
+/// @param[out] selectors Caller-allocated selector table.
+/// @return Non-zero when raw or DPCM selectors decode completely; zero for unsupported
+///         global/hybrid codebooks, malformed data, or truncation.
 static int basislz_decode_selectors(const uint8_t *data,
                                     size_t size,
                                     uint32_t num_selectors,
@@ -306,13 +363,20 @@ done:
 
 /// @brief The four slice-decoding Huffman tables + selector history size (section 9.0).
 typedef struct {
+    /// Endpoint prediction-symbol table.
     basislz_huff_table endpoint_pred_model;
+    /// Delta endpoint-index table.
     basislz_huff_table delta_endpoint_model;
+    /// Selector and history-reference symbol table.
     basislz_huff_table selector_model;
+    /// Selector-history run-length table.
     basislz_huff_table selector_history_buf_rle_model;
+    /// Approximate move-to-front selector history size.
     uint32_t selector_history_buf_size;
 } basislz_slice_tables;
 
+/// @brief Release every Huffman table owned by a slice-table set and reset its history size.
+/// @param[in,out] tables Slice-table set to dispose.
 static void basislz_slice_tables_free(basislz_slice_tables *tables) {
     basislz_huff_free(&tables->endpoint_pred_model);
     basislz_huff_free(&tables->delta_endpoint_model);
@@ -321,6 +385,12 @@ static void basislz_slice_tables_free(basislz_slice_tables *tables) {
     tables->selector_history_buf_size = 0;
 }
 
+/// @brief Decode the four slice Huffman tables and selector-history size.
+/// @param[in] data Encoded slice-table bytes.
+/// @param size Number of readable bytes at @p data.
+/// @param[out] tables Destination table set, cleared before decoding.
+/// @return Non-zero on complete valid input; zero on malformed tables, truncation, or
+///         an excessive selector-history size.
 static int basislz_read_slice_tables(const uint8_t *data,
                                      size_t size,
                                      basislz_slice_tables *tables) {
@@ -343,6 +413,10 @@ static int basislz_read_slice_tables(const uint8_t *data,
 }
 
 /// @brief Variable-length chunked integer (spec section 10.2).
+/// @param[in,out] br Encoded bit reader advanced through all continuation chunks.
+/// @param chunk_bits Payload bits carried by each chunk.
+/// @return Decoded 32-bit unsigned value, or zero after raising failure on truncation
+///         or excessive continuation length.
 static uint32_t basislz_decode_vlc(basislz_bit_reader *br, uint32_t chunk_bits) {
     const uint32_t chunk_size = 1u << chunk_bits;
     const uint32_t chunk_mask = chunk_size - 1u;
@@ -374,6 +448,9 @@ static const int16_t basislz_inten_tables[8][4] = {{-8, -2, 2, 8},
                                                    {-106, -33, 33, 106},
                                                    {-183, -47, 47, 183}};
 
+/// @brief Clamp an integer color component to the unsigned eight-bit range.
+/// @param v Component value to clamp.
+/// @return @p v limited to `[0, 255]`.
 static uint8_t basislz_clamp255(int v) {
     if (v < 0)
         return 0;
@@ -383,6 +460,8 @@ static uint8_t basislz_clamp255(int v) {
 }
 
 /// @brief Expand an endpoint into the 4-color ramp (5-bit color scaled to 8-bit).
+/// @param[in] endpoint ETC1S endpoint record.
+/// @param[out] ramp Four RGB8 colors ordered by selector value.
 static void basislz_endpoint_ramp(const basislz_endpoint *endpoint, uint8_t ramp[4][3]) {
     const int16_t *inten = basislz_inten_tables[endpoint->inten5 & 7];
     int base[3];
@@ -395,11 +474,23 @@ static void basislz_endpoint_ramp(const basislz_endpoint *endpoint, uint8_t ramp
 
 /// @brief Per-block decode output: codebook indices for one slice.
 typedef struct {
+    /// Endpoint codebook entry selected for the block.
     uint16_t endpoint_index;
+    /// Selector codebook entry selected for the block.
     uint16_t selector_index;
 } basislz_block_indices;
 
 /// @brief Decode one ETC1S slice into per-block codebook indices (spec section 10.3).
+/// @param[in] data Encoded slice bytes.
+/// @param size Number of readable bytes at @p data.
+/// @param num_blocks_x Horizontal ETC1 block count.
+/// @param num_blocks_y Vertical ETC1 block count.
+/// @param num_endpoints Size of the endpoint codebook.
+/// @param num_selectors Size of the selector codebook.
+/// @param[in] tables Decoded slice Huffman and history configuration.
+/// @param[out] out_blocks Caller-allocated row-major block-index table.
+/// @return Non-zero when all predictive endpoint and selector symbols decode within
+///         their codebook bounds; zero on invalid configuration, allocation, or data.
 static int basislz_decode_slice(const uint8_t *data,
                                 size_t size,
                                 uint32_t num_blocks_x,
@@ -559,15 +650,24 @@ done:
 
 /// @brief KTX2 BasisLZ supercompression global data, parsed and validated.
 typedef struct {
+    /// Number of decoded endpoint records.
     uint32_t endpoint_count;
+    /// Number of decoded selector records.
     uint32_t selector_count;
+    /// Owned endpoint codebook.
     basislz_endpoint *endpoints;
+    /// Owned selector codebook.
     basislz_selector *selectors;
+    /// Owned slice decoding tables.
     basislz_slice_tables tables;
+    /// Borrowed 20-byte-per-image descriptor sequence inside the global data.
     const uint8_t *image_descs; /* 20 bytes per image, level-major */
+    /// Number of descriptors at @ref image_descs.
     uint32_t image_count;
 } basislz_global_data;
 
+/// @brief Release decoded BasisLZ global codebooks and clear the aggregate state.
+/// @param[in,out] gd Global data object to dispose.
 static void basislz_global_free(basislz_global_data *gd) {
     free(gd->endpoints);
     free(gd->selectors);
@@ -580,6 +680,12 @@ static void basislz_global_free(basislz_global_data *gd) {
 ///          selectorCount u16, endpoints/selectors/tables/extended byte lengths u32),
 ///          then one 20-byte imageDesc per (level, layer, face), then the endpoint,
 ///          selector, tables, and extended byte streams in that order.
+/// @param[in] sgd KTX2 supercompression global-data segment.
+/// @param sgd_size Number of readable bytes at @p sgd.
+/// @param image_count Expected number of 20-byte image descriptors.
+/// @param[out] gd Destination parsed global data, cleared before use.
+/// @return Non-zero when segment layout and all codebooks are valid; zero on truncation,
+///         invalid counts, allocation, or codebook decode failure.
 static int basislz_parse_global_data(const uint8_t *sgd,
                                      size_t sgd_size,
                                      uint32_t image_count,
@@ -626,6 +732,16 @@ fail:
 
 /// @brief Decode one ETC1S slice into an RGBA8 Pixels object (RGB path), or merge the
 ///        slice's green channel into the A channel of @p pixels (alpha path).
+/// @param[in] gd Parsed global endpoint, selector, and slice tables.
+/// @param[in] slice_data Encoded ETC1S slice bytes.
+/// @param slice_size Number of readable bytes at @p slice_data.
+/// @param width Logical mip width in texels.
+/// @param height Logical mip height in texels.
+/// @param merge_alpha Non-zero to replace destination alpha from decoded green;
+///                    zero to write decoded RGB with opaque alpha.
+/// @param[in,out] pixels Destination RGBA8 Pixels object.
+/// @return Non-zero when all blocks decode and are written; zero on size overflow,
+///         allocation failure, or malformed slice data.
 static int basislz_decode_slice_to_pixels(const basislz_global_data *gd,
                                           const uint8_t *slice_data,
                                           size_t slice_size,
@@ -687,6 +803,14 @@ done:
     return ok;
 }
 
+/// @brief Parse a KTX2 BasisLZ texture after generic header validation.
+/// @param[in] data Complete KTX2 byte stream.
+/// @param size Number of readable bytes at @p data.
+/// @param[in] api_name Loader name used in recoverable diagnostics.
+/// @param pixel_width Base-level width in texels.
+/// @param pixel_height Base-level height in texels.
+/// @param level_count Number of KTX2 mip levels.
+/// @return New TextureAsset3D handle, or `NULL` after recording an error.
 static void *textureasset3d_parse_ktx2_basislz(const uint8_t *data,
                                                size_t size,
                                                const char *api_name,
@@ -698,7 +822,13 @@ static void *textureasset3d_parse_ktx2_basislz(const uint8_t *data,
 /// @details @p mips carries each level's compressed byte range in the file; imageDesc i
 ///          describes level i's RGB and optional alpha slice, with slice offsets
 ///          relative to the start of the level's byte range.
-/// @return Array of decoded Pixels (caller owns), or NULL on failure.
+/// @param[in] data Complete KTX2 byte stream.
+/// @param size Number of readable bytes at @p data.
+/// @param[in] mips Validated source range and dimension table.
+/// @param mip_count Number of entries in @p mips and @p gd image descriptors.
+/// @param[in] gd Parsed BasisLZ global data and codebooks.
+/// @return Owned array of decoded Pixels handles, or `NULL` on malformed input,
+///         oversize fallback allocation, or slice decode failure.
 static void **textureasset3d_decode_basislz_mips(const uint8_t *data,
                                                  size_t size,
                                                  const textureasset3d_mip *mips,
@@ -769,7 +899,13 @@ fail:
 ///          its offset/length), decodes the endpoint/selector codebooks and slice
 ///          tables, then decodes every level's ETC1S slices straight to RGBA8 Pixels.
 ///          The result is an uncompressed asset (format "rgba8", no native payloads).
-/// @return New TextureAsset3D handle, or NULL with a recoverable error recorded.
+/// @param[in] data Complete KTX2 byte stream.
+/// @param size Number of readable bytes at @p data.
+/// @param[in] api_name Loader name used in recoverable diagnostics.
+/// @param pixel_width Base-level width in texels.
+/// @param pixel_height Base-level height in texels.
+/// @param level_count Number of KTX2 mip levels and BasisLZ image descriptors.
+/// @return New TextureAsset3D handle, or `NULL` with a recoverable error recorded.
 static void *textureasset3d_parse_ktx2_basislz(const uint8_t *data,
                                                size_t size,
                                                const char *api_name,

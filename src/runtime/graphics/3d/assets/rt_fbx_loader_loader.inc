@@ -16,12 +16,31 @@
 // Links: rt_fbx_loader.c, rt_fbx_loader_scene.inc, rt_fbx_loader_nodeanim.inc
 //
 //===----------------------------------------------------------------------===//
+
+/**
+ * @file rt_fbx_loader_loader.inc
+ * @brief Coordinates transactional FBX parsing, extraction, texture linking, and public
+ *        load entry points.
+ *
+ * This internal implementation fragment owns the top-level load transaction. It reads
+ * binary or ASCII FBX input, builds and validates the object/connection graph, extracts
+ * runtime assets in dependency order, and rolls back all staged resources if any hard
+ * phase fails. It also contains the bounded minimal ASCII helpers and recoverable-load
+ * wrappers used by higher-level model import.
+ *
+ * Successful public loads return a newly allocated, reference-counted
+ * @c rt_fbx_asset whose finalizer owns all published meshes, materials, skeletons,
+ * animations, cameras, morph targets, and scene nodes. Parser trees and binding tables
+ * remain transaction-local scratch storage.
+ */
+
 /*==========================================================================
  * Top-level FBX loader
  *=========================================================================*/
 
 /// @brief GC finalizer for `rt_fbx_asset` — release every owned mesh / material / skeleton /
 /// animation.
+/// @param[in,out] obj Asset instance being finalized; NULL is accepted as a no-op.
 static void rt_fbx_asset_finalize(void *obj) {
     rt_fbx_asset *fbx = (rt_fbx_asset *)obj;
     if (!fbx)
@@ -38,7 +57,11 @@ static void rt_fbx_asset_finalize(void *obj) {
 }
 
 /// @brief Ensure a double array holds at least @p needed elements, doubling capacity (min 64)
-///   with overflow checks. @return 1 on success, 0 on overflow or allocation failure.
+///   with overflow checks.
+/// @param[in,out] values Address of the owned heap-array pointer.
+/// @param[in,out] capacity Current element capacity, updated after reallocation.
+/// @param needed Minimum required element capacity.
+/// @return One on success, or zero on arithmetic overflow or allocation failure.
 static int fbx_ascii_grow_double_array(double **values, size_t *capacity, size_t needed) {
     double *grown;
     size_t new_capacity;
@@ -61,7 +84,11 @@ static int fbx_ascii_grow_double_array(double **values, size_t *capacity, size_t
 }
 
 /// @brief Ensure an int32 array holds at least @p needed elements, doubling capacity (min 64)
-///   with overflow checks. @return 1 on success, 0 on overflow or allocation failure.
+///   with overflow checks.
+/// @param[in,out] values Address of the owned heap-array pointer.
+/// @param[in,out] capacity Current element capacity, updated after reallocation.
+/// @param needed Minimum required element capacity.
+/// @return One on success, or zero on arithmetic overflow or allocation failure.
 static int fbx_ascii_grow_i32_array(int32_t **values, size_t *capacity, size_t needed) {
     int32_t *grown;
     size_t new_capacity;
@@ -185,7 +212,11 @@ static int fbx_ascii_parse_double_span(const char *p,
 }
 
 /// @brief Locate the "a:" value payload of the ASCII-FBX array node named @p key within
-///   @p text; NULL if the node or its payload marker is absent.
+///   @p text.
+/// @param text NUL-terminated ASCII FBX document.
+/// @param key Array-node label to locate.
+/// @return Borrowed pointer immediately after the node's `a:` marker, or NULL when
+///         the node or payload marker is absent.
 static const char *fbx_ascii_array_payload(const char *text, const char *key) {
     const char *p = text ? strstr(text, key) : NULL;
     if (!p)
@@ -195,8 +226,12 @@ static const char *fbx_ascii_array_payload(const char *text, const char *key) {
 }
 
 /// @brief Parse a comma-separated list of doubles from an ASCII-FBX "a:" payload up to the
-///   closing '}', rejecting non-finite values. @return 1 if ≥1 value parsed (sets @p out /
-///   @p out_count), 0 on parse error or allocation failure.
+///   closing '}', rejecting non-finite values.
+/// @param payload Borrowed pointer to the first byte after an `a:` marker.
+/// @param[out] out Receives the newly allocated value array, or NULL on failure.
+/// @param[out] out_count Receives the parsed scalar count, or zero on failure.
+/// @return One when at least one value is parsed, or zero on invalid input, parse
+///         failure, or allocation failure.
 static int fbx_ascii_parse_double_array(const char *payload, double **out, size_t *out_count) {
     double *values = NULL;
     size_t count = 0;
@@ -232,8 +267,12 @@ static int fbx_ascii_parse_double_array(const char *payload, double **out, size_
 }
 
 /// @brief Parse a comma-separated list of int32s from an ASCII-FBX "a:" payload up to the
-///   closing '}', rejecting out-of-range values. @return 1 if ≥1 value parsed (sets @p out /
-///   @p out_count), 0 on parse error or allocation failure.
+///   closing '}', rejecting out-of-range values.
+/// @param payload Borrowed pointer to the first byte after an `a:` marker.
+/// @param[out] out Receives the newly allocated integer array, or NULL on failure.
+/// @param[out] out_count Receives the parsed integer count, or zero on failure.
+/// @return One when at least one value is parsed, or zero on invalid input, parse
+///         failure, range error, or allocation failure.
 static int fbx_ascii_parse_i32_array(const char *payload, int32_t **out, size_t *out_count) {
     int32_t *values = NULL;
     size_t count = 0;
@@ -304,6 +343,20 @@ static int32_t fbx_ascii_resolve_attribute_index(size_t direct_count,
 /// @details FBX marks each polygon's final index with a bitwise complement (a negative value);
 ///   this triangulates arbitrary-sized polygons, skips out-of-range indices, and consumes optional
 ///   ASCII normals, UVs, and vertex colors using direct, indexed, or inferred mapping.
+/// @param positions Flattened XYZ control-point array.
+/// @param position_count Number of scalar values in @p positions.
+/// @param indices Polygon-vertex control indices with complemented polygon terminators.
+/// @param index_count Number of entries in @p indices.
+/// @param normals Optional flattened XYZ direct normal array.
+/// @param normal_count Number of scalar values in @p normals.
+/// @param uvs Optional flattened UV direct texture-coordinate array.
+/// @param uv_count Number of scalar values in @p uvs.
+/// @param uv_indices Optional per-corner indirection into the UV direct array.
+/// @param uv_index_count Number of entries in @p uv_indices.
+/// @param colors Optional flattened RGBA direct vertex-color array.
+/// @param color_count Number of scalar values in @p colors.
+/// @param color_indices Optional per-corner indirection into the color direct array.
+/// @param color_index_count Number of entries in @p color_indices.
 /// @return The new mesh object, or NULL on malformed input or allocation failure.
 static void *fbx_ascii_build_mesh(const double *positions,
                                   size_t position_count,
@@ -614,12 +667,16 @@ static void fbx_ascii_extract_model_name(const char *text, char *out, size_t out
     fbx_decode_object_name(raw, out, out_size);
 }
 
-/// @brief ASCII-FBX fallback loader: parse mesh arrays, optional attributes, material properties,
-///   and a model name into a single runtime asset.
-/// @return A new FBX asset, or NULL if the required arrays are missing or allocation fails.
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((unused))
 #endif
+/// @brief Build a minimal single-mesh runtime asset from an ASCII FBX document.
+/// @details Parses required position/index arrays plus optional normals, UVs, colors,
+///          material properties, and the first model name. Every temporary array and
+///          partially built runtime object is released transactionally on failure.
+/// @param text NUL-terminated ASCII FBX document.
+/// @return Newly allocated FBX asset on success, or NULL when required arrays are
+///         missing/malformed or any object/allocation step fails.
 static void *fbx_load_ascii_minimal(const char *text) {
     double *positions = NULL;
     int32_t *indices = NULL;
@@ -725,12 +782,10 @@ fail:
     return NULL;
 }
 
-/// @brief Collect Geometry/Material objects from the FBX `Objects` node onto the asset,
-///   recording id->mesh/material bindings and per-mesh vertex remaps. Extracted phase of
-///   rt_fbx_load; the binding/remap arrays grow in place via the in/out pointer params.
-/// @brief Link FBX Texture nodes to their owning materials via the connection table.
-///   Extracted phase of rt_fbx_load; reads the connection table + material bindings and
-///   assigns decoded pixels to the matched material texture slots.
+/// @brief Obtain the raw embedded image payload from an FBX `Video` node.
+/// @param video Video node containing an optional raw `Content` child.
+/// @param[out] out_len Optional destination for the raw payload length; initialized to zero.
+/// @return Borrowed pointer into the parsed node tree, or NULL when raw content is absent.
 static const uint8_t *fbx_video_content_bytes(fbx_node_t *video, uint32_t *out_len) {
     fbx_node_t *content;
     if (out_len)
@@ -799,7 +854,14 @@ static const char *fbx_node_media_filename_hint(fbx_node_t *node) {
 
 /// @brief Find the Video node connected to texture @p texture_id and decode its embedded
 ///   image content into a Pixels object, picking the codec from the Video filename hint (or
-///   @p texture_hint / @p fallback_hint). Returns NULL if no embedded content decodes.
+///   @p texture_hint / @p fallback_hint).
+/// @param objects Parsed FBX `Objects` node used to resolve connected Video objects.
+/// @param ct Connection table linking Texture and Video object identifiers.
+/// @param texture_id Identifier of the Texture object being resolved.
+/// @param texture_hint Preferred filename/path hint from the Texture node.
+/// @param fallback_hint Secondary codec hint attempted when the preferred hint fails.
+/// @return Newly allocated runtime Pixels object on successful decode, or NULL when
+///         no connected embedded payload can be decoded.
 static void *fbx_try_decode_embedded_texture(fbx_node_t *objects,
                                              const fbx_conn_table_t *ct,
                                              int64_t texture_id,
@@ -831,6 +893,9 @@ static void *fbx_try_decode_embedded_texture(fbx_node_t *objects,
     return NULL;
 }
 
+/// @brief Test whether a texture connection property denotes a normal or bump map.
+/// @param prop Connection property name.
+/// @return Non-zero for recognized normal/bump aliases; otherwise zero.
 static int fbx_texture_prop_is_normal(const char *prop) {
     return fbx_ascii_streq_ignore_case(prop, "NormalMap") ||
            fbx_ascii_streq_ignore_case(prop, "Bump") ||
@@ -838,29 +903,44 @@ static int fbx_texture_prop_is_normal(const char *prop) {
            fbx_ascii_contains_i(prop, "normal") || fbx_ascii_contains_i(prop, "bump");
 }
 
+/// @brief Test whether a texture connection property denotes a specular map.
+/// @param prop Connection property name.
+/// @return Non-zero for recognized specular aliases; otherwise zero.
 static int fbx_texture_prop_is_specular(const char *prop) {
     return fbx_ascii_streq_ignore_case(prop, "SpecularColor") ||
            fbx_ascii_streq_ignore_case(prop, "SpecularFactor") ||
            fbx_ascii_contains_i(prop, "specular");
 }
 
+/// @brief Test whether a texture connection property denotes an emissive map.
+/// @param prop Connection property name.
+/// @return Non-zero for recognized emission aliases; otherwise zero.
 static int fbx_texture_prop_is_emissive(const char *prop) {
     return fbx_ascii_streq_ignore_case(prop, "EmissiveColor") ||
            fbx_ascii_streq_ignore_case(prop, "EmissiveFactor") ||
            fbx_ascii_contains_i(prop, "emissive") || fbx_ascii_contains_i(prop, "emission");
 }
 
+/// @brief Test whether a texture property denotes metallic or roughness data.
+/// @param prop Connection property name.
+/// @return Non-zero for recognized metallic/metalness/roughness aliases; otherwise zero.
 static int fbx_texture_prop_is_metallic_roughness(const char *prop) {
     return fbx_ascii_contains_i(prop, "metallic") || fbx_ascii_contains_i(prop, "metalness") ||
            fbx_ascii_contains_i(prop, "roughness") || fbx_ascii_contains_i(prop, "rough");
 }
 
+/// @brief Test whether a texture connection property denotes ambient occlusion.
+/// @param prop Connection property name.
+/// @return Non-zero for recognized ambient-occlusion aliases; otherwise zero.
 static int fbx_texture_prop_is_ao(const char *prop) {
     return fbx_ascii_contains_i(prop, "ambientocclusion") ||
            fbx_ascii_contains_i(prop, "occlusion") || fbx_ascii_streq_ignore_case(prop, "AO") ||
            fbx_ascii_contains_i(prop, "ambient_occlusion");
 }
 
+/// @brief Test whether a texture property denotes diffuse or base-color data.
+/// @param prop Connection property name; NULL or empty is treated as diffuse.
+/// @return Non-zero for absent names and recognized diffuse/base-color aliases.
 static int fbx_texture_prop_is_diffuse(const char *prop) {
     return !prop || *prop == '\0' || fbx_ascii_streq_ignore_case(prop, "DiffuseColor") ||
            fbx_ascii_streq_ignore_case(prop, "DiffuseFactor") ||
@@ -874,6 +954,9 @@ static int fbx_texture_prop_is_diffuse(const char *prop) {
 /// @details Explicit diffuse/base-color properties and unrecognized properties both fall back to
 ///          the same base-color slot. Keeping this in one helper avoids duplicate branches while
 ///          preserving the diffuse predicate for documentation and future slot-specific handling.
+/// @param[in,out] mat Runtime material receiving the texture reference.
+/// @param pixels Decoded runtime Pixels object to assign.
+/// @param prop_name FBX connection property name, used to retain diffuse classification behavior.
 static void fbx_assign_base_color_texture(void *mat, void *pixels, const char *prop_name) {
     (void)fbx_texture_prop_is_diffuse(prop_name);
     rt_material3d_set_texture(mat, pixels);
@@ -882,6 +965,12 @@ static void fbx_assign_base_color_texture(void *mat, void *pixels, const char *p
 /// @brief Resolve and attach textures to the asset's materials: for each Texture node, load
 ///   its image (external file relative to @p cpath, or embedded Video content) and assign it
 ///   to the connected material's slots per @p material_bindings.
+/// @param[in,out] asset Asset whose material array bounds the linking pass.
+/// @param objects Parsed FBX `Objects` node containing Texture and Video objects.
+/// @param cpath Source FBX path or explicit texture-base path for relative resolution.
+/// @param ct Connection table used to link textures, videos, and materials.
+/// @param material_bindings Object-ID to runtime-material binding array.
+/// @param material_binding_count Number of entries in @p material_bindings.
 static void fbx_load_link_textures(rt_fbx_asset *asset,
                                    fbx_node_t *objects,
                                    const char *cpath,
@@ -967,7 +1056,11 @@ static void fbx_load_link_textures(rt_fbx_asset *asset,
 
 #include "rt_fbx_loader_morph.inc"
 
-/// @brief Whether a Geometry object connected to a surface represents an active trim graph.
+/// @brief Determine whether a surface Geometry participates in an active trim graph.
+/// @param objects Parsed FBX `Objects` node.
+/// @param connections Connection table used to find neighboring Geometry objects.
+/// @param geometry_id Identifier of the candidate NURBS or patch surface.
+/// @return Non-zero when a connected trim surface, boundary, or NURBS curve exists.
 static int fbx_geometry_has_active_trim(fbx_node_t *objects,
                                         const fbx_conn_table_t *connections,
                                         int64_t geometry_id) {
@@ -999,6 +1092,17 @@ static int fbx_geometry_has_active_trim(fbx_node_t *objects,
 ///          later material, skin, morph, and scene-node passes do not need a parallel path. Shape
 ///          and non-renderable curve records remain available to their dedicated passes. A
 ///          declared renderable Geometry must decode into at least one valid triangle.
+/// @param[in,out] asset Staged asset that receives owned mesh and material references.
+/// @param objects Parsed FBX `Objects` node.
+/// @param connections Validated connection table used to detect trim relationships.
+/// @param[in,out] context Loader context used for procedural-surface budget accounting.
+/// @param z_up Non-zero to convert imported geometry into runtime Y-up coordinates.
+/// @param[in,out] p_mesh_bindings Address of the heap-grown mesh-binding array.
+/// @param[in,out] p_mesh_binding_count Address of its initialized entry count.
+/// @param[in,out] p_mesh_remaps Address of the heap-grown geometry-remap array.
+/// @param[in,out] p_mesh_remap_count Address of its initialized entry count.
+/// @param[in,out] p_material_bindings Address of the heap-grown material-binding array.
+/// @param[in,out] p_material_binding_count Address of its initialized entry count.
 /// @return One on success; zero on allocation failure or malformed renderable Geometry.
 static int fbx_load_collect_geometry(rt_fbx_asset *asset,
                                      fbx_node_t *objects,
@@ -1234,14 +1338,21 @@ static uint8_t *fbx_read_entire_file(const char *cpath,
     return data;
 }
 
-/// @brief Return true when a byte stream starts with the FBX binary magic including its NUL byte.
+/// @brief Test whether a byte stream starts with the complete FBX binary magic sequence.
+/// @param data Candidate file bytes.
+/// @param size Number of readable bytes in @p data.
+/// @return Non-zero when the full magic, including its trailing NUL byte, matches.
 static int fbx_has_binary_magic(const uint8_t *data, long size) {
     static const uint8_t magic[] = {'K', 'a', 'y', 'd', 'a', 'r', 'a', ' ', 'F', 'B', 'X',
                                     ' ', 'B', 'i', 'n', 'a', 'r', 'y', ' ', ' ', 0x00};
     return data && size >= (long)sizeof(magic) && memcmp(data, magic, sizeof(magic)) == 0;
 }
 
-/// @brief Sniff the initial comment block used by ASCII FBX files (`; FBX ...`).
+/// @brief Sniff the bounded initial comment block used by ASCII FBX files.
+/// @param data Candidate file bytes.
+/// @param size Number of readable bytes in @p data.
+/// @return Non-zero when the first 256 bytes contain a semicolon comment beginning
+///         with case-insensitive `FBX`; otherwise zero.
 static int fbx_has_ascii_fbx_signature(const uint8_t *data, long size) {
     size_t limit;
     if (!data || size <= 0)
@@ -1265,6 +1376,18 @@ static int fbx_has_ascii_fbx_signature(const uint8_t *data, long size) {
 /// @brief Release every parser/extractor scratch table owned by one top-level load attempt.
 /// @details All arguments may be NULL/zero. Runtime resources already published on the staged
 ///          asset are intentionally excluded and remain the asset finalizer's responsibility.
+/// @param[in,out] root Parsed node-tree root to recursively clear.
+/// @param[in,out] connections Connection table to release.
+/// @param[in,out] constraints Parsed constraint set to release.
+/// @param[in,out] constraint_pose Evaluated static constraint pose to release.
+/// @param[in,out] mesh_bindings Mesh-binding array, including nested material maps.
+/// @param mesh_binding_count Number of initialized entries in @p mesh_bindings.
+/// @param[in,out] mesh_remaps Geometry-remap array and its nested allocations.
+/// @param mesh_remap_count Number of initialized entries in @p mesh_remaps.
+/// @param[in,out] material_bindings Heap material-binding array.
+/// @param[in,out] bone_bindings Heap bone-binding array.
+/// @param[in,out] morph_bindings Morph-channel bindings and their nested allocations.
+/// @param morph_binding_count Number of initialized entries in @p morph_bindings.
 static void fbx_load_cleanup_scratch(fbx_node_t *root,
                                      fbx_conn_table_t *connections,
                                      fbx_constraint_set_t *constraints,
@@ -1686,6 +1809,12 @@ static void *fbx_load_impl(rt_string path) {
     return asset;
 }
 
+/// @brief Load an FBX asset and manage public diagnostic/statistics transaction state.
+/// @details Validates the runtime path, delegates parsing and extraction to
+///          @ref fbx_load_impl, and commits either the success or failure counters and
+///          last-error record maintained by the asset-error subsystem.
+/// @param path Runtime string containing the native FBX file path.
+/// @return Newly allocated FBX asset handle on success, or NULL on load failure.
 void *rt_fbx_load(rt_string path) {
     rt_asset_error_begin_load();
     if (!path) {
@@ -1788,7 +1917,12 @@ void *rt_fbx_load_recoverable(rt_string path) {
     return rt_fbx_load(path);
 }
 
-/// @brief Recoverably load an FBX path while overriding relative texture lookup base path.
+/// @brief Recoverably load an FBX while temporarily overriding relative texture resolution.
+/// @details The previous process-local override is restored before return. The override
+///          string is borrowed only for the duration of the synchronous load.
+/// @param path Runtime string containing the FBX file path.
+/// @param texture_base Runtime string used as the relative texture lookup base.
+/// @return Newly allocated FBX asset handle on success, or NULL for a recoverable load failure.
 void *rt_fbx_load_recoverable_with_texture_base(rt_string path, rt_string texture_base) {
     rt_string previous = g_fbx_texture_base_override;
     void *asset;

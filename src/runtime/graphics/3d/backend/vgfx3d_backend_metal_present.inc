@@ -18,7 +18,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Metal command submission, transient storage, depth probes, and presentation.
+/// @details This implementation fragment owns the draw-to-display handoff: it sizes the Metal
+///          layer, manages frames in flight, encodes readback probes, presents completed textures,
+///          and provides reusable upload buffers for draw submission.
+
 /// @brief Sync the CAMetalLayer's drawable size and scale to the current backing view.
+/// @param ctx Borrowed Metal context whose layer tracks the logical output dimensions.
 static void metal_update_layer_size(VGFXMetalContext *ctx) {
     if (!ctx)
         return;
@@ -33,6 +40,7 @@ static void metal_update_layer_size(VGFXMetalContext *ctx) {
 }
 
 /// @brief End the active scene render-command encoder if one is open.
+/// @param ctx Borrowed Metal context whose current encoder is finalized and cleared.
 static void metal_finish_encoding(VGFXMetalContext *ctx) {
     if (!ctx)
         return;
@@ -49,6 +57,9 @@ static void metal_finish_encoding(VGFXMetalContext *ctx) {
 #define VGFX3D_METAL_MAX_INFLIGHT 3
 
 /// @brief Fetch the MTLBuffer stored in a transient pool slot (NSNull → nil).
+/// @param pool Borrowed transient-ring array containing buffers or `NSNull` placeholders.
+/// @param slot Zero-based ring slot to inspect.
+/// @return The buffer stored at @p slot, or nil when the pool, slot, or entry is unavailable.
 static id<MTLBuffer> metal_transient_pool_buffer(NSMutableArray *pool, NSUInteger slot) {
     if (!pool || slot >= pool.count)
         return nil;
@@ -57,6 +68,8 @@ static id<MTLBuffer> metal_transient_pool_buffer(NSMutableArray *pool, NSUIntege
 }
 
 /// @brief Lazily create a transient pool with one NSNull placeholder per ring slot.
+/// @param pool Existing mutable transient pool, or nil when initialization is required.
+/// @return @p pool when non-nil; otherwise a newly initialized mutable ring array.
 static NSMutableArray *metal_transient_pool_ensure(NSMutableArray *pool) {
     if (pool)
         return pool;
@@ -69,6 +82,7 @@ static NSMutableArray *metal_transient_pool_ensure(NSMutableArray *pool) {
 /// @brief Rotate to the next transient ring slot and reset its write offsets.
 /// @details Called whenever a new context command buffer is created; the frames-in-flight
 ///          semaphore guarantees the slot's previous user has finished on the GPU.
+/// @param ctx Borrowed Metal context whose transient pools and cursors are advanced.
 static void metal_rotate_transient_ring(VGFXMetalContext *ctx) {
     NSUInteger slot;
     if (!ctx)
@@ -94,6 +108,8 @@ static void metal_rotate_transient_ring(VGFXMetalContext *ctx) {
 /// @details Waits on the in-flight semaphore (signalled by each committed buffer's completion)
 ///          so the CPU can never run more than VGFX3D_METAL_MAX_INFLIGHT command buffers ahead
 ///          of the GPU, then rotates the transient ring for the new buffer's dynamic writes.
+/// @param ctx Borrowed Metal context providing the command queue and in-flight semaphore.
+/// @return A newly acquired command buffer, or nil when the context or queue cannot provide one.
 static id<MTLCommandBuffer> metal_acquire_command_buffer(VGFXMetalContext *ctx) {
     id<MTLCommandBuffer> buf;
     if (!ctx || !ctx.commandQueue)
@@ -110,11 +126,14 @@ static id<MTLCommandBuffer> metal_acquire_command_buffer(VGFXMetalContext *ctx) 
     return buf;
 }
 
-/// @brief Commit the pending command buffer, optionally blocking until the GPU finishes it.
 /// @brief Encode this frame's queued scene-depth probe blits into the command buffer.
 /// @details Copies one texel per probe from the scene depth texture into the shared
 ///   probe buffer; the completed handler publishes the results. Returns the number of
 ///   probes encoded (0 when there is nothing to do or no depth texture exists).
+/// @param ctx Borrowed Metal context containing the queued probe coordinates and depth texture.
+/// @param cmdBuf Borrowed command buffer that receives the probe blit encoder.
+/// @param[out] outProbeBuffer Optional destination for the shared buffer holding encoded samples.
+/// @return The number of probe copies encoded, or zero when none could be encoded.
 static int32_t metal_encode_depth_probes(VGFXMetalContext *ctx,
                                          id<MTLCommandBuffer> cmdBuf,
                                          id<MTLBuffer> *outProbeBuffer) {
@@ -193,6 +212,9 @@ static int32_t metal_encode_depth_probes(VGFXMetalContext *ctx,
 /// @brief Publish completed depth-probe values from the shared buffer into the context.
 /// @details The probe hook contract is canonical window depth (larger = farther); the
 ///   scene depth buffer is reversed-Z, so values are flipped on publish.
+/// @param ctx Borrowed Metal context receiving the sanitized probe results.
+/// @param probe_buffer Borrowed shared buffer containing completed GPU depth samples.
+/// @param count Number of float samples available in @p probe_buffer.
 static void metal_publish_depth_probes(VGFXMetalContext *ctx,
                                        id<MTLBuffer> probe_buffer,
                                        int32_t count) {
@@ -211,6 +233,7 @@ static void metal_publish_depth_probes(VGFXMetalContext *ctx,
 }
 
 /// @brief Invalidate prior probe results after a command-buffer/encoding failure.
+/// @param ctx Borrowed Metal context whose published result count is cleared.
 static void metal_invalidate_depth_probes(VGFXMetalContext *ctx) {
     if (!ctx)
         return;
@@ -219,6 +242,11 @@ static void metal_invalidate_depth_probes(VGFXMetalContext *ctx) {
     }
 }
 
+/// @brief Commit the pending command buffer, optionally blocking until the GPU finishes it.
+/// @details Finalizes open encoding, appends queued depth-probe copies, retains per-frame
+///          resources through completion, and signals the in-flight semaphore exactly once.
+/// @param ctx Borrowed Metal context whose pending command buffer is submitted and released.
+/// @param waitUntilCompleted YES to wait synchronously and publish probe results before returning.
 static void metal_commit_pending(VGFXMetalContext *ctx, BOOL waitUntilCompleted) {
     if (!ctx)
         return;
@@ -266,6 +294,8 @@ static void metal_commit_pending(VGFXMetalContext *ctx, BOOL waitUntilCompleted)
 
 /// @brief Detach the active offscreen render target, optionally syncing its color back to Pixels
 /// first.
+/// @param ctx Borrowed Metal context whose RTT bindings and pending frame are detached.
+/// @param syncColor YES to synchronize dirty GPU color data into the runtime target before detach.
 static void metal_detach_render_target(VGFXMetalContext *ctx, BOOL syncColor) {
     vgfx3d_rendertarget_t *target;
     BOOL hadPendingFrame;
@@ -302,6 +332,8 @@ static void metal_detach_render_target(VGFXMetalContext *ctx, BOOL syncColor) {
 
 /// @brief Blit a finished texture into the window's CPU framebuffer (software-present fallback
 /// path).
+/// @param ctx Borrowed Metal context providing the window and readback services.
+/// @param texture Borrowed finished color texture to copy into the CPU framebuffer.
 static void metal_present_texture_to_framebuffer(VGFXMetalContext *ctx, id<MTLTexture> texture) {
     vgfx_framebuffer_t fb;
     if (!ctx || !texture || !ctx.vgfxWin)
@@ -313,6 +345,9 @@ static void metal_present_texture_to_framebuffer(VGFXMetalContext *ctx, id<MTLTe
 }
 
 /// @brief Present a finished texture to the layer's next drawable (or framebuffer fallback).
+/// @param ctx Borrowed Metal context providing the layer and command buffer.
+/// @param texture Borrowed finished color texture to copy into the drawable.
+/// @param schedulePresent YES to enqueue drawable presentation on the command buffer.
 /// @return YES if a drawable was presented, NO if it fell back / had no drawable.
 static BOOL metal_present_texture(VGFXMetalContext *ctx,
                                   id<MTLTexture> texture,
@@ -379,6 +414,10 @@ static BOOL metal_present_texture(VGFXMetalContext *ctx,
 }
 
 /// @brief Allocate a shared-storage MTLBuffer initialized from @p bytes (CPU/GPU-visible).
+/// @param ctx Borrowed Metal context providing the device used for allocation.
+/// @param bytes Borrowed source byte range copied into the new buffer.
+/// @param length Number of bytes to allocate and copy.
+/// @return A new shared-storage buffer, or nil for invalid input or allocation failure.
 static id<MTLBuffer> metal_new_shared_buffer(VGFXMetalContext *ctx,
                                              const void *bytes,
                                              size_t length) {
@@ -388,6 +427,9 @@ static id<MTLBuffer> metal_new_shared_buffer(VGFXMetalContext *ctx,
 }
 
 /// @brief Allocate an uninitialized shared-storage MTLBuffer of @p length bytes.
+/// @param ctx Borrowed Metal context providing the device used for allocation.
+/// @param length Number of bytes to allocate.
+/// @return A new shared-storage buffer, or nil for invalid input or allocation failure.
 static id<MTLBuffer> metal_new_shared_buffer_with_length(VGFXMetalContext *ctx, size_t length) {
     if (!ctx || !ctx.device || length == 0)
         return nil;
@@ -398,6 +440,8 @@ static id<MTLBuffer> metal_new_shared_buffer_with_length(VGFXMetalContext *ctx, 
 /// @details Vertex buffer offsets are generally flexible, while index buffer offsets must at least
 ///          satisfy the index element size. A 256-byte alignment keeps both paths conservative and
 ///          avoids backend-specific validation edge cases.
+/// @param value Unaligned byte offset.
+/// @return @p value rounded up to the next 256-byte boundary, or `NSUIntegerMax` on overflow.
 static NSUInteger metal_align_dynamic_offset(NSUInteger value) {
     const NSUInteger align = 256u;
     if (value > ((NSUInteger)-1) - (align - 1u))
@@ -420,6 +464,12 @@ typedef enum {
 ///          transient-ring slot at a unique offset (the ring itself protects against
 ///          frames-in-flight reuse) and grows the slot's buffer on demand, publishing growth
 ///          back into the pool so the slot keeps its high-water capacity.
+/// @param ctx Borrowed Metal context owning the active transient-ring slot.
+/// @param stream Vertex, index, or instance stream that receives the upload.
+/// @param bytes Borrowed source byte range to copy.
+/// @param length Number of bytes to append.
+/// @param[out] out_offset Optional destination for the byte offset of the uploaded slice.
+/// @return The shared buffer containing the slice, or nil when validation or allocation fails.
 static id<MTLBuffer> metal_upload_transient_buffer(VGFXMetalContext *ctx,
                                                    vgfx3d_metal_transient_stream_t stream,
                                                    const void *bytes,
@@ -517,6 +567,7 @@ static id<MTLBuffer> metal_upload_transient_buffer(VGFXMetalContext *ctx,
 }
 
 /// @brief Run the texture/cubemap/morph cache pruning passes once per frame.
+/// @param ctx Borrowed Metal context whose geometry cache may evict its least-recently-used entry.
 static void metal_cache_evict_if_needed(VGFXMetalContext *ctx) {
     NSValue *oldestKey = nil;
     VGFXMetalGeometryCacheEntry *oldestEntry = nil;
@@ -535,6 +586,12 @@ static void metal_cache_evict_if_needed(VGFXMetalContext *ctx) {
 }
 
 /// @brief Get (growing as needed) the per-frame vertex and index buffers for a draw of given size.
+/// @param ctx Borrowed Metal context providing persistent and transient geometry storage.
+/// @param cmd Borrowed draw command containing geometry data and cache identity.
+/// @param[out] outVB Required destination for the resolved vertex buffer.
+/// @param[out] outIB Required destination for the resolved index buffer.
+/// @param[out] outVertexOffset Optional destination for the vertex slice byte offset.
+/// @param[out] outIndexOffset Optional destination for the index slice byte offset.
 /// @return 1 when both output buffers are valid, 0 when allocation/upload failed.
 static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
                                       const vgfx3d_draw_cmd_t *cmd,
@@ -614,6 +671,8 @@ static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
 
 /// @brief The texture that holds the current frame's final image for readback/present.
 /// @details Prefers the post-FX output when post-processing ran, else the main scene color texture.
+/// @param ctx Borrowed Metal context whose active target route is inspected.
+/// @return The best available final-frame texture, or nil when the context has none.
 static id<MTLTexture> metal_active_readback_texture(VGFXMetalContext *ctx) {
     if (!ctx)
         return nil;
@@ -630,6 +689,7 @@ static id<MTLTexture> metal_active_readback_texture(VGFXMetalContext *ctx) {
 }
 
 /// @brief Reset the cached GPU post-processing chain snapshot to empty (without freeing buffers).
+/// @param ctx Borrowed Metal context whose owned chain is reset and marked invalid.
 static void metal_reset_gpu_postfx_chain(VGFXMetalContext *ctx) {
     vgfx3d_postfx_chain_t chain;
     if (!ctx)
@@ -641,6 +701,7 @@ static void metal_reset_gpu_postfx_chain(VGFXMetalContext *ctx) {
 }
 
 /// @brief Free the cached GPU post-processing chain snapshot and release its owned memory.
+/// @param ctx Borrowed Metal context whose owned chain allocation is released.
 static void metal_free_gpu_postfx_chain(VGFXMetalContext *ctx) {
     vgfx3d_postfx_chain_t chain;
     if (!ctx)
@@ -654,6 +715,8 @@ static void metal_free_gpu_postfx_chain(VGFXMetalContext *ctx) {
 /// @brief Deep-copy a post-FX chain snapshot into the context for GPU post-processing.
 /// @details Owns the copy so the chain can be applied across frames independent of the caller's
 /// data.
+/// @param ctx Borrowed Metal context that owns the resulting chain copy.
+/// @param src Borrowed source chain to duplicate.
 /// @return 1 on success, 0 on allocation failure.
 static int metal_copy_gpu_postfx_chain(VGFXMetalContext *ctx, const vgfx3d_postfx_chain_t *src) {
     vgfx3d_postfx_chain_t chain;

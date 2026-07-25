@@ -3,16 +3,32 @@
 // File: src/runtime/graphics/3d/assets/rt_fbx_loader_anim.inc  (#included from rt_fbx_loader.c; not
 // a standalone translation unit) Purpose: FBX animation extraction
 //===----------------------------------------------------------------------===//
+/**
+ * @file rt_fbx_loader_anim.inc
+ * @brief Imports FBX skin weights and skeletal animation into runtime objects.
+ *
+ * This fragment reduces arbitrary cluster influences to the runtime's
+ * four-weight vertex layout, validates and samples constant, linear, and cubic
+ * animation curves, composes FBX animation layers and inheritance modes, bakes
+ * constraint-dependent poses, and transactionally emits `Animation3D` clips.
+ * It is included by `rt_fbx_loader.c` after the parser, geometry, scene, and
+ * constraint helpers it consumes.
+ */
 /*==========================================================================
  * Animation extraction
  *=========================================================================*/
 
+/// Number of FBX time ticks in one second.
 #define FBX_TIME_SECOND 46186158000LL
 
 /// @brief Locate a child node named @p child_name and return its first property as an int64 array.
 /// @details Expects the property type byte to be `'l'` (FBX long-array).  Writes the element
 ///          count to *count and returns a pointer into the already-decoded in-memory array.
 ///          Returns NULL and leaves *count unchanged on a missing child or wrong property type.
+/// @param[in] node Parent node to search.
+/// @param[in] child_name Exact child-node name.
+/// @param[out] count Required destination for the decoded element count on success.
+/// @return Borrowed decoded `int64_t` array data, or `NULL`.
 static const int64_t *fbx_get_i64_array(fbx_node_t *node, const char *child_name, uint32_t *count) {
     fbx_node_t *child = fbx_find_child(node, child_name);
     if (!child || child->prop_count < 1)
@@ -28,6 +44,10 @@ static const int64_t *fbx_get_i64_array(fbx_node_t *node, const char *child_name
 /// @brief Locate a child node named @p child_name and return its first property as an int32 array.
 /// @details Expects property type `'i'` (FBX int-array).  Used to read per-vertex indices such
 ///          as cluster Indexes.  Returns NULL and leaves *count unchanged on type mismatch.
+/// @param[in] node Parent node to search.
+/// @param[in] child_name Exact child-node name.
+/// @param[out] count Required destination for the decoded element count on success.
+/// @return Borrowed decoded `int32_t` array data, or `NULL`.
 static const int32_t *fbx_get_i32_array(fbx_node_t *node, const char *child_name, uint32_t *count) {
     fbx_node_t *child = fbx_find_child(node, child_name);
     if (!child || child->prop_count < 1)
@@ -44,6 +64,11 @@ static const int32_t *fbx_get_i32_array(fbx_node_t *node, const char *child_name
 /// @details Expects property type `'d'` (FBX double-array). When the property is type `'f'`
 ///          (float-array), writes *count but returns NULL — callers should fall back to
 ///          fbx_get_f32_array in that case. Used for animation curve values and blend weights.
+/// @param[in] node Parent node to search.
+/// @param[in] child_name Exact child-node name.
+/// @param[out] count Required destination for the decoded element count on a
+/// double or float array.
+/// @return Borrowed decoded `double` array data, or `NULL`.
 static const double *fbx_get_f64_array(fbx_node_t *node, const char *child_name, uint32_t *count) {
     fbx_node_t *child = fbx_find_child(node, child_name);
     if (!child || child->prop_count < 1)
@@ -63,6 +88,10 @@ static const double *fbx_get_f64_array(fbx_node_t *node, const char *child_name,
 
 /// @brief Convenience: locate `node->child_name` and return its float-array data + count.
 /// Returns NULL on missing child or non-float-array property.
+/// @param[in] node Parent node to search.
+/// @param[in] child_name Exact child-node name.
+/// @param[out] count Required destination for the decoded element count on success.
+/// @return Borrowed decoded `float` array data, or `NULL`.
 static const float *fbx_get_f32_array(fbx_node_t *node, const char *child_name, uint32_t *count) {
     fbx_node_t *child = fbx_find_child(node, child_name);
     if (!child || child->prop_count < 1)
@@ -80,6 +109,11 @@ static const float *fbx_get_f32_array(fbx_node_t *node, const char *child_name, 
 ///          because duplicate or long equal-prefix names are legal FBX content and must never bind
 ///          animation/skin data to a different bone. The object/skeleton parameters remain in the
 ///          internal signature for source compatibility with extraction call sites.
+/// @param[in] objects Unused objects tree retained for source-compatible call sites.
+/// @param[in] skeleton Unused target skeleton retained for source-compatible call sites.
+/// @param[in] bone_bindings Numeric model-to-bone mapping table.
+/// @param[in] bone_binding_count Number of mapping entries.
+/// @param[in] model_id FBX model identifier to resolve.
 /// @return Engine bone index from the load-local binding table, or -1 when the ID is not a bone.
 static int32_t fbx_find_bone_index_for_model(fbx_node_t *objects,
                                              void *skeleton,
@@ -101,6 +135,9 @@ static int32_t fbx_find_bone_index_for_model(fbx_node_t *objects,
 /// @details A Cluster (sub-deformer) is connected child→parent to the Model node representing
 ///          the bone it drives. This function walks the connection table for an entry whose
 ///          child_id is @p cluster_id and whose parent is a "Model" node.
+/// @param[in] objects FBX Objects node used to validate parent object types.
+/// @param[in] ct Indexed connection table.
+/// @param[in] cluster_id Cluster deformer identifier.
 /// @return FBX object ID of the owning Model, or 0 if not found.
 static int64_t fbx_find_cluster_bone_model(fbx_node_t *objects,
                                            const fbx_conn_table_t *ct,
@@ -119,8 +156,11 @@ static int64_t fbx_find_cluster_bone_model(fbx_node_t *objects,
 
 /// @brief Walk the FBX connection table to find the geometry that owns a given skin.
 /// @details In FBX, a Deformer (skin) is connected OO (object→object) upward to a
-///          Geometry (Mesh) node. This scan finds the first matching parent of type
-///          `Geometry` with subtype `"Mesh"` — that's the mesh the skin drives.
+///          renderable Geometry node. This scan finds the first supported geometry
+///          parent, which is the mesh or tessellated surface the skin drives.
+/// @param[in] objects FBX Objects node used to validate parent object types.
+/// @param[in] ct Indexed connection table.
+/// @param[in] skin_id Skin deformer identifier.
 /// @return Geometry object ID, or 0 if not found / not a mesh skin.
 static int64_t fbx_find_skin_geometry(fbx_node_t *objects,
                                       const fbx_conn_table_t *ct,
@@ -151,9 +191,9 @@ static int64_t fbx_find_skin_geometry(fbx_node_t *objects,
 ///               most significant.
 ///          Weights are not renormalized here; that happens in
 ///          `fbx_apply_control_skin_to_vertex` after all clusters are accumulated.
-/// @param dst Destination influence (mutated in place).
-/// @param bone_index Engine bone index to add.
-/// @param weight Non-negative weight; values <= 0 are silently dropped.
+/// @param[in,out] dst Destination influence (mutated in place).
+/// @param[in] bone_index Engine bone index to add.
+/// @param[in] weight Non-negative weight; values <= 0 are silently dropped.
 static void fbx_skin_add_influence(fbx_skin_influence_t *dst, int32_t bone_index, double weight) {
     int32_t weakest = 0;
     if (!dst || bone_index < 0 || !isfinite(weight) || weight <= 0.0)
@@ -188,8 +228,11 @@ static void fbx_skin_add_influence(fbx_skin_influence_t *dst, int32_t bone_index
 ///          slots (weight <= 0), renormalizes the surviving weights to sum to 1, and
 ///          commits them via `rt_mesh3d_set_bone_weights`. Updates `mesh->bone_count`
 ///          as a running high-water mark so the skinning palette is sized correctly
-///          for the shader upload. No-op if every influence slot is empty (the vertex
-///          has no skin binding and should use the bind pose).
+///          for the shader upload. If every influence slot is empty, all four stored
+///          indices and weights on the vertex are cleared.
+/// @param[in,out] mesh Mesh receiving normalized weights.
+/// @param[in] vertex_index Zero-based output vertex index.
+/// @param[in] influence Accumulated four-slot control-point influence.
 static void fbx_apply_control_skin_to_vertex(rt_mesh3d *mesh,
                                              int32_t vertex_index,
                                              const fbx_skin_influence_t *influence) {
@@ -247,6 +290,10 @@ static void fbx_apply_control_skin_to_vertex(rt_mesh3d *mesh,
 ///          `control_vertices[ci]` is a flat list of mesh vertex indices spawned by
 ///          control point `ci` — we expand that fan-out here. If no remap exists we
 ///          assume 1:1 (no deduplication happened during load).
+/// @param[in,out] mesh_obj Runtime mesh receiving weights.
+/// @param[in] remap Optional control/surface-to-output mapping.
+/// @param[in] controls Per-control-point accumulated influences.
+/// @param[in] control_count Number of control influence records.
 static void fbx_apply_skin_to_mesh(void *mesh_obj,
                                    const fbx_mesh_remap_t *remap,
                                    const fbx_skin_influence_t *controls,
@@ -302,6 +349,15 @@ static void fbx_apply_skin_to_mesh(void *mesh_obj,
 ///          Finalization (renormalization, write to mesh) is done by `fbx_apply_skin_to_mesh`.
 ///          Float and double weight arrays are both handled; the remap table is used when the
 ///          mesh was deduplicated to map control-point indices back to the original FBX layout.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] skeleton Runtime skeleton receiving mesh bindings.
+/// @param[in] bone_bindings Numeric model-to-bone mapping table.
+/// @param[in] bone_binding_count Number of bone mappings.
+/// @param[in] mesh_bindings Geometry-to-runtime-mesh mapping table.
+/// @param[in] mesh_binding_count Number of mesh mappings.
+/// @param[in] mesh_remaps Optional geometry remapping records.
+/// @param[in] mesh_remap_count Number of remapping records.
 static void fbx_apply_skinning(fbx_node_t *objects,
                                const fbx_conn_table_t *ct,
                                void *skeleton,
@@ -397,81 +453,140 @@ static void fbx_apply_skinning(fbx_node_t *objects,
     }
 }
 
+/// @brief Borrowed, validated view over one decoded FBX animation curve.
 typedef struct {
+    /// Strictly increasing source key times in FBX ticks.
     const int64_t *times;
+    /// Optional double-precision key values.
     const double *values64;
+    /// Optional single-precision key values when `values64` is absent.
     const float *values32;
+    /// Optional per-key interpolation flags.
     const int32_t *attr_flags;
+    /// Optional double-precision tangent metadata.
     const double *attr_data64;
+    /// Optional single-precision tangent metadata.
     const float *attr_data32;
+    /// Common time/value key count.
     uint32_t count;
+    /// Available interpolation-flag count.
     uint32_t attr_flag_count;
+    /// Available tangent-metadata scalar count.
     uint32_t attr_data_count;
 } fbx_anim_curve_view_t;
 
+/// @brief Parsed properties and optional animated weight of one FBX layer.
 typedef struct {
+    /// Numeric AnimationLayer identifier.
     int64_t id;
+    /// Static layer weight in percent.
     double weight;
+    /// Nonzero when the layer is muted.
     int mute;
+    /// Nonzero when the layer is soloed.
     int solo;
+    /// FBX additive or override blend-mode selector.
     int blend_mode;
+    /// Quaternion-versus-Euler rotation accumulation selector.
     int rotation_accumulation_mode;
+    /// Multiplicative-versus-additive scale accumulation selector.
     int scale_accumulation_mode;
+    /// Optional curve animating the layer weight.
     fbx_anim_curve_view_t weight_curve;
 } fbx_anim_layer_t;
 
+/// @brief One layer's curve-node channel targeting a model or scalar property.
 typedef struct {
+    /// Index into the owning stack's layer array.
     int32_t layer_index;
+    /// Numeric FBX object receiving the channel.
     int64_t target_id;
+    /// Borrowed connection property name.
     const char *property;
+    /// Translation, rotation, or scale selector, or `-1` for a scalar property.
     int transform_path;
+    /// Curve-node defaults for the three components.
     double default_values[3];
+    /// Bits identifying explicitly authored defaults.
     uint8_t default_mask;
+    /// Bits identifying connected valid curves.
     uint8_t curve_mask;
+    /// X, Y, and Z/component curve views.
     fbx_anim_curve_view_t curves[3];
 } fbx_anim_layer_channel_t;
 
+/// @brief Flattened, load-owned representation of an FBX animation stack.
 typedef struct {
+    /// Owned parsed layer array.
     fbx_anim_layer_t *layers;
+    /// Number of parsed layers.
     int32_t layer_count;
+    /// Owned flattened curve-node channel array.
     fbx_anim_layer_channel_t *channels;
+    /// Number of parsed channels.
     int32_t channel_count;
+    /// Nonzero when at least one unmuted layer is soloed.
     int has_solo;
 } fbx_anim_layer_stack_t;
 
+/// Runtime selector for ordinary linear curve interpolation.
 #define FBX_ANIM_INTERP_LINEAR 0
+/// Runtime selector for left-key constant interpolation.
 #define FBX_ANIM_INTERP_CONSTANT 1
+/// Runtime selector for Hermite cubic interpolation.
 #define FBX_ANIM_INTERP_CUBIC 2
+/// FBX `KeyAttrFlags` bit identifying constant interpolation.
 #define FBX_ANIM_INTERP_FLAG_CONSTANT 0x00000002
+/// FBX `KeyAttrFlags` bit identifying linear interpolation.
 #define FBX_ANIM_INTERP_FLAG_LINEAR 0x00000004
+/// FBX `KeyAttrFlags` bit identifying cubic interpolation.
 #define FBX_ANIM_INTERP_FLAG_CUBIC 0x00000008
 
+/// @brief Sampling state for one runtime bone or FBX model.
 typedef struct {
+    /// Nonzero after static transform data has been loaded.
     int8_t initialized;
+    /// Numeric FBX model identifier.
     int64_t target_id;
+    /// Optional shared parsed layer stack.
     const fbx_anim_layer_stack_t *layer_stack;
+    /// Static FBX transform components used for missing channels.
     fbx_transform_components_t base_transform;
+    /// Legacy direct curve views indexed by TRS path and XYZ component.
     fbx_anim_curve_view_t curves[3][3]; /* trs, component */
 } fbx_anim_bone_builder_t;
 
 /// @brief One all-model animation builder used when constraints cross skeleton boundaries.
 typedef struct {
+    /// Numeric FBX model identifier.
     int64_t id;
+    /// Numeric parent model identifier, or zero.
     int64_t parent_id;
+    /// Index of the parent within the all-model array, or `-1`.
     int32_t parent_index;
+    /// Original child index in the Objects node.
     int32_t import_index;
+    /// Nonzero when the model represents a skeleton node.
     int is_skeleton;
+    /// Borrowed source Model node.
     fbx_node_t *source;
+    /// Static and animated transform sampler for the model.
     fbx_anim_bone_builder_t animation;
 } fbx_anim_constraint_model_t;
 
 /// @brief Return non-zero if @p curve contains at least one keyframe with usable value data.
+/// @param[in] curve Borrowed curve view.
+/// @return Nonzero when time and value storage exists and the key count is
+/// within the importer ceiling.
 static int fbx_anim_curve_has_data(const fbx_anim_curve_view_t *curve) {
     return curve && curve->times && (curve->values64 || curve->values32) && curve->count > 0 &&
            curve->count <= FBX_ANIM_CURVE_KEYS_MAX;
 }
 
 /// @brief Validate an FBX animation curve before the sampler assumes sorted finite data.
+/// @param[in] curve Curve view to validate.
+/// @return Nonzero when keys are present, times are strictly increasing and
+/// bounded, and every value is finite.
 static int fbx_anim_curve_view_valid(const fbx_anim_curve_view_t *curve) {
     if (!fbx_anim_curve_has_data(curve))
         return 0;
@@ -487,6 +602,9 @@ static int fbx_anim_curve_view_valid(const fbx_anim_curve_view_t *curve) {
 }
 
 /// @brief Case-insensitive ASCII string equality (NULL operands compare unequal).
+/// @param[in] a First null-terminated string.
+/// @param[in] b Second null-terminated string.
+/// @return Nonzero for an ASCII case-insensitive exact match, otherwise zero.
 static int fbx_ascii_streq_ignore_case(const char *a, const char *b) {
     if (!a || !b)
         return 0;
@@ -504,6 +622,8 @@ static int fbx_ascii_streq_ignore_case(const char *a, const char *b) {
 ///          write the bare aliases `X`, `Y`, `Z`; others preserve the meaning but vary
 ///          ASCII case. Accept these forms so valid curves do not disappear solely
 ///          because of exporter spelling.
+/// @param[in] prop Connection property label.
+/// @return Zero, one, or two for X, Y, or Z; `-1` for an unsupported label.
 static int32_t fbx_anim_component_from_connection_prop(const char *prop) {
     if (!prop)
         return -1;
@@ -647,7 +767,11 @@ static double fbx_anim_curve_cubic_value(const fbx_anim_curve_view_t *curve,
 ///          the last value (no extrapolation).  Constant segments hold the left key, cubic
 ///          segments use Hermite interpolation with `KeyAttrDataFloat` tangents when available,
 ///          and all other segments are linear. FBX time is in units of 1/46,186,158,000 second.
+/// @param[in] curve Validated source curve view.
+/// @param[in] fbx_time Requested source time in FBX ticks.
 /// @param fallback Value returned when the curve has no data.
+/// @return The sampled finite value according to the segment mode, or
+/// `fallback` for unusable data.
 static double fbx_anim_curve_value(const fbx_anim_curve_view_t *curve,
                                    int64_t fbx_time,
                                    double fallback) {
@@ -700,6 +824,13 @@ static double fbx_anim_curve_value(const fbx_anim_curve_view_t *curve,
     return v0 + (v1 - v0) * a;
 }
 
+/// @brief Build a validated borrowed view of an AnimationCurve node.
+/// @param[in] curve Candidate FBX AnimationCurve node.
+/// @param[out] out Destination view populated only on success.
+/// @return Nonzero when key times and equally sized float or double values are
+/// present, bounded, finite, and strictly ordered; otherwise zero.
+/// @details Optional interpolation flags and tangent arrays are attached when
+/// available but do not need to match the key count.
 static int fbx_anim_read_curve_view(fbx_node_t *curve, fbx_anim_curve_view_t *out) {
     uint32_t time_count = 0;
     uint32_t value_count = 0;
@@ -726,6 +857,11 @@ static int fbx_anim_read_curve_view(fbx_node_t *curve, fbx_anim_curve_view_t *ou
     return 1;
 }
 
+/// @brief Detect numeric curve data that must invalidate an animation graph.
+/// @param[in] curve Candidate AnimationCurve node.
+/// @return Nonzero when any decoded key time converts outside the permitted
+/// seconds range or any decoded value is non-finite; otherwise zero.
+/// @details Missing arrays are not themselves classified as unsafe here.
 static int fbx_anim_curve_has_unsafe_numeric_data(fbx_node_t *curve) {
     uint32_t time_count = 0;
     uint32_t value_count = 0;
@@ -751,6 +887,14 @@ static int fbx_anim_curve_has_unsafe_numeric_data(fbx_node_t *curve) {
     return 0;
 }
 
+/// @brief Read a finite numeric layer or curve-node property with fallback.
+/// @param[in] node Node searched first through `Properties70`, then direct children.
+/// @param[in] name Exact property name.
+/// @param[in] fallback Value returned when the property is absent.
+/// @param[out] out Required destination value.
+/// @param[out] out_found Optional flag set when an authored value was found.
+/// @return Nonzero for an absent or finite property; zero for a missing output
+/// pointer or authored non-finite value.
 static int fbx_anim_layer_property_number(
     fbx_node_t *node, const char *name, double fallback, double *out, int *out_found) {
     fbx_node_t *property;
@@ -782,6 +926,9 @@ static int fbx_anim_layer_property_number(
     return 1;
 }
 
+/// @brief Map an FBX local-transform property name to a TRS path index.
+/// @param[in] property Case-insensitive property name.
+/// @return Zero for translation, one for rotation, two for scaling, or `-1`.
 static int fbx_anim_transform_path(const char *property) {
     if (fbx_ascii_streq_ignore_case(property, "Lcl Translation"))
         return 0;
@@ -792,6 +939,11 @@ static int fbx_anim_transform_path(const char *property) {
     return -1;
 }
 
+/// @brief Determine whether one parsed animation layer contributes.
+/// @param[in] stack Parsed layer stack.
+/// @param[in] layer_index Zero-based layer index.
+/// @return Nonzero when the index is valid, the layer is not muted, and either
+/// the stack has no solo layer or this layer is soloed.
 static int fbx_anim_layer_is_active(const fbx_anim_layer_stack_t *stack, int32_t layer_index) {
     const fbx_anim_layer_t *layer;
     if (!stack || layer_index < 0 || layer_index >= stack->layer_count)
@@ -800,6 +952,8 @@ static int fbx_anim_layer_is_active(const fbx_anim_layer_stack_t *stack, int32_t
     return !layer->mute && (!stack->has_solo || layer->solo);
 }
 
+/// @brief Free a parsed layer stack and reset it to empty.
+/// @param[in,out] stack Stack owning layer and channel arrays; `NULL` is ignored.
 static void fbx_anim_layer_stack_free(fbx_anim_layer_stack_t *stack) {
     if (!stack)
         return;
@@ -808,6 +962,20 @@ static void fbx_anim_layer_stack_free(fbx_anim_layer_stack_t *stack) {
     memset(stack, 0, sizeof(*stack));
 }
 
+/// @brief Parse and validate all layers and curve-node channels in one stack.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] stack_id Numeric AnimationStack identifier.
+/// @param[in,out] context Aggregate allocation budget.
+/// @param[out] out Destination stack, initialized empty before parsing.
+/// @return Nonzero on success, including a stack with no layers; zero on
+/// invalid graph structure, unsafe properties, budget exhaustion, or allocation
+/// failure.
+/// @details Layer allocation is budgeted in a counting pass. The parser
+/// validates blend and accumulation modes, resolves each curve node to exactly
+/// one target/property pair, records optional component defaults, rejects
+/// duplicate channels, and treats a channel targeting its owning layer's
+/// `Weight` property as the animated layer weight.
 static int fbx_anim_layer_stack_parse(fbx_node_t *objects,
                                       const fbx_conn_table_t *ct,
                                       int64_t stack_id,
@@ -1009,6 +1177,11 @@ invalid:
     return 0;
 }
 
+/// @brief Sample one layer's effective normalized weight.
+/// @param[in] layer Parsed layer.
+/// @param[in] time Source time in FBX ticks.
+/// @return The static or animated percentage clamped to `[0, 100]` and divided
+/// by 100, or zero for a null layer.
 static double fbx_anim_layer_weight_at(const fbx_anim_layer_t *layer, int64_t time) {
     double percent;
     if (!layer)
@@ -1017,6 +1190,12 @@ static double fbx_anim_layer_weight_at(const fbx_anim_layer_t *layer, int64_t ti
     return fbx_clamp_double(percent, 0.0, 100.0, layer->weight) / 100.0;
 }
 
+/// @brief Find a layer channel for one target and TRS path.
+/// @param[in] stack Parsed layer stack.
+/// @param[in] layer_index Owning layer index.
+/// @param[in] target_id Numeric target model identifier.
+/// @param[in] transform_path Translation, rotation, or scale index.
+/// @return The first borrowed exact-match channel, or `NULL`.
 static const fbx_anim_layer_channel_t *fbx_anim_layer_find_channel(
     const fbx_anim_layer_stack_t *stack,
     int32_t layer_index,
@@ -1033,6 +1212,15 @@ static const fbx_anim_layer_channel_t *fbx_anim_layer_find_channel(
     return NULL;
 }
 
+/// @brief Sample one component of a parsed layer channel.
+/// @param[in] channel Channel to sample.
+/// @param[in] component Component index from zero through two.
+/// @param[in] time Source time in FBX ticks.
+/// @param[in] fallback Value used when no component default is present.
+/// @param[out] out Destination sampled value.
+/// @param[out] out_present Optional flag indicating an authored default or curve.
+/// @return Nonzero when arguments are valid and the result is finite; otherwise
+/// zero.
 static int fbx_anim_layer_channel_value(const fbx_anim_layer_channel_t *channel,
                                         int component,
                                         int64_t time,
@@ -1054,6 +1242,10 @@ static int fbx_anim_layer_channel_value(const fbx_anim_layer_channel_t *channel,
     return 1;
 }
 
+/// @brief Convert FBX Euler degrees and rotation order to a quaternion.
+/// @param[in] euler Three Euler angles in degrees.
+/// @param[in] rotation_order FBX rotation-order selector.
+/// @param[out] quaternion Destination `(x, y, z, w)` quaternion.
 static void fbx_anim_quaternion_from_euler_order(const double euler[3],
                                                  int rotation_order,
                                                  double quaternion[4]) {
@@ -1062,6 +1254,18 @@ static void fbx_anim_quaternion_from_euler_order(const double euler[3],
     fbx_decompose_matrix_trs(matrix, NULL, quaternion, NULL);
 }
 
+/// @brief Compose all active layers into one model's transform components.
+/// @param[in] stack Parsed layer stack, or `NULL` for the base transform.
+/// @param[in] target_id Numeric target model identifier.
+/// @param[in] base Static transform and metadata used as the starting value.
+/// @param[in] time Source time in FBX ticks.
+/// @param[out] out Fully composed and sanitized transform components.
+/// @return Nonzero on success, or zero for invalid inputs, non-finite samples,
+/// or invalid multiplicative-scale values.
+/// @details The first layer is treated as override. Later layers follow their
+/// additive/override, Euler/quaternion rotation, and multiplicative/additive
+/// scale accumulation settings. Mute and solo state and animated layer weights
+/// are honored.
 static int fbx_anim_layer_sample_components(const fbx_anim_layer_stack_t *stack,
                                             int64_t target_id,
                                             const fbx_transform_components_t *base,
@@ -1212,6 +1416,17 @@ static int fbx_anim_layer_sample_components(const fbx_anim_layer_stack_t *stack,
     return 1;
 }
 
+/// @brief Compose active layer channels for one scalar target property.
+/// @param[in] stack Parsed layer stack, or `NULL`.
+/// @param[in] target_id Numeric target object identifier.
+/// @param[in] property Optional case-insensitive property filter; `NULL`
+/// selects only non-transform channels.
+/// @param[in] base Starting scalar value and missing-component fallback.
+/// @param[in] time Source time in FBX ticks.
+/// @param[out] out Destination composed finite scalar.
+/// @param[out] out_found Optional flag indicating that a contributing channel
+/// matched.
+/// @return Nonzero on success, otherwise zero.
 static int fbx_anim_layer_sample_scalar(const fbx_anim_layer_stack_t *stack,
                                         int64_t target_id,
                                         const char *property,
@@ -1262,6 +1477,10 @@ static int fbx_anim_layer_sample_scalar(const fbx_anim_layer_stack_t *stack,
 }
 
 /// @brief qsort comparator for int64 keys, ascending (returns -1/0/1).
+/// @param[in] a Pointer to the first `int64_t`.
+/// @param[in] b Pointer to the second `int64_t`.
+/// @return Negative, zero, or positive when the first value is less than,
+/// equal to, or greater than the second.
 static int fbx_i64_compare(const void *a, const void *b) {
     int64_t av = *(const int64_t *)a;
     int64_t bv = *(const int64_t *)b;
@@ -1271,6 +1490,13 @@ static int fbx_i64_compare(const void *a, const void *b) {
 /// @brief Append @p value to an unsorted key-time array; sorting/dedup happens once after collect.
 /// @details Non-finite or extreme key times indicate a corrupt animation curve and are reported as
 ///          failure so callers can reject the stack instead of silently producing an empty clip.
+/// @param[in,out] times Address of the owned dynamic tick array.
+/// @param[in,out] count Address of its logical count.
+/// @param[in,out] capacity Address of its allocated capacity.
+/// @param[in] value FBX tick value to append.
+/// @param[in,out] context Aggregate allocation budget charged for growth.
+/// @return Nonzero on success, or zero for invalid metadata, an unsafe time,
+/// the runtime key ceiling, budget exhaustion, overflow, or allocation failure.
 static int fbx_anim_append_time(int64_t **times,
                                 int32_t *count,
                                 int32_t *capacity,
@@ -1421,6 +1647,7 @@ static int fbx_anim_append_adaptive_cubic_times(int64_t **times,
 /// @param count Current array count.
 /// @param capacity Current array capacity.
 /// @param curve Curve whose key and intermediate sample times should be appended.
+/// @param context Aggregate allocation budget charged for appended times.
 /// @return Non-zero on success.
 static int fbx_anim_append_curve_sample_times(int64_t **times,
                                               int32_t *count,
@@ -1453,6 +1680,17 @@ static int fbx_anim_append_curve_sample_times(int64_t **times,
     return 1;
 }
 
+/// @brief Append sample times from selected active channels and layer weights.
+/// @param[in,out] times Address of the unsorted dynamic tick array.
+/// @param[in,out] count Address of its logical count.
+/// @param[in,out] capacity Address of its allocated capacity.
+/// @param[in] stack Parsed layer stack; `NULL` contributes no times.
+/// @param[in] target_id Target object filter, or zero to accept all targets.
+/// @param[in] transform_only Nonzero to exclude scalar property channels.
+/// @param[in] property Optional case-insensitive property filter.
+/// @param[in,out] context Aggregate allocation budget.
+/// @return Nonzero when every selected key, constant boundary, cubic adaptive
+/// sample, and relevant animated layer-weight time is appended.
 static int fbx_anim_layer_stack_append_times(int64_t **times,
                                              int32_t *count,
                                              int32_t *capacity,
@@ -1488,6 +1726,13 @@ static int fbx_anim_layer_stack_append_times(int64_t **times,
     return 1;
 }
 
+/// @brief Find the source-time extent of active channels in a layer stack.
+/// @param[in] stack Parsed layer stack.
+/// @param[in] transform_only Nonzero to ignore scalar property channels.
+/// @param[out] minimum Destination earliest FBX tick.
+/// @param[out] maximum Destination latest FBX tick.
+/// @return Nonzero when at least one selected channel or relevant animated
+/// layer weight has curve data; otherwise zero.
 static int fbx_anim_layer_stack_bounds(const fbx_anim_layer_stack_t *stack,
                                        int transform_only,
                                        int64_t *minimum,
@@ -1530,6 +1775,8 @@ static int fbx_anim_layer_stack_bounds(const fbx_anim_layer_stack_t *stack,
 }
 
 /// @brief Sort key times and compact duplicates in place.
+/// @param[in,out] times Tick array to reorder and compact.
+/// @param[in,out] count Logical count, replaced with the unique count.
 static void fbx_anim_sort_unique_times(int64_t *times, int32_t *count) {
     int32_t write = 0;
     if (!times || !count || *count <= 1)
@@ -1542,53 +1789,22 @@ static void fbx_anim_sort_unique_times(int64_t *times, int32_t *count) {
     *count = write;
 }
 
-/// @brief Walk `AnimationStack` / `AnimationLayer` / `AnimationCurveNode` nodes and
-///        build keyframe tracks per bone.
-///
-/// @details FBX's animation graph is deeply indirected. This function flattens it into
-///          the engine's bone-oriented `rt_animation3d` representation by traversing:
-///
-///            AnimationStack  (one per "clip"/"take")
-///                └── AnimationLayer+  (usually one; blending layers are flattened)
-///                        └── AnimationCurveNode+  (one per animated channel group)
-///                                ├── connects up to a `Model` (bone) by property name
-///                                │     ("Lcl Translation" / "Lcl Rotation" / "Lcl Scaling")
-///                                └── AnimationCurve (X, Y, Z) via subfield connections
-///                                      ("d|X" / "d|Y" / "d|Z") each with parallel
-///                                      `KeyTime` (i64 FBX ticks) + `KeyValueFloat` arrays.
-///
-///          For each AnimationStack we:
-///            1. Allocate one `fbx_anim_bone_builder_t` per skeleton bone.
-///            2. For each curve found, record the (time, axis-value) samples into the
-///               matching bone/TRS slot.
-///            3. Unify the sample time lists across T/R/S per bone, seeded by the
-///               bind-pose TRS so bones with partial curves snap to rest on the
-///               missing axis.
-///            4. Emit one merged keyframe per unique time, converting Euler degrees to
-///               quaternions for rotation channels. Z-up assets have the translation
-///               axes swapped to Y-up via `fbx_correct_zup`.
-///            5. Finalize the `rt_animation3d` with the total duration and push it
-///               onto the output array.
-///
-///          FBX time units (1/46186158000 s) are converted to seconds up-front so the
-///          engine never has to know about FBX ticks downstream. Missing / unresolved
-///          connections are silently skipped rather than failing the whole load.
-/// @param root FBX document root.
-/// @param ct Connection table (OO/OP connections already resolved).
-/// @param skeleton Target skeleton whose bone count determines builder allocation.
-/// @param z_up Non-zero for Z-up source assets; triggers axis correction.
-/// @param out_anims Receives an array of rt_animation3d* (caller owns).
-/// @param out_count Receives the count written.
-/// @brief Walk a stack's AnimationLayers → CurveNodes → AnimationCurves, filling @p builders
-///        (per-bone T/R/S curve views + base local transform). The deep connection walk
-///        resolves each curve node to its target bone and TRS channel.
-/// @note Complexity is O(connections) per nesting level (layer → curve-node → model → curve),
-///        and each step also calls fbx_find_object_by_id (a linear object-tree walk). This is a
-///        deliberate trade-off: FBX scenes typically carry only a few hundred connections, so
-///        the one-time load cost is negligible. For very large rigs the optimization path is an
-///        id→node hash plus connection indices keyed by parent_id/child_id (O(1) lookups); it is
-///        endpoint adjacency and numeric object indexes keep the work proportional to the graph
-///        actually reachable from @p stack_id.
+/// @brief Initialize per-bone samplers for one FBX animation stack.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] skeleton Target runtime skeleton.
+/// @param[in] bone_bindings Numeric model-to-bone mappings.
+/// @param[in] bone_binding_count Number of bone mappings.
+/// @param[in] bone_count Number of builder slots and runtime bones.
+/// @param[in] stack_id Numeric AnimationStack identifier.
+/// @param[in] layer_stack Parsed stack shared by every builder, or `NULL` to
+/// use the legacy direct-curve representation.
+/// @param[out] builders Zero-initialized per-bone builder array.
+/// @details Every mapped bone receives its static transform components and
+/// numeric target ID. With a parsed layer stack, sampling resolves channels
+/// from that shared representation. The legacy path instead traverses layer,
+/// curve-node, model, and component connections and stores the first valid
+/// direct curve in each bone/TRS/component slot.
 static void fbx_anim_collect_curves(fbx_node_t *objects,
                                     const fbx_conn_table_t *ct,
                                     void *skeleton,
@@ -1733,6 +1949,10 @@ static void fbx_anim_collect_curves(fbx_node_t *objects,
 
 /// @brief True if the given FBX animation stack id owns at least one AnimationLayer child in
 ///   the connection table.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] stack_id Numeric AnimationStack identifier.
+/// @return Nonzero when a connected child resolves to an AnimationLayer.
 static int fbx_anim_stack_has_layer(fbx_node_t *objects,
                                     const fbx_conn_table_t *ct,
                                     int64_t stack_id) {
@@ -1749,6 +1969,13 @@ static int fbx_anim_stack_has_layer(fbx_node_t *objects,
 }
 
 /// @brief Smallest and largest FBX key ticks across all of @p builders' curves.
+/// @param[in] builders Per-bone sampler array.
+/// @param[in] bone_count Number of builder entries.
+/// @param[out] out_min_time Optional destination earliest tick, initialized to zero.
+/// @param[out] out_max_time Optional destination latest tick, initialized to zero.
+/// @return Nonzero when at least one valid curve contributes a bound.
+/// @details Builders sharing a parsed layer stack use that stack's active
+/// transform-channel bounds. Legacy builders scan every direct TRS curve.
 static int fbx_anim_compute_time_bounds(const fbx_anim_bone_builder_t *builders,
                                         int64_t bone_count,
                                         int64_t *out_min_time,
@@ -1827,6 +2054,11 @@ static int fbx_anim_sample_components(const fbx_anim_bone_builder_t *builder,
     return 1;
 }
 
+/// @brief Read and validate a direct model curve for constraint-aware sampling.
+/// @param[in] curve Candidate AnimationCurve node.
+/// @param[out] out Destination borrowed curve view.
+/// @return Nonzero when time/value arrays match and pass numeric/order
+/// validation; otherwise zero.
 static int fbx_anim_constraint_read_curve(fbx_node_t *curve, fbx_anim_curve_view_t *out) {
     uint32_t time_count = 0;
     uint32_t value_count = 0;
@@ -1853,6 +2085,17 @@ static int fbx_anim_constraint_read_curve(fbx_node_t *curve, fbx_anim_curve_view
     return 1;
 }
 
+/// @brief Build indexed animation records for every FBX Model object.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph used to resolve parent IDs.
+/// @param[out] out_models Destination owned model-record array.
+/// @param[out] out_count Destination model count.
+/// @param[out] out_ids Destination owned ID-to-model-index table, sorted by ID.
+/// @param[in,out] context Aggregate allocation budget.
+/// @return Nonzero on success, including an empty model set; zero for invalid
+/// arguments, budget exhaustion, overflow, or allocation failure.
+/// @details Each record caches the source node, parent relationship, skeleton
+/// classification, and initialized static transform components.
 static int fbx_anim_constraint_make_models(fbx_node_t *objects,
                                            const fbx_conn_table_t *ct,
                                            fbx_anim_constraint_model_t **out_models,
@@ -1912,6 +2155,18 @@ static int fbx_anim_constraint_make_models(fbx_node_t *objects,
     return 1;
 }
 
+/// @brief Attach stack animation sources to every all-model constraint record.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] stack_id Numeric AnimationStack identifier.
+/// @param[in] layer_stack Parsed shared layer stack, or `NULL` for legacy
+/// direct-curve collection.
+/// @param[in,out] models All-model animation records.
+/// @param[in] model_count Number of model records and ID mappings.
+/// @param[in] ids Sorted ID-to-model-index table.
+/// @details A parsed stack is shared directly by every model sampler. The
+/// legacy path walks layer curve nodes and attaches the first valid curve for
+/// each model/TRS/component slot.
 static void fbx_anim_constraint_collect_curves(fbx_node_t *objects,
                                                const fbx_conn_table_t *ct,
                                                int64_t stack_id,
@@ -1978,6 +2233,13 @@ static void fbx_anim_constraint_collect_curves(fbx_node_t *objects,
     }
 }
 
+/// @brief Compute the tick extent of all model curves used by constraint baking.
+/// @param[in] models All-model animation records.
+/// @param[in] model_count Number of records.
+/// @param[out] minimum Destination earliest tick.
+/// @param[out] maximum Destination latest tick.
+/// @return Nonzero when at least one direct curve or active parsed-stack
+/// transform curve contributes bounds.
 static int fbx_anim_constraint_bounds(const fbx_anim_constraint_model_t *models,
                                       int32_t model_count,
                                       int64_t *minimum,
@@ -2003,6 +2265,13 @@ static int fbx_anim_constraint_bounds(const fbx_anim_constraint_model_t *models,
     return found;
 }
 
+/// @brief Allocate and populate a reusable constraint-evaluation pose.
+/// @param[in] models All-model records supplying IDs, parents, and source nodes.
+/// @param[in] model_count Number of pose entries.
+/// @param[in,out] context Aggregate allocation budget.
+/// @param[out] pose Destination pose.
+/// @return Nonzero when pose storage is allocated and its sorted lookup table
+/// initialized; otherwise zero.
 static int fbx_anim_constraint_initialize_pose(const fbx_anim_constraint_model_t *models,
                                                int32_t model_count,
                                                fbx_load_context_t *context,
@@ -2020,6 +2289,13 @@ static int fbx_anim_constraint_initialize_pose(const fbx_anim_constraint_model_t
     return 1;
 }
 
+/// @brief Determine whether applying a constraint can change one model.
+/// @param[in] constraint Constraint to inspect.
+/// @param[in] pose Pose providing IDs and IK parent relationships.
+/// @param[in] model_index Candidate model index.
+/// @return Nonzero when an active supported constraint targets the model.
+/// @details Ordinary constraints write their direct target. A single-chain IK
+/// constraint writes every model on the end-effector-to-target chain.
 static int fbx_anim_constraint_writes_model(const fbx_constraint_t *constraint,
                                             const fbx_constraint_pose_t *pose,
                                             int32_t model_index) {
@@ -2039,6 +2315,20 @@ static int fbx_anim_constraint_writes_model(const fbx_constraint_t *constraint,
     return 0;
 }
 
+/// @brief Collect every source time capable of affecting one constrained model.
+/// @param[in,out] times Address of the unsorted dynamic tick array.
+/// @param[in,out] count Address of its logical count.
+/// @param[in,out] capacity Address of its allocated capacity.
+/// @param[in] models All-model animation records.
+/// @param[in] model_count Number of model and pose entries.
+/// @param[in] model_index Output model whose dependency closure is collected.
+/// @param[in] constraints Parsed constraint set.
+/// @param[in,out] pose Reusable pose whose evaluation flags serve as marks.
+/// @param[in,out] context Aggregate allocation budget.
+/// @return Nonzero when the dependency closure and all of its direct or layered
+/// curve times are collected; otherwise zero.
+/// @details The closure includes ancestors plus source, world-up, IK effector,
+/// and pole models of every constraint that can write an already marked model.
 static int fbx_anim_constraint_append_times(int64_t **times,
                                             int32_t *count,
                                             int32_t *capacity,
@@ -2120,6 +2410,12 @@ static int fbx_anim_constraint_append_times(int64_t **times,
     return 1;
 }
 
+/// @brief Map a runtime bone index into the all-model constraint pose.
+/// @param[in] bone_bindings Numeric model-to-bone mappings.
+/// @param[in] bone_binding_count Number of mappings.
+/// @param[in] pose Constraint pose providing model-ID lookup.
+/// @param[in] bone_index Runtime skeleton bone index.
+/// @return The corresponding pose model index, or `-1`.
 static int32_t fbx_anim_constraint_model_for_bone(const fbx_bone_binding_t *bone_bindings,
                                                   int32_t bone_binding_count,
                                                   const fbx_constraint_pose_t *pose,
@@ -2130,6 +2426,24 @@ static int32_t fbx_anim_constraint_model_for_bone(const fbx_bone_binding_t *bone
     return -1;
 }
 
+/// @brief Evaluate one model's constrained parent-relative runtime transform.
+/// @param[in] models All-model animation records.
+/// @param[in] model_count Number of model and pose entries.
+/// @param[in] model_index Target model index.
+/// @param[in] parent_model_index Runtime bone parent's model index, or `-1`.
+/// @param[in] source_time Source time in FBX ticks.
+/// @param[in] z_up Nonzero to apply Z-up to Y-up basis conversion.
+/// @param[in,out] constraints Parsed set whose runtime caches may be updated.
+/// @param[in,out] pose Reusable pose buffers.
+/// @param[in,out] context Aggregate allocation and evaluation context.
+/// @param[out] position Destination local translation.
+/// @param[out] quaternion Destination local `(x, y, z, w)` rotation.
+/// @param[out] scale Destination local scale.
+/// @return Nonzero on success, or zero when sampling, hierarchy composition,
+/// constraint application, or parent inversion fails.
+/// @details All FBX models are sampled before the constraint set is applied;
+/// the target global transform is then converted back relative to the runtime
+/// skeleton parent and decomposed.
 static int fbx_anim_constraint_sample_pose(const fbx_anim_constraint_model_t *models,
                                            int32_t model_count,
                                            int32_t model_index,
@@ -2171,6 +2485,20 @@ static int fbx_anim_constraint_sample_pose(const fbx_anim_constraint_model_t *mo
     return 1;
 }
 
+/// @brief Bake one constrained skeleton bone into an Animation3D channel.
+/// @param[in,out] animation Destination runtime clip.
+/// @param[in] models All-model animation records.
+/// @param[in] model_count Number of model and pose entries.
+/// @param[in] model_index Model corresponding to the emitted bone.
+/// @param[in] parent_model_index Runtime bone parent's model, or `-1`.
+/// @param[in] bone_index Destination runtime bone index.
+/// @param[in] clip_start Earliest source tick used as runtime time zero.
+/// @param[in] z_up Nonzero to apply basis conversion.
+/// @param[in,out] constraints Parsed constraint set.
+/// @param[in,out] pose Reusable constraint pose.
+/// @param[in,out] context Aggregate allocation budget.
+/// @return One when keys were emitted, zero when no dependency curve supplied
+/// times, or `-1` on collection, budget, pose, allocation, or insertion failure.
 static int fbx_anim_constraint_emit_bone(void *animation,
                                          const fbx_anim_constraint_model_t *models,
                                          int32_t model_count,
@@ -2261,6 +2589,23 @@ static int fbx_anim_constraint_emit_bone(void *animation,
     return 1;
 }
 
+/// @brief Transactionally extract clips whose poses depend on FBX constraints.
+/// @param[in] objects FBX Objects node.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] skeleton Target runtime skeleton.
+/// @param[in] bone_bindings Numeric model-to-bone mappings.
+/// @param[in] bone_binding_count Number of mappings.
+/// @param[in] z_up Nonzero for Z-up source content.
+/// @param[in,out] constraints Parsed constraint set.
+/// @param[in,out] out_anims Address of the owned output clip-reference array.
+/// @param[in,out] out_count Address of its logical count.
+/// @param[in,out] out_capacity Address of its allocated capacity.
+/// @param[in,out] context Aggregate allocation budget.
+/// @return Nonzero after processing every stack, including when no clip emits;
+/// zero after releasing the entire staged output on a hard failure.
+/// @details Each qualifying stack samples every model, applies constraints at
+/// the dependency-union times for each skeleton bone, emits a looping clip, and
+/// publishes it only when at least one bone produced keys.
 static int fbx_extract_constraint_animations(fbx_node_t *objects,
                                              const fbx_conn_table_t *ct,
                                              void *skeleton,
@@ -2512,6 +2857,16 @@ static int fbx_anim_append_inherited_sample_times(int64_t **times,
 /// @details Returns -1 on any allocation, budget, hierarchy, or insertion failure so the caller can
 ///          roll back the complete FBX asset; zero means no source/ancestor curve affected this
 ///          bone, and one means at least one keyframe was emitted.
+/// @param[in,out] anim Destination runtime animation.
+/// @param[in] builders Per-bone animation samplers.
+/// @param[in] bone_count Number of builder and skeleton entries.
+/// @param[in] skeleton Target skeleton providing parent relationships.
+/// @param[in] bone_idx Bone whose local channel is emitted.
+/// @param[in] z_up Nonzero to apply source basis conversion.
+/// @param[in] clip_start_time Source tick corresponding to runtime time zero.
+/// @param[in,out] context Aggregate allocation budget.
+/// @return One when keys were emitted, zero when no relevant times exist, or
+/// `-1` on a hard failure.
 static int fbx_anim_build_bone_keyframes(void *anim,
                                          const fbx_anim_bone_builder_t *builders,
                                          int64_t bone_count,
@@ -2622,9 +2977,19 @@ static int fbx_anim_build_bone_keyframes(void *anim,
 ///          times. Builder and generated runtime storage are charged before allocation. Any hard
 ///          failure releases all clips staged by this call so the enclosing asset cannot publish a
 ///          truncated animation set.
-/// @param out_anims Receives a newly allocated array of animation objects (caller owns).
-/// @param out_count Receives the number of animations written.
-/// @param context Active aggregate load budget.
+/// @param[in] root FBX document root.
+/// @param[in] ct Indexed connection graph.
+/// @param[in] skeleton Target runtime skeleton.
+/// @param[in] bone_bindings Numeric model-to-bone mappings.
+/// @param[in] bone_binding_count Number of mappings.
+/// @param[in] z_up Nonzero for Z-up source content.
+/// @param[in,out] constraints Optional parsed constraints; a nonempty set
+/// selects constraint-aware baking for every stack.
+/// @param[out] out_anims Receives a newly allocated array of retained animation
+/// objects owned by the caller.
+/// @param[out] out_count Receives the number of animations written.
+/// @param[out] out_capacity Receives the allocated reference-array capacity.
+/// @param[in,out] context Active aggregate load budget.
 /// @return Nonzero on success (including no animations), zero after rolling back on failure.
 static int fbx_extract_animations(fbx_node_t *root,
                                   const fbx_conn_table_t *ct,

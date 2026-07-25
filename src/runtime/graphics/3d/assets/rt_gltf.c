@@ -20,6 +20,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf.c
+ * @brief Implements glTF 2.0/GLB loading, resource ownership, JSON orchestration,
+ *        and the public asset query API.
+ *
+ * The loader validates the root document and required extensions, resolves binary,
+ * data-URI, external, asset-manager, or preloaded dependencies, then invokes the
+ * specialized accessor, codec, material, mesh, skin, animation, and scene import
+ * fragments in transactional order. Successful assets own all published resources;
+ * decoded buffers, texture tables, primitive mappings, and parsed JSON remain scratch
+ * state and are released before return.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_gltf.h"
@@ -121,7 +134,10 @@ static int gltf_double_to_i64_checked(double value, int64_t *out) {
     return 1;
 }
 
-/// @brief Narrow an int64 JSON value to int32 with fallback on range errors.
+/// @brief Narrow a signed 64-bit JSON value to 32 bits with a range fallback.
+/// @param value Value to narrow.
+/// @param fallback Value returned when @p value is outside the int32 range.
+/// @return Safely narrowed value or @p fallback.
 static int32_t gltf_i32_from_i64_or(int64_t value, int32_t fallback) {
     if (value < (int64_t)INT32_MIN || value > (int64_t)INT32_MAX)
         return fallback;
@@ -144,76 +160,131 @@ extern void rt_material3d_set_import_texture_slot(void *obj,
 // Asset container
 //===----------------------------------------------------------------------===//
 
+/// @brief Asset-owned metadata and resources for one immutable imported scene.
 typedef struct {
+    /// Owned root SceneNode3D reference.
     void *root;
+    /// Owned NUL-terminated scene display name.
     char *name;
+    /// Count of nodes reachable from @ref root.
     int32_t node_count;
+    /// Owned reference array of cameras reachable from the scene.
     void **cameras;
+    /// Number of initialized camera references.
     int32_t camera_count;
+    /// Allocated camera-reference capacity.
     int32_t camera_capacity;
 } gltf_scene_info_t;
 
+/// @brief GC-managed aggregate of all resources imported from one glTF document.
 typedef struct {
+    /// Runtime object header/vtable slot.
     void *vptr;
+    /// Owned Mesh3D reference array.
     void **meshes;
+    /// Number of initialized meshes.
     int32_t mesh_count;
+    /// Allocated mesh capacity.
     int32_t mesh_capacity;
+    /// Owned Material3D reference array.
     void **materials;
+    /// Number of initialized materials.
     int32_t material_count;
+    /// Allocated material capacity.
     int32_t material_capacity;
+    /// Owned Skeleton3D reference array.
     void **skeletons;
+    /// Number of initialized skeletons.
     int32_t skeleton_count;
+    /// Allocated skeleton capacity.
     int32_t skeleton_capacity;
+    /// Owned skeletal Animation3D reference array.
     void **animations;
+    /// Number of initialized skeletal clips.
     int32_t animation_count;
+    /// Allocated skeletal-clip capacity.
     int32_t animation_capacity;
+    /// Owned NodeAnimation3D reference array.
     void **node_animations;
+    /// Number of initialized node clips.
     int32_t node_animation_count;
+    /// Allocated node-clip capacity.
     int32_t node_animation_capacity;
+    /// Owned active-scene Camera3D reference array.
     void **cameras;
+    /// Number of initialized active-scene cameras.
     int32_t camera_count;
+    /// Allocated active-scene camera capacity.
     int32_t camera_capacity;
+    /// Owned immutable scene metadata array.
     gltf_scene_info_t *scenes;
+    /// Number of initialized scenes.
     int32_t scene_count;
+    /// Allocated scene capacity.
     int32_t scene_capacity;
+    /// Owned active-scene root reference.
     void *scene_root;
+    /// Count of nodes reachable from @ref scene_root.
     int32_t node_count;
     /* KHR_materials_variants: variant display names, index-aligned with the
      * per-node variant material tables built during scene import. */
     char **variant_names;
+    /// Number of owned entries in @ref variant_names.
     int32_t variant_name_count;
 } rt_gltf_asset;
 
-/// @brief Validate @p obj as a GLTF asset handle, returning NULL on class mismatch.
+/// @brief Validate a runtime handle as a glTF asset.
+/// @param obj Candidate runtime object.
+/// @return Typed borrowed asset pointer, or NULL on NULL/class mismatch.
 static rt_gltf_asset *gltf_asset_checked(void *obj) {
     return (rt_gltf_asset *)rt_g3d_checked_or_null(obj, RT_G3D_GLTF_ASSET_CLASS_ID);
 }
 
+/// @brief Load-local mapping from glTF skin joints to a runtime skeleton.
 typedef struct {
+    /// Owned or staged Skeleton3D reference.
     void *skeleton;
+    /// Owned array mapping skin-joint ordinal to glTF node index.
     int32_t *joint_nodes;
+    /// Owned array mapping skin-joint ordinal to runtime bone index.
     int32_t *joint_to_bone;
+    /// Number of initialized joint mappings.
     int32_t joint_count;
 } gltf_skin_t;
 
+/// @brief Normalized sampler state associated with one glTF texture.
 typedef struct {
+    /// Horizontal texture wrap mode.
     int32_t wrap_s;
+    /// Vertical texture wrap mode.
     int32_t wrap_t;
+    /// Minification texel filter.
     int32_t min_filter;
+    /// Magnification texel filter.
     int32_t mag_filter;
+    /// Mipmap selection filter.
     int32_t mip_filter;
 } gltf_sampler_info_t;
 
+/// @brief Parsed textureInfo UV-set and KHR_texture_transform metadata.
 typedef struct {
+    /// Selected `TEXCOORD_n` index.
     int32_t texcoord;
+    /// Non-zero when the textureInfo object exists.
     int8_t present;
+    /// Non-zero when a KHR_texture_transform block exists.
     int8_t has_transform;
+    /// UV translation.
     double offset[2];
+    /// UV scale.
     double scale[2];
+    /// UV rotation in radians.
     double rotation;
 } gltf_texture_info_t;
 
+/// @brief Per-material textureInfo metadata indexed by runtime material slot.
 typedef struct {
+    /// Texture slot metadata parallel to the Material3D slot enumeration.
     gltf_texture_info_t slots[RT_MATERIAL3D_TEXTURE_SLOT_COUNT];
 } gltf_material_info_t;
 
@@ -224,6 +295,8 @@ static int gltf_ascii_ieq_n(const char *a, const char *b, size_t len);
 
 /// @brief Number of skin joints safe to read (clamped to VGFX3D_MAX_SKELETON_BONES);
 ///   0 when any backing array is absent.
+/// @param skin Skin mapping to validate.
+/// @return Safe readable joint count, clamped to the runtime skeleton limit.
 static int32_t gltf_skin_safe_joint_count(const gltf_skin_t *skin) {
     if (!skin || skin->joint_count <= 0 || !skin->joint_nodes || !skin->joint_to_bone)
         return 0;
@@ -231,7 +304,11 @@ static int32_t gltf_skin_safe_joint_count(const gltf_skin_t *skin) {
                                                          : VGFX3D_MAX_SKELETON_BONES;
 }
 
-/// @brief Clamp a (count, capacity) pair to a safe element count (0 when invalid, else min).
+/// @brief Clamp a reference-array count/capacity pair to a safe readable element count.
+/// @param items Reference-array storage.
+/// @param count Reported initialized count.
+/// @param capacity Allocated capacity.
+/// @return Zero for invalid storage/metadata, otherwise `min(count, capacity)`.
 static int32_t gltf_asset_safe_count(void **items, int32_t count, int32_t capacity) {
     if (!items || count <= 0 || capacity <= 0)
         return 0;
@@ -240,7 +317,9 @@ static int32_t gltf_asset_safe_count(void **items, int32_t count, int32_t capaci
     return count;
 }
 
-/// @brief Number of imported scenes safe to read (live count clamped to capacity).
+/// @brief Return the number of imported scenes safe to read.
+/// @param asset Candidate typed asset.
+/// @return Zero for invalid scene storage, otherwise the live count clamped to capacity.
 static int32_t gltf_asset_safe_scene_count(const rt_gltf_asset *asset) {
     if (!asset || !asset->scenes || asset->scene_count <= 0 || asset->scene_capacity <= 0)
         return 0;
@@ -251,6 +330,9 @@ static int32_t gltf_asset_safe_scene_count(const rt_gltf_asset *asset) {
 
 /// @brief Release every reference in a glTF ref array (over its safe count) and free the
 ///   backing storage, resetting the count/capacity to zero.
+/// @param[in,out] items Address of the owned reference-array pointer.
+/// @param[in,out] count Address of its initialized count.
+/// @param[in,out] capacity Address of its allocated capacity.
 static void gltf_asset_release_ref_array(void ***items, int32_t *count, int32_t *capacity) {
     void **array = items ? *items : NULL;
     int32_t safe_count = gltf_asset_safe_count(array, count ? *count : 0, capacity ? *capacity : 0);
@@ -270,7 +352,8 @@ static void gltf_asset_release_ref_array(void ***items, int32_t *count, int32_t 
         *capacity = 0;
 }
 
-/// @brief GC finalizer for an `rt_gltf_asset` — release every owned mesh / material / scene root.
+/// @brief Release every resource and allocation owned by a glTF asset.
+/// @param[in,out] obj Asset being finalized; NULL is accepted as a no-op.
 static void gltf_asset_finalize(void *obj) {
     rt_gltf_asset *a = (rt_gltf_asset *)obj;
     if (!a)
@@ -316,7 +399,9 @@ static void gltf_asset_finalize(void *obj) {
 // JSON helpers
 //===----------------------------------------------------------------------===//
 
-/// @brief Set the name of a scene node from a C string (no-op for empty / NULL input).
+/// @brief Set a scene-node name from a non-empty C string.
+/// @param[in,out] node Runtime scene node to rename.
+/// @param name NUL-terminated name; NULL or empty is a no-op.
 static void gltf_set_node_name(rt_scene_node3d *node, const char *name) {
     if (!node || !name || name[0] == '\0')
         return;
@@ -365,7 +450,10 @@ static const char *gltf_effective_node_name(void *nodes_arr,
 // borrowed cstr returns, etc.).
 // ---------------------------------------------------------------------------
 
-/// @brief Look up a JSON object field by key (NULL if absent or `obj` is NULL).
+/// @brief Look up a JSON object field by key.
+/// @param obj Borrowed runtime JSON map.
+/// @param key NUL-terminated property name.
+/// @return Borrowed boxed value, or NULL when absent or @p obj is NULL.
 static void *jget(void *obj, const char *key) {
     void *value;
     if (!obj)
@@ -376,7 +464,11 @@ static void *jget(void *obj, const char *key) {
     return value;
 }
 
-/// @brief Read `obj[key]` as a double; returns `def` if absent or wrong type.
+/// @brief Read a JSON object field as a finite double.
+/// @param obj Borrowed runtime JSON object.
+/// @param key Property name.
+/// @param def Fallback for absence, unsupported type, or non-finite floating value.
+/// @return Converted integer/float/boolean value, or @p def.
 static double jnum(void *obj, const char *key, double def) {
     void *v = jget(obj, key);
     if (!v)
@@ -395,7 +487,11 @@ static double jnum(void *obj, const char *key, double def) {
     }
 }
 
-/// @brief Read `obj[key]` as an exact mathematical integer; returns `def` otherwise.
+/// @brief Read a JSON object field as an exact mathematical integer.
+/// @param obj Borrowed runtime JSON object.
+/// @param key Property name.
+/// @param def Fallback for absence, unsupported type, fractional, non-finite, or range error.
+/// @return Exact converted integer/boolean value, or @p def.
 static int64_t jint(void *obj, const char *key, int64_t def) {
     void *v = jget(obj, key);
     if (!v)
@@ -436,7 +532,10 @@ static int64_t jbool(void *obj, const char *key, int64_t def) {
     return value == 0 || value == 1 ? value : def;
 }
 
-/// @brief Read `obj[key]` as a borrowed C string (NULL if absent or non-string).
+/// @brief Read a JSON object field as a borrowed C string.
+/// @param obj Borrowed runtime JSON object.
+/// @param key Property name.
+/// @return Borrowed NUL-terminated runtime-string data, or NULL when absent/non-string.
 static const char *jstr(void *obj, const char *key) {
     void *v = jget(obj, key);
     if (!rt_string_is_handle(v))
@@ -444,17 +543,25 @@ static const char *jstr(void *obj, const char *key) {
     return rt_string_cstr((rt_string)v);
 }
 
-/// @brief Read `obj[key]` as an array (alias for `jget` — typed for readability).
+/// @brief Read a JSON object field as an array-shaped borrowed value.
+/// @param obj Borrowed runtime JSON object.
+/// @param key Property name.
+/// @return Borrowed field value, or NULL; callers validate array behavior through @ref jarr_len.
 void *jarr(void *obj, const char *key) {
     return jget(obj, key);
 }
 
-/// @brief Length of a JSON array (0 for NULL).
+/// @brief Return the runtime length of a JSON array.
+/// @param arr Borrowed runtime sequence, or NULL.
+/// @return Sequence length, or zero for NULL.
 int64_t jarr_len(void *arr) {
     return arr ? rt_seq_len(arr) : 0;
 }
 
-/// @brief Length of a JSON array as int32, rejecting counts that cannot be safely indexed.
+/// @brief Convert a JSON array length to a safely indexable 32-bit count.
+/// @param arr Borrowed runtime sequence, or NULL.
+/// @param[out] out_len Receives the non-negative 32-bit length.
+/// @return Non-zero on success, or zero when the length is negative/out of range.
 static int gltf_jarr_len_i32(void *arr, int *out_len) {
     int64_t len;
     if (!out_len)
@@ -466,7 +573,10 @@ static int gltf_jarr_len_i32(void *arr, int *out_len) {
     return 1;
 }
 
-/// @brief Coerce a boxed JSON value to double with default fallback.
+/// @brief Coerce a boxed JSON numeric value to a finite double.
+/// @param value Borrowed boxed JSON value.
+/// @param def Fallback for NULL, unsupported type, or non-finite float.
+/// @return Converted integer/float value, or @p def.
 double jvalue_num(void *value, double def) {
     if (!value)
         return def;
@@ -482,7 +592,10 @@ double jvalue_num(void *value, double def) {
     }
 }
 
-/// @brief Read a boxed JSON array value as an exact mathematical integer.
+/// @brief Read a boxed JSON value as an exact mathematical integer.
+/// @param value Borrowed boxed JSON value.
+/// @param def Fallback for NULL, unsupported type, fractional, non-finite, or range error.
+/// @return Exact converted integer, or @p def.
 static int64_t jvalue_int(void *value, int64_t def) {
     if (!value)
         return def;
@@ -498,7 +611,10 @@ static int64_t jvalue_int(void *value, int64_t def) {
     }
 }
 
-/// @brief Iterative count — returns 1 for `node` plus the sum of all descendants.
+/// @brief Count a scene subtree iteratively.
+/// @param node Root node to count.
+/// @return One plus all reachable descendants, zero for NULL, or the partial saturated
+///         count if scratch allocation/capacity growth fails.
 static int32_t gltf_count_subtree(const rt_scene_node3d *node) {
     const rt_scene_node3d **stack = NULL;
     int32_t count = 0;
@@ -560,6 +676,7 @@ static int32_t gltf_count_subtree(const rt_scene_node3d *node) {
 ///          material / node / mesh parsing. Listing an extension here without
 ///          implementing it is worse than not listing it, because assets that require
 ///          it will load and then silently render wrong.
+/// @param name Extension name.
 /// @return 1 if the extension is supported, 0 otherwise (including NULL input).
 static int gltf_required_extension_supported(const char *name) {
     if (!name)
@@ -579,6 +696,9 @@ static int gltf_required_extension_supported(const char *name) {
 /// @brief Membership test for extensions this loader handles in optional `extensionsUsed` form.
 /// @details Some extensions have partial optional support but are intentionally not accepted in
 ///          `extensionsRequired`, where the glTF contract demands complete rendering semantics.
+/// @param name Extension name.
+/// @return Non-zero when the extension is fully required-compatible or intentionally
+///         supported in optional-used form.
 static int gltf_used_extension_supported(const char *name) {
     if (gltf_required_extension_supported(name))
         return 1;
@@ -625,6 +745,7 @@ static char *gltf_append_extension_name_owned(char *list, const char *name) {
 ///          required list, records every unsupported extension in the load error, and
 ///          returns 0 so the top-level loader can bail cleanly. Missing or empty
 ///          `extensionsRequired` is treated as "nothing required" (returns 1).
+/// @param root Parsed glTF root JSON object.
 /// @return 1 when every required extension is supported (or the array is absent);
 ///         0 when any required extension is unsupported and the load should fail.
 static int gltf_validate_required_extensions(void *root) {
@@ -661,6 +782,7 @@ static int gltf_validate_required_extensions(void *root) {
 /// @brief Record warnings for optional `extensionsUsed` entries this loader does not implement.
 /// @details Optional extensions are legal to ignore, but silently dropping them can make assets
 ///          appear wrong. Warnings name the extension and explain the visual degradation.
+/// @param root Parsed glTF root JSON object.
 static void gltf_warn_unsupported_used_extensions(void *root) {
     void *used = jarr(root, "extensionsUsed");
     if (!used)
@@ -682,6 +804,7 @@ static void gltf_warn_unsupported_used_extensions(void *root) {
 /// @details Sets texcoord=0, has_transform=0, offset=(0,0), scale=(1,1), rotation=0.0 so callers
 ///   can always call `gltf_read_texture_info` after this without guarding on partial
 ///   initialisation.
+/// @param[out] info Texture metadata to reset; NULL is a no-op.
 static void gltf_texture_info_init(gltf_texture_info_t *info) {
     if (!info)
         return;
@@ -777,6 +900,7 @@ static int32_t gltf_map_sampler_mip_filter(int64_t min_filter) {
 /// @brief Initialise a `gltf_sampler_info_t` to the glTF default sampler state.
 /// @details glTF defaults are repeat wrapping with linear min/mag texel filtering and linear mip
 ///          interpolation.
+/// @param[out] info Sampler metadata to reset; NULL is a no-op.
 static void gltf_sampler_info_init(gltf_sampler_info_t *info) {
     if (!info)
         return;
@@ -1028,6 +1152,11 @@ static void gltf_apply_texture_slot(const gltf_sampler_info_t *texture_samplers,
 /// @brief True if a texture is a supported format but its decoded image is still missing.
 /// @details Flags an in-range, supported-format texture whose image slot is NULL, i.e. one the
 ///          caller still needs to decode/stage before the material can reference it.
+/// @param texture_index Candidate glTF texture index.
+/// @param texture_count Number of entries in the parallel texture arrays.
+/// @param texture_images Decoded image-reference array, or NULL.
+/// @param texture_supported Per-texture supported-format flags.
+/// @return Non-zero when the index is valid and supported but has no decoded image.
 static int gltf_texture_index_missing_supported_payload(int64_t texture_index,
                                                         int32_t texture_count,
                                                         void **texture_images,
@@ -1037,6 +1166,9 @@ static int gltf_texture_index_missing_supported_payload(int64_t texture_index,
 }
 
 /// @brief Resolve the image source for a parsed glTF texture, including KHR_texture_basisu.
+/// @param texture_json Parsed texture object.
+/// @return Basis Universal extension source when valid, otherwise the core `source`,
+///         or -1 when neither is present.
 static int64_t gltf_texture_source_index(void *texture_json) {
     void *extensions;
     void *basisu;
@@ -1069,6 +1201,10 @@ static int64_t gltf_texture_source_index(void *texture_json) {
 // Main loader
 //===----------------------------------------------------------------------===//
 
+/// @brief Release a decoded glTF buffer table while preserving the borrowed GLB BIN chunk.
+/// @param[in,out] buffers Heap buffer table and owned dependency payloads.
+/// @param buf_count Number of initialized buffer entries.
+/// @param bin_chunk Borrowed pointer into the root GLB allocation, never freed here.
 static void gltf_free_buffers(gltf_buffer_t *buffers, int buf_count, const uint8_t *bin_chunk) {
     if (!buffers)
         return;
@@ -1079,6 +1215,16 @@ static void gltf_free_buffers(gltf_buffer_t *buffers, int buf_count, const uint8
     free(buffers);
 }
 
+/// @brief Resolve one glTF buffer URI from staged, data-URI, filesystem, or asset data.
+/// @param filepath Root glTF path used to resolve relative dependencies.
+/// @param load_assets Non-zero to resolve external bytes through the asset manager.
+/// @param[in,out] preload_bundle Optional staged dependency bundle consumed by key/path.
+/// @param buffer_index Zero-based buffer index used for staged dependency keys.
+/// @param uri Non-NULL glTF buffer URI.
+/// @param byte_length Declared minimum buffer byte length.
+/// @param[out] buffer Destination that takes ownership of loaded bytes.
+/// @return Non-zero on success, including a legal empty data buffer; zero for malformed,
+///         missing, undersized, unsupported, or allocation-failed dependencies.
 static int gltf_load_buffer_uri(const char *filepath,
                                 int load_assets,
                                 rt_gltf_preload_bundle *preload_bundle,
@@ -1131,6 +1277,22 @@ static int gltf_load_buffer_uri(const char *filepath,
     return 1;
 }
 
+/// @brief Build the load-local glTF buffer table from JSON and an optional GLB BIN chunk.
+/// @details The first URI-less buffer may borrow @p bin_chunk. Other buffers own bytes
+///          loaded by @ref gltf_load_buffer_uri. URI-less placeholders are permitted only
+///          when compressed buffer views make their uncompressed fallback optional.
+/// @param root Parsed glTF root JSON object.
+/// @param filepath Root document path for relative dependency resolution.
+/// @param load_assets Non-zero to use asset-manager dependency resolution.
+/// @param[in,out] preload_bundle Optional staged dependency bundle.
+/// @param bin_chunk Borrowed GLB BIN payload, or NULL.
+/// @param bin_chunk_len Readable BIN payload length, including permitted padding.
+/// @param root_size Root source size used to bound untrusted table counts.
+/// @param allow_placeholder_buffers Non-zero to allow data-less meshopt fallback buffers.
+/// @param[out] out_buffers Receives the newly allocated buffer table.
+/// @param[out] out_buf_count Receives the number of declared buffer entries.
+/// @return Non-zero on success, or zero for invalid counts, lengths, dependencies,
+///         placeholder policy, or allocation failure.
 static int gltf_load_buffers(void *root,
                              const char *filepath,
                              int load_assets,
@@ -1190,6 +1352,8 @@ static int gltf_load_buffers(void *root,
     return 1;
 }
 
+/// @brief Allocate an empty, finalized glTF asset container.
+/// @return Newly allocated runtime asset with all arrays/counts initialized, or NULL.
 static rt_gltf_asset *gltf_asset_new_empty(void) {
     rt_gltf_asset *asset =
         (rt_gltf_asset *)rt_obj_new_i64(RT_G3D_GLTF_ASSET_CLASS_ID, (int64_t)sizeof(rt_gltf_asset));
@@ -1223,6 +1387,14 @@ static rt_gltf_asset *gltf_asset_new_empty(void) {
     return asset;
 }
 
+/// @brief Extract an owned NUL-terminated JSON copy and borrowed BIN view from glTF/GLB bytes.
+/// @param file_data Root source allocation.
+/// @param file_size Number of readable source bytes.
+/// @param[out] out_json_str Receives a newly allocated JSON copy.
+/// @param[out] out_bin_chunk Receives a borrowed pointer into @p file_data, or NULL.
+/// @param[out] out_bin_chunk_len Receives the BIN payload length.
+/// @return Non-zero on success, or zero for malformed root framing, size overflow,
+///         or allocation failure.
 static int gltf_extract_json_document(uint8_t *file_data,
                                       size_t file_size,
                                       char **out_json_str,
@@ -1247,6 +1419,13 @@ static int gltf_extract_json_document(uint8_t *file_data,
     return 1;
 }
 
+/// @brief Validate and parse an owned glTF JSON string into a runtime root object.
+/// @details Enforces exact integer-token syntax, required data-URI validity, glTF 2.x
+///          versioning, and required-extension support. JSON-parser traps are converted
+///          into recoverable asset errors.
+/// @param[in,out] json_str Owned NUL-terminated JSON allocation, consumed on every path.
+/// @param json_len Exact JSON byte length excluding the terminator.
+/// @return Owned parsed root JSON object on success, or NULL with an asset error set.
 static void *gltf_parse_validated_root_json(char *json_str, size_t json_len) {
     rt_string json_rts;
     void *root = NULL;
@@ -1305,26 +1484,46 @@ static void *gltf_parse_validated_root_json(char *json_str, size_t json_len) {
     return root;
 }
 
+/// @brief Transaction-local resource tables shared across glTF payload import phases.
 typedef struct {
+    /// Owned decoded image references.
     void **images;
+    /// Number of entries in @ref images.
     int image_count;
+    /// Per-image flags indicating a required material dependency.
     uint8_t *image_required;
+    /// Borrowed/parallel decoded images indexed by texture.
     void **texture_images;
+    /// Per-texture supported-format flags.
     uint8_t *texture_supported;
+    /// Normalized sampler state indexed by texture.
     gltf_sampler_info_t *texture_samplers;
+    /// Number of entries in texture-parallel arrays.
     int texture_count;
+    /// First flattened primitive index for each source mesh.
     int *mesh_prim_start;
+    /// Flattened primitive count for each source mesh.
     int *mesh_prim_count;
+    /// Material references parallel to flattened primitives.
     void **primitive_materials;
+    /// Per-primitive KHR_materials_variants material-index tables.
     int32_t **primitive_variant_mappings;
+    /// Number of initialized mapping-table pointers.
     int32_t primitive_variant_mapping_count;
+    /// Parsed texture-slot metadata parallel to imported materials.
     gltf_material_info_t *material_infos;
+    /// Owned load-local skin mappings.
     gltf_skin_t *skins;
+    /// Number of initialized skins.
     int32_t skin_count;
+    /// Owned references to parsed KHR_lights_punctual templates.
     void **imported_lights;
+    /// Number of initialized imported light references.
     int32_t imported_light_count;
 } gltf_load_scratch_t;
 
+/// @brief Release every allocation and temporary reference in a load scratch record.
+/// @param[in,out] scratch Scratch tables to clear; NULL is accepted as a no-op.
 static void gltf_load_scratch_cleanup(gltf_load_scratch_t *scratch) {
     if (!scratch)
         return;
@@ -1357,6 +1556,8 @@ static void gltf_load_scratch_cleanup(gltf_load_scratch_t *scratch) {
 /// @brief Parse root `extensions.KHR_materials_variants.variants[].name` into the asset.
 /// @details Missing or unnamed entries synthesize "variant_N" so every variant stays
 ///          addressable by index and by a stable display name. Absent extension → no-op.
+/// @param[in,out] asset Asset receiving owned variant-name copies.
+/// @param root Parsed glTF root JSON object.
 static void gltf_load_variant_names(rt_gltf_asset *asset, void *root) {
     void *extensions = jget(root, "extensions");
     void *variants_ext = extensions ? jget(extensions, "KHR_materials_variants") : NULL;
@@ -1388,6 +1589,16 @@ static void gltf_load_variant_names(rt_gltf_asset *asset, void *root) {
     asset->variant_name_count = (int32_t)count;
 }
 
+/// @brief Run the ordered image, material, mesh, skin, animation, and scene import phases.
+/// @param[in,out] asset Empty staged asset receiving published runtime resources.
+/// @param root Parsed and validated glTF root JSON object.
+/// @param filepath Root source path for dependency resolution.
+/// @param load_assets Non-zero to use asset-manager dependency resolution.
+/// @param[in,out] preload_bundle Optional staged dependency bundle.
+/// @param buffers Validated load-local buffer table.
+/// @param buf_count Number of entries in @p buffers.
+/// @param[in,out] scratch Transaction-local cross-phase tables.
+/// @return Zero when all phases succeed, or non-zero when any hard import phase fails.
 static int gltf_load_asset_payload(rt_gltf_asset *asset,
                                    void *root,
                                    const char *filepath,
@@ -1482,6 +1693,11 @@ static int gltf_load_asset_payload(rt_gltf_asset *asset,
 ///          returns NULL. Partial state is rolled back via `gltf_release_ref` so
 ///          the caller never sees a half-built asset.
 /// @param path File path to `.gltf` or `.glb`.
+/// @param load_assets Non-zero to resolve root/external dependencies through the asset manager.
+/// @param[in,out] preloaded_data Optional owned root-source buffer, consumed by this load.
+/// @param preloaded_size Number of readable bytes in @p preloaded_data.
+/// @param[in,out] preload_bundle Optional owned staged-dependency bundle; dependencies
+///                               are consumed but the caller retains/frees the bundle object.
 /// @return Opaque rt_gltf_asset*, or NULL on failure.
 static void *rt_gltf_load_impl(rt_string path,
                                int load_assets,
@@ -1629,26 +1845,33 @@ static void *rt_gltf_load_impl(rt_string path,
  * threading a parameter through every loader layer. Zero value = defaults. */
 static RT_THREAD_LOCAL rt_gltf_load_options g_gltf_thread_load_options;
 
-/// @brief Default-initialized import options (all zero). See header.
+/// @brief Return the default glTF import options with every optional behavior disabled.
+/// @return Zero-initialized option value suitable for selective field overrides.
 rt_gltf_load_options rt_gltf_load_options_default(void) {
     rt_gltf_load_options opts;
     memset(&opts, 0, sizeof(opts));
     return opts;
 }
 
-/// @brief Borrow the calling thread's active import options. See header.
+/// @brief Borrow the calling thread's active glTF import options.
+/// @return Pointer to thread-local option storage, valid on the calling thread until
+///         the next option update or thread teardown.
 const rt_gltf_load_options *rt_gltf_active_load_options(void) {
     return &g_gltf_thread_load_options;
 }
 
-/// @brief Install thread-scoped import options, returning the previous value. See header.
+/// @brief Install thread-scoped import options.
+/// @param opts Options to copy, or NULL to restore defaults.
+/// @return Previous thread-local option value for scoped restoration.
 rt_gltf_load_options rt_gltf_set_thread_load_options(const rt_gltf_load_options *opts) {
     rt_gltf_load_options previous = g_gltf_thread_load_options;
     g_gltf_thread_load_options = opts ? *opts : rt_gltf_load_options_default();
     return previous;
 }
 
-/// @brief Load a glTF/GLB from the filesystem (no asset-manager resolution). See header.
+/// @brief Load a glTF/GLB directly from the filesystem.
+/// @param path Runtime string containing the native root-document path.
+/// @return Newly allocated glTF asset on success, or NULL after recording load failure.
 void *rt_gltf_load(rt_string path) {
     rt_asset_error_begin_load();
     if (!path) {
@@ -1671,7 +1894,9 @@ void *rt_gltf_load(rt_string path) {
     return asset;
 }
 
-/// @brief Load a glTF/GLB through the asset manager (mounted/embedded + dev fallback). See header.
+/// @brief Load a glTF/GLB through mounted/embedded asset resolution with development fallback.
+/// @param path Runtime string containing the logical asset path.
+/// @return Newly allocated glTF asset on success, or NULL after recording load failure.
 void *rt_gltf_load_asset(rt_string path) {
     rt_asset_error_begin_load();
     if (!path) {
@@ -1695,7 +1920,13 @@ void *rt_gltf_load_asset(rt_string path) {
 }
 
 /// @brief Internal async path: build a glTF/GLB asset from worker-staged root bytes.
-/// @details Takes ownership of @p preloaded_data and frees it on all paths.
+/// @details Transfers ownership of @p preloaded_data to the synchronous loader and
+///          performs no additional root-file I/O.
+/// @param path Runtime source path retained for diagnostics and relative dependency resolution.
+/// @param[in,out] preloaded_data Owned staged root-document bytes.
+/// @param preloaded_size Number of readable staged bytes.
+/// @param load_assets Non-zero to resolve remaining dependencies through the asset manager.
+/// @return Newly allocated glTF asset on success, or NULL on failure.
 void *rt_gltf_load_preloaded(rt_string path,
                              uint8_t *preloaded_data,
                              size_t preloaded_size,
@@ -1706,6 +1937,9 @@ void *rt_gltf_load_preloaded(rt_string path,
 /// @brief Build a glTF asset on the main thread from a previously-staged preload bundle.
 /// @details Consumes the bundle's staged dependencies (no file I/O), falling back to a normal
 ///          rt_gltf_load/rt_gltf_load_asset when @p bundle is NULL. Always frees @p bundle.
+/// @param path Runtime source path used for diagnostics and dependency keys.
+/// @param[in,out] bundle Owned preload bundle, consumed and freed; may be NULL.
+/// @param load_assets Non-zero to select asset-manager fallback when @p bundle is NULL.
 /// @return The loaded glTF asset handle, or NULL on failure.
 void *rt_gltf_load_preloaded_bundle(rt_string path,
                                     rt_gltf_preload_bundle *bundle,
@@ -1724,13 +1958,18 @@ void *rt_gltf_load_preloaded_bundle(rt_string path,
     return asset;
 }
 
-/// @brief Get the number of meshes extracted from the GLTF file.
+/// @brief Get the number of meshes extracted from a glTF asset.
+/// @param obj Candidate glTF asset handle.
+/// @return Safe mesh count, or zero for an invalid handle/storage.
 int64_t rt_gltf_mesh_count(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     return a ? gltf_asset_safe_count(a->meshes, a->mesh_count, a->mesh_capacity) : 0;
 }
 
-/// @brief Get a mesh by index from the loaded GLTF asset.
+/// @brief Borrow a mesh by index from a loaded glTF asset.
+/// @param obj Candidate glTF asset handle.
+/// @param index Zero-based mesh index.
+/// @return Borrowed Mesh3D handle, or NULL for invalid asset/index/class.
 void *rt_gltf_get_mesh(void *obj, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     if (!a)
@@ -1741,13 +1980,18 @@ void *rt_gltf_get_mesh(void *obj, int64_t index) {
     return rt_g3d_checked_or_null(a->meshes[index], RT_G3D_MESH3D_CLASS_ID);
 }
 
-/// @brief Get the number of materials extracted from the GLTF file.
+/// @brief Get the number of materials extracted from a glTF asset.
+/// @param obj Candidate glTF asset handle.
+/// @return Safe material count, or zero for an invalid handle/storage.
 int64_t rt_gltf_material_count(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     return a ? gltf_asset_safe_count(a->materials, a->material_count, a->material_capacity) : 0;
 }
 
-/// @brief Get a material by index from the loaded GLTF asset.
+/// @brief Borrow a material by index from a loaded glTF asset.
+/// @param obj Candidate glTF asset handle.
+/// @param index Zero-based material index.
+/// @return Borrowed Material3D handle, or NULL for invalid asset/index/class.
 void *rt_gltf_get_material(void *obj, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     if (!a)
@@ -1759,13 +2003,18 @@ void *rt_gltf_get_material(void *obj, int64_t index) {
     return rt_g3d_checked_or_null(a->materials[index], RT_G3D_MATERIAL3D_CLASS_ID);
 }
 
-/// @brief Number of skeletons extracted from the loaded glTF asset.
+/// @brief Get the number of skeletons extracted from a glTF asset.
+/// @param obj Candidate glTF asset handle.
+/// @return Safe skeleton count, or zero for an invalid handle/storage.
 int64_t rt_gltf_skeleton_count(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     return a ? gltf_asset_safe_count(a->skeletons, a->skeleton_count, a->skeleton_capacity) : 0;
 }
 
-/// @brief Get a skeleton by index from the loaded glTF asset.
+/// @brief Borrow a skeleton by index from a loaded glTF asset.
+/// @param obj Candidate glTF asset handle.
+/// @param index Zero-based skeleton index.
+/// @return Borrowed Skeleton3D handle, or NULL for invalid asset/index/class.
 void *rt_gltf_get_skeleton(void *obj, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     if (!a)
@@ -1777,13 +2026,18 @@ void *rt_gltf_get_skeleton(void *obj, int64_t index) {
     return rt_g3d_checked_or_null(a->skeletons[index], RT_G3D_SKELETON3D_CLASS_ID);
 }
 
-/// @brief Number of animation clips extracted from the loaded glTF asset.
+/// @brief Get the number of skeletal animation clips in a glTF asset.
+/// @param obj Candidate glTF asset handle.
+/// @return Safe Animation3D count, or zero for an invalid handle/storage.
 int64_t rt_gltf_animation_count(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     return a ? gltf_asset_safe_count(a->animations, a->animation_count, a->animation_capacity) : 0;
 }
 
-/// @brief Get an Animation3D clip by index from the loaded glTF asset.
+/// @brief Borrow a skeletal Animation3D clip by index.
+/// @param obj Candidate glTF asset handle.
+/// @param index Zero-based clip index.
+/// @return Borrowed Animation3D handle, or NULL for invalid asset/index/class.
 void *rt_gltf_get_animation(void *obj, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     if (!a)
@@ -1795,7 +2049,9 @@ void *rt_gltf_get_animation(void *obj, int64_t index) {
     return rt_g3d_checked_or_null(a->animations[index], RT_G3D_ANIMATION3D_CLASS_ID);
 }
 
-/// @brief Return the number of node animations (AnimationClip-style tracks) in the glTF asset.
+/// @brief Return the number of node-animation clips in a glTF asset.
+/// @param obj Candidate glTF asset handle.
+/// @return Safe NodeAnimation3D count, or zero for invalid handle/storage.
 int64_t rt_gltf_node_animation_count(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     return a ? gltf_asset_safe_count(
@@ -1803,7 +2059,10 @@ int64_t rt_gltf_node_animation_count(void *obj) {
              : 0;
 }
 
-/// @brief Get a node-animation track by index from the loaded glTF asset.
+/// @brief Borrow a node-animation clip by index.
+/// @param obj Candidate glTF asset handle.
+/// @param index Zero-based node-animation index.
+/// @return Borrowed NodeAnimation3D handle, or NULL for invalid asset/index/class.
 void *rt_gltf_get_node_animation(void *obj, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     if (!a)
@@ -1816,12 +2075,17 @@ void *rt_gltf_get_node_animation(void *obj, int64_t index) {
 }
 
 /// @brief Return the number of cameras imported from the active scene.
+/// @param obj Candidate glTF asset handle.
+/// @return Safe active-scene camera count, or zero for invalid handle/storage.
 int64_t rt_gltf_camera_count(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     return a ? gltf_asset_safe_count(a->cameras, a->camera_count, a->camera_capacity) : 0;
 }
 
-/// @brief Borrow the i-th active-scene Camera3D imported from glTF.
+/// @brief Borrow a Camera3D imported from the active scene.
+/// @param obj Candidate glTF asset handle.
+/// @param index Zero-based active-scene camera index.
+/// @return Borrowed Camera3D handle, or NULL for invalid asset/index/class.
 void *rt_gltf_get_camera(void *obj, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     if (!a)
@@ -1832,13 +2096,19 @@ void *rt_gltf_get_camera(void *obj, int64_t index) {
     return rt_g3d_checked_or_null(a->cameras[index], RT_G3D_CAMERA3D_CLASS_ID);
 }
 
-/// @brief Number of immutable scenes in the glTF asset.
+/// @brief Return the number of immutable scenes in a glTF asset.
+/// @param obj Candidate glTF asset handle.
+/// @return Safe scene count, or zero for invalid handle/storage.
 int64_t rt_gltf_scene_count(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     return gltf_asset_safe_scene_count(a);
 }
 
-/// @brief Return the imported scene name, or an empty string for invalid indices.
+/// @brief Return an imported scene name.
+/// @param obj Candidate glTF asset handle.
+/// @param index Zero-based immutable-scene index.
+/// @return Runtime string containing the scene name, or an owned empty runtime string
+///         for an invalid index.
 rt_string rt_gltf_get_scene_name(void *obj, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     int32_t scene_count = gltf_asset_safe_scene_count(a);
@@ -1847,7 +2117,10 @@ rt_string rt_gltf_get_scene_name(void *obj, int64_t index) {
     return rt_const_cstr(a->scenes[index].name);
 }
 
-/// @brief Borrow the root SceneNode3D for immutable scene @p index.
+/// @brief Borrow the root SceneNode3D for an immutable scene.
+/// @param obj Candidate glTF asset handle.
+/// @param index Zero-based immutable-scene index.
+/// @return Borrowed SceneNode3D handle, or NULL for invalid asset/index/class.
 void *rt_gltf_get_scene_root_at(void *obj, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     int32_t scene_count = gltf_asset_safe_scene_count(a);
@@ -1856,7 +2129,10 @@ void *rt_gltf_get_scene_root_at(void *obj, int64_t index) {
     return rt_g3d_checked_or_null(a->scenes[index].root, RT_G3D_SCENENODE3D_CLASS_ID);
 }
 
-/// @brief Number of cameras reachable from immutable scene @p scene_index.
+/// @brief Return the number of cameras reachable from an immutable scene.
+/// @param obj Candidate glTF asset handle.
+/// @param scene_index Zero-based immutable-scene index.
+/// @return Safe scene-local camera count, or zero for invalid asset/index/storage.
 int64_t rt_gltf_scene_camera_count(void *obj, int64_t scene_index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     int32_t scene_count = gltf_asset_safe_scene_count(a);
@@ -1867,7 +2143,11 @@ int64_t rt_gltf_scene_camera_count(void *obj, int64_t scene_index) {
                                  a->scenes[scene_index].camera_capacity);
 }
 
-/// @brief Borrow a Camera3D from immutable scene @p scene_index.
+/// @brief Borrow a Camera3D from an immutable scene.
+/// @param obj Candidate glTF asset handle.
+/// @param scene_index Zero-based immutable-scene index.
+/// @param index Zero-based camera index within that scene.
+/// @return Borrowed Camera3D handle, or NULL for invalid asset/indices/class.
 void *rt_gltf_get_scene_camera(void *obj, int64_t scene_index, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     gltf_scene_info_t *scene;
@@ -1882,7 +2162,9 @@ void *rt_gltf_get_scene_camera(void *obj, int64_t scene_index, int64_t index) {
     return rt_g3d_checked_or_null(scene->cameras[index], RT_G3D_CAMERA3D_CLASS_ID);
 }
 
-/// @brief Number of nodes in the loaded glTF scene tree (0 for NULL).
+/// @brief Return the number of nodes in the loaded active-scene tree.
+/// @param obj Candidate glTF asset handle.
+/// @return Stored positive node count when the active root is valid, otherwise zero.
 int64_t rt_gltf_node_count(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     if (!a || a->node_count <= 0 || !rt_g3d_has_class(a->scene_root, RT_G3D_SCENENODE3D_CLASS_ID))
@@ -1890,13 +2172,17 @@ int64_t rt_gltf_node_count(void *obj) {
     return a->node_count;
 }
 
-/// @brief Return the scene-root SceneNode of the loaded asset (NULL if not loaded / NULL).
+/// @brief Borrow the active scene-root SceneNode3D of a loaded asset.
+/// @param obj Candidate glTF asset handle.
+/// @return Borrowed SceneNode3D handle, or NULL for invalid asset/root/class.
 void *rt_gltf_get_scene_root(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     return a ? rt_g3d_checked_or_null(a->scene_root, RT_G3D_SCENENODE3D_CLASS_ID) : NULL;
 }
 
-/// @brief Number of KHR_materials_variants names imported with the asset (0 when absent).
+/// @brief Return the number of imported KHR_materials_variants names.
+/// @param obj Candidate glTF asset handle.
+/// @return Positive variant-name count, or zero when absent/invalid.
 int64_t rt_gltf_variant_count(void *obj) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     if (!a || !a->variant_names || a->variant_name_count <= 0)
@@ -1904,7 +2190,10 @@ int64_t rt_gltf_variant_count(void *obj) {
     return a->variant_name_count;
 }
 
-/// @brief Return the material-variant name at @p index, or an empty string when invalid.
+/// @brief Return an imported material-variant name.
+/// @param obj Candidate glTF asset handle.
+/// @param index Zero-based variant index.
+/// @return Runtime string containing the name, or an owned empty runtime string when invalid.
 rt_string rt_gltf_get_variant_name(void *obj, int64_t index) {
     rt_gltf_asset *a = gltf_asset_checked(obj);
     if (!a || !a->variant_names || index < 0 || index >= a->variant_name_count ||
@@ -1913,6 +2202,10 @@ rt_string rt_gltf_get_variant_name(void *obj, int64_t index) {
     return rt_const_cstr(a->variant_names[index]);
 }
 
+/// @brief Probe whether graphics-enabled Draco mesh decoding accepts a payload.
+/// @param data Candidate Draco bitstream.
+/// @param size Number of readable bytes.
+/// @return Non-zero when the payload decodes successfully; otherwise zero.
 int rt_gltf_draco_decode_probe(const unsigned char *data, size_t size) {
     draco_mesh mesh;
     int unsupported = 0;
@@ -1928,6 +2221,10 @@ int rt_gltf_draco_decode_probe(const unsigned char *data, size_t size) {
 #else
 typedef int rt_graphics_disabled_tu_guard;
 
+/// @brief Report Draco decoding as unavailable in a graphics-disabled build.
+/// @param data Ignored candidate bytes.
+/// @param size Ignored byte count.
+/// @return Always zero.
 int rt_gltf_draco_decode_probe(const unsigned char *data, size_t size) {
     (void)data;
     (void)size;

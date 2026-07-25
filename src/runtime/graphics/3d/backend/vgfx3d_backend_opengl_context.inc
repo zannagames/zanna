@@ -16,6 +16,13 @@
 // Links: vgfx3d_backend_opengl.c, vgfx3d_backend_opengl_shaders.inc
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements OpenGL native-context creation, fixed resource setup, and teardown.
+/// @details Context construction is transactional: it resolves a compatible native binding,
+///          probes capabilities, compiles and links all shader programs, creates fixed GL
+///          resources, and unwinds every completed stage when a later stage fails.
+
 typedef struct gl_shader_set_t {
     GLuint vs;
     GLuint fs;
@@ -33,6 +40,11 @@ typedef struct gl_shader_set_t {
 } gl_shader_set_t;
 
 /// @brief Pick an FBConfig compatible with the target X window's visual/depth.
+/// @param dpy Borrowed X display containing the target window.
+/// @param xwin Target X window whose visual and depth must be matched.
+/// @param configs Borrowed array of candidate framebuffer configurations.
+/// @param fb_count Number of entries in @p configs.
+/// @return The first exact visual/depth match, the first candidate as fallback, or NULL.
 #if !defined(ZANNA_GRAPHICS_WAYLAND)
 static GLXFBConfig gl_pick_matching_fb_config(Display *dpy,
                                               Window xwin,
@@ -62,6 +74,9 @@ static GLXFBConfig gl_pick_matching_fb_config(Display *dpy,
 #endif
 
 /// @brief Initialize all per-context matrices and default target/upload state.
+/// @param ctx Borrowed newly allocated OpenGL context to initialize.
+/// @param w Initial logical output width in pixels.
+/// @param h Initial logical output height in pixels.
 static void gl_init_context_defaults(gl_context_t *ctx, int32_t w, int32_t h) {
     static const float kIdentity4x4[16] = {
         1.0f,
@@ -105,6 +120,7 @@ static void gl_init_context_defaults(gl_context_t *ctx, int32_t w, int32_t h) {
 ///          double-buffered FBConfig was requested. In that case `GL_BACK` draws are discarded or
 ///          unreadable, producing a blank client area; targeting `GL_FRONT` keeps presentation and
 ///          screenshots tied to the drawable that actually exists.
+/// @param ctx Borrowed current OpenGL context receiving the default buffer selection.
 static void gl_query_default_framebuffer_buffer(gl_context_t *ctx) {
     GLint doublebuffered = 1;
     if (!ctx || !gl.GetIntegerv)
@@ -126,6 +142,7 @@ static void gl_query_default_framebuffer_buffer(gl_context_t *ctx) {
 ///          configuration, so the backend can fall back to presenting the final offscreen image
 ///          through ZannaGFX. The probe saves and restores framebuffer state and only runs during
 ///          context creation before user-visible rendering begins.
+/// @param ctx Borrowed current OpenGL context receiving the probe result.
 static void gl_probe_default_framebuffer_writable(gl_context_t *ctx) {
     gl_framebuffer_state_t saved;
     uint8_t sample[4] = {0, 0, 0, 0};
@@ -155,6 +172,9 @@ static void gl_probe_default_framebuffer_writable(gl_context_t *ctx) {
 }
 
 /// @brief Compile every shader used by the OpenGL backend context.
+/// @param[out] shaders Caller-owned temporary bundle receiving compiled shader object names.
+/// @param zero_to_one_clip Nonzero to compile shaders for zero-to-one clip-space depth.
+/// @return Nonzero only when every required shader compiles successfully.
 static int gl_compile_context_shaders(gl_shader_set_t *shaders, int zero_to_one_clip) {
     memset(shaders, 0, sizeof(*shaders));
     shaders->vs =
@@ -197,6 +217,7 @@ static int gl_compile_context_shaders(gl_shader_set_t *shaders, int zero_to_one_
 }
 
 /// @brief Delete all shaders in a temporary context shader bundle.
+/// @param[in,out] shaders Caller-owned bundle whose nonzero shader objects are deleted and cleared.
 static void gl_delete_context_shaders(gl_shader_set_t *shaders) {
     if (shaders->vs)
         gl.DeleteShader(shaders->vs);
@@ -226,6 +247,9 @@ static void gl_delete_context_shaders(gl_shader_set_t *shaders) {
 }
 
 /// @brief Link shader programs from the temporary shader bundle.
+/// @param ctx Borrowed OpenGL context receiving all linked program object names.
+/// @param shaders Borrowed bundle containing the successfully compiled shader stages.
+/// @return Nonzero only when every required program links successfully.
 static int gl_link_context_programs(gl_context_t *ctx, const gl_shader_set_t *shaders) {
     ctx->program = link_program(shaders->vs, shaders->fs);
     ctx->unlit_program = link_program(shaders->vs, shaders->unlit_fs);
@@ -243,6 +267,7 @@ static int gl_link_context_programs(gl_context_t *ctx, const gl_shader_set_t *sh
 }
 
 /// @brief Delete shader programs created during context setup.
+/// @param ctx Borrowed OpenGL context whose nonzero program objects are deleted and cleared.
 static void gl_delete_context_programs(gl_context_t *ctx) {
     if (ctx->program)
         gl.DeleteProgram(ctx->program);
@@ -274,6 +299,7 @@ static void gl_delete_context_programs(gl_context_t *ctx) {
 }
 
 /// @brief Bind default sampler-unit uniforms across main, shadow, skybox and post-FX programs.
+/// @param ctx Borrowed OpenGL context whose current main program receives fixed texture units.
 static void gl_bind_main_sampler_uniforms(gl_context_t *ctx) {
     gl.UseProgram(ctx->program);
     gl.Uniform1i(ctx->uDiffuseTex, 0);
@@ -295,6 +321,8 @@ static void gl_bind_main_sampler_uniforms(gl_context_t *ctx) {
     gl.Uniform1i(ctx->uAOTex, GL_TU_AO);
 }
 
+/// @brief Bind fixed sampler-unit assignments for every context-owned shader program.
+/// @param ctx Borrowed OpenGL context containing linked programs and uniform locations.
 static void gl_bind_default_sampler_uniforms(gl_context_t *ctx) {
     gl_bind_main_sampler_uniforms(ctx);
     gl.UseProgram(ctx->shadow_program);
@@ -322,6 +350,7 @@ static void gl_bind_default_sampler_uniforms(gl_context_t *ctx) {
 }
 
 /// @brief Bind uniform-block indices for current/previous bone palettes.
+/// @param ctx Borrowed OpenGL context whose programs receive fixed UBO binding points.
 static void gl_bind_context_uniform_blocks(gl_context_t *ctx) {
     GLuint main_block = gl.GetUniformBlockIndex(ctx->program, "Bones");
     GLuint prev_main_block = gl.GetUniformBlockIndex(ctx->program, "PrevBones");
@@ -349,6 +378,7 @@ static void gl_bind_context_uniform_blocks(gl_context_t *ctx) {
 }
 
 /// @brief Generate VAOs, buffers, UBOs, and morph texture-buffer handles for the context.
+/// @param ctx Borrowed OpenGL context receiving the generated object names.
 /// @return Non-zero when every mandatory GL object name was created successfully.
 static int gl_generate_context_objects(gl_context_t *ctx) {
     if (!ctx)
@@ -377,6 +407,7 @@ static int gl_generate_context_objects(gl_context_t *ctx) {
 }
 
 /// @brief Allocate the dynamic streaming VBO/IBO, instance, morph, and bone buffers.
+/// @param ctx Borrowed OpenGL context whose generated buffers receive initial storage.
 /// @return Non-zero when all initial storage allocations complete without GL errors.
 static int gl_init_streaming_buffers(gl_context_t *ctx) {
     if (!ctx)
@@ -424,6 +455,7 @@ static int gl_init_streaming_buffers(gl_context_t *ctx) {
 }
 
 /// @brief Upload immutable fullscreen-triangle and skybox vertex buffers.
+/// @param ctx Borrowed OpenGL context containing the helper VAOs and VBOs.
 /// @return Non-zero when both immutable helper meshes upload and attribute setup succeeds.
 static int gl_init_static_geometry_buffers(gl_context_t *ctx) {
     if (!ctx)
@@ -454,6 +486,7 @@ static int gl_init_static_geometry_buffers(gl_context_t *ctx) {
 /// while the real texture is pending keeps the shader's textured path active
 /// and multiplies by white, so authored material colors remain visible without
 /// introducing a black/transparent first-frame artifact.
+/// @param ctx Borrowed OpenGL context that owns the fallback texture.
 /// @return Non-zero when the fallback texture is available.
 static int gl_create_default_white_texture(gl_context_t *ctx) {
     static const uint8_t kWhitePixel[4] = {255u, 255u, 255u, 255u};
@@ -485,6 +518,7 @@ static int gl_create_default_white_texture(gl_context_t *ctx) {
 
 /// @brief Create the context-owned split-sum environment-BRDF lookup texture
 /// from the shared CPU precomputation (RG32F, clamped bilinear).
+/// @param ctx Borrowed OpenGL context that owns the lookup texture.
 /// @return Non-zero when the table texture is available.
 static int gl_create_brdf_lut_texture(gl_context_t *ctx) {
     if (!ctx)
@@ -524,6 +558,7 @@ static int gl_create_brdf_lut_texture(gl_context_t *ctx) {
 /// valid pixels. This fallback provides a complete cubemap for those interim
 /// frames, avoiding invalid binds and incomplete-cubemap sampling during
 /// environment-map streaming.
+/// @param ctx Borrowed OpenGL context that owns the fallback cubemap.
 /// @return Non-zero when the fallback cubemap is available.
 static int gl_create_default_white_cubemap(gl_context_t *ctx) {
     static const uint8_t kWhitePixel[4] = {255u, 255u, 255u, 255u};
@@ -569,6 +604,7 @@ static int gl_create_default_white_cubemap(gl_context_t *ctx) {
 /// This is the failure-path counterpart to the tail of `gl_destroy_ctx()`. It intentionally skips
 /// caches and render targets because they are created only after `create_ctx()` returns a live
 /// backend context.
+/// @param ctx Borrowed OpenGL context whose fixed GL objects are deleted and zeroed.
 static void gl_release_fixed_context_objects(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -650,6 +686,7 @@ static void gl_init_default_render_state(void) {
 /// This path is used only during destruction after `glXMakeCurrent` fails. Destroying the GLX
 /// context lets the driver reclaim context-owned objects, but host arrays and copied post-FX chain
 /// state still need explicit release.
+/// @param ctx Borrowed OpenGL context whose CPU allocations and chain ownership are released.
 static void gl_release_host_only_context_storage(gl_context_t *ctx) {
     if (!ctx)
         return;
@@ -684,6 +721,10 @@ static void gl_release_host_only_context_storage(gl_context_t *ctx) {
 ///
 /// FBConfig selection picks the first config matching the window's
 /// X visual to avoid drawable-incompatibility errors at MakeCurrent.
+/// @param win Borrowed Zanna window whose native handles and framebuffer are used.
+/// @param w Initial logical output width in pixels.
+/// @param h Initial logical output height in pixels.
+/// @return A fully initialized backend context, or NULL after releasing partial state on failure.
 static void *gl_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
     gl_shader_set_t shaders;
     vgfx_native_handles_t handles;
@@ -848,6 +889,7 @@ static void *gl_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
 /// Order matters: caches first (GL objects depend on the context),
 /// then offscreen targets, then the master VAOs/VBOs/UBOs/programs,
 /// finally the GLX context itself.
+/// @param ctx_ptr Owned OpenGL backend context to destroy; may be NULL.
 static void gl_destroy_ctx(void *ctx_ptr) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     if (!ctx)

@@ -5,34 +5,49 @@
 // selection and eviction
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Game3D model-cache keys, residency accounting, and eviction policy.
+/// @details This include module is compiled as part of rt_game3d.c. It estimates shared render
+///   resources with pointer deduplication, tracks cache generations and recency, and selects
+///   deterministic eviction victims by priority, distance, age, and stable index.
+
 #define game3d_asset_fseek(fp, off, whence) rt_file_stdio_seek64((fp), (off), (whence))
 #define game3d_asset_ftell(fp) rt_file_stdio_tell64((fp))
 
 /// @brief Return the template's loaded Model3D as a class-checked reference, or NULL
 ///   when the template is absent or its model slot holds the wrong type.
+/// @param model_template ModelTemplate whose model slot is inspected.
+/// @return The borrowed validated Model3D handle, or NULL.
 static void *game3d_model_template_model_ref(const rt_game3d_model_template *model_template) {
     return model_template ? rt_g3d_checked_or_null(model_template->model, RT_G3D_MODEL3D_CLASS_ID)
                           : NULL;
 }
 
 /// @brief Class-checked cast of an opaque GC handle to a ModelTemplate, or NULL on mismatch.
+/// @param obj Candidate ModelTemplate handle.
+/// @return The borrowed validated template pointer, or NULL.
 static rt_game3d_model_template *game3d_model_template_ref(void *obj) {
     return (rt_game3d_model_template *)rt_g3d_checked_or_null(
         obj, RT_G3D_GAME3D_MODEL_TEMPLATE_CLASS_ID);
 }
 
 /// @brief Return the asset handle's loaded entity as a class-checked reference, or NULL.
+/// @param handle AssetHandle3D whose entity result slot is inspected.
+/// @return The borrowed validated Entity3D handle, or NULL.
 static void *game3d_asset_handle_entity_ref(const rt_game3d_asset_handle *handle) {
     return handle ? rt_g3d_checked_or_null(handle->entity, RT_G3D_GAME3D_ENTITY_CLASS_ID) : NULL;
 }
 
 /// @brief Return the asset handle's loaded ModelTemplate as a class-checked reference, or NULL.
+/// @param handle AssetHandle3D whose template result slot is inspected.
+/// @return The borrowed validated ModelTemplate pointer, or NULL.
 static rt_game3d_model_template *game3d_asset_handle_template_ref(
     const rt_game3d_asset_handle *handle) {
     return handle ? game3d_model_template_ref(handle->model_template) : NULL;
 }
 
 /// @brief GC finalizer for a ModelTemplate: release the loaded model and the path string.
+/// @param obj ModelTemplate allocation being finalized.
 static void game3d_model_template_finalize(void *obj) {
     rt_game3d_model_template *model_template = (rt_game3d_model_template *)obj;
     if (!model_template)
@@ -42,6 +57,7 @@ static void game3d_model_template_finalize(void *obj) {
 }
 
 /// @brief GC finalizer for AssetHandle3D: release terminal result and error text.
+/// @param obj AssetHandle3D allocation being finalized.
 static void game3d_asset_handle_finalize(void *obj) {
     rt_game3d_asset_handle *handle = (rt_game3d_asset_handle *)obj;
     if (!handle)
@@ -54,6 +70,8 @@ static void game3d_asset_handle_finalize(void *obj) {
 
 /// @brief Ensure the global model cache can hold `need` entries, doubling and zeroing
 ///   new slots; returns 0 on allocation failure.
+/// @param need Minimum entry capacity required by the caller.
+/// @return 1 when sufficient capacity is available, or 0 on invalid growth or allocation failure.
 static int game3d_model_cache_grow(int32_t need) {
     int32_t new_cap;
     if (g_game3d_model_cache_capacity >= need)
@@ -74,6 +92,9 @@ static int game3d_model_cache_grow(int32_t need) {
 }
 
 /// @brief Compare two runtime strings for byte equality (NULLs treated as "").
+/// @param a First runtime string, or NULL for empty text.
+/// @param b Second runtime string, or NULL for empty text.
+/// @return 1 when the byte sequences are equal, or 0 otherwise.
 static int game3d_string_equals(rt_string a, rt_string b) {
     const char *as = a ? rt_string_cstr(a) : "";
     const char *bs = b ? rt_string_cstr(b) : "";
@@ -81,6 +102,8 @@ static int game3d_string_equals(rt_string a, rt_string b) {
 }
 
 /// @brief True when the runtime string contains at least one byte.
+/// @param value Runtime string to inspect, or NULL.
+/// @return 1 when the string is non-empty, or 0 otherwise.
 static int game3d_string_has_bytes(rt_string value) {
     const char *bytes = value ? rt_string_cstr(value) : "";
     return bytes && bytes[0] != '\0';
@@ -90,6 +113,8 @@ static int game3d_string_has_bytes(rt_string value) {
 /// (.scene3d/.vscn/.gltf/.glb/.fbx/.obj/.stl), case-insensitive.
 /// @details `.scene3d` is the canonical scene extension; `.vscn` remains an
 ///          accepted legacy alias (ADR 0182).
+/// @param path Null-terminated path to inspect.
+/// @return 1 for a supported extension, or 0 otherwise.
 static int game3d_path_has_model_extension(const char *path) {
     static const char *const exts[] = {
         ".scene3d", ".vscn", ".gltf", ".glb", ".fbx", ".obj", ".stl"};
@@ -114,6 +139,8 @@ static int game3d_path_has_model_extension(const char *path) {
 }
 
 /// @brief Whether @p path ends in a glTF extension (.gltf/.glb), case-insensitive.
+/// @param path Null-terminated path to inspect.
+/// @return 1 for `.gltf` or `.glb`, or 0 otherwise.
 static int game3d_path_has_gltf_extension(const char *path) {
     static const char *const exts[] = {".gltf", ".glb"};
     if (!path)
@@ -137,6 +164,8 @@ static int game3d_path_has_gltf_extension(const char *path) {
 }
 
 /// @brief Whether @p path ends in an FBX extension, case-insensitive.
+/// @param path Null-terminated path to inspect.
+/// @return 1 for an exact `.fbx` suffix, or 0 otherwise.
 static int game3d_path_has_fbx_extension(const char *path) {
     const char *dot = path ? strrchr(path, '.') : NULL;
     if (!dot || !dot[1])
@@ -207,6 +236,10 @@ static uint8_t *game3d_asset_read_file_bytes(const char *path, size_t *out_size)
 }
 
 /// @brief Load a model's root bytes, preferring the packed asset system and falling back to disk.
+/// @param path Runtime string containing the requested asset or filesystem path.
+/// @param asset_path Non-zero to try the packed asset system before filesystem fallback.
+/// @param out_size Optional output receiving the loaded byte count.
+/// @return A malloc-owned byte buffer, or NULL on failure.
 static GAME3D_UNUSED_PRIVATE uint8_t *game3d_asset_load_root_bytes(rt_string path,
                                                                    int8_t asset_path,
                                                                    size_t *out_size) {
@@ -225,6 +258,9 @@ static GAME3D_UNUSED_PRIVATE uint8_t *game3d_asset_load_root_bytes(rt_string pat
 }
 
 /// @brief Saturating unsigned 64-bit addition (clamps to UINT64_MAX instead of wrapping).
+/// @param a First addend.
+/// @param b Second addend.
+/// @return The sum, or UINT64_MAX on overflow.
 static uint64_t game3d_u64_saturating_add(uint64_t a, uint64_t b) {
     if (UINT64_MAX - a < b)
         return UINT64_MAX;
@@ -232,17 +268,24 @@ static uint64_t game3d_u64_saturating_add(uint64_t a, uint64_t b) {
 }
 
 /// @brief Convert a uint64 to int64, saturating values above INT64_MAX.
+/// @param value Unsigned value to convert.
+/// @return The signed value, capped at INT64_MAX.
 static int64_t game3d_i64_from_u64_saturating(uint64_t value) {
     return value > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)value;
 }
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 /// @brief Convert an int64 to uint64, treating negative values as 0.
+/// @param value Signed value to convert.
+/// @return The non-negative unsigned value.
 static uint64_t game3d_u64_from_i64_nonnegative(int64_t value) {
     return value > 0 ? (uint64_t)value : 0;
 }
 
 /// @brief Saturating unsigned 64-bit multiplication (clamps to UINT64_MAX on overflow).
+/// @param a First factor.
+/// @param b Second factor.
+/// @return The product, or UINT64_MAX on overflow.
 static uint64_t game3d_u64_saturating_mul_u64(uint64_t a, uint64_t b) {
     if (a != 0 && b > UINT64_MAX / a)
         return UINT64_MAX;
@@ -259,6 +302,7 @@ typedef struct {
 /// @brief Initialize a temporary pointer-deduplication set to an empty state.
 /// @details The set owns only the pointer array it allocates; it never retains or
 ///   releases the objects whose addresses are recorded.
+/// @param set Deduplication set storage to zero.
 static void game3d_seen_ptr_set_init(game3d_seen_ptr_set *set) {
     if (set)
         memset(set, 0, sizeof(*set));
@@ -267,6 +311,7 @@ static void game3d_seen_ptr_set_init(game3d_seen_ptr_set *set) {
 /// @brief Release the temporary storage owned by a pointer-deduplication set.
 /// @details Safe to call on an already-empty set; recorded object pointers are
 ///   bookkeeping only and are not released.
+/// @param set Deduplication set whose pointer array is released and reset.
 static void game3d_seen_ptr_set_free(game3d_seen_ptr_set *set) {
     if (!set)
         return;
@@ -275,6 +320,9 @@ static void game3d_seen_ptr_set_free(game3d_seen_ptr_set *set) {
 }
 
 /// @brief Whether @p value is already in the pointer set.
+/// @param set Deduplication set to search.
+/// @param value Pointer identity to test; NULL is treated as already seen.
+/// @return 1 when recorded or NULL, or 0 when not present.
 static int game3d_seen_ptr_set_contains(const game3d_seen_ptr_set *set, void *value) {
     if (!value)
         return 1;
@@ -290,6 +338,9 @@ static int game3d_seen_ptr_set_contains(const game3d_seen_ptr_set *set, void *va
 /// @brief Mark a pointer as seen. Returns 1 for a newly-seen pointer, 0 for duplicates/null.
 /// @details If the dedupe set cannot grow, stay conservative by counting this and later resources
 ///          instead of undercounting resident memory.
+/// @param set Deduplication set to update.
+/// @param value Pointer identity to record.
+/// @return 1 when the resource should be counted, or 0 for NULL or a duplicate.
 static int game3d_seen_ptr_set_mark(game3d_seen_ptr_set *set, void *value) {
     void **grown;
     int32_t new_capacity;
@@ -319,6 +370,8 @@ static int game3d_seen_ptr_set_mark(game3d_seen_ptr_set *set, void *value) {
 }
 
 /// @brief Estimate the resident memory of a Pixels object (width × height × 4 bytes).
+/// @param pixels Pixels handle whose validated dimensions are measured.
+/// @return Saturating RGBA byte estimate, or 0 for an invalid handle.
 static uint64_t game3d_pixels_estimate_resident_bytes(void *pixels) {
     rt_pixels_impl *impl;
     uint64_t width;
@@ -337,6 +390,9 @@ static uint64_t game3d_pixels_estimate_resident_bytes(void *pixels) {
 /// @brief Add a texture's resident bytes to the total, but only the first time it is seen.
 /// @details Records the texture in the seen-set so a texture shared by several materials is counted
 /// once.
+/// @param texture TextureAsset3D or Pixels handle to measure.
+/// @param seen_textures Shared pointer set used to suppress duplicates.
+/// @return Resident bytes for a newly seen valid texture, or 0 otherwise.
 static uint64_t game3d_count_material_texture_once(void *texture,
                                                    game3d_seen_ptr_set *seen_textures) {
     int is_texture_asset;
@@ -356,6 +412,9 @@ static uint64_t game3d_count_material_texture_once(void *texture,
 /// @details Counts the cubemap object and each complete face payload while using
 ///   the same seen-set as material textures, so shared face images or shared
 ///   cubemaps do not inflate cache residency estimates.
+/// @param cubemap Complete Cubemap3D handle to measure.
+/// @param seen_textures Shared pointer set used for the cubemap and its face images.
+/// @return Saturating bytes for newly seen cubemap resources, or 0 otherwise.
 static uint64_t game3d_count_material_cubemap_once(void *cubemap,
                                                    game3d_seen_ptr_set *seen_textures) {
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -384,6 +443,9 @@ static uint64_t game3d_count_material_cubemap_once(void *cubemap,
 }
 
 /// @brief Estimate the resident texture bytes of a material across all its texture slots (deduped).
+/// @param material Material3D whose texture and environment slots are traversed.
+/// @param seen_textures Shared pointer set used to suppress cross-material duplicates.
+/// @return Saturating bytes contributed by newly seen texture resources.
 static uint64_t game3d_material_estimate_texture_bytes(rt_material3d *material,
                                                        game3d_seen_ptr_set *seen_textures) {
     uint64_t total = 0;
@@ -407,6 +469,8 @@ static uint64_t game3d_material_estimate_texture_bytes(rt_material3d *material,
 }
 
 /// @brief Conservative resident-byte estimate for cache policy decisions.
+/// @param model_template ModelTemplate whose model resources and path are measured.
+/// @return A positive saturating resident-byte estimate.
 static uint64_t game3d_model_template_estimate_resident_bytes(
     rt_game3d_model_template *model_template) {
     game3d_seen_ptr_set seen_textures;
@@ -462,6 +526,8 @@ static uint64_t game3d_model_template_estimate_resident_bytes(
 }
 
 /// @brief Estimate a mesh's resident memory from its vertex and index buffer sizes.
+/// @param mesh Mesh3D handle to query.
+/// @return The non-negative resident byte count, or 0 for an invalid mesh.
 static uint64_t game3d_mesh_estimate_resident_bytes(void *mesh) {
     if (!mesh || !rt_g3d_has_class(mesh, RT_G3D_MESH3D_CLASS_ID))
         return 0;
@@ -469,6 +535,9 @@ static uint64_t game3d_mesh_estimate_resident_bytes(void *mesh) {
 }
 
 /// @brief Add a mesh's resident bytes to the total only the first time it is seen (dedup).
+/// @param mesh Mesh3D handle to measure.
+/// @param seen_meshes Shared pointer set used to suppress duplicate meshes.
+/// @return Resident bytes for a newly seen valid mesh, or 0 otherwise.
 static uint64_t game3d_count_scene_mesh_once(void *mesh, game3d_seen_ptr_set *seen_meshes) {
     if (!mesh || !seen_meshes)
         return 0;
@@ -481,6 +550,10 @@ static uint64_t game3d_count_scene_mesh_once(void *mesh, game3d_seen_ptr_set *se
 
 /// @brief Add a material's resident texture bytes to the total only the first time it is seen
 /// (dedup).
+/// @param material Material3D to account.
+/// @param seen_materials Shared pointer set used to suppress duplicate materials.
+/// @param seen_textures Shared pointer set used to suppress duplicate texture resources.
+/// @return Base material bytes plus newly seen texture bytes, or 0 for a duplicate or invalid item.
 static uint64_t game3d_count_scene_material_once(rt_material3d *material,
                                                  game3d_seen_ptr_set *seen_materials,
                                                  game3d_seen_ptr_set *seen_textures) {
@@ -499,6 +572,10 @@ static uint64_t game3d_count_scene_material_once(rt_material3d *material,
 }
 
 /// @brief Bound a private array count by its backing pointer and capacity before direct reads.
+/// @param array Backing allocation, or NULL when no elements are readable.
+/// @param count Reported logical element count.
+/// @param capacity Allocated element capacity.
+/// @return A safe non-negative count bounded by @p capacity.
 static int32_t game3d_clamped_array_count(const void *array, int32_t count, int32_t capacity) {
     if (!array || count <= 0 || capacity <= 0)
         return 0;
@@ -506,12 +583,17 @@ static int32_t game3d_clamped_array_count(const void *array, int32_t count, int3
 }
 
 /// @brief Safe LOD count for direct SceneNode3D residency traversal.
+/// @param node SceneNode3D private payload to inspect.
+/// @return The validated number of readable LOD entries.
 static int32_t game3d_scene_node_lod_count(const rt_scene_node3d *node) {
     return node ? game3d_clamped_array_count(node->lod_levels, node->lod_count, node->lod_capacity)
                 : 0;
 }
 
 /// @brief Safe child count for direct SceneNode3D residency traversal, capped by scene size.
+/// @param node SceneNode3D private payload to inspect.
+/// @param scene_node_bound Remaining traversal ceiling.
+/// @return The validated child count capped by @p scene_node_bound.
 static int32_t game3d_scene_node_child_count(const rt_scene_node3d *node,
                                              int32_t scene_node_bound) {
     int32_t count;
@@ -529,6 +611,8 @@ typedef struct {
     game3d_seen_ptr_set seen_textures;
 } game3d_scene_residency_context;
 
+/// @brief Initialize the mesh, material, and texture deduplication sets for a scene walk.
+/// @param ctx Residency traversal context to initialize.
 static void game3d_scene_residency_context_init(game3d_scene_residency_context *ctx) {
     if (!ctx)
         return;
@@ -537,6 +621,8 @@ static void game3d_scene_residency_context_init(game3d_scene_residency_context *
     game3d_seen_ptr_set_init(&ctx->seen_textures);
 }
 
+/// @brief Release all temporary pointer arrays owned by a scene residency context.
+/// @param ctx Residency traversal context to reset.
 static void game3d_scene_residency_context_free(game3d_scene_residency_context *ctx) {
     if (!ctx)
         return;
@@ -545,6 +631,10 @@ static void game3d_scene_residency_context_free(game3d_scene_residency_context *
     game3d_seen_ptr_set_free(&ctx->seen_textures);
 }
 
+/// @brief Count one scene node and its newly encountered render resources.
+/// @param node Valid SceneNode3D private payload to account.
+/// @param ctx Shared deduplication context for the hierarchy walk.
+/// @return Saturating node, mesh, material, and texture byte contribution.
 static uint64_t game3d_scene_count_node_resources(rt_scene_node3d *node,
                                                   game3d_scene_residency_context *ctx) {
     uint64_t total = (uint64_t)sizeof(*node);
@@ -571,6 +661,12 @@ static uint64_t game3d_scene_count_node_resources(rt_scene_node3d *node,
     return total;
 }
 
+/// @brief Validate a child node and append it to the growable traversal stack.
+/// @param stack_io Address of the malloc-owned stack pointer.
+/// @param count_io Address of the current stack count.
+/// @param capacity_io Address of the current stack capacity.
+/// @param child Candidate SceneNode3D child; invalid children are ignored successfully.
+/// @return 1 when ignored or appended, or 0 when the stack cannot grow.
 static int game3d_scene_stack_push(rt_scene_node3d ***stack_io,
                                    size_t *count_io,
                                    size_t *capacity_io,
@@ -681,6 +777,8 @@ static uint64_t game3d_entity_estimate_resident_bytes(void *entity_obj) {
 }
 #else
 /// @brief Conservative resident-byte estimate for cache policy decisions in headless builds.
+/// @param model_template ModelTemplate whose object and path storage are measured.
+/// @return A positive saturating resident-byte estimate.
 static uint64_t game3d_model_template_estimate_resident_bytes(
     rt_game3d_model_template *model_template) {
     uint64_t total = sizeof(*model_template);
@@ -695,6 +793,8 @@ static uint64_t game3d_model_template_estimate_resident_bytes(
 }
 
 /// @brief Scene residency is unavailable without the private graphics runtime layouts.
+/// @param scene_obj Ignored Scene3D handle retained for source-compatible cache policy.
+/// @return Always 0 in a headless build.
 static uint64_t game3d_scene_estimate_resident_bytes(void *scene_obj) {
     (void)scene_obj;
     return 0;
@@ -710,6 +810,7 @@ static uint64_t game3d_entity_estimate_resident_bytes(void *entity_obj) {
 #endif
 
 /// @brief Return the next monotonic model-cache access tick (for LRU recency ordering).
+/// @return The incremented non-zero tick, with existing recency reset on counter wrap.
 static uint64_t game3d_model_cache_next_tick(void) {
     if (g_game3d_model_cache_tick == UINT64_MAX) {
         for (int32_t i = 0; i < g_game3d_model_cache_count; ++i)
@@ -721,6 +822,7 @@ static uint64_t game3d_model_cache_next_tick(void) {
 
 /// @brief Read the current model-cache generation counter (bumped to invalidate all entries at
 /// once).
+/// @return The generation snapshot read while holding the cache lock.
 static uint64_t game3d_model_cache_current_generation(void) {
     uint64_t generation;
     game3d_model_cache_lock();
@@ -730,6 +832,8 @@ static uint64_t game3d_model_cache_current_generation(void) {
 }
 
 /// @brief Whether @p generation still equals the current cache generation (i.e. not invalidated).
+/// @param generation Previously captured cache generation.
+/// @return 1 when still current, or 0 after invalidation.
 static int game3d_model_cache_generation_matches(uint64_t generation) {
     int matches;
     game3d_model_cache_lock();
@@ -746,6 +850,11 @@ static void game3d_model_cache_advance_generation_locked(void) {
         g_game3d_model_cache_generation++;
 }
 
+/// @brief Normalize a packed-asset path into a stable `asset://` cache key.
+/// @details Duplicate separators and dot segments are collapsed without allowing parent traversal
+///   above the logical asset root; allocation or length fallback preserves the original path.
+/// @param path Runtime asset path to normalize.
+/// @return A new or retained runtime string containing the stable cache key.
 static rt_string game3d_model_cache_key_asset_path(rt_string path) {
     const char *raw = path ? rt_string_cstr(path) : "";
     char normalized[RT_GAME3D_MODEL_CACHE_KEY_MAX];
@@ -814,6 +923,9 @@ static rt_string game3d_model_cache_key_asset_path(rt_string path) {
 }
 
 /// @brief Build the stable cache key for a model path.
+/// @param path Runtime model path to normalize.
+/// @param asset_path Non-zero for packed-asset normalization; zero for an absolute filesystem path.
+/// @return A new or retained runtime string containing the stable key.
 static rt_string game3d_model_cache_key_path(rt_string path, int8_t asset_path) {
     const char *raw = path ? rt_string_cstr(path) : "";
     if (!raw)
@@ -827,6 +939,9 @@ static rt_string game3d_model_cache_key_path(rt_string path, int8_t asset_path) 
 }
 
 /// @brief Look up a model-cache entry by path + asset flag; -1 if absent.
+/// @param path Normalized runtime cache path.
+/// @param asset_path Namespace discriminator stored with the entry.
+/// @return The zero-based cache index, or -1 when absent.
 static int32_t game3d_model_cache_find_index(rt_string path, int8_t asset_path) {
     for (int32_t i = 0; i < g_game3d_model_cache_count; ++i) {
         rt_game3d_model_cache_entry *entry = &g_game3d_model_cache[i];
@@ -837,6 +952,8 @@ static int32_t game3d_model_cache_find_index(rt_string path, int8_t asset_path) 
 }
 
 /// @brief Sanitize a residency priority value (finite, clamped) for cache victim ordering.
+/// @param priority Candidate residency priority.
+/// @return A finite value clamped to plus or minus one billion.
 static double game3d_model_cache_sanitize_priority(double priority) {
     if (!isfinite(priority))
         return 0.0;
@@ -848,6 +965,8 @@ static double game3d_model_cache_sanitize_priority(double priority) {
 }
 
 /// @brief Sanitize a residency distance value (finite, non-negative) for cache victim ordering.
+/// @param distance Candidate distance from the active residency focus.
+/// @return The non-negative distance, or DBL_MAX for invalid or negative input.
 static double game3d_model_cache_sanitize_distance(double distance) {
     if (!isfinite(distance) || distance < 0.0)
         return DBL_MAX;
@@ -857,6 +976,7 @@ static double game3d_model_cache_sanitize_distance(double distance) {
 }
 
 /// @brief Reset a cache entry's residency hint (priority/distance) to the neutral defaults.
+/// @param entry Cache entry to initialize; NULL is ignored.
 static void game3d_model_cache_set_default_residency_hint(rt_game3d_model_cache_entry *entry) {
     if (!entry)
         return;
@@ -867,6 +987,9 @@ static void game3d_model_cache_set_default_residency_hint(rt_game3d_model_cache_
 /// @brief Whether @p candidate is a better (worse-to-keep) eviction victim than @p current.
 /// @details Ranks by lower residency priority, then greater distance, then least-recently used;
 ///          loading entries are never chosen.
+/// @param candidate Cache entry being considered for eviction.
+/// @param current Current best victim, or NULL when no victim has been selected.
+/// @return 1 when @p candidate should replace @p current, or 0 otherwise.
 static int game3d_model_cache_entry_is_worse_victim(const rt_game3d_model_cache_entry *candidate,
                                                     const rt_game3d_model_cache_entry *current) {
     if (!candidate || candidate->loading)
@@ -923,6 +1046,9 @@ static game3d_model_cache_victim_candidate_t *game3d_model_cache_acquire_victim_
 /// @brief Eviction ordering for model-cache victims: non-zero if @p candidate is a better
 ///   eviction target than @p current — lower residency priority first, then greater residency
 ///   distance, then least-recently-used, then lower original index as a stable tiebreak.
+/// @param candidate Snapshot being considered for heap priority.
+/// @param current Current comparison snapshot, or NULL.
+/// @return 1 when @p candidate has higher eviction priority, or 0 otherwise.
 static int game3d_model_cache_victim_candidate_is_worse(
     const game3d_model_cache_victim_candidate_t *candidate,
     const game3d_model_cache_victim_candidate_t *current) {
@@ -946,6 +1072,8 @@ static int game3d_model_cache_victim_candidate_is_worse(
 }
 
 /// @brief Swap two model-cache victim-heap entries.
+/// @param a First heap entry.
+/// @param b Second heap entry.
 static void game3d_model_cache_victim_heap_swap(game3d_model_cache_victim_candidate_t *a,
                                                 game3d_model_cache_victim_candidate_t *b) {
     game3d_model_cache_victim_candidate_t tmp = *a;
@@ -955,6 +1083,9 @@ static void game3d_model_cache_victim_heap_swap(game3d_model_cache_victim_candid
 
 /// @brief Sift a victim-heap entry down to restore heap order (best eviction target at the
 ///   root), comparing children with game3d_model_cache_victim_candidate_is_worse.
+/// @param heap Victim-candidate heap to repair.
+/// @param count Number of valid entries in @p heap.
+/// @param index Entry index from which to sift downward.
 static void game3d_model_cache_victim_heap_sift_down(game3d_model_cache_victim_candidate_t *heap,
                                                      int32_t count,
                                                      int32_t index) {
@@ -976,6 +1107,8 @@ static void game3d_model_cache_victim_heap_sift_down(game3d_model_cache_victim_c
 
 /// @brief Snapshot all non-loading model-cache entries into @p heap (up to @p heap_capacity)
 ///   and heapify so the best eviction victim is at the root.
+/// @param heap Caller-provided victim-candidate storage.
+/// @param heap_capacity Maximum number of entries that can be written.
 /// @return The number of candidate entries collected.
 static int32_t game3d_model_cache_build_victim_heap(game3d_model_cache_victim_candidate_t *heap,
                                                     int32_t heap_capacity) {
@@ -1005,6 +1138,8 @@ static int32_t game3d_model_cache_build_victim_heap(game3d_model_cache_victim_ca
 
 /// @brief Re-resolve the live model-cache index matching @p candidate (by asset path, model
 ///   template, and path), since the heap holds copies; -1 if it is no longer present.
+/// @param candidate Snapshot whose live cache entry is requested.
+/// @return The current zero-based cache index, or -1 when no exact entry remains.
 static int32_t game3d_model_cache_find_victim_candidate(
     const game3d_model_cache_victim_candidate_t *candidate) {
     if (!candidate)
@@ -1022,6 +1157,7 @@ static int32_t game3d_model_cache_find_victim_candidate(
 }
 
 /// @brief Select the index of the best eviction victim in the model cache (-1 if none evictable).
+/// @return The zero-based victim index, or -1 when every entry is loading or absent.
 static int32_t game3d_model_cache_select_victim(void) {
     int32_t victim = -1;
     const rt_game3d_model_cache_entry *victim_entry = NULL;
@@ -1036,6 +1172,7 @@ static int32_t game3d_model_cache_select_victim(void) {
 }
 
 /// @brief Drop one cache entry and compact the array.
+/// @param index Zero-based cache entry index to release and remove.
 static void game3d_model_cache_remove_at(int32_t index) {
     if (index < 0 || index >= g_game3d_model_cache_count)
         return;
@@ -1095,6 +1232,8 @@ fallback_scan:
 }
 
 /// @brief Remove a cached template by object identity, preserving external refs.
+/// @param model_template ModelTemplate identity to remove from a ready cache entry.
+/// @return 1 when an entry was evicted, or 0 when the template was not cached.
 static int game3d_model_cache_evict_template(void *model_template) {
     if (!model_template)
         return 0;

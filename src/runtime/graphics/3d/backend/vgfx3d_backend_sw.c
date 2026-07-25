@@ -28,6 +28,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file vgfx3d_backend_sw.c
+ * @brief Implements the CPU software-rasterization backend for Zanna Graphics3D.
+ *
+ * The translation unit owns the software backend context, safe numeric helpers, analytic-light
+ * and shadow sampling, depth probes, worker-pool lifetime, and backend selection. Rasterization,
+ * texture sampling, vertex processing, shadow rendering, and vtable operations are split into
+ * dependency-ordered implementation fragments included below.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -140,6 +150,14 @@ typedef struct {
     int8_t scaled_frame_active;
 } sw_context_t;
 
+/// @brief Compute the normalized world-space direction from a shaded point toward the camera.
+/// @param ctx Borrowed software context containing camera projection and pose state.
+/// @param wx World-space point X coordinate.
+/// @param wy World-space point Y coordinate.
+/// @param wz World-space point Z coordinate.
+/// @param out_vx Receives the view-direction X component.
+/// @param out_vy Receives the view-direction Y component.
+/// @param out_vz Receives the view-direction Z component.
 static inline void sw_compute_view_vector(const sw_context_t *ctx,
                                           float wx,
                                           float wy,
@@ -200,6 +218,13 @@ static void sw_fill_depth_buffer(float *depth, size_t count, float value) {
 
 /// @brief Normalize the vector (*x,*y,*z) in place; on non-finite or near-zero length,
 ///   substitute the fallback vector and return 0, else return 1.
+/// @param x In/out X component; receives @p fallback_x on invalid input.
+/// @param y In/out Y component; receives @p fallback_y on invalid input.
+/// @param z In/out Z component; receives @p fallback_z on invalid input.
+/// @param fallback_x Replacement X component for an invalid or degenerate vector.
+/// @param fallback_y Replacement Y component for an invalid or degenerate vector.
+/// @param fallback_z Replacement Z component for an invalid or degenerate vector.
+/// @return 1 when the original vector was normalized, otherwise 0 after applying fallbacks.
 static int sw_normalize3(
     float *x, float *y, float *z, float fallback_x, float fallback_y, float fallback_z) {
     float len;
@@ -226,6 +251,8 @@ static int sw_normalize3(
 }
 
 /// @brief Clamp a float to [0, 1], mapping every non-positive/NaN value to zero.
+/// @param value Floating-point value to clamp.
+/// @return @p value constrained to `[0, 1]`, with NaN mapped to zero.
 static inline float clamp01f(float value) {
     if (!(value > 0.0f))
         return 0.0f;
@@ -233,12 +260,17 @@ static inline float clamp01f(float value) {
 }
 
 /// @brief Compute x^5 without a libm call for Schlick Fresnel terms.
+/// @param value Base value to raise to the fifth power.
+/// @return The arithmetic product @p value raised to the fifth power.
 static inline float pow5f_fast(float value) {
     float squared = value * value;
     return squared * squared * value;
 }
 
 /// @brief Raise a clamped material term to a finite, bounded exponent.
+/// @param value Material term clamped to `[0, 1]` before exponentiation.
+/// @param power Requested exponent; non-finite values become one and values above 4096 are capped.
+/// @return The sanitized power result, including one for non-positive exponents.
 static inline float sw_material_powf(float value, float power) {
     value = clamp01f(value);
     if (!isfinite(power))
@@ -263,6 +295,9 @@ static inline float sw_material_powf(float value, float power) {
 }
 
 /// @brief Clamp a caller-provided light array count to the fixed renderer payload.
+/// @param lights Borrowed light array; null is treated as empty.
+/// @param count Caller-provided array length.
+/// @return A count in `[0, VGFX3D_MAX_LIGHTS]`.
 static int32_t sw_sanitize_light_count(const vgfx3d_light_params_t *lights, int32_t count) {
     if (!lights || count <= 0)
         return 0;
@@ -270,6 +305,12 @@ static int32_t sw_sanitize_light_count(const vgfx3d_light_params_t *lights, int3
 }
 
 /// @brief Validate an RGBA8 surface before any row or pixel pointer arithmetic.
+/// @param pixels Borrowed first byte of the surface.
+/// @param width Signed pixel width.
+/// @param height Signed pixel height.
+/// @param stride Signed row stride in bytes.
+/// @return Non-zero when the dimensions, stride, and final row offset form a representable
+///         RGBA8 surface; otherwise zero.
 static int sw_rgba_surface_is_valid(const uint8_t *pixels,
                                     int32_t width,
                                     int32_t height,
@@ -290,6 +331,9 @@ static int sw_rgba_surface_is_valid(const uint8_t *pixels,
 }
 
 /// @brief Floor a finite screen coordinate and clamp it to an inclusive pixel extent.
+/// @param value Screen coordinate to floor.
+/// @param max_inclusive Largest legal pixel coordinate.
+/// @return The floored coordinate clamped to `[0, max_inclusive]`; invalid inputs map to zero.
 static int32_t sw_floor_pixel_coord(float value, int32_t max_inclusive) {
     double rounded;
     if (!isfinite(value) || max_inclusive <= 0 || value <= 0.0f)
@@ -301,6 +345,10 @@ static int32_t sw_floor_pixel_coord(float value, int32_t max_inclusive) {
 }
 
 /// @brief Ceil a finite screen coordinate and clamp it to an inclusive pixel extent.
+/// @param value Screen coordinate to ceil.
+/// @param max_inclusive Largest legal pixel coordinate.
+/// @return The ceiled coordinate clamped to `[0, max_inclusive]`, or -1 for a non-finite or
+///         negative input.
 static int32_t sw_ceil_pixel_coord(float value, int32_t max_inclusive) {
     double rounded;
     if (!isfinite(value))
@@ -316,6 +364,9 @@ static int32_t sw_ceil_pixel_coord(float value, int32_t max_inclusive) {
 }
 
 /// @brief Convert a normalized half-open coordinate to a valid texture/depth index.
+/// @param value Normalized coordinate, conventionally in `[0, 1]`.
+/// @param extent Positive number of addressable elements.
+/// @return A valid index in `[0, extent)`, with invalid input mapped to zero.
 static int32_t sw_unit_coord_to_index(float value, int32_t extent) {
     double scaled;
     if (!isfinite(value) || extent <= 0)
@@ -334,11 +385,17 @@ static int32_t sw_unit_coord_to_index(float value, int32_t extent) {
 /// @details The canvas normally resolves finite values before backend dispatch, but the
 ///          backend vtable is also an internal C boundary exercised by tests and tools.
 ///          Keeping sanitization here prevents NaNs from reaching libm or byte casts.
+/// @param src Borrowed draw-command snapshot to sanitize.
+/// @param dst Receives the sanitized command.
 static void sw_sanitize_draw_command(const vgfx3d_draw_cmd_t *src, vgfx3d_draw_cmd_t *dst) {
     vgfx3d_sanitize_draw_command(src, dst);
 }
 
 /// @brief Copy and sanitize one bounded software-light snapshot.
+/// @param src Borrowed source-light array.
+/// @param count Number of source entries supplied by the caller.
+/// @param dst Receives at most @c VGFX3D_MAX_LIGHTS sanitized entries.
+/// @return Number of valid entries written to @p dst.
 static int32_t sw_sanitize_lights(const vgfx3d_light_params_t *src,
                                   int32_t count,
                                   vgfx3d_light_params_t dst[VGFX3D_MAX_LIGHTS]) {
@@ -346,11 +403,16 @@ static int32_t sw_sanitize_lights(const vgfx3d_light_params_t *src,
 }
 
 /// @brief Copy non-negative, bounded ambient RGB state.
+/// @param src Borrowed three-component ambient color.
+/// @param dst Receives the sanitized RGB components.
 static void sw_sanitize_ambient(const float *src, float dst[3]) {
     vgfx3d_sanitize_ambient_rgb(src, dst);
 }
 
 /// @brief Smoothly fade a finite-range emitter to zero at its authored boundary.
+/// @param distance Non-negative distance from the shaded point to the emitter.
+/// @param range Positive authored cutoff distance.
+/// @return Smoothstep-shaped fade in `[0, 1]`, or zero for invalid/out-of-range input.
 static float sw_light_range_fade(float distance, float range) {
     float remaining;
     if (!isfinite(distance) || !isfinite(range) || range <= 1e-7f || distance >= range)
@@ -360,6 +422,9 @@ static float sw_light_range_fade(float distance, float range) {
 }
 
 /// @brief Evaluate the FBX decay exponent using the light's legacy attenuation coefficient.
+/// @param light Borrowed light supplying decay type and attenuation coefficient.
+/// @param distance Non-negative distance to the emitter.
+/// @return Finite attenuation in `[0, 1]`, or zero for invalid input.
 static float sw_light_distance_decay(const vgfx3d_light_params_t *light, float distance) {
     float attenuation;
     float powered_distance;
@@ -385,6 +450,9 @@ static float sw_light_distance_decay(const vgfx3d_light_params_t *light, float d
 }
 
 /// @brief Overflow-safe legacy inverse-quadratic attenuation for point/spot lights.
+/// @param coefficient Non-negative inverse-quadratic attenuation coefficient.
+/// @param distance Non-negative distance to the emitter.
+/// @return Finite attenuation in `[0, 1]`, or zero for invalid arithmetic.
 static float sw_punctual_attenuation(float coefficient, float distance) {
     double denominator;
     if (!isfinite(distance) || distance < 0.0f)
@@ -398,6 +466,14 @@ static float sw_punctual_attenuation(float coefficient, float distance) {
 }
 
 /// @brief Evaluate one analytic light at a world point.
+/// @param light Borrowed sanitized light description.
+/// @param wx World-space X coordinate of the shaded point.
+/// @param wy World-space Y coordinate of the shaded point.
+/// @param wz World-space Z coordinate of the shaded point.
+/// @param out_lx Receives the X component of the fragment-to-emitter direction.
+/// @param out_ly Receives the Y component of the fragment-to-emitter direction.
+/// @param out_lz Receives the Z component of the fragment-to-emitter direction.
+/// @param out_attenuation Receives the finite scalar light attenuation.
 /// @return 0 for no contribution/ambient, 1 for directional BRDF lighting, or 2 for isotropic
 ///   volume irradiance. For result 1, @p out_l* is the unit fragment-to-emitter direction.
 static int sw_eval_analytic_light(const vgfx3d_light_params_t *light,
@@ -573,6 +649,7 @@ static int sw_eval_analytic_light(const vgfx3d_light_params_t *light,
 /// @details Shadow slots can be sparse while lights are reconfigured. Counting
 ///          through the highest valid slot lets later valid slots remain visible
 ///          even when an earlier slot is empty; invalid gaps simply sample as lit.
+/// @param ctx Borrowed software context whose shadow scan bound is recomputed; null is a no-op.
 static void sw_recompute_shadow_count(sw_context_t *ctx) {
     int8_t count = 0;
     if (!ctx)
@@ -615,6 +692,14 @@ static const float sw_shadow_poisson[16][2] = {
 ///          PCF (4 taps at PERFORMANCE, 8 at BALANCED/CINEMATIC — CPU-cost bounded) rotated by
 ///          interleaved-gradient noise over the shadow-map texel coordinate. Fully-occluded taps
 ///          contribute `1 - shadow_strength` so `ShadowStrength = 1` yields black shadows.
+/// @param ctx Borrowed software context containing shadow maps and filter settings.
+/// @param slot Shadow-map array slot to sample.
+/// @param wx World-space receiver X coordinate.
+/// @param wy World-space receiver Y coordinate.
+/// @param wz World-space receiver Z coordinate.
+/// @param nx World-space receiver-normal X component.
+/// @param ny World-space receiver-normal Y component.
+/// @param nz World-space receiver-normal Z component.
 /// @return Visibility in [1 - strength, 1]: 1.0 = fully lit. Returns 1.0 (fully lit) when the
 ///         slot is invalid, outside the shadow frustum, or the context is null.
 static float sw_sample_shadow_visibility(const sw_context_t *ctx,
@@ -754,6 +839,12 @@ static float sw_sample_shadow_visibility(const sw_context_t *ctx,
 }
 
 /// @brief Resolve the concrete shadow-map slot for a light at the given world position.
+/// @param ctx Borrowed software context containing camera and shadow-slot state.
+/// @param light Borrowed light containing the base slot and projection metadata.
+/// @param wx World-space receiver X coordinate.
+/// @param wy World-space receiver Y coordinate.
+/// @param wz World-space receiver Z coordinate.
+/// @return Selected cubemap face or directional cascade slot, or -1 when no valid slot exists.
 static int32_t sw_resolve_shadow_slot(
     const sw_context_t *ctx, const vgfx3d_light_params_t *light, float wx, float wy, float wz) {
     int32_t base_slot;
@@ -819,6 +910,10 @@ static int32_t sw_resolve_shadow_slot(
 
 /// @brief Effective cascade count for a light after slot/base clamping (mirrors
 ///        sw_resolve_shadow_slot's bounds).
+/// @param ctx Borrowed software context containing the available shadow-slot range.
+/// @param light Borrowed light containing base-slot, count, and split metadata.
+/// @return Validated cascade count, zero when unavailable, or one when malformed splits force the
+///         base-cascade fallback.
 static int32_t sw_effective_cascade_count(const sw_context_t *ctx,
                                           const vgfx3d_light_params_t *light) {
     int32_t base_slot;
@@ -853,6 +948,15 @@ static int32_t sw_effective_cascade_count(const sw_context_t *ctx,
 ///   into the next so the cascade handoff cannot pop as the camera moves, and the last
 ///   cascade fades to fully lit approaching the capped shadow distance instead of
 ///   ending on a hard line. Cube/spot projections resolve exactly as before.
+/// @param ctx Borrowed software context containing camera and shadow-map state.
+/// @param light Borrowed light containing projection and cascade metadata.
+/// @param wx World-space receiver X coordinate.
+/// @param wy World-space receiver Y coordinate.
+/// @param wz World-space receiver Z coordinate.
+/// @param nx World-space receiver-normal X component.
+/// @param ny World-space receiver-normal Y component.
+/// @param nz World-space receiver-normal Z component.
+/// @return Shadow visibility in `[0, 1]`, with one used for absent or invalid shadows.
 static float sw_sample_shadow_light(const sw_context_t *ctx,
                                     const vgfx3d_light_params_t *light,
                                     float wx,
@@ -922,6 +1026,11 @@ static float sw_sample_shadow_light(const sw_context_t *ctx,
 ///          per-pixel when at least one referenced shadow slot is complete; otherwise
 ///          applying Gouraud lighting first and Phong lighting again during shadow
 ///          sampling squares the light contribution.
+/// @param ctx Borrowed software context containing available shadow slots.
+/// @param cmd Borrowed draw command containing material workflow and normal-map state.
+/// @param lights Borrowed light array referenced by the draw.
+/// @param light_count Number of entries supplied in @p lights.
+/// @return Non-zero when lighting must run per pixel, otherwise zero.
 static int sw_draw_requires_per_pixel_lighting(const sw_context_t *ctx,
                                                const vgfx3d_draw_cmd_t *cmd,
                                                const vgfx3d_light_params_t *lights,
@@ -964,6 +1073,10 @@ static int sw_draw_requires_per_pixel_lighting(const sw_context_t *ctx,
 /// @details Software depth is available synchronously, so the probe result is captured
 ///   at queue time: NDC z converted to the hook's window-depth convention
 ///   ([0, 1], cleared/empty depth reported as 1.0). Returns the slot id or -1.
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param ndc_x Horizontal normalized-device coordinate to sample.
+/// @param ndc_y Vertical normalized-device coordinate to sample.
+/// @return Frame-local probe slot, or -1 when the context or probe capacity is unavailable.
 static int32_t sw_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     int32_t slot;
@@ -998,6 +1111,9 @@ static int32_t sw_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) {
 }
 
 /// @brief Read a probe captured this frame (software answers synchronously).
+/// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
+/// @param slot Frame-local slot previously returned by @c sw_queue_depth_probe().
+/// @return Captured window-space depth in `[0, 1]`, or -1 for an invalid slot.
 static float sw_read_depth_probe(void *ctx_ptr, int32_t slot) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     if (!ctx || slot < 0 || slot >= ctx->depth_probe_count)
@@ -1009,6 +1125,11 @@ static float sw_read_depth_probe(void *ctx_ptr, int32_t slot) {
 ///
 /// Reallocates `width × height` floats. Used during resize and on
 /// first frame after context creation. Returns 0 on overflow / OOM.
+/// @param ctx Borrowed software context that owns the depth buffer.
+/// @param width Positive required width in pixels.
+/// @param height Positive required height in pixels.
+/// @return 1 when a matching buffer is ready, otherwise 0 for invalid dimensions, overflow, or
+///         allocation failure.
 static int sw_ensure_zbuf_capacity(sw_context_t *ctx, int32_t width, int32_t height) {
     if (!ctx || width <= 0 || height <= 0)
         return 0;
@@ -1032,6 +1153,8 @@ static int sw_ensure_zbuf_capacity(sw_context_t *ctx, int32_t width, int32_t hei
 }
 
 /// @brief Clamp a software-rasterizer worker count to [1, SW_MAX_WORKERS].
+/// @param count Requested worker count.
+/// @return @p count constrained to `[1, SW_MAX_WORKERS]`.
 static int64_t sw_clamp_worker_count(int64_t count) {
     if (count < 1)
         return 1;
@@ -1041,11 +1164,14 @@ static int64_t sw_clamp_worker_count(int64_t count) {
 }
 
 /// @brief Default software-rasterizer worker count: hardware parallelism capped to SW_MAX_WORKERS.
+/// @return Hardware-derived worker count constrained to the software backend limits.
 static int64_t sw_default_worker_count(void) {
     return sw_clamp_worker_count(rt_parallel_default_workers());
 }
 
 /// @brief Resolve ZANNA_3D_SW_THREADS into a deterministic worker budget.
+/// @return Valid environment override constrained to backend limits, or the hardware-derived
+///         default when the environment value is absent or malformed.
 static int64_t sw_resolve_worker_count_from_env(void) {
     const char *env = getenv("ZANNA_3D_SW_THREADS");
     char *end = NULL;
@@ -1060,6 +1186,8 @@ static int64_t sw_resolve_worker_count_from_env(void) {
 }
 
 /// @brief Create the context-owned worker pool unless the requested count is one.
+/// @param ctx Borrowed software context that receives the pool and resolved worker count; null is
+///            a no-op.
 static void sw_init_worker_pool(sw_context_t *ctx) {
     if (!ctx)
         return;
@@ -1073,6 +1201,8 @@ static void sw_init_worker_pool(sw_context_t *ctx) {
 }
 
 /// @brief Shut down and release the context-owned worker pool.
+/// @param ctx Borrowed software context whose pool is detached and released; null or a missing
+///            pool is a no-op.
 static void sw_release_worker_pool(sw_context_t *ctx) {
     if (!ctx || !ctx->worker_pool)
         return;
@@ -1085,6 +1215,8 @@ static void sw_release_worker_pool(sw_context_t *ctx) {
 }
 
 /// @brief Test-only probe for unit tests; not part of the script-facing API.
+/// @param ctx_ptr Opaque borrowed pointer to a software context.
+/// @return The context's worker count constrained to backend limits, or one for a null context.
 int64_t vgfx3d_software_backend_thread_count_for_test(const void *ctx_ptr) {
     const sw_context_t *ctx = (const sw_context_t *)ctx_ptr;
     return ctx ? sw_clamp_worker_count(ctx->worker_count) : 1;
@@ -1095,6 +1227,9 @@ int64_t vgfx3d_software_backend_thread_count_for_test(const void *ctx_ptr) {
  *=========================================================================*/
 
 /// @brief Row-major 4×4 matrix multiply: `out = a * b`.
+/// @param a Borrowed first 16-float matrix.
+/// @param b Borrowed second 16-float matrix.
+/// @param out Receives the 16-float product and must not alias an input.
 static void mat4f_mul(const float *a, const float *b, float *out) {
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++)
@@ -1103,6 +1238,9 @@ static void mat4f_mul(const float *a, const float *b, float *out) {
 }
 
 /// @brief Transform a homogeneous 4-vector by a row-major 4×4 matrix.
+/// @param m Borrowed 16-float row-major matrix.
+/// @param in Borrowed four-component input vector.
+/// @param out Receives the four transformed components and must not alias @p in.
 static void mat4f_transform4(const float *m, const float *in, float *out) {
     out[0] = m[0] * in[0] + m[1] * in[1] + m[2] * in[2] + m[3] * in[3];
     out[1] = m[4] * in[0] + m[5] * in[1] + m[6] * in[2] + m[7] * in[3];
@@ -1114,6 +1252,11 @@ static void mat4f_transform4(const float *m, const float *in, float *out) {
 /// @details Software backend render targets use signed 32-bit dimensions, while
 ///          depth/color buffer loops use `size_t`. This helper rejects invalid or
 ///          overflowing dimensions before callers clear linear buffers.
+/// @param width Positive signed pixel width.
+/// @param height Positive signed pixel height.
+/// @param out_count Receives the pixel count on success or zero on failure; may be null.
+/// @return 1 when the dimensions and corresponding float-buffer size are representable,
+///         otherwise 0.
 static int sw_pixel_count_checked(int32_t width, int32_t height, size_t *out_count) {
     if (out_count)
         *out_count = 0;
@@ -1140,22 +1283,49 @@ static int sw_pixel_count_checked(int32_t width, int32_t height, size_t *out_cou
 
 /* Test-only robustness probes. These mirror the existing worker-count probe and
  * deliberately stay out of the script/runtime API registry. */
+/// @brief Expose the software backend's unit-interval clamp to native robustness tests.
+/// @param value Floating-point value to clamp.
+/// @return @p value constrained to `[0, 1]`, with NaN mapped to zero.
 float vgfx3d_software_backend_clamp01_for_test(float value) {
     return clamp01f(value);
 }
 
+/// @brief Expose sanitized material exponentiation to native robustness tests.
+/// @param value Material term clamped to `[0, 1]`.
+/// @param power Requested exponent subject to the production sanitizer.
+/// @return The same bounded power result used by software material shading.
 float vgfx3d_software_backend_material_pow_for_test(float value, float power) {
     return sw_material_powf(value, power);
 }
 
+/// @brief Expose software texture-index wrapping to native robustness tests.
+/// @param index Signed source index to wrap or clamp.
+/// @param size Positive texture-axis extent.
+/// @param mode Runtime texture addressing mode.
+/// @return The production sampler's resolved integer texel index.
 int32_t vgfx3d_software_backend_wrap_index_for_test(int64_t index, int32_t size, int32_t mode) {
     return sw_wrap_index(index, size, mode);
 }
 
+/// @brief Expose normalized-coordinate conversion to native robustness tests.
+/// @param value Normalized coordinate to convert.
+/// @param extent Positive texture-axis extent.
+/// @return The production sampler's valid integer index.
 int32_t vgfx3d_software_backend_unit_coord_index_for_test(float value, int32_t extent) {
     return sw_unit_coord_to_index(value, extent);
 }
 
+/// @brief Expose perspective-correct barycentric reweighting to native robustness tests.
+/// @param b0 First screen-space barycentric weight.
+/// @param b1 Second screen-space barycentric weight.
+/// @param b2 Third screen-space barycentric weight.
+/// @param inv_w0 Reciprocal clip-space W for the first vertex.
+/// @param inv_w1 Reciprocal clip-space W for the second vertex.
+/// @param inv_w2 Reciprocal clip-space W for the third vertex.
+/// @param out_b0 Receives the corrected first weight.
+/// @param out_b1 Receives the corrected second weight.
+/// @param out_b2 Receives the corrected third weight.
+/// @return Non-zero when finite corrected weights were produced, otherwise zero.
 int32_t vgfx3d_software_backend_perspective_weights_for_test(float b0,
                                                              float b1,
                                                              float b2,
@@ -1169,6 +1339,12 @@ int32_t vgfx3d_software_backend_perspective_weights_for_test(float b0,
         b0, b1, b2, inv_w0, inv_w1, inv_w2, out_b0, out_b1, out_b2);
 }
 
+/// @brief Expose RGBA8 surface validation to native robustness tests.
+/// @param pixels Borrowed surface pointer.
+/// @param width Signed pixel width.
+/// @param height Signed pixel height.
+/// @param stride Signed row stride in bytes.
+/// @return Non-zero when the surface layout is valid and representable, otherwise zero.
 int32_t vgfx3d_software_backend_rgba_surface_valid_for_test(const uint8_t *pixels,
                                                             int32_t width,
                                                             int32_t height,
@@ -1184,6 +1360,10 @@ int32_t vgfx3d_software_backend_rgba_surface_valid_for_test(const uint8_t *pixel
 ///   CPU post-FX scene effects. Returns NULL for non-software contexts, when a
 ///   render target is bound (its own depth_buf is used instead), or before the
 ///   first frame allocates the buffer.
+/// @param ctx_ptr Opaque borrowed pointer to a software backend context.
+/// @param out_w Optional output receiving the depth-buffer width, reset to zero on failure.
+/// @param out_h Optional output receiving the depth-buffer height, reset to zero on failure.
+/// @return Borrowed context-owned depth-buffer storage, or null when unavailable.
 const float *vgfx3d_sw_get_zbuf(void *ctx_ptr, int32_t *out_w, int32_t *out_h) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     if (out_w)
@@ -1226,6 +1406,10 @@ const vgfx3d_backend_t vgfx3d_software_backend = {
     .set_render_scale = sw_set_render_scale,
 };
 
+/// @brief Resolve an exact backend name among implementations compiled for this platform.
+/// @param name Null-terminated backend name such as @c software, @c metal, @c d3d11, or
+///             @c opengl.
+/// @return Address of the matching static backend descriptor, or null when unavailable.
 static const vgfx3d_backend_t *vgfx3d_backend_from_name(const char *name) {
     if (!name)
         return NULL;
@@ -1250,6 +1434,7 @@ static const vgfx3d_backend_t *vgfx3d_backend_from_name(const char *name) {
 /// Windows, Metal on macOS, OpenGL on Linux), falling back to the
 /// software backend when no GPU backend is available. Called once
 /// at canvas-create time and the choice is cached.
+/// @return Address of the selected static backend descriptor; always falls back to software.
 const vgfx3d_backend_t *vgfx3d_select_backend(void) {
     vgfx3d_backend_platform_t platform = VGFX3D_BACKEND_PLATFORM_OTHER;
     const vgfx3d_backend_t *backend;

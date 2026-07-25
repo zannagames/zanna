@@ -18,13 +18,31 @@
 //     returning, so consumers see the same identity layout as sequential meshes.
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_gltf_draco.inc
+ * @brief Implements bounded clean-room decoding for `KHR_draco_mesh_compression`.
+ * @details This fragment is included by `rt_gltf.c` and implements the published Draco
+ *          bitstream algorithms needed by glTF: little-endian and varint reads, rANS/rABS
+ *          entropy decoding, sequential and edgebreaker connectivity, seam-aware attribute
+ *          traversal, prediction inversion, and final attribute dequantization. All input is
+ *          treated as untrusted; counts, offsets, allocation sizes, recursion, and traversal
+ *          progress are bounded so malformed payloads return failure instead of trapping or
+ *          looping indefinitely.
+ */
+
+/// Maximum component count accepted for a decoded Draco attribute.
 #define DRACO_MAX_COMPONENTS 4
+/// Maximum attribute descriptors accepted in one Draco mesh payload.
 #define DRACO_MAX_ATTRIBUTES 16
 
 /* Sequential attribute encoder types */
+/// Generic sequential attribute decoder identifier.
 #define DRACO_SEQ_GENERIC 0
+/// Integer sequential attribute decoder identifier.
 #define DRACO_SEQ_INTEGER 1
+/// Quantized sequential attribute decoder identifier.
 #define DRACO_SEQ_QUANTIZATION 2
+/// Octahedral-normal sequential attribute decoder identifier.
 #define DRACO_SEQ_NORMALS 3
 
 /* Prediction schemes / transforms */
@@ -53,9 +71,13 @@
 
 /// @brief Bounded little-endian byte reader for one Draco payload.
 typedef struct {
+    /// Borrowed payload bytes.
     const uint8_t *data;
+    /// Total payload byte length.
     size_t size;
+    /// Next unread byte offset.
     size_t pos;
+    /// Sticky non-zero flag raised by any out-of-bounds read.
     int failed;
 } draco_buf;
 
@@ -71,6 +93,9 @@ typedef struct {
 #define DRACO_MAX_ELEMENTS_PER_INPUT_BYTE 4096u
 
 /// @brief Reject an element count that is grossly disproportionate to the payload size.
+/// @param count Declared element count from the payload.
+/// @param payload_size Total compressed payload byte length.
+/// @return Non-zero when the declaration is plausibly encodable by the payload.
 static int draco_count_fits_payload(uint64_t count, size_t payload_size) {
     if (payload_size == 0u)
         return count == 0u;
@@ -79,6 +104,9 @@ static int draco_count_fits_payload(uint64_t count, size_t payload_size) {
     return count <= (uint64_t)payload_size * DRACO_MAX_ELEMENTS_PER_INPUT_BYTE;
 }
 
+/// @brief Read one byte from a bounded Draco buffer.
+/// @param b Reader state advanced on success and marked failed on exhaustion.
+/// @return Decoded byte, or zero after raising the sticky failure flag.
 static uint8_t draco_read_u8(draco_buf *b) {
     if (b->pos >= b->size) {
         b->failed = 1;
@@ -87,18 +115,27 @@ static uint8_t draco_read_u8(draco_buf *b) {
     return b->data[b->pos++];
 }
 
+/// @brief Read an unaligned little-endian 16-bit unsigned integer.
+/// @param b Bounded reader state.
+/// @return Decoded value, with @p b marked failed if either byte is unavailable.
 static uint16_t draco_read_u16(draco_buf *b) {
     uint16_t lo = draco_read_u8(b);
     uint16_t hi = draco_read_u8(b);
     return (uint16_t)(lo | (hi << 8));
 }
 
+/// @brief Read an unaligned little-endian 32-bit unsigned integer.
+/// @param b Bounded reader state.
+/// @return Decoded value, with @p b marked failed if any byte is unavailable.
 static uint32_t draco_read_u32(draco_buf *b) {
     uint32_t v = draco_read_u16(b);
     v |= (uint32_t)draco_read_u16(b) << 16;
     return v;
 }
 
+/// @brief Read a little-endian IEEE-754 float without aliasing or alignment assumptions.
+/// @param b Bounded reader state.
+/// @return Decoded float bit pattern.
 static float draco_read_f32(draco_buf *b) {
     uint32_t bits = draco_read_u32(b);
     float f;
@@ -107,6 +144,8 @@ static float draco_read_f32(draco_buf *b) {
 }
 
 /// @brief Unsigned LEB128 varint (capped at 64 bits).
+/// @param b Bounded reader state.
+/// @return Decoded value, or zero after marking @p b failed for truncation or overlong input.
 static uint64_t draco_read_varint(draco_buf *b) {
     uint64_t result = 0;
     int shift = 0;
@@ -127,18 +166,30 @@ static uint64_t draco_read_varint(draco_buf *b) {
 // rANS entropy decoding (spec "Rans Decoding")
 //===----------------------------------------------------------------------===//
 
+/// @brief Mutable reverse-buffer state for one rANS entropy decoder.
 typedef struct {
+    /// Borrowed encoded byte stream.
     const uint8_t *buf;
+    /// Number of unread bytes preceding the current state seed.
     size_t buf_offset;
+    /// Current normalized rANS state.
     uint32_t state;
 } draco_rans;
 
+/// @brief Probability and cumulative interval assigned to one rANS symbol.
 typedef struct {
+    /// Symbol frequency in the configured precision range.
     uint32_t prob;
+    /// Inclusive start of the symbol's cumulative interval.
     uint32_t cum_prob;
 } draco_rans_sym;
 
 /// @brief Initialize a rANS decoder from the tail of @p buf (spec RansInitDecoder).
+/// @param ans Decoder state to initialize.
+/// @param buf Borrowed entropy-coded byte stream.
+/// @param size Number of bytes in @p buf.
+/// @param l_base Normalization base added to the serialized state.
+/// @return Non-zero when a complete initial state was available.
 static int draco_rans_init(draco_rans *ans, const uint8_t *buf, size_t size, uint32_t l_base) {
     uint32_t x;
     if (size == 0)
@@ -173,6 +224,13 @@ static int draco_rans_init(draco_rans *ans, const uint8_t *buf, size_t size, uin
 }
 
 /// @brief Read one symbol (spec RansRead) using the lookup/probability tables.
+/// @param ans Initialized decoder state, updated in place.
+/// @param l_base Lower normalization threshold.
+/// @param precision Total probability-table precision.
+/// @param lut Lookup table mapping cumulative remainder to symbol.
+/// @param probs Per-symbol probability intervals.
+/// @param out_val Receives the decoded symbol index.
+/// @return Non-zero on success; zero when the state cannot be normalized.
 static int draco_rans_read(draco_rans *ans,
                            uint32_t l_base,
                            uint32_t precision,
@@ -195,6 +253,10 @@ static int draco_rans_read(draco_rans *ans,
 }
 
 /// @brief Binary rABS reader (spec RabsDescRead) for prediction/seam flag streams.
+/// @param ans Initialized binary entropy state, updated in place.
+/// @param prob_zero Encoded zero-symbol probability on a 256-unit scale.
+/// @param out_val Receives the decoded binary symbol.
+/// @return Non-zero after decoding one symbol.
 static int draco_rabs_read(draco_rans *ans, uint32_t prob_zero, uint32_t *out_val) {
     uint32_t p = 256u - prob_zero;
     uint32_t x;
@@ -216,6 +278,11 @@ static int draco_rabs_read(draco_rans *ans, uint32_t prob_zero, uint32_t *out_va
 
 /// @brief Parse the run-length coded probability table and build the rANS lookup
 ///        tables (spec BuildSymbolTables + rans_build_look_up_table).
+/// @param b Bounded payload reader positioned at the probability table.
+/// @param num_symbols Number of symbol probability entries.
+/// @param precision Required cumulative probability total and lookup-table length.
+/// @param out_lut Receives the heap-allocated cumulative lookup table.
+/// @param out_probs Receives the heap-allocated per-symbol interval table.
 /// @return 1 on success; tables are heap allocations owned by the caller.
 static int draco_build_symbol_tables(draco_buf *b,
                                      uint32_t num_symbols,
@@ -283,6 +350,10 @@ fail:
 
 /// @brief Decode @p num_values entropy-coded symbols (spec DecodeSymbols: both the
 ///        TAGGED and RAW schemes).
+/// @param b Bounded payload reader positioned at the symbol stream.
+/// @param num_values Number of scalar symbols to decode.
+/// @param num_components Number of components grouped under each tagged bit length.
+/// @param out_values Caller-allocated destination with @p num_values slots.
 /// @return 1 on success; @p out_values (caller-allocated) receives the symbols.
 static int draco_decode_symbols(draco_buf *b,
                                 uint32_t num_values,
@@ -390,46 +461,78 @@ static int draco_decode_symbols(draco_buf *b,
 
 /// @brief One decoded attribute: identification plus decoded value storage.
 typedef struct {
+    /// Draco attribute semantic: position, normal, color, texture coordinate, or generic.
     uint8_t att_type;   /* 0 pos, 1 normal, 2 color, 3 tex coord, 4 generic */
+    /// Draco scalar data-type code.
     uint8_t data_type;  /* draco DT_* */
+    /// Number of scalar components per value.
     uint8_t components; /* 1..4 */
+    /// Whether integer output carries normalized semantics.
     uint8_t normalized;
+    /// Payload-unique attribute identifier referenced by the glTF extension.
     uint32_t unique_id;
+    /// Sequential attribute decoder type.
     uint8_t decoder_type; /* DRACO_SEQ_* */
     /* portable (integer) decode state */
+    /// Prediction scheme identifier parsed for portable integer values.
     int8_t prediction_scheme;
+    /// Prediction-transform identifier applied during reconstruction.
     int8_t prediction_transform;
+    /// Owned post-prediction portable integer tuples.
     int32_t *values; /* num_values * components, post-prediction integers */
     /* transform data */
+    /// Inclusive lower bound used by the wrapping inverse transform.
     int32_t wrap_min;
+    /// Inclusive upper bound used by the wrapping inverse transform.
     int32_t wrap_max;
+    /// Maximum quantized coordinate for octahedral normals.
     int32_t normal_max_q;
+    /// Number of quantization bits for scalar attributes.
     uint8_t quantization_bits;
+    /// Per-component quantization origin.
     float quant_min[DRACO_MAX_COMPONENTS];
+    /// Shared quantization range.
     float quant_range;
     /* mesh-prediction side data (edgebreaker schemes) */
+    /// Per-context constrained-multi crease decisions.
     uint8_t *crease_bits[DRACO_EB_MAX_PARALLELOGRAMS]; /* constrained-multi, per context */
+    /// Number of decisions in each crease context.
     uint32_t crease_count[DRACO_EB_MAX_PARALLELOGRAMS];
+    /// Next crease decision consumed from each context.
     uint32_t crease_pos[DRACO_EB_MAX_PARALLELOGRAMS];
+    /// Texture-orientation decisions consumed from the end.
     uint8_t *tex_orient; /* tex-coords orientations, consumed from the end */
+    /// Current reverse-consumption position for @ref tex_orient.
     uint32_t tex_orient_pos;
+    /// Geometric-normal flip decisions consumed in traversal order.
     uint8_t *flip_bits; /* geometric-normal flip flags, consumed in order */
+    /// Number of available flip decisions.
     uint32_t flip_count;
     /* final output */
+    /// Owned dequantized or decoded floating-point values.
     float *out_floats;  /* dequantized / normal-decoded values, or NULL */
+    /// Owned original integer values when the attribute remains integral.
     int32_t *out_ints;  /* integer values, or NULL */
+    /// Number of logical attribute tuples.
     uint32_t num_values;
 } draco_attribute;
 
 /// @brief Full decode state for one Draco payload.
 typedef struct {
+    /// Number of decoded triangular faces.
     uint32_t num_faces;
+    /// Number of output points after connectivity reconstruction.
     uint32_t num_points;
+    /// Owned interleaved triangle point indices.
     uint32_t *face_to_vertex; /* 3 * num_faces, interleaved v0 v1 v2 */
+    /// Fixed-capacity decoded attribute descriptors.
     draco_attribute attributes[DRACO_MAX_ATTRIBUTES];
+    /// Number of initialized entries in @ref attributes.
     uint32_t num_attributes;
 } draco_mesh;
 
+/// @brief Release every allocation owned by a decoded Draco mesh and clear its state.
+/// @param mesh Mesh state to destroy.
 static void draco_mesh_free(draco_mesh *mesh) {
     free(mesh->face_to_vertex);
     for (uint32_t i = 0; i < mesh->num_attributes && i < DRACO_MAX_ATTRIBUTES; i++) {
@@ -445,6 +548,9 @@ static void draco_mesh_free(draco_mesh *mesh) {
 }
 
 /// @brief Decode sequential connectivity (spec DecodeSequentialConnectivityData).
+/// @param b Bounded reader positioned at the sequential connectivity block.
+/// @param mesh Destination mesh receiving face and point counts plus triangle indices.
+/// @return Non-zero when all indices decode within the declared point range.
 static int draco_decode_sequential_connectivity(draco_buf *b, draco_mesh *mesh) {
     uint64_t num_faces = draco_read_varint(b);
     uint64_t num_points = draco_read_varint(b);
@@ -511,6 +617,9 @@ static int draco_decode_sequential_connectivity(draco_buf *b, draco_mesh *mesh) 
 }
 
 /// @brief Skip one metadata element (spec ParseMetadataElement, recursive layout).
+/// @param b Bounded reader positioned at an encoded metadata element.
+/// @param depth Current recursion depth, bounded to prevent hostile nesting.
+/// @return Non-zero when the element and all children were skipped safely.
 static int draco_skip_metadata_element(draco_buf *b, int depth) {
     uint64_t num_entries = draco_read_varint(b);
     uint64_t num_sub;
@@ -543,6 +652,8 @@ static int draco_skip_metadata_element(draco_buf *b, int depth) {
 }
 
 /// @brief Skip the optional metadata section (spec DecodeMetadata).
+/// @param b Bounded reader positioned at the metadata section.
+/// @return Non-zero when all attribute and file metadata entries were skipped safely.
 static int draco_skip_metadata(draco_buf *b) {
     uint64_t num_att_metadata = draco_read_varint(b);
     if (b->failed || num_att_metadata > 10000u)
@@ -558,6 +669,11 @@ static int draco_skip_metadata(draco_buf *b) {
 /// @brief Wrap-transform inverse (spec PredictionSchemeWrapDecodingTransform).
 /// @note Predictions arrive as int64 because parallelogram sums of extreme
 ///       quantized values can exceed the int32 range before clamping.
+/// @param att Attribute supplying the inclusive wrapping interval.
+/// @param pred Predicted component values.
+/// @param corr Encoded correction components.
+/// @param out Destination reconstructed components.
+/// @param components Number of components in each tuple.
 static void draco_wrap_compute_original(const draco_attribute *att,
                                         const int64_t *pred,
                                         const int32_t *corr,
@@ -582,6 +698,11 @@ static void draco_wrap_compute_original(const draco_attribute *att,
 
 /* --- Canonicalized octahedron normal transform (spec Prediction Normal Transform) --- */
 
+/// @brief Wrap an octahedral coordinate around the quantized interval centered at @p center.
+/// @param x Coordinate to wrap.
+/// @param center Half-width of the canonical interval.
+/// @param max_q Full quantized modulus.
+/// @return Coordinate mapped into the canonical interval.
 static int32_t draco_mod_max(int32_t x, int32_t center, int32_t max_q) {
     if (x > center)
         return x - max_q;
@@ -590,6 +711,10 @@ static int32_t draco_mod_max(int32_t x, int32_t center, int32_t max_q) {
     return x;
 }
 
+/// @brief Reflect a signed octahedral point across the boundary of its canonical diamond.
+/// @param s In/out first signed coordinate.
+/// @param t In/out second signed coordinate.
+/// @param center Diamond extent along either axis.
 static void draco_invert_diamond(int32_t *s, int32_t *t, int32_t center) {
     int32_t sign_s = 0;
     int32_t sign_t = 0;
@@ -626,6 +751,9 @@ static void draco_invert_diamond(int32_t *s, int32_t *t, int32_t center) {
     *t = tt;
 }
 
+/// @brief Determine the quarter-turn that moves an octahedral point into the bottom-left sector.
+/// @param pred Two-dimensional signed prediction coordinate.
+/// @return Clockwise rotation count from zero through three.
 static int draco_rotation_count(const int32_t *pred) {
     int32_t sign_x = pred[0];
     int32_t sign_y = pred[1];
@@ -636,6 +764,10 @@ static int draco_rotation_count(const int32_t *pred) {
     return sign_y <= 0 ? 0 : 3;
 }
 
+/// @brief Rotate a two-dimensional integer point by a multiple of 90 degrees.
+/// @param p Source coordinate pair.
+/// @param rotation Quarter-turn count modulo four.
+/// @param out Destination coordinate pair.
 static void draco_rotate_point(const int32_t *p, int rotation, int32_t *out) {
     switch (rotation) {
     case 1:
@@ -657,12 +789,18 @@ static void draco_rotate_point(const int32_t *p, int rotation, int32_t *out) {
     }
 }
 
+/// @brief Test whether an octahedral coordinate lies in the canonical bottom-left sector.
+/// @param p Signed two-dimensional coordinate.
+/// @return Non-zero for the origin or a point with negative X and non-positive Y.
 static int draco_is_in_bottom_left(const int32_t *p) {
     if (p[0] == 0 && p[1] == 0)
         return 1;
     return p[0] < 0 && p[1] <= 0;
 }
 
+/// @brief Return the index of the most-significant set bit in an unsigned integer.
+/// @param n Value to inspect.
+/// @return Zero-based bit index, or -1 when @p n is zero.
 static int draco_msb(uint32_t n) {
     int msb = -1;
     while (n != 0) {
@@ -673,6 +811,10 @@ static int draco_msb(uint32_t n) {
 }
 
 /// @brief Octahedron-canonicalized transform inverse (spec ComputeOriginalValue/2).
+/// @param att Attribute supplying the normal quantization maximum.
+/// @param pred_vals Predicted two-component octahedral coordinate.
+/// @param corr_vals Encoded correction pair.
+/// @param out_vals Destination reconstructed coordinate pair.
 static void draco_normal_oct_compute_original(const draco_attribute *att,
                                               const int32_t *pred_vals,
                                               const int32_t *corr_vals,
@@ -715,6 +857,11 @@ static void draco_normal_oct_compute_original(const draco_attribute *att,
 }
 
 /// @brief Apply the parsed prediction transform to one value tuple.
+/// @param att Attribute selecting the inverse transform and its parameters.
+/// @param pred Predicted component tuple.
+/// @param corr Encoded correction tuple.
+/// @param out Destination reconstructed tuple.
+/// @param components Number of components in the tuple.
 static void draco_transform_compute_original(const draco_attribute *att,
                                              const int64_t *pred,
                                              const int32_t *corr,
@@ -731,6 +878,8 @@ static void draco_transform_compute_original(const draco_attribute *att,
 }
 
 /// @brief Difference prediction inverse (spec PredictionSchemeDifference).
+/// @param att Attribute whose portable values are reconstructed in place.
+/// @param num_values Number of logical tuples in `att->values`.
 /// @param components Portable component count (2 for octahedral normals).
 static void draco_difference_compute_original(draco_attribute *att,
                                               uint32_t num_values,
@@ -758,94 +907,163 @@ static void draco_difference_compute_original(draco_attribute *att,
 /// @brief Per-attribute-data seam and recomputed-vertex state (one entry per
 ///        non-position attribute connectivity stream).
 typedef struct {
+    /// Zero-symbol probability for the seam rABS stream.
     uint8_t prob_zero;
+    /// Borrowed encoded seam-decision stream.
     const uint8_t *buf; /* seam rABS stream (borrowed from the payload) */
+    /// Byte length of @ref buf.
     size_t size;
+    /// Per-corner flag marking a discontinuous attribute edge.
     uint8_t *edge_on_seam;     /* [corner_cap] */
+    /// Per-position-vertex flag indicating contact with any seam.
     uint8_t *vertex_on_seam;   /* [num_vertices] position vertex touches a seam edge */
+    /// Recomputed attribute vertex for each corner.
     int32_t *corner_to_vertex; /* [corner_cap] recomputed attribute vertices */
+    /// Attribute-specific triangle vertex table.
     int32_t *face_to_vertex;   /* [corner_cap] attribute face->vertex table */
+    /// Representative corner for each recomputed attribute vertex.
     int32_t *leftmost_corner;  /* [corner_cap] per recomputed attribute vertex */
+    /// Number of recomputed attribute vertices.
     uint32_t vertex_count;
 } draco_eb_data;
 
 /// @brief Per-attributes-decoder traversal output.
 typedef struct {
+    /// Attribute-connectivity data index, or `0xFF` for the position decoder.
     uint8_t data_id;      /* 0xFF = none (position decoder) */
+    /// Vertex-mapped or corner-mapped decoder mode.
     uint8_t decoder_type; /* 0 vertex-mapped, 1 corner-mapped */
+    /// Depth-first or prediction-degree traversal selector.
     uint8_t traversal;    /* 0 depth-first, 1 prediction degree */
+    /// First mesh attribute owned by this decoder.
     uint32_t att_start;   /* first index into draco_mesh::attributes */
+    /// Number of consecutive mesh attributes owned by this decoder.
     uint32_t att_count;
+    /// Encoded value index to representative corner mapping.
     int32_t *value_to_corner; /* [corner_cap] encoded value index -> corner */
+    /// Number of emitted attribute values.
     uint32_t value_count;
+    /// Traversal vertex to encoded value index, or -1 if unvisited.
     int32_t *vertex_to_value; /* [visit_cap] vertex -> encoded value index or -1 */
+    /// Final point to encoded value index mapping.
     int32_t *indices_map;     /* [point_count] point -> encoded value index */
 } draco_eb_dec;
 
 /// @brief Whole-payload edgebreaker decode state.
 typedef struct {
+    /// Standard or valence connectivity traversal type.
     uint8_t traversal_type;
+    /// Encoded vertices including vertices introduced by split symbols.
     uint32_t num_vertices; /* encoded vertices + split symbols */
+    /// Declared triangular face count.
     uint32_t num_faces;
+    /// Number of non-position attribute connectivity streams.
     uint8_t num_att_data;
+    /// Number of topology symbols.
     uint32_t num_symbols;
+    /// Number of topology split events.
     uint32_t num_split_symbols;
+    /// Allocated corner count, equal to three times @ref num_faces.
     uint32_t corner_cap; /* 3 * num_faces */
+    /// Vertex-indexed scratch capacity used by traversal arrays.
     uint32_t visit_cap;  /* max(num_vertices, corner_cap) */
     /* connectivity */
+    /// Position face-to-vertex table indexed by corner.
     int32_t *face_to_vertex; /* [corner_cap], corner-indexed */
+    /// Number of reconstructed faces.
     uint32_t face_count;
+    /// Opposite-corner table.
     int32_t *opposite;       /* [corner_cap] */
+    /// Representative corner for every encoded vertex.
     int32_t *vertex_corners; /* [num_vertices] */
+    /// Whether each encoded vertex currently lies on a hole boundary.
     uint8_t *is_vert_hole;   /* [num_vertices] */
+    /// Highest vertex identifier created by topology reconstruction.
     int32_t last_vert_added;
+    /// Most recently decoded topology symbol.
     int last_symbol;
+    /// Active valence-context index.
     int active_context;
     /* active corner stack */
+    /// Active topology corner stack.
     int32_t *stack;
+    /// Number of entries in @ref stack.
     uint32_t stack_size;
+    /// Allocated capacity of @ref stack.
     uint32_t stack_cap;
     /* topology splits (consumed back to front) */
+    /// Encoder symbol IDs at which split events become active.
     uint32_t *split_source_symbol;
+    /// Encoder symbol IDs of the matching split symbols.
     uint32_t *split_symbol;
+    /// Encoded split-edge selectors.
     uint8_t *split_edge;
+    /// Number of unconsumed split events.
     uint32_t split_count;
     /* matched splits awaiting their S symbol */
+    /// Decoder symbol IDs awaiting their matching split.
     int32_t *match_split_id;
+    /// Active corners associated with pending split matches.
     int32_t *match_corner;
+    /// Number of pending split matches.
     uint32_t match_count;
+    /// Allocated capacity of the pending-match arrays.
     uint32_t match_cap;
     /* standard-traversal symbol bits (LSB-first per byte) */
+    /// Borrowed standard-traversal topology symbol bitstream.
     const uint8_t *sym_buf;
+    /// Byte length of @ref sym_buf.
     size_t sym_size;
+    /// Next unread bit position in @ref sym_buf.
     uint64_t sym_bitpos;
     /* start-face rABS stream */
+    /// Zero-symbol probability for start-face flags.
     uint8_t start_face_prob_zero;
+    /// Borrowed start-face flag stream.
     const uint8_t *start_face_buf;
+    /// Byte length of @ref start_face_buf.
     size_t start_face_size;
     /* valence traversal */
+    /// Current reconstructed valence of every encoded vertex.
     uint32_t *valences; /* [num_vertices] */
+    /// Reverse-consumption positions for valence-context symbol streams.
     uint32_t ctx_pos[DRACO_EB_NUM_VALENCES];
+    /// Decoded topology symbols grouped by clamped valence context.
     uint32_t *ctx_syms[DRACO_EB_NUM_VALENCES];
     /* attribute data + decoders */
+    /// Fixed-capacity seam-connectivity streams.
     draco_eb_data att_data[DRACO_EB_MAX_ATT_DATA];
+    /// Fixed-capacity attribute traversal decoders.
     draco_eb_dec dec[DRACO_EB_MAX_DECODERS];
+    /// Number of initialized entries in @ref dec.
     uint32_t num_decoders;
     /* point mapping */
+    /// Final output point associated with each position corner.
     int32_t *corner_to_point; /* [corner_cap] */
+    /// Number of output points after seam splitting.
     uint32_t point_count;
     /* traversal scratch */
+    /// Per-face visited flags.
     uint8_t *face_visited;   /* [num_faces] */
+    /// Per-traversal-vertex visited flags.
     uint8_t *vertex_visited; /* [visit_cap] */
+    /// Corner stack used by attribute traversals.
     int32_t *trav_stack;     /* [corner_cap + 2] */
+    /// Number of entries in @ref trav_stack.
     uint32_t trav_size;
     /* prediction-degree traversal */
+    /// Current prediction degree for each traversal vertex.
     uint32_t *pred_degree; /* [visit_cap] */
+    /// Three priority stacks for prediction-degree traversal.
     int32_t *pd_stack[3];  /* [corner_cap + 2] each */
+    /// Number of entries in each prediction-degree stack.
     uint32_t pd_size[3];
+    /// Lowest non-empty prediction-degree priority.
     int pd_best;
 } draco_eb;
 
+/// @brief Release every allocation owned by an edgebreaker decoder and clear its state.
+/// @param eb Decoder state to destroy.
 static void draco_eb_free(draco_eb *eb) {
     free(eb->face_to_vertex);
     free(eb->opposite);
@@ -884,6 +1102,10 @@ static void draco_eb_free(draco_eb *eb) {
 
 /// @brief Read @p nbits from the standard-traversal symbol buffer, LSB-first
 ///        within each byte (verified against reference-encoder output).
+/// @param eb Edgebreaker state owning the symbol stream and bit cursor.
+/// @param nbits Number of bits to read into the low bits of the result.
+/// @param ok In/out success flag cleared when the requested range exceeds the stream.
+/// @return Decoded bit field, or zero when unavailable.
 static uint32_t draco_eb_read_symbol_bits(draco_eb *eb, uint32_t nbits, int *ok) {
     uint32_t val = 0;
     for (uint32_t k = 0; k < nbits; k++) {
@@ -901,24 +1123,39 @@ static uint32_t draco_eb_read_symbol_bits(draco_eb *eb, uint32_t nbits, int *ok)
 
 /* --- Corner-table helpers (spec Next/Previous/PosOpposite/Swing*) --- */
 
+/// @brief Return the next counterclockwise corner of the same triangle.
+/// @param c Corner index, or a negative sentinel.
+/// @return Next local corner, preserving a negative sentinel unchanged.
 static int32_t draco_eb_next(int32_t c) {
     if (c < 0)
         return c;
     return ((c % 3) == 2) ? c - 2 : c + 1;
 }
 
+/// @brief Return the previous clockwise corner of the same triangle.
+/// @param c Corner index, or a negative sentinel.
+/// @return Previous local corner, preserving a negative sentinel unchanged.
 static int32_t draco_eb_prev(int32_t c) {
     if (c < 0)
         return c;
     return ((c % 3) == 0) ? c + 2 : c - 1;
 }
 
+/// @brief Look up the position-connectivity corner opposite @p c.
+/// @param eb Edgebreaker state containing the opposite-corner table.
+/// @param c Corner index to query.
+/// @return Opposite corner index, or -1 for a boundary or invalid corner.
 static int32_t draco_eb_pos_opposite(const draco_eb *eb, int32_t c) {
     if (c < 0 || (uint32_t)c >= eb->corner_cap)
         return -1;
     return eb->opposite[c];
 }
 
+/// @brief Look up an attribute opposite corner while treating seam edges as boundaries.
+/// @param eb Edgebreaker state containing seam and opposite-corner tables.
+/// @param a Attribute-connectivity data index.
+/// @param c Corner index to query.
+/// @return Opposite corner, or -1 for a seam, boundary, or invalid corner.
 static int32_t draco_eb_attr_opposite(const draco_eb *eb, uint32_t a, int32_t c) {
     if (c < 0 || (uint32_t)c >= eb->corner_cap || eb->att_data[a].edge_on_seam[c])
         return -1;
@@ -926,36 +1163,69 @@ static int32_t draco_eb_attr_opposite(const draco_eb *eb, uint32_t a, int32_t c)
 }
 
 /// @brief True when decoder @p d uses recomputed (seam-split) attribute vertices.
+/// @param eb Edgebreaker state containing decoder descriptors.
+/// @param d Decoder index to classify.
+/// @return Non-zero when the decoder uses corner-mapped attribute connectivity.
 static int draco_eb_dec_is_corner_mapped(const draco_eb *eb, uint32_t d) {
     return d != 0 && eb->dec[d].decoder_type == 1 && eb->dec[d].data_id != 0xFF;
 }
 
+/// @brief Resolve an opposite corner through a decoder's position or attribute topology.
+/// @param eb Edgebreaker state.
+/// @param d Attribute decoder index.
+/// @param c Corner index to query.
+/// @return Decoder-specific opposite corner, or -1 at a boundary.
 static int32_t draco_eb_opposite(const draco_eb *eb, uint32_t d, int32_t c) {
     if (draco_eb_dec_is_corner_mapped(eb, d))
         return draco_eb_attr_opposite(eb, eb->dec[d].data_id, c);
     return draco_eb_pos_opposite(eb, c);
 }
 
+/// @brief Swing clockwise around the decoder-specific vertex incident to @p c.
+/// @param eb Edgebreaker state.
+/// @param d Attribute decoder index.
+/// @param c Starting corner.
+/// @return Adjacent corner around the vertex, or a negative boundary sentinel.
 static int32_t draco_eb_swing_right(const draco_eb *eb, uint32_t d, int32_t c) {
     return draco_eb_prev(draco_eb_opposite(eb, d, draco_eb_prev(c)));
 }
 
+/// @brief Swing counterclockwise around the decoder-specific vertex incident to @p c.
+/// @param eb Edgebreaker state.
+/// @param d Attribute decoder index.
+/// @param c Starting corner.
+/// @return Adjacent corner around the vertex, or a negative boundary sentinel.
 static int32_t draco_eb_swing_left(const draco_eb *eb, uint32_t d, int32_t c) {
     return draco_eb_next(draco_eb_opposite(eb, d, draco_eb_next(c)));
 }
 
 /// @brief Seam-gated swing used by seam vertex recomputation (always gated by
 ///        attribute data @p a regardless of the owning decoder's type).
+/// @param eb Edgebreaker state.
+/// @param a Attribute-connectivity data index.
+/// @param c Starting corner.
+/// @return Next seam-aware corner around the attribute vertex, or a negative boundary sentinel.
 static int32_t draco_eb_attr_swing_left(const draco_eb *eb, uint32_t a, int32_t c) {
     return draco_eb_next(draco_eb_attr_opposite(eb, a, draco_eb_next(c)));
 }
 
+/// @brief Select the face-to-vertex table used by an attribute decoder.
+/// @param eb Edgebreaker state.
+/// @param d Decoder index.
+/// @return Borrowed position table or seam-recomputed attribute table.
 static const int32_t *draco_eb_ftv(const draco_eb *eb, uint32_t d) {
     if (draco_eb_dec_is_corner_mapped(eb, d))
         return eb->att_data[eb->dec[d].data_id].face_to_vertex;
     return eb->face_to_vertex;
 }
 
+/// @brief Resolve the current, next, and previous vertex IDs around one triangle corner.
+/// @param eb Edgebreaker state.
+/// @param d Decoder whose connectivity table is used.
+/// @param corner Corner index to resolve.
+/// @param v Receives the vertex at @p corner.
+/// @param n Receives the vertex at the next local corner.
+/// @param p Receives the vertex at the previous local corner.
 static void draco_eb_corner_to_verts(const draco_eb *eb,
                                      uint32_t d,
                                      int32_t corner,
@@ -976,6 +1246,11 @@ static void draco_eb_corner_to_verts(const draco_eb *eb,
     *p = ftv[base + (local + 2) % 3];
 }
 
+/// @brief Resolve only the vertex ID at a decoder-specific corner.
+/// @param eb Edgebreaker state.
+/// @param d Decoder whose connectivity table is used.
+/// @param corner Corner index to resolve.
+/// @return Vertex ID, or -1 when the corner is invalid.
 static int32_t draco_eb_corner_to_vert(const draco_eb *eb, uint32_t d, int32_t corner) {
     int32_t v, n, p;
     draco_eb_corner_to_verts(eb, d, corner, &v, &n, &p);
@@ -984,6 +1259,10 @@ static int32_t draco_eb_corner_to_vert(const draco_eb *eb, uint32_t d, int32_t c
 
 /// @brief spec MapCornerToVertex (the corner->vertex direction is carried by the
 ///        face table itself; only the vertex->corner link is tracked here).
+/// @param eb Edgebreaker state whose representative-corner table is updated.
+/// @param corner Corner to associate with the vertex.
+/// @param vert Vertex identifier, or a negative value requiring no reverse mapping.
+/// @return Non-zero when both identifiers are within their valid domains.
 static int draco_eb_map_corner(draco_eb *eb, int32_t corner, int32_t vert) {
     if (corner < 0 || (uint32_t)corner >= eb->corner_cap)
         return 0;
@@ -995,6 +1274,11 @@ static int draco_eb_map_corner(draco_eb *eb, int32_t corner, int32_t vert) {
     return 1;
 }
 
+/// @brief Join two valid corners as symmetric opposites.
+/// @param eb Edgebreaker state whose opposite table is updated.
+/// @param c First corner index.
+/// @param oc Second corner index.
+/// @return Non-zero when both corners were in range and linked.
 static int draco_eb_set_opposite(draco_eb *eb, int32_t c, int32_t oc) {
     if (c < 0 || oc < 0 || (uint32_t)c >= eb->corner_cap || (uint32_t)oc >= eb->corner_cap)
         return 0;
@@ -1003,6 +1287,12 @@ static int draco_eb_set_opposite(draco_eb *eb, int32_t c, int32_t oc) {
     return 1;
 }
 
+/// @brief Append one triangle to the reconstructed face-to-vertex table.
+/// @param eb Edgebreaker state receiving the face.
+/// @param v Vertex at the first local corner.
+/// @param n Vertex at the second local corner.
+/// @param p Vertex at the third local corner.
+/// @return Non-zero when capacity remained for the new face.
 static int draco_eb_push_face(draco_eb *eb, int32_t v, int32_t n, int32_t p) {
     int32_t *ftv;
     if (eb->face_count >= eb->num_faces)
@@ -1015,6 +1305,10 @@ static int draco_eb_push_face(draco_eb *eb, int32_t v, int32_t n, int32_t p) {
     return 1;
 }
 
+/// @brief Replace every reconstructed position occurrence of one vertex ID with another.
+/// @param eb Edgebreaker state whose completed face prefix is rewritten.
+/// @param from Vertex identifier to replace.
+/// @param to Replacement vertex identifier.
 static void draco_eb_replace_verts(draco_eb *eb, int32_t from, int32_t to) {
     uint32_t total = eb->face_count * 3u;
     for (uint32_t i = 0; i < total; i++) {
@@ -1024,6 +1318,10 @@ static void draco_eb_replace_verts(draco_eb *eb, int32_t from, int32_t to) {
 }
 
 /// @brief spec UpdateCornersAfterMerge — remap the swing fan opposite @p c to @p v.
+/// @param eb Edgebreaker state whose vertex-to-corner links are updated.
+/// @param c Corner adjacent to the merged fan.
+/// @param v Surviving vertex identifier.
+/// @return Non-zero when the complete fan was remapped without invalid indices or cycles.
 static int draco_eb_update_corners_after_merge(draco_eb *eb, int32_t c, int32_t v) {
     int32_t opp = draco_eb_pos_opposite(eb, c);
     uint32_t guard = 0;
@@ -1041,6 +1339,11 @@ static int draco_eb_update_corners_after_merge(draco_eb *eb, int32_t c, int32_t 
 }
 
 /// @brief spec IsTopologySplit — consume a matching split event, back to front.
+/// @param eb Edgebreaker state containing unconsumed split events.
+/// @param encoder_symbol_id Source encoder symbol being matched.
+/// @param out_edge Receives the encoded split-edge selector.
+/// @param out_split_id Receives the paired encoder split-symbol ID.
+/// @return Non-zero when the last pending event matched and was consumed.
 static int draco_eb_is_topology_split(draco_eb *eb,
                                       uint32_t encoder_symbol_id,
                                       uint8_t *out_edge,
@@ -1055,6 +1358,10 @@ static int draco_eb_is_topology_split(draco_eb *eb,
 }
 
 /// @brief spec NewActiveCornerReached — apply one C/S/L/R/E symbol to the corner table.
+/// @param eb Edgebreaker state mutated by topology reconstruction.
+/// @param new_corner First corner index reserved for the next face.
+/// @param symbol_id Decoder-order symbol identifier.
+/// @return Non-zero when the symbol produced valid bounded connectivity state.
 static int draco_eb_new_corner(draco_eb *eb, int32_t new_corner, uint32_t symbol_id) {
     int check_topology_split = 0;
     int32_t vert = -1;
@@ -1259,6 +1566,8 @@ static int draco_eb_new_corner(draco_eb *eb, int32_t new_corner, uint32_t symbol
 }
 
 /// @brief spec EdgebreakerDecodeSymbol (standard bit stream or valence contexts).
+/// @param eb Edgebreaker state supplying the active symbol source and context.
+/// @return Non-zero after storing a valid topology symbol in `eb->last_symbol`.
 static int draco_eb_decode_symbol(draco_eb *eb) {
     if (eb->traversal_type == DRACO_EB_VALENCE) {
         static const int topo[5] = {DRACO_TOPOLOGY_C, DRACO_TOPOLOGY_S, DRACO_TOPOLOGY_L,
@@ -1294,6 +1603,8 @@ static int draco_eb_decode_symbol(draco_eb *eb) {
 }
 
 /// @brief spec ProcessInteriorEdges — close interior fans left by the symbol pass.
+/// @param eb Edgebreaker state containing active boundary corners and start-face flags.
+/// @return Non-zero when every flagged interior fan was closed consistently.
 static int draco_eb_process_interior_edges(draco_eb *eb) {
     draco_rans ans;
     int have_ans = 0;
@@ -1354,6 +1665,9 @@ static int draco_eb_process_interior_edges(draco_eb *eb) {
 }
 
 /// @brief Parse the edgebreaker connectivity header and allocate decode state.
+/// @param b Bounded reader positioned at the connectivity header.
+/// @param eb Zero-initialized edgebreaker state receiving counts and scratch arrays.
+/// @return Non-zero when declarations are valid and all required allocations succeed.
 static int draco_eb_parse_and_alloc(draco_buf *b, draco_eb *eb) {
     uint64_t nv, nf, ns, nss, total_verts;
     eb->traversal_type = draco_read_u8(b);
@@ -1423,6 +1737,9 @@ static int draco_eb_parse_and_alloc(draco_buf *b, draco_eb *eb) {
 }
 
 /// @brief spec ParseTopologySplitEvents + ProcessSplitData.
+/// @param b Bounded reader positioned at the split-event block.
+/// @param eb Edgebreaker state receiving validated split arrays.
+/// @return Non-zero when all declared events are valid for reverse consumption.
 static int draco_eb_parse_splits(draco_buf *b, draco_eb *eb) {
     uint64_t n = draco_read_varint(b);
     if (b->failed || n > eb->num_faces)
@@ -1467,6 +1784,9 @@ static int draco_eb_parse_splits(draco_buf *b, draco_eb *eb) {
 }
 
 /// @brief spec EdgebreakerTraversalStart — standard buffers or valence contexts.
+/// @param b Bounded reader positioned at traversal data.
+/// @param eb Allocated edgebreaker state receiving symbol streams and contexts.
+/// @return Non-zero when the selected traversal representation is valid.
 static int draco_eb_traversal_start(draco_buf *b, draco_eb *eb) {
     if (eb->traversal_type == DRACO_EB_STANDARD) {
         uint64_t sz = draco_read_varint(b);
@@ -1514,6 +1834,9 @@ static int draco_eb_traversal_start(draco_buf *b, draco_eb *eb) {
 }
 
 /// @brief spec DecodeEdgebreakerConnectivityData + DecodeEdgeBreakerConnectivity.
+/// @param b Bounded reader positioned at split and traversal data.
+/// @param eb Allocated edgebreaker state receiving reconstructed connectivity.
+/// @return Non-zero when all declared faces and corner links are reconstructed.
 static int draco_eb_decode_connectivity(draco_buf *b, draco_eb *eb) {
     if (!draco_eb_parse_and_alloc(b, eb))
         return 0;
@@ -1536,6 +1859,9 @@ static int draco_eb_decode_connectivity(draco_buf *b, draco_eb *eb) {
 
 /// @brief spec UpdateVertexToCornerMap — rotate a hole vertex's corner link to
 ///        the leftmost corner of its fan.
+/// @param eb Edgebreaker state whose representative-corner table is repaired.
+/// @param v Position vertex index to update.
+/// @return Non-zero when a valid representative was found without cycling.
 static int draco_eb_update_vertex_corner(draco_eb *eb, uint32_t v) {
     int32_t first_c = eb->vertex_corners[v];
     int32_t act_c, c;
@@ -1557,6 +1883,9 @@ static int draco_eb_update_vertex_corner(draco_eb *eb, uint32_t v) {
 
 /// @brief spec DecodeAttributeSeams — one rABS stream per attribute data; boundary
 ///        edges are seams unconditionally, interior edges consume one flag bit.
+/// @param b Bounded reader positioned at the seam streams.
+/// @param eb Edgebreaker state receiving edge and vertex seam flags.
+/// @return Non-zero when every seam decision stream decodes completely.
 static int draco_eb_decode_seams(draco_buf *b, draco_eb *eb) {
     draco_rans ans[DRACO_EB_MAX_ATT_DATA];
     int have[DRACO_EB_MAX_ATT_DATA];
@@ -1614,6 +1943,9 @@ static int draco_eb_decode_seams(draco_buf *b, draco_eb *eb) {
 
 /// @brief spec RecomputeVerticesInternal — split position vertices along the seams
 ///        of attribute data @p a into per-attribute vertices.
+/// @param eb Edgebreaker state containing decoded seam topology.
+/// @param a Attribute-connectivity data index to reconstruct.
+/// @return Non-zero when every corner receives a bounded attribute vertex.
 static int draco_eb_recompute_vertices(draco_eb *eb, uint32_t a) {
     draco_eb_data *ad = &eb->att_data[a];
     uint32_t num_new = 0;
@@ -1673,6 +2005,8 @@ static int draco_eb_recompute_vertices(draco_eb *eb, uint32_t a) {
 
 /// @brief spec Attribute_AssignPointsToCorners — dedup corners into output points,
 ///        splitting wherever any attribute's recomputed vertex changes.
+/// @param eb Edgebreaker state receiving `corner_to_point` and the final point count.
+/// @return Non-zero when all corners are assigned within bounded output capacity.
 static int draco_eb_assign_points(draco_eb *eb) {
     uint32_t count = 0;
     for (uint32_t i = 0; i < eb->corner_cap; i++)
@@ -1743,6 +2077,9 @@ static int draco_eb_assign_points(draco_eb *eb) {
 
 /// @brief Position-vertex boundary test (reference decoder CornerTable::IsOnBoundary:
 ///        hole vertices remain marked after connectivity decode).
+/// @param eb Edgebreaker state containing hole markers.
+/// @param v Position vertex index.
+/// @return Non-zero when @p v is valid and marked as lying on a hole boundary.
 static int draco_eb_pos_boundary(const draco_eb *eb, int32_t v) {
     if (v < 0 || (uint32_t)v >= eb->num_vertices)
         return 1;
@@ -1752,6 +2089,10 @@ static int draco_eb_pos_boundary(const draco_eb *eb, int32_t v) {
 }
 
 /// @brief spec IsOnAttributeBoundary for corner-mapped decoders.
+/// @param eb Edgebreaker state containing recomputed attribute connectivity.
+/// @param a Attribute-connectivity data index.
+/// @param v Attribute vertex index.
+/// @return Non-zero when the attribute vertex has an open seam-aware fan.
 static int draco_eb_attr_boundary(const draco_eb *eb, uint32_t a, int32_t v) {
     const draco_eb_data *ad = &eb->att_data[a];
     int32_t corner, pv;
@@ -1767,6 +2108,11 @@ static int draco_eb_attr_boundary(const draco_eb *eb, uint32_t a, int32_t v) {
 }
 
 /// @brief spec OnNewVertexVisited — record traversal order for decoder @p d.
+/// @param eb Edgebreaker state containing traversal and decoder mappings.
+/// @param d Decoder index receiving the new value.
+/// @param vertex Traversal vertex visited for the first time.
+/// @param corner Representative corner associated with the encoded value.
+/// @return Non-zero when identifiers and output capacity are valid.
 static int draco_eb_on_new_vertex(draco_eb *eb, uint32_t d, int32_t vertex, int32_t corner) {
     draco_eb_dec *dec = &eb->dec[d];
     if (vertex < 0 || (uint32_t)vertex >= eb->visit_cap || dec->value_count >= eb->corner_cap)
@@ -1782,6 +2128,10 @@ static int draco_eb_on_new_vertex(draco_eb *eb, uint32_t d, int32_t vertex, int3
 ///        the position corner table with no seam gating, matching the reference
 ///        decoder (is_connectivity_used = false); corner-mapped decoders gate the
 ///        left/right steps on seam edges.
+/// @param eb Edgebreaker state containing connectivity and traversal scratch.
+/// @param d Attribute decoder index whose value order is generated.
+/// @param corner_id Seed corner for the connected traversal component.
+/// @return Non-zero when the component is traversed without invalid topology or iteration excess.
 static int draco_eb_traverse_dfs(draco_eb *eb, uint32_t d, int32_t corner_id) {
     int corner_mapped = draco_eb_dec_is_corner_mapped(eb, d);
     uint32_t a = corner_mapped ? eb->dec[d].data_id : 0u;
@@ -1889,6 +2239,11 @@ static int draco_eb_traverse_dfs(draco_eb *eb, uint32_t d, int32_t corner_id) {
 
 /* --- Prediction-degree traversal (spec MESH_TRAVERSAL_PREDICTION_DEGREE) --- */
 
+/// @brief Push a corner onto one prediction-degree priority stack.
+/// @param eb Edgebreaker traversal state.
+/// @param ci Corner index to enqueue.
+/// @param priority Stack index from zero through two.
+/// @return Non-zero when the selected stack had capacity.
 static int draco_eb_pd_push(draco_eb *eb, int32_t ci, int priority) {
     if (eb->pd_size[priority] >= eb->corner_cap + 1u)
         return 0;
@@ -1898,6 +2253,11 @@ static int draco_eb_pd_push(draco_eb *eb, int32_t ci, int priority) {
     return 1;
 }
 
+/// @brief Update a candidate tip's prediction degree and choose its traversal priority.
+/// @param eb Edgebreaker traversal state.
+/// @param d Attribute decoder index controlling corner-to-vertex mapping.
+/// @param ci Candidate corner.
+/// @return Priority bucket from zero through two.
 static int draco_eb_pd_priority(draco_eb *eb, uint32_t d, int32_t ci) {
     int32_t v, n, p;
     int priority = 0;
@@ -1911,6 +2271,9 @@ static int draco_eb_pd_priority(draco_eb *eb, uint32_t d, int32_t ci) {
     return priority;
 }
 
+/// @brief Pop a corner from the highest-priority non-empty prediction-degree stack.
+/// @param eb Edgebreaker traversal state.
+/// @return Corner index, or -1 when every priority stack is empty.
 static int32_t draco_eb_pd_pop(draco_eb *eb) {
     for (int i = eb->pd_best; i < 3; i++) {
         if (eb->pd_size[i] > 0) {
@@ -1922,6 +2285,10 @@ static int32_t draco_eb_pd_pop(draco_eb *eb) {
 }
 
 /// @brief spec PredictionDegree_TraverseFromCorner.
+/// @param eb Edgebreaker state containing connectivity and priority traversal scratch.
+/// @param d Attribute decoder index whose value order is generated.
+/// @param corner_id Seed corner for the connected traversal component.
+/// @return Non-zero when the traversal completes within all topology and iteration bounds.
 static int draco_eb_traverse_pd(draco_eb *eb, uint32_t d, int32_t corner_id) {
     int32_t tip, next_vert, prev_vert;
     uint32_t guard = 0;
@@ -2001,6 +2368,9 @@ static int draco_eb_traverse_pd(draco_eb *eb, uint32_t d, int32_t corner_id) {
 }
 
 /// @brief spec UpdatePointToAttributeIndexMapping — point -> encoded value index.
+/// @param eb Edgebreaker state containing point, vertex, and value mappings.
+/// @param d Attribute decoder index whose final point map is generated.
+/// @return Non-zero when every output point resolves to a decoded value.
 static int draco_eb_update_indices_map(draco_eb *eb, uint32_t d) {
     draco_eb_dec *dec = &eb->dec[d];
     for (uint32_t p = 0; p < eb->point_count; p++)
@@ -2028,6 +2398,14 @@ static int draco_eb_update_indices_map(draco_eb *eb, uint32_t d) {
 
 /// @brief spec ComputeParallelogramPrediction. Returns 1 when all three opposite
 ///        entries are already decoded; predictions accumulate in int64.
+/// @param eb Edgebreaker state providing decoder-specific connectivity.
+/// @param d Attribute decoder index.
+/// @param data_entry_id Entry currently being predicted; dependencies must precede it.
+/// @param ci Representative corner for the current entry.
+/// @param data Previously reconstructed portable values.
+/// @param ncomp Number of components per value.
+/// @param out_pred Receives the parallelogram prediction tuple.
+/// @return Non-zero when all three neighboring values are available and earlier than the target.
 static int draco_eb_parallelogram_pred(const draco_eb *eb,
                                        uint32_t d,
                                        int32_t data_entry_id,
@@ -2060,6 +2438,11 @@ static int draco_eb_parallelogram_pred(const draco_eb *eb,
 }
 
 /// @brief spec MeshPredictionSchemeParallelogramDecoder_ComputeOriginalValues.
+/// @param eb Edgebreaker state containing traversal order and connectivity.
+/// @param d Attribute decoder index.
+/// @param att Attribute whose correction values are reconstructed in place.
+/// @param ncomp Number of portable components per value.
+/// @return Non-zero after reconstructing all values.
 static int draco_eb_parallelogram_compute(draco_eb *eb,
                                           uint32_t d,
                                           draco_attribute *att,
@@ -2084,6 +2467,11 @@ static int draco_eb_parallelogram_compute(draco_eb *eb,
 }
 
 /// @brief spec MeshPredictionSchemeConstrainedMultiParallelogramDecoder.
+/// @param eb Edgebreaker state containing traversal order and connectivity.
+/// @param d Attribute decoder index.
+/// @param att Attribute containing corrections and per-context crease decisions.
+/// @param ncomp Number of portable components per value.
+/// @return Non-zero when every value and required crease decision is reconstructed.
 static int draco_eb_multi_parallelogram_compute(draco_eb *eb,
                                                 uint32_t d,
                                                 draco_attribute *att,
@@ -2151,6 +2539,8 @@ static int draco_eb_multi_parallelogram_compute(draco_eb *eb,
 }
 
 /// @brief spec IntSqrt — integer Newton iteration.
+/// @param number Unsigned value whose floor square root is requested.
+/// @return Greatest integer whose square does not exceed @p number.
 static uint64_t draco_int_sqrt(uint64_t number) {
     uint64_t act_number = number;
     uint64_t square_root = 1;
@@ -2168,6 +2558,12 @@ static uint64_t draco_int_sqrt(uint64_t number) {
 
 /// @brief spec GetPositionForEntryId — fetch the portable (quantized) position for
 ///        an encoded value entry of decoder @p d via the point mapping.
+/// @param eb Edgebreaker state containing decoder and point mappings.
+/// @param mesh Decoded mesh whose first attribute supplies portable positions.
+/// @param d Attribute decoder index owning @p entry_id.
+/// @param entry_id Encoded attribute-value index.
+/// @param pos Receives the three-component quantized position.
+/// @return Non-zero when the entry resolves through a valid corner and point.
 static int draco_eb_position_for_entry(const draco_eb *eb,
                                        const draco_mesh *mesh,
                                        uint32_t d,
@@ -2195,6 +2591,12 @@ static int draco_eb_position_for_entry(const draco_eb *eb,
 }
 
 /// @brief spec GetPositionForCorner.
+/// @param eb Edgebreaker state containing point and decoder mappings.
+/// @param mesh Decoded mesh whose first attribute supplies portable positions.
+/// @param d Attribute decoder used to interpret @p corner.
+/// @param corner Corner whose associated position is requested.
+/// @param pos Receives the three-component quantized position.
+/// @return Non-zero when the corner and its encoded value mapping are valid.
 static int draco_eb_position_for_corner(const draco_eb *eb,
                                         const draco_mesh *mesh,
                                         uint32_t d,
@@ -2207,6 +2609,11 @@ static int draco_eb_position_for_corner(const draco_eb *eb,
 }
 
 /// @brief spec MeshPredictionSchemeTexCoordsPortableDecoder_ComputeOriginalValues.
+/// @param eb Edgebreaker state containing traversal and connectivity mappings.
+/// @param mesh Decoded mesh containing the portable position attribute.
+/// @param d Texture-coordinate decoder index.
+/// @param att Two-component texture-coordinate attribute reconstructed in place.
+/// @return Non-zero when all values and orientation decisions are reconstructed.
 static int draco_eb_texcoords_compute(draco_eb *eb,
                                       const draco_mesh *mesh,
                                       uint32_t d,
@@ -2319,6 +2726,11 @@ static int draco_eb_texcoords_compute(draco_eb *eb,
 
 /// @brief spec MeshPredictionSchemeGeometricNormalDecoder_ComputeOriginalValues —
 ///        area-weighted one-ring normal, canonicalized to octahedral coordinates.
+/// @param eb Edgebreaker state containing traversal and connectivity mappings.
+/// @param mesh Decoded mesh containing the portable position attribute.
+/// @param d Normal decoder index.
+/// @param att Two-component octahedral normal corrections reconstructed in place.
+/// @return Non-zero when every geometric prediction and flip decision is valid.
 static int draco_eb_geometric_normal_compute(draco_eb *eb,
                                              const draco_mesh *mesh,
                                              uint32_t d,
@@ -2444,6 +2856,11 @@ static int draco_eb_geometric_normal_compute(draco_eb *eb,
 /* --- Prediction side-data parsers (spec DecodePredictionData) --- */
 
 /// @brief spec ParsePredictionRansData — prob_zero byte + sized rABS buffer.
+/// @param b Bounded reader positioned at the rABS descriptor.
+/// @param out_prob Receives the encoded zero-symbol probability.
+/// @param out_buf Receives a borrowed pointer to the sized entropy stream.
+/// @param out_size Receives the entropy-stream byte length.
+/// @return Non-zero when the complete declared stream lies within the payload.
 static int draco_parse_prediction_rans(draco_buf *b,
                                        uint8_t *out_prob,
                                        const uint8_t **out_buf,
@@ -2461,6 +2878,10 @@ static int draco_parse_prediction_rans(draco_buf *b,
 
 /// @brief spec DecodePredictionData — scheme-specific flag streams followed by the
 ///        transform parameters (geometric normal reads its transform first).
+/// @param b Bounded reader positioned at prediction side data.
+/// @param att Attribute receiving crease, orientation, flip, and transform parameters.
+/// @param num_entries Number of predicted logical values bounding side-data counts.
+/// @return Non-zero when all data required by the selected prediction scheme is valid.
 static int draco_decode_prediction_data(draco_buf *b, draco_attribute *att,
                                         uint32_t num_entries) {
     if (att->prediction_scheme == DRACO_PREDICTION_CONSTRAINED_MULTI) {
@@ -2550,6 +2971,9 @@ static int draco_decode_prediction_data(draco_buf *b, draco_attribute *att,
 
 /// @brief GENERIC attributes store raw little-endian values with no entropy coding
 ///        (reference SequentialAttributeDecoder::DecodeValues).
+/// @param b Bounded reader positioned at raw attribute values.
+/// @param att Attribute descriptor receiving final float or integer storage.
+/// @return Non-zero when the declared values fit and decode completely.
 static int draco_decode_generic_attribute(draco_buf *b, draco_attribute *att) {
     /* Draco data types: 1 INT8, 2 UINT8, 3 INT16, 4 UINT16, 5 INT32, 6 UINT32,
      * 7 INT64, 8 UINT64, 9 FLOAT32, 10 FLOAT64, 11 BOOL. */
@@ -2619,6 +3043,12 @@ static int draco_decode_generic_attribute(draco_buf *b, draco_attribute *att) {
 /// @brief Decode one attribute's portable values (spec DecodePortableAttributes +
 ///        SequentialIntegerAttributeDecoder_DecodeIntegerValues). @p eb is NULL for
 ///        sequential meshes, where only NONE/DIFFERENCE prediction is legal.
+/// @param b Bounded reader positioned at the portable attribute stream.
+/// @param mesh Mesh containing position data needed by geometric predictors.
+/// @param att Attribute descriptor and destination value storage.
+/// @param eb Optional edgebreaker traversal state for mesh prediction schemes.
+/// @param dec_idx Attribute decoder index within @p eb.
+/// @return Non-zero when entropy decoding, prediction inversion, and side data all succeed.
 static int draco_decode_portable_attribute(draco_buf *b,
                                            draco_mesh *mesh,
                                            draco_attribute *att,
@@ -2713,6 +3143,8 @@ static int draco_decode_portable_attribute(draco_buf *b,
 }
 
 /// @brief Dequantize one attribute (spec SequentialQuantizationAttributeDecoder).
+/// @param att Quantized attribute whose integer values and transform data are read.
+/// @return Non-zero after allocating and filling the final floating-point array.
 static int draco_dequantize_attribute(draco_attribute *att) {
     uint32_t max_quantized = (1u << att->quantization_bits) - 1u;
     float factor;
@@ -2741,6 +3173,8 @@ static int draco_dequantize_attribute(draco_attribute *att) {
 ///        OctaherdalCoordsToUnitVector and callers).
 /// @details Falls back to the decoder-level quantization bits when the prediction
 ///          carried no octahedral transform data (PREDICTION_NONE normals).
+/// @param att Normal attribute containing portable octahedral coordinates.
+/// @return Non-zero after allocating and filling three-component unit-vector output.
 static int draco_decode_normals_attribute(draco_attribute *att) {
     int32_t max_q_src = att->normal_max_q > 0
                             ? att->normal_max_q
@@ -2815,6 +3249,9 @@ static int draco_decode_normals_attribute(draco_attribute *att) {
 }
 
 /// @brief spec DecodeDataNeededByPortableTransforms — quantization parameters.
+/// @param b Bounded reader positioned at transform metadata.
+/// @param att Attribute receiving quantization origin, range, and bit count.
+/// @return Non-zero when all transform parameters required by the decoder are available.
 static int draco_read_transform_data(draco_buf *b, draco_attribute *att) {
     if (att->decoder_type == DRACO_SEQ_NORMALS) {
         att->quantization_bits = draco_read_u8(b);
@@ -2832,6 +3269,9 @@ static int draco_read_transform_data(draco_buf *b, draco_attribute *att) {
 }
 
 /// @brief spec TransformAttributesToOriginalFormat for one attribute.
+/// @param att Attribute whose portable representation is converted to final output.
+/// @return Non-zero when the selected decoder type has valid transform data and conversion
+///         succeeds.
 static int draco_transform_attribute_to_original(draco_attribute *att) {
     if (att->decoder_type == DRACO_SEQ_GENERIC)
         return 1; /* raw values are already final */
@@ -2854,6 +3294,10 @@ static int draco_transform_attribute_to_original(draco_attribute *att) {
 /// @brief Decode an edgebreaker payload (spec DecodeEdgebreakerConnectivityData +
 ///        DecodeAttributeData) and remap the result to point-indexed arrays so the
 ///        caller sees the same layout as a sequential mesh.
+/// @param b Bounded reader positioned at edgebreaker connectivity data.
+/// @param mesh Destination mesh receiving remapped triangles and attributes.
+/// @return Non-zero when connectivity, seams, traversals, attributes, and point remapping all
+///         succeed.
 static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
     draco_eb ebs;
     draco_eb *eb = &ebs;
@@ -3054,6 +3498,11 @@ done:
 
 /// @brief Decode a complete Draco payload (spec Decode()) — sequential and
 ///        edgebreaker triangular meshes.
+/// @param data Complete compressed Draco payload.
+/// @param size Number of readable bytes at @p data.
+/// @param mesh Zero-initialized destination mesh, cleared on failure.
+/// @param out_unsupported Optional flag set when the payload is valid but uses an unsupported
+///                        geometry or encoding mode.
 /// @return 1 on success, 0 with @p out_unsupported set when the payload uses an
 ///         encoding Zanna does not handle (point clouds) rather than being corrupt.
 static int draco_decode_mesh(const uint8_t *data,
@@ -3156,6 +3605,9 @@ fail:
 }
 
 /// @brief Find a decoded Draco attribute by its glTF-mapped unique id.
+/// @param mesh Decoded mesh whose attribute table is searched.
+/// @param unique_id Attribute identifier supplied by the glTF Draco extension.
+/// @return Borrowed matching attribute descriptor, or NULL when absent or out of range.
 static const draco_attribute *draco_find_attribute(const draco_mesh *mesh, int64_t unique_id) {
     if (unique_id < 0)
         return NULL;

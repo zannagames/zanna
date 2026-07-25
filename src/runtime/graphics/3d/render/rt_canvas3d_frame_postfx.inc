@@ -1,7 +1,35 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/render/rt_canvas3d_frame_postfx.inc
+// Purpose: Latch Canvas3D post-processing state and derive per-frame motion-data needs.
+// Key invariants:
+//   - Included only by rt_canvas3d.c; this is not a standalone translation unit.
+//   - Post-processing state is snapshotted once at frame begin.
+//   - Render-target canvases and incapable backends leave GPU post-FX disabled.
+// Ownership/Lifetime:
+//   - The Canvas3D frame owns the copied effect descriptors through presentation.
+//   - Backend callbacks borrow the latched chain and must not retain its address.
+// Links: rt_canvas3d.c, rt_canvas3d_internal.h, vgfx3d_backend.h
+//
+//===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements per-frame Canvas3D GPU post-processing state latching.
+/// @details The helpers copy mutable post-processing configuration into frame
+///   storage before drawing begins, publish that stable snapshot to capable
+///   backends, and detect effects that require previous-transform data.
+
 /// @brief Push the current frame's post-FX enable flag + snapshot to the backend.
 ///
 /// Called by `latch_gpu_postfx_state` after capturing a snapshot.
 /// Backends that don't implement these hooks silently no-op.
+/// @param c Borrowed Canvas3D whose already-latched state is published. A
+///   `NULL` canvas or missing backend is ignored.
 static void canvas3d_apply_gpu_postfx_state(rt_canvas3d *c) {
     const vgfx3d_postfx_chain_t *chain = NULL;
 
@@ -21,6 +49,8 @@ static void canvas3d_apply_gpu_postfx_state(rt_canvas3d *c) {
 /// by the present-time composite match what was active at frame start
 /// (avoids tearing if the user toggles a post-FX setting mid-frame).
 /// Skips snapshot capture for RTT canvases or non-postfx backends.
+/// @param c Borrowed Canvas3D whose frame snapshot is reset and populated. A
+///   `NULL` canvas is ignored.
 static void canvas3d_latch_gpu_postfx_state(rt_canvas3d *c) {
     if (!c)
         return;
@@ -35,6 +65,11 @@ static void canvas3d_latch_gpu_postfx_state(rt_canvas3d *c) {
 }
 
 /// @brief True when this latched post-FX frame requires previous transforms.
+/// @details Motion blur and temporal anti-aliasing consume motion data only
+///   when their corresponding latched effect descriptor is enabled.
+/// @param c Borrowed Canvas3D containing the immutable per-frame effect chain.
+/// @return Non-zero when an enabled motion-blur or TAA effect needs motion
+///   vectors; zero for disabled post-FX, other effects, or a `NULL` canvas.
 static int canvas3d_frame_needs_motion_vectors(const rt_canvas3d *c) {
     if (!c || !c->frame_gpu_postfx_enabled || !c->frame_postfx_chain.enabled)
         return 0;

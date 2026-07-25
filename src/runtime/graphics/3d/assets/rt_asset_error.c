@@ -17,6 +17,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_asset_error.c
+ * @brief Implements thread-local diagnostics and statistics for 3D asset imports.
+ *
+ * Each thread maintains one nested-load depth, last error, bounded warning
+ * list, suppression count, and set of saturating import counters. Beginning a
+ * top-level load clears all prior diagnostics; a successful top-level end
+ * clears only the error, while failure leaves the complete report available
+ * to callers. Script-facing getters copy data into newly allocated runtime
+ * strings, whereas internal C getters borrow thread-local buffers.
+ */
 #include "rt_asset_error.h"
 
 #include "rt_platform.h"
@@ -25,22 +36,41 @@
 #include <stdio.h>
 #include <string.h>
 
+/// Bytes reserved for the last error, including its null terminator.
 #define RT_ASSET_ERROR_MESSAGE_CAP 512
+/// Maximum number of visible warning slots retained per thread.
 #define RT_ASSET_WARNING_CAP 16
+/// Bytes reserved for each warning, including its null terminator.
 #define RT_ASSET_WARNING_MESSAGE_CAP 256
+/// Capacity of the newline-joined warning and base report storage.
 #define RT_ASSET_WARNING_JOINED_CAP                                                                \
     ((RT_ASSET_WARNING_CAP * (RT_ASSET_WARNING_MESSAGE_CAP + 1)) + 64)
 
+/// Last recoverable asset error code for the current thread.
 static RT_THREAD_LOCAL rt_asset_error_code g_asset_error_code = RT_ASSET_ERROR_NONE;
+/// Last recoverable asset error text for the current thread.
 static RT_THREAD_LOCAL char g_asset_error_message[RT_ASSET_ERROR_MESSAGE_CAP];
+/// Whether the last error text exceeded its fixed buffer.
 static RT_THREAD_LOCAL int g_asset_error_message_truncated = 0;
+/// Bounded visible warning messages for the current thread.
 static RT_THREAD_LOCAL char g_asset_warnings[RT_ASSET_WARNING_CAP][RT_ASSET_WARNING_MESSAGE_CAP];
+/// Per-visible-slot warning truncation flags.
 static RT_THREAD_LOCAL int g_asset_warning_truncated[RT_ASSET_WARNING_CAP];
+/// Number of currently visible warning slots.
 static RT_THREAD_LOCAL int64_t g_asset_warning_count = 0;
+/// Number of warnings received after the visible table filled.
 static RT_THREAD_LOCAL int64_t g_asset_warning_suppressed = 0;
+/// Nesting depth of asset loaders participating in the current transaction.
 static RT_THREAD_LOCAL int32_t g_asset_load_depth = 0;
+/// Saturating import-quality counters indexed by `rt_asset_import_stat`.
 static RT_THREAD_LOCAL int64_t g_asset_import_stats[RT_ASSET_IMPORT_STAT_COUNT];
 
+/// @brief Format a diagnostic into bounded storage.
+/// @param[out] dst Destination character buffer.
+/// @param[in] dst_cap Buffer capacity including the null terminator.
+/// @param[in] fmt `printf`-style format string, or `NULL` for empty text.
+/// @param[in] ap Arguments corresponding to `fmt`.
+/// @return One when formatting fails or truncates, otherwise zero.
 static int asset_error_vformat(char *dst, size_t dst_cap, const char *fmt, va_list ap)
 #if defined(__GNUC__) || defined(__clang__)
     __attribute__((format(printf, 3, 0)))
@@ -50,10 +80,10 @@ static int asset_error_vformat(char *dst, size_t dst_cap, const char *fmt, va_li
 /// @brief Format an asset diagnostic and report whether storage truncated it.
 /// @details Keeps every diagnostic buffer NUL-terminated even when `vsnprintf`
 ///          fails or the formatted output exceeds @p dst_cap.
-/// @param dst Destination buffer.
-/// @param dst_cap Destination byte capacity including NUL.
-/// @param fmt printf-style format string; NULL is treated as an empty string.
-/// @param ap Format argument list.
+/// @param[out] dst Destination buffer.
+/// @param[in] dst_cap Destination byte capacity including NUL.
+/// @param[in] fmt printf-style format string; NULL is treated as an empty string.
+/// @param[in] ap Format argument list.
 /// @return 1 when formatted text was truncated; otherwise 0.
 static int asset_error_vformat(char *dst, size_t dst_cap, const char *fmt, va_list ap) {
     int written;
@@ -66,12 +96,19 @@ static int asset_error_vformat(char *dst, size_t dst_cap, const char *fmt, va_li
     return written < 0 || (size_t)written >= dst_cap;
 }
 
+/// @brief Clear only the current thread's last error.
+/// @details Resets the code, message, and message-truncation flag without
+/// affecting warnings, import statistics, suppression count, or load depth.
 void rt_asset_error_clear_error(void) {
     g_asset_error_code = RT_ASSET_ERROR_NONE;
     g_asset_error_message[0] = '\0';
     g_asset_error_message_truncated = 0;
 }
 
+/// @brief Clear all current-thread diagnostics and import statistics.
+/// @details Clears the last error, every visible warning slot, the warning
+/// count, suppression count, and all import counters. The nesting depth is not
+/// modified.
 void rt_asset_error_clear(void) {
     rt_asset_error_clear_error();
     g_asset_warning_count = 0;
@@ -84,6 +121,11 @@ void rt_asset_error_clear(void) {
         g_asset_import_stats[i] = 0;
 }
 
+/// @brief Add a positive amount to one saturating import statistic.
+/// @param[in] stat Counter selector.
+/// @param[in] amount Positive increment.
+/// @details Invalid selectors and nonpositive increments are ignored. Overflow
+/// saturates the selected counter at `INT64_MAX`.
 void rt_asset_error_add_import_stat(rt_asset_import_stat stat, int64_t amount) {
     if (stat < 0 || stat >= RT_ASSET_IMPORT_STAT_COUNT || amount <= 0)
         return;
@@ -93,12 +135,19 @@ void rt_asset_error_add_import_stat(rt_asset_import_stat stat, int64_t amount) {
         g_asset_import_stats[stat] += amount;
 }
 
+/// @brief Read one current-thread import statistic.
+/// @param[in] stat Counter selector.
+/// @return The stored value, or zero for an invalid selector.
 int64_t rt_asset_error_get_import_stat(rt_asset_import_stat stat) {
     if (stat < 0 || stat >= RT_ASSET_IMPORT_STAT_COUNT)
         return 0;
     return g_asset_import_stats[stat];
 }
 
+/// @brief Enter a possibly nested asset-load diagnostic scope.
+/// @return Nonzero when this call began the outermost load, otherwise zero.
+/// @details Entering at depth zero clears all diagnostics and counters. Nested
+/// loaders share the outer transaction's thread-local state.
 int rt_asset_error_begin_load(void) {
     if (g_asset_load_depth <= 0) {
         g_asset_load_depth = 0;
@@ -108,6 +157,10 @@ int rt_asset_error_begin_load(void) {
     return g_asset_load_depth == 1;
 }
 
+/// @brief Leave a successful asset-load scope.
+/// @details Decrements a positive nesting depth. Once depth reaches zero, the
+/// last error is cleared while warnings and import statistics remain available
+/// for inspection.
 void rt_asset_error_end_load_success(void) {
     if (g_asset_load_depth > 0)
         g_asset_load_depth--;
@@ -115,11 +168,19 @@ void rt_asset_error_end_load_success(void) {
         rt_asset_error_clear_error();
 }
 
+/// @brief Leave a failed asset-load scope while preserving diagnostics.
+/// @details Decrements a positive nesting depth but never clears the last
+/// error, warnings, or import statistics.
 void rt_asset_error_end_load_failure(void) {
     if (g_asset_load_depth > 0)
         g_asset_load_depth--;
 }
 
+/// @brief Replace the current thread's last asset error.
+/// @param[in] code Error classification to store.
+/// @param[in] message Null-terminated message, or `NULL` for empty text.
+/// @details The message is copied into bounded thread-local storage and the
+/// truncation flag records formatting failure or insufficient capacity.
 void rt_asset_error_set(rt_asset_error_code code, const char *message) {
     int written;
     g_asset_error_code = code;
@@ -130,6 +191,12 @@ void rt_asset_error_set(rt_asset_error_code code, const char *message) {
         written < 0 || (size_t)written >= sizeof(g_asset_error_message);
 }
 
+/// @brief Replace the current thread's last asset error using formatted text.
+/// @param[in] code Error classification to store.
+/// @param[in] fmt `printf`-style format string, or `NULL` for empty text.
+/// @param[in] ... Values referenced by `fmt`.
+/// @details Output is always null-terminated and its truncation status is
+/// retained alongside the code.
 void rt_asset_error_setf(rt_asset_error_code code, const char *fmt, ...) {
     va_list ap;
     g_asset_error_code = code;
@@ -139,11 +206,20 @@ void rt_asset_error_setf(rt_asset_error_code code, const char *fmt, ...) {
     va_end(ap);
 }
 
+/// @brief Store an error only when no earlier error is present.
+/// @param[in] code Error classification to store.
+/// @param[in] message Null-terminated message, or `NULL` for empty text.
+/// @details Preserves the first recorded failure in a nested import chain.
 void rt_asset_error_set_if_empty(rt_asset_error_code code, const char *message) {
     if (g_asset_error_code == RT_ASSET_ERROR_NONE)
         rt_asset_error_set(code, message);
 }
 
+/// @brief Store a formatted error only when no earlier error is present.
+/// @param[in] code Error classification to store.
+/// @param[in] fmt `printf`-style format string, or `NULL` for empty text.
+/// @param[in] ... Values referenced by `fmt`.
+/// @details Preserves the first recorded failure in a nested import chain.
 void rt_asset_error_setf_if_empty(rt_asset_error_code code, const char *fmt, ...) {
     va_list ap;
     if (g_asset_error_code != RT_ASSET_ERROR_NONE)
@@ -155,14 +231,25 @@ void rt_asset_error_setf_if_empty(rt_asset_error_code code, const char *fmt, ...
     va_end(ap);
 }
 
+/// @brief Read the current thread's last asset error code.
+/// @return The stored code, or `RT_ASSET_ERROR_NONE` after a clear.
 rt_asset_error_code rt_asset_error_get_code(void) {
     return g_asset_error_code;
 }
 
+/// @brief Borrow the current thread's last asset error message.
+/// @return A nonnull pointer to thread-local null-terminated storage.
+/// @note The pointer is overwritten by later error operations on the same
+/// thread and must not be freed.
 const char *rt_asset_error_get_message(void) {
     return g_asset_error_message;
 }
 
+/// @brief Append one warning to the current thread's bounded warning list.
+/// @param[in] message Null-terminated warning text, or `NULL` for empty text.
+/// @details The first 16 warnings occupy visible slots. Each later warning
+/// increments the suppression count and replaces the last visible slot with a
+/// cumulative `"N more suppressed"` summary.
 void rt_asset_error_add_warning(const char *message) {
     if (g_asset_warning_count < RT_ASSET_WARNING_CAP) {
         int written = snprintf(g_asset_warnings[g_asset_warning_count],
@@ -185,6 +272,11 @@ void rt_asset_error_add_warning(const char *message) {
         written < 0 || (size_t)written >= RT_ASSET_WARNING_MESSAGE_CAP;
 }
 
+/// @brief Format and append one warning.
+/// @param[in] fmt `printf`-style format string, or `NULL` for empty text.
+/// @param[in] ... Values referenced by `fmt`.
+/// @details Formatting first uses one warning-sized temporary buffer, after
+/// which the bounded result follows the ordinary warning insertion policy.
 void rt_asset_error_add_warningf(const char *fmt, ...) {
     char message[RT_ASSET_WARNING_MESSAGE_CAP];
     va_list ap;
@@ -194,30 +286,49 @@ void rt_asset_error_add_warningf(const char *fmt, ...) {
     rt_asset_error_add_warning(message);
 }
 
+/// @brief Read the number of visible current-thread warning slots.
+/// @return A value from zero through `RT_ASSET_WARNING_CAP`.
 int64_t rt_asset_error_get_warning_count(void) {
     return g_asset_warning_count;
 }
 
+/// @brief Borrow one visible warning message.
+/// @param[in] index Zero-based warning slot.
+/// @return Thread-local warning text, or a static empty string for an invalid
+/// index.
+/// @note The returned pointer must not be freed and is invalidated or
+/// overwritten by later diagnostic operations on the same thread.
 const char *rt_asset_error_get_warning(int64_t index) {
     if (index < 0 || index >= g_asset_warning_count)
         return "";
     return g_asset_warnings[index];
 }
 
+/// @brief Test whether the stored last-error message was truncated.
+/// @return One when truncated or formatting failed, otherwise zero.
 int rt_asset_error_get_message_was_truncated(void) {
     return g_asset_error_message_truncated ? 1 : 0;
 }
 
+/// @brief Test whether one visible warning slot was truncated.
+/// @param[in] index Zero-based warning slot.
+/// @return One when that slot was truncated, otherwise zero; invalid indices
+/// also return zero.
 int rt_asset_error_get_warning_was_truncated(int64_t index) {
     if (index < 0 || index >= g_asset_warning_count)
         return 0;
     return g_asset_warning_truncated[index] ? 1 : 0;
 }
 
+/// @brief Read how many warnings were suppressed after the table filled.
+/// @return The current thread's cumulative suppression count.
 int64_t rt_asset_error_get_warning_suppressed_count(void) {
     return g_asset_warning_suppressed;
 }
 
+/// @brief Copy the last asset-load error into a runtime string.
+/// @return A newly allocated string containing the current error message,
+/// including an empty string when no message is present.
 rt_string rt_assets3d_get_last_load_error(void) {
     const char *message = rt_asset_error_get_message();
     if (!message)
@@ -225,19 +336,30 @@ rt_string rt_assets3d_get_last_load_error(void) {
     return rt_string_from_bytes(message, strlen(message));
 }
 
+/// @brief Expose the last asset-load error code to the runtime API.
+/// @return The current `rt_asset_error_code` converted to `int64_t`.
 int64_t rt_assets3d_get_last_load_error_code(void) {
     return (int64_t)rt_asset_error_get_code();
 }
 
+/// @brief Expose the number of visible load warnings to the runtime API.
+/// @return The current thread's visible warning count.
 int64_t rt_assets3d_get_load_warning_count(void) {
     return rt_asset_error_get_warning_count();
 }
 
+/// @brief Copy one visible load warning into a runtime string.
+/// @param[in] index Zero-based warning slot.
+/// @return A newly allocated warning string, or an empty string for an invalid
+/// index.
 rt_string rt_assets3d_get_load_warning(int64_t index) {
     const char *warning = rt_asset_error_get_warning(index);
     return rt_string_from_bytes(warning, strlen(warning));
 }
 
+/// @brief Join all visible load warnings into one runtime string.
+/// @return A newly allocated string containing warnings separated by newline
+/// characters, or an empty string when none exist.
 rt_string rt_assets3d_get_load_warnings(void) {
     char joined[RT_ASSET_WARNING_JOINED_CAP];
     size_t used = 0;
@@ -262,6 +384,12 @@ rt_string rt_assets3d_get_load_warnings(void) {
 }
 
 /// @brief Append @p text to a bounded report buffer, tracking the used length.
+/// @param[in,out] dst Null-terminated destination buffer.
+/// @param[in] cap Total destination capacity including the null terminator.
+/// @param[in,out] used Number of bytes currently written, updated on return.
+/// @param[in] text Null-terminated text, or `NULL` for no bytes.
+/// @details Text beyond the remaining capacity is silently truncated while the
+/// destination remains null-terminated.
 static void asset_report_append(char *dst, size_t cap, size_t *used, const char *text) {
     size_t len = text ? strlen(text) : 0;
     if (*used >= cap - 1)
@@ -274,6 +402,12 @@ static void asset_report_append(char *dst, size_t cap, size_t *used, const char 
 }
 
 /// @brief Append @p text as a JSON string literal (quoted, minimally escaped).
+/// @param[in,out] dst Null-terminated destination buffer.
+/// @param[in] cap Total destination capacity including the null terminator.
+/// @param[in,out] used Number of bytes currently written, updated on return.
+/// @param[in] text Text to quote, or `NULL` for an empty string.
+/// @details Quotes, backslashes, common whitespace controls, and remaining
+/// bytes below `0x20` are escaped before bounded append.
 static void asset_report_append_json_string(char *dst, size_t cap, size_t *used, const char *text) {
     asset_report_append(dst, cap, used, "\"");
     for (const char *p = text ? text : ""; *p; p++) {
@@ -301,6 +435,12 @@ static void asset_report_append_json_string(char *dst, size_t cap, size_t *used,
 }
 
 /// @brief Append one `"key":value` counter field (with optional leading comma).
+/// @param[in,out] dst Null-terminated destination buffer.
+/// @param[in] cap Total destination capacity including the null terminator.
+/// @param[in,out] used Number of bytes currently written, updated on return.
+/// @param[in] key Trusted internal JSON field name.
+/// @param[in] value Signed counter value.
+/// @param[in] leading_comma Nonzero to prefix the field with a comma.
 static void asset_report_append_counter(
     char *dst, size_t cap, size_t *used, const char *key, int64_t value, int leading_comma) {
     char field[96];
@@ -313,6 +453,11 @@ static void asset_report_append_counter(
     asset_report_append(dst, cap, used, field);
 }
 
+/// @brief Build the current thread's machine-readable asset import report.
+/// @return A newly allocated runtime string containing a bounded JSON object
+/// with import counters, suppression count, and visible warnings.
+/// @details Warning strings are JSON-escaped. The fixed report buffer prevents
+/// unbounded allocation; exceptionally escape-heavy content may be truncated.
 rt_string rt_assets3d_get_import_report(void) {
     char report[RT_ASSET_WARNING_JOINED_CAP + 1024];
     size_t used = 0;

@@ -25,6 +25,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_physics3d_probes.c
+ * @brief Implements clearance, ledge, vault, and raw collider traversal probes.
+ *
+ * Probes compose existing narrow-phase and sweep queries without registering
+ * scratch bodies or mutating simulation state. Results are GC-managed
+ * world-space snapshots and retain no physics objects.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_collider3d.h"
@@ -59,11 +68,14 @@ typedef struct {
 } rt_ledge_hit3d_obj;
 
 /// @brief Validate @p obj as a LedgeHit3D handle (NULL on mismatch).
+/// @param obj Runtime object handle.
+/// @return Typed result payload, or NULL on mismatch.
 static rt_ledge_hit3d_obj *ledge_hit3d_checked(void *obj) {
     return (rt_ledge_hit3d_obj *)rt_g3d_checked_or_null(obj, RT_G3D_LEDGEHIT3D_CLASS_ID);
 }
 
 /// @brief Allocate a zeroed LedgeHit3D result handle.
+/// @return Newly allocated result, or NULL on failure.
 static rt_ledge_hit3d_obj *ledge_hit3d_new(void) {
     rt_ledge_hit3d_obj *hit = (rt_ledge_hit3d_obj *)rt_obj_new_i64(
         RT_G3D_LEDGEHIT3D_CLASS_ID, (int64_t)sizeof(rt_ledge_hit3d_obj));
@@ -76,6 +88,8 @@ static rt_ledge_hit3d_obj *ledge_hit3d_new(void) {
 }
 
 /// @brief `LedgeHit3D.GrabPoint` — world-space ledge edge point.
+/// @param obj LedgeHit3D handle.
+/// @return Newly allocated grab-point Vec3, or NULL when invalid.
 void *rt_ledge_hit3d_get_grab_point(void *obj) {
     rt_ledge_hit3d_obj *hit = ledge_hit3d_checked(obj);
     if (!hit)
@@ -84,6 +98,8 @@ void *rt_ledge_hit3d_get_grab_point(void *obj) {
 }
 
 /// @brief `LedgeHit3D.SurfaceNormal` — ledge top surface normal.
+/// @param obj LedgeHit3D handle.
+/// @return Newly allocated top-normal Vec3, or NULL when invalid.
 void *rt_ledge_hit3d_get_surface_normal(void *obj) {
     rt_ledge_hit3d_obj *hit = ledge_hit3d_checked(obj);
     if (!hit)
@@ -92,6 +108,8 @@ void *rt_ledge_hit3d_get_surface_normal(void *obj) {
 }
 
 /// @brief `LedgeHit3D.WallNormal` — front wall surface normal.
+/// @param obj LedgeHit3D handle.
+/// @return Newly allocated wall-normal Vec3, or NULL when invalid.
 void *rt_ledge_hit3d_get_wall_normal(void *obj) {
     rt_ledge_hit3d_obj *hit = ledge_hit3d_checked(obj);
     if (!hit)
@@ -100,6 +118,8 @@ void *rt_ledge_hit3d_get_wall_normal(void *obj) {
 }
 
 /// @brief `LedgeHit3D.LandingPoint` — far-side landing (vault only; NULL otherwise).
+/// @param obj LedgeHit3D handle.
+/// @return Newly allocated landing Vec3, or NULL when absent.
 void *rt_ledge_hit3d_get_landing_point(void *obj) {
     rt_ledge_hit3d_obj *hit = ledge_hit3d_checked(obj);
     if (!hit || !hit->has_landing)
@@ -108,18 +128,24 @@ void *rt_ledge_hit3d_get_landing_point(void *obj) {
 }
 
 /// @brief `LedgeHit3D.Height` — ledge top height above the probe origin.
+/// @param obj LedgeHit3D handle.
+/// @return Measured ledge rise, or zero when invalid.
 double rt_ledge_hit3d_get_height(void *obj) {
     rt_ledge_hit3d_obj *hit = ledge_hit3d_checked(obj);
     return hit ? hit->height : 0.0;
 }
 
 /// @brief `LedgeHit3D.HasStandingRoom` — capsule clearance existed at the top.
+/// @param obj LedgeHit3D handle.
+/// @return One when standing clearance was verified, otherwise zero.
 int8_t rt_ledge_hit3d_get_has_standing_room(void *obj) {
     rt_ledge_hit3d_obj *hit = ledge_hit3d_checked(obj);
     return hit ? hit->has_standing_room : 0;
 }
 
 /// @brief `LedgeHit3D.HasLanding` — a far-side vault landing was found.
+/// @param obj LedgeHit3D handle.
+/// @return One when landing data is present, otherwise zero.
 int8_t rt_ledge_hit3d_get_has_landing(void *obj) {
     rt_ledge_hit3d_obj *hit = ledge_hit3d_checked(obj);
     return hit ? hit->has_landing : 0;
@@ -130,6 +156,10 @@ int8_t rt_ledge_hit3d_get_has_landing(void *obj) {
 //=========================================================================
 
 /// @brief Read a Vec3 parameter into @p out; returns 0 (and traps) on wrong type.
+/// @param vec Vec3 runtime handle.
+/// @param out Three-component sanitized output.
+/// @param api_name Diagnostic text used on type mismatch.
+/// @return One on success, otherwise zero.
 static int probe_read_vec3(void *vec, double out[3], const char *api_name) {
     if (!rt_g3d_is_vec3(vec)) {
         rt_trap(api_name);
@@ -144,6 +174,12 @@ static int probe_read_vec3(void *vec, double out[3], const char *api_name) {
 /// @brief Capsule-overlap test at an explicit pose against every masked world
 ///   body, using a scratch (unregistered) capsule body and the standard
 ///   narrow-phase. Returns 1 when any solid overlap exists.
+/// @param world World3D to query.
+/// @param pos Capsule center position.
+/// @param radius Capsule radius.
+/// @param height Total capsule height.
+/// @param mask Query layer mask.
+/// @return One for any solid overlap, otherwise zero.
 static int probe_capsule_overlaps(
     rt_world3d *world, const double pos[3], double radius, double height, int64_t mask) {
     if (!world)
@@ -174,6 +210,18 @@ static int probe_capsule_overlaps(
 }
 
 /// @brief Shared ledge steps 1-2: wall sweep + top down-sweep.
+/// @param world_obj World3D runtime handle used by public sweep APIs.
+/// @param world Typed World3D backing the query.
+/// @param origin Foot-level world origin.
+/// @param forward Requested horizontal search direction.
+/// @param radius Probe capsule/sphere radius.
+/// @param max_height Maximum ledge rise.
+/// @param max_depth Maximum forward reach.
+/// @param mask Query layer mask.
+/// @param out_wall_point Wall-contact point output.
+/// @param out_wall_normal Wall-normal output.
+/// @param out_top_point Top-contact point output.
+/// @param out_top_normal Top-normal output.
 /// @return 1 on success with all out-params filled; 0 when no valid ledge.
 static int probe_find_ledge_top(void *world_obj,
                                 rt_world3d *world,
@@ -273,6 +321,16 @@ static int probe_find_ledge_top(void *world_obj,
 /// @brief Overlap two colliders at explicit poses through the standard
 ///        narrow-phase (scratch bodies, never world-registered). Combat-volume
 ///        primitive: writes the contact normal/depth/witness point on hit.
+/// @param collider_a First Collider3D.
+/// @param pos_a First world position.
+/// @param quat_a First XYZW orientation.
+/// @param collider_b Second Collider3D.
+/// @param pos_b Second world position.
+/// @param quat_b Second XYZW orientation.
+/// @param out_normal Optional A-to-B normal output.
+/// @param out_depth Optional penetration-depth output.
+/// @param out_point Optional witness-point output.
+/// @return One when the posed colliders overlap, otherwise zero.
 int8_t rt_collider3d_overlap_at_raw(void *collider_a,
                                     const double *pos_a,
                                     const double *quat_a,
@@ -327,6 +385,12 @@ int8_t rt_collider3d_overlap_at_raw(void *collider_a,
 
 /// @brief `Physics3DWorld.ProbeClearance(position, radius, height, mask)` —
 ///   true when a capsule of the given dims fits at @p position (no solid overlap).
+/// @param world_obj World3D handle.
+/// @param position Vec3 capsule position.
+/// @param radius Positive capsule radius.
+/// @param height Positive total capsule height.
+/// @param mask Query layer mask.
+/// @return One when the capsule fits, otherwise zero.
 int8_t rt_world3d_probe_clearance(
     void *world_obj, void *position, double radius, double height, int64_t mask) {
     rt_world3d *world = (rt_world3d *)rt_g3d_checked_or_null(world_obj, RT_G3D_WORLD3D_CLASS_ID);
@@ -341,6 +405,14 @@ int8_t rt_world3d_probe_clearance(
 
 /// @brief `Physics3DWorld.ProbeLedge(origin, forward, radius, maxHeight, maxDepth,
 ///   mask)` — find a grabbable ledge ahead; NULL when nothing valid is found.
+/// @param world_obj World3D handle.
+/// @param origin_vec Vec3 foot-level origin.
+/// @param forward_vec Vec3 search direction.
+/// @param radius Positive probe radius.
+/// @param max_height Maximum ledge rise and standing height.
+/// @param max_depth Maximum forward reach.
+/// @param mask Query layer mask.
+/// @return Newly allocated LedgeHit3D snapshot, or NULL when no valid ledge exists.
 void *rt_world3d_probe_ledge(void *world_obj,
                              void *origin_vec,
                              void *forward_vec,
@@ -402,6 +474,14 @@ void *rt_world3d_probe_ledge(void *world_obj,
 /// @brief `Physics3DWorld.ProbeVault(origin, forward, radius, maxHeight,
 ///   maxThickness, mask)` — like ProbeLedge but also requires a near-origin-level
 ///   landing on the far side of the obstacle; NULL when not vaultable.
+/// @param world_obj World3D handle.
+/// @param origin_vec Vec3 foot-level origin.
+/// @param forward_vec Vec3 search direction.
+/// @param radius Positive probe radius.
+/// @param max_height Maximum vault rise and clearance height.
+/// @param max_thickness Maximum obstacle thickness.
+/// @param mask Query layer mask.
+/// @return Newly allocated LedgeHit3D with landing data, or NULL when not vaultable.
 void *rt_world3d_probe_vault(void *world_obj,
                              void *origin_vec,
                              void *forward_vec,

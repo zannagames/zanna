@@ -23,6 +23,13 @@
 // Links: src/runtime/oop/rt_object.h, src/runtime/graphics/3d/rt_graphics3d_ids.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines null-safe retained-reference slot helpers for Graphics3D private state.
+/// @details The inline helpers consume owned runtime references, clear borrowed wrong-class
+///   corruption without dereferencing it, and report repairs so dependent caches can be
+///   invalidated without risking double release.
+
 #pragma once
 
 #include "rt_graphics3d_ids.h"

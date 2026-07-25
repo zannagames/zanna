@@ -21,6 +21,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_navmesh3d_query_grid_stage.inc
+ * @brief Builds transactional candidates for NavMesh3D's bounded spatial query grid.
+ *
+ * The staging routine replicates triangle references into a checked uniform
+ * XZ grid without mutating the live index. Successful allocations transfer to
+ * the caller's stage object; resource-budget refusal requests a bounded linear
+ * fallback, while structural or allocation failures remain distinguishable so
+ * callers can preserve previously published state.
+ */
+
 /// @brief Construct a complete candidate uniform XZ query grid without touching live state.
 /// @details Each triangle is replicated into every cell overlapped by its XZ AABB. Cell and
 /// reference products use checked `uint64_t`/`size_t` arithmetic. If configured budgets would be

@@ -17,7 +17,26 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Model3D import bridges for VSCN, OBJ, STL, glTF, and FBX assets.
+/// @details This implementation fragment is included by `rt_model3d.c`. It translates each
+///   supported source format into the common Model3D resource tables and scene templates, resolves
+///   asset-manager data where requested, and owns the temporary-file bridges required by
+///   path-oriented importers.
+
+/// @brief Write a byte span to a temporary asset path.
+/// @param path Runtime string naming the output file; the caller retains ownership.
+/// @param bytes Non-null byte span to write; the caller retains ownership.
+/// @param size Number of bytes available at @p bytes.
+/// @return Non-zero only when every byte was written and the file closed successfully.
 static int model3d_write_temp_asset_bytes(rt_string path, const uint8_t *bytes, size_t size);
+
+/// @brief Create a uniquely named temporary file and populate it with asset bytes.
+/// @param prefix_cstr Prefix used when generating the temporary filename.
+/// @param suffix_cstr Filename suffix, including the importer-recognized extension.
+/// @param bytes Non-null byte span to stage; the caller retains ownership.
+/// @param size Number of bytes available at @p bytes.
+/// @return An owned runtime string naming the temporary file, or `NULL` on failure.
 static rt_string model3d_spill_asset_bytes(const char *prefix_cstr,
                                            const char *suffix_cstr,
                                            const uint8_t *bytes,
@@ -26,6 +45,7 @@ static rt_string model3d_spill_asset_bytes(const char *prefix_cstr,
 /// @brief Extract the next token from *@p cursor — honoring single/double quotes so paths or
 ///   material names containing spaces survive — and advance @p cursor past it (and any closing
 ///   quote).
+/// @param[in,out] cursor Address of the current parser position; advanced past the returned token.
 /// @return A malloc'd copy of the token, or NULL at end-of-line / on a comment.
 static char *model_obj_next_path_token(const char **cursor) {
     const char *start;
@@ -57,6 +77,12 @@ static char *model_obj_next_path_token(const char **cursor) {
 /// @brief Load the texture named by an MTL map directive (sanitized via the path-traversal
 ///   guard and joined to @p mtl_dir) and assign it to @p material's @p slot
 ///   (normal/specular/emissive, else base color). No-op on a missing/unsafe/unloadable path.
+/// @param material Material receiving the decoded Pixels resource; may be `NULL`.
+/// @param mtl_dir Directory against which the relative texture reference is resolved.
+/// @param map_value Unparsed value following the MTL map directive.
+/// @param slot Material texture-slot identifier selecting the destination property.
+/// @param load_assets Non-zero to resolve the texture through the asset manager; zero to load it
+///   directly from the filesystem.
 static void model_obj_set_texture_from_map(
     void *material, const char *mtl_dir, const char *map_value, int32_t slot, int load_assets) {
     char *map_ref;
@@ -117,6 +143,10 @@ static void model_obj_set_texture_from_map(
 
 /// @brief Parse the .mtl library referenced by @p mtllib_ref (relative to @p obj_dir), adding
 ///   each "newmtl" material — with its colors and map_* textures — to @p table.
+/// @param table Destination material-name table; retained materials are appended to it.
+/// @param obj_dir Logical directory containing the OBJ and resolving its MTL reference.
+/// @param mtllib_ref Relative MTL path obtained from an OBJ `mtllib` directive.
+/// @param load_assets Non-zero to resolve library and texture bytes through the asset manager.
 static void model_obj_parse_mtl_file(model_obj_material_table *table,
                                      const char *obj_dir,
                                      const char *mtllib_ref,
@@ -255,8 +285,14 @@ static void model_obj_parse_mtl_file(model_obj_material_table *table,
     free(line);
 }
 
-/// @brief Scan the OBJ file at @p obj_path for "mtllib" directives and parse each referenced
+/// @brief Scan the OBJ file at @p obj_scan_path for "mtllib" directives and parse each referenced
 ///   .mtl library into @p table.
+/// @param obj_scan_path Physical filesystem path opened for the directive scan.
+/// @param logical_obj_path Original OBJ path used as the dependency-resolution base when the
+///   physical file is a temporary spill.
+/// @param table Destination table populated with named materials.
+/// @param load_assets Non-zero to resolve referenced libraries and textures through the asset
+///   manager.
 static void model_obj_load_material_libraries(const char *obj_scan_path,
                                               const char *logical_obj_path,
                                               model_obj_material_table *table,
@@ -300,7 +336,12 @@ static void model_obj_load_material_libraries(const char *obj_scan_path,
 
 /// @brief Load a Wavefront OBJ file into @p model: parse vertices/normals/UVs and faces
 ///   (grouped by material), resolve materials from referenced .mtl libraries, and build the
-///   model's per-material meshes. @return 1 on success, 0 on failure.
+///   model's per-material meshes.
+/// @param model Destination Model3D receiving retained meshes, materials, and scene nodes.
+/// @param path Runtime path used to load the OBJ bytes; the caller retains ownership.
+/// @param path_cstr Logical path used as the base for material-library dependencies.
+/// @param load_assets Non-zero to obtain root and dependency bytes from the asset manager.
+/// @return 1 on success, or 0 after releasing all temporary resources on failure.
 static int model3d_load_from_obj(rt_model3d *model,
                                  rt_string path,
                                  const char *path_cstr,
@@ -391,8 +432,15 @@ cleanup:
 
 /// @brief .gltf/.glb branch of rt_model3d_load_impl: decode the asset and collect its
 ///   meshes/materials/skeletons/animations/cameras/scene templates onto `model`.
-///   Consumes the preloaded gltf inputs. @return 1 on success, 0 on failure (the local
-///   asset is released; the caller cleans up `model`).
+///   Consumes the preloaded glTF inputs.
+/// @param model Destination Model3D receiving retained glTF resources and scene templates.
+/// @param path Logical asset path used for diagnostics and external dependency resolution.
+/// @param load_assets Non-zero to load through the asset manager when no preload was supplied.
+/// @param preloaded_gltf_data Optional owned glTF/GLB byte buffer transferred to the importer.
+/// @param preloaded_gltf_size Number of bytes in @p preloaded_gltf_data.
+/// @param preloaded_gltf_bundle Optional owned preload bundle transferred to the importer.
+/// @return 1 on success, or 0 after releasing the decoded asset on failure; the caller remains
+///   responsible for cleaning up @p model.
 static int model3d_load_from_gltf(rt_model3d *model,
                                   rt_string path,
                                   int load_assets,
@@ -631,6 +679,10 @@ static int model3d_write_temp_asset_bytes(rt_string path, const uint8_t *bytes, 
 }
 
 /// @brief Stage asset bytes in a uniquely named temporary file with the requested extension.
+/// @param prefix_cstr Prefix used when generating the temporary filename.
+/// @param suffix_cstr Filename suffix, including the importer-recognized extension.
+/// @param bytes Non-null byte span to stage; the caller retains ownership.
+/// @param size Number of bytes available at @p bytes.
 /// @return Owned runtime path on success, or NULL after cleaning a partial file on failure.
 static rt_string model3d_spill_asset_bytes(const char *prefix_cstr,
                                            const char *suffix_cstr,
@@ -660,6 +712,9 @@ static rt_string model3d_spill_asset_bytes(const char *prefix_cstr,
 /// @details The FBX importer is path-based (binary parsing re-opens the file), so embedded or
 ///   packed assets are spilled to a temp file, decoded with the recoverable loader, and
 ///   unlinked — mirroring the asset-decode tempfile bridge used for path-only image formats.
+/// @param original_path Logical FBX path retained as the base for referenced textures.
+/// @param bytes Non-null FBX byte span to stage; the caller retains ownership.
+/// @param size Number of bytes available at @p bytes.
 /// @return FBX asset handle on success, or NULL on any failure.
 static void *model3d_fbx_from_asset_bytes(rt_string original_path,
                                           const uint8_t *bytes,
@@ -701,6 +756,12 @@ static void *model3d_fbx_from_asset_bytes(rt_string original_path,
 ///   first (via a temp-file bridge) so `Model3D.LoadAsset` resolves bundled FBX models, with the
 ///   filesystem path as the fallback. Valid binary FBX files still use the strict parser,
 ///   preserving existing hard diagnostics for malformed binary content.
+/// @param model Destination Model3D receiving retained FBX resources and scene nodes.
+/// @param path Logical FBX path used for direct loading and referenced-texture resolution.
+/// @param load_assets Non-zero to try bytes resolved through the asset manager before the
+///   filesystem fallback.
+/// @param preloaded_fbx_data Optional caller-owned FBX byte span to try before other sources.
+/// @param preloaded_fbx_size Number of bytes in @p preloaded_fbx_data.
 /// @return 1 on success, 0 on recoverable load failure.
 static int model3d_load_from_fbx(rt_model3d *model,
                                  rt_string path,
@@ -850,6 +911,18 @@ static int model3d_load_from_fbx(rt_model3d *model,
 /// animations, and the scene-node template tree from the source asset, retaining each component for
 /// the model's lifetime. Returns NULL for recoverable loader failure; invalid paths and unsupported
 /// extensions still trap. Use `_instantiate` to spawn a clone in a live scene.
+/// @param path Runtime string naming the model source and logical dependency base.
+/// @param load_assets Non-zero to resolve source bytes and dependencies through the asset manager.
+/// @param preloaded_gltf_data Optional owned glTF/GLB byte buffer transferred to this function.
+/// @param preloaded_gltf_size Number of bytes in @p preloaded_gltf_data.
+/// @param preloaded_gltf_bundle Optional owned glTF preload bundle transferred to this function.
+/// @param preloaded_fbx_data Optional owned FBX byte buffer transferred to this function.
+/// @param preloaded_fbx_size Number of bytes in @p preloaded_fbx_data.
+/// @param preloaded_vscn_text Optional borrowed VSCN document text to parse instead of reading
+///   @p path.
+/// @param preloaded_vscn_len Number of bytes in @p preloaded_vscn_text.
+/// @return An owned Model3D object on success, or `NULL` after releasing transferred preload
+///   resources on recoverable failure.
 static void *rt_model3d_load_impl(rt_string path,
                                   int load_assets,
                                   uint8_t *preloaded_gltf_data,

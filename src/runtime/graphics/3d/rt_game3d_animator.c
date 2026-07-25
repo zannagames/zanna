@@ -23,6 +23,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the Game3D animator wrapper and its bounded event bridge.
+/// @details Animator3D can coordinate skeletal and imported node animation drivers while ensuring
+///   each driver advances through its intended update path. The wrapper retains its bindings and
+///   owns all event-name strings buffered from the most recent play or update operation.
+
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_audio.h"
@@ -75,12 +81,16 @@
 #include <string.h>
 
 /// @brief Return the wrapped AnimController3D only when the private slot is still valid.
+/// @param animator Animator3D wrapper whose skeletal controller slot is inspected.
+/// @return The borrowed validated AnimController3D handle, or NULL when absent or stale.
 static void *game3d_animator_controller_ref(const rt_game3d_animator *animator) {
     return animator ? rt_g3d_checked_or_null(animator->controller, RT_G3D_ANIMCONTROLLER3D_CLASS_ID)
                     : NULL;
 }
 
 /// @brief Return the wrapped NodeAnimator3D only when the private slot is still valid.
+/// @param animator Animator3D wrapper whose node-animation slot is inspected.
+/// @return The borrowed validated NodeAnimator3D handle, or NULL when absent or stale.
 static void *game3d_animator_node_animator_ref(const rt_game3d_animator *animator) {
     return animator
                ? rt_g3d_checked_or_null(animator->node_animator, RT_G3D_NODEANIMATOR3D_CLASS_ID)
@@ -88,6 +98,8 @@ static void *game3d_animator_node_animator_ref(const rt_game3d_animator *animato
 }
 
 /// @brief Clamp the private event count to the public fixed-buffer range.
+/// @param animator Animator3D wrapper whose private count is sanitized.
+/// @return A safe count from 0 through RT_GAME3D_ANIM_EVENT_MAX.
 static int32_t game3d_animator_event_count_clamped(const rt_game3d_animator *animator) {
     if (!animator || animator->event_count < 0)
         return 0;
@@ -96,6 +108,7 @@ static int32_t game3d_animator_event_count_clamped(const rt_game3d_animator *ani
 }
 
 /// @brief Release an owned string event slot, clearing stale private corruption safely.
+/// @param slot Address of an event-name slot to validate, release, and clear.
 static void game3d_animator_release_event_slot(rt_string *slot) {
     if (!slot || !*slot)
         return;
@@ -107,6 +120,8 @@ static void game3d_animator_release_event_slot(rt_string *slot) {
 }
 
 /// @brief Drop non-string private event slots and compact the visible event buffer.
+/// @param animator Animator3D whose bounded event array is repaired in place.
+/// @return The number of valid string events that remain after compaction.
 static int32_t game3d_animator_repair_event_buffer(rt_game3d_animator *animator) {
     if (!animator)
         return 0;
@@ -133,6 +148,7 @@ static int32_t game3d_animator_repair_event_buffer(rt_game3d_animator *animator)
 }
 
 /// @brief Release all buffered animation-event name strings and reset the count to 0.
+/// @param animator Animator3D whose owned event strings are discarded.
 static void game3d_animator_clear_events(rt_game3d_animator *animator) {
     if (!animator)
         return;
@@ -143,6 +159,9 @@ static void game3d_animator_clear_events(rt_game3d_animator *animator) {
 
 /// @brief Pull pending controller events into the animator's buffer until the controller
 ///   reports none or RT_GAME3D_ANIM_EVENT_MAX is reached.
+/// @details Events beyond the public buffer capacity are drained and released so they cannot
+///   leak into a later update.
+/// @param animator Animator3D receiving retained event-name strings.
 static void game3d_animator_drain_events(rt_game3d_animator *animator) {
     void *controller = game3d_animator_controller_ref(animator);
     if (!controller)
@@ -173,6 +192,7 @@ static void game3d_animator_drain_events(rt_game3d_animator *animator) {
 }
 
 /// @brief GC finalizer for an animator: drop buffered events and release the controller.
+/// @param obj Animator3D allocation being finalized.
 static void game3d_animator_finalize(void *obj) {
     rt_game3d_animator *animator = (rt_game3d_animator *)obj;
     if (!animator)
@@ -183,6 +203,9 @@ static void game3d_animator_finalize(void *obj) {
 }
 
 /// @brief Allocate an animator wrapping optional skeletal and node animation drivers.
+/// @param controller Optional AnimController3D skeletal driver.
+/// @param node_animator Optional NodeAnimator3D imported-node driver.
+/// @return A new Animator3D handle, or NULL when both inputs are absent or invalid.
 void *rt_game3d_animator_new_from_bindings(void *controller, void *node_animator) {
     rt_game3d_animator *animator;
     if (controller && !rt_g3d_has_class(controller, RT_G3D_ANIMCONTROLLER3D_CLASS_ID)) {
@@ -212,6 +235,8 @@ void *rt_game3d_animator_new_from_bindings(void *controller, void *node_animator
 }
 
 /// @brief Allocate an animator wrapping either an AnimController3D or a NodeAnimator3D.
+/// @param controller_or_node_animator Runtime handle for one supported animation driver.
+/// @return A new Animator3D handle, or NULL when the handle has an unsupported class.
 void *rt_game3d_animator_new(void *controller_or_node_animator) {
     if (rt_g3d_has_class(controller_or_node_animator, RT_G3D_ANIMCONTROLLER3D_CLASS_ID))
         return rt_game3d_animator_new_from_bindings(controller_or_node_animator, NULL);
@@ -222,6 +247,8 @@ void *rt_game3d_animator_new(void *controller_or_node_animator) {
 }
 
 /// @brief Get the AnimController3D backing the animator (NULL if invalid).
+/// @param obj Animator3D wrapper to query.
+/// @return The borrowed skeletal controller handle, or NULL when unavailable.
 void *rt_game3d_animator_get_controller(void *obj) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.get_controller: invalid animator");
@@ -229,6 +256,8 @@ void *rt_game3d_animator_get_controller(void *obj) {
 }
 
 /// @brief Get the NodeAnimator3D backing this wrapper, or NULL for skeletal-only animators.
+/// @param obj Animator3D wrapper to query.
+/// @return The borrowed node animator handle, or NULL when unavailable.
 void *rt_game3d_animator_get_node_animator(void *obj) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.get_nodeAnimator: invalid animator");
@@ -236,6 +265,8 @@ void *rt_game3d_animator_get_node_animator(void *obj) {
 }
 
 /// @brief Whether this wrapper needs Game3D's skeletal animation update pass.
+/// @param obj Candidate Animator3D wrapper.
+/// @return 1 when a valid skeletal controller is bound, or 0 otherwise.
 int8_t rt_game3d_animator_needs_game_update(void *obj) {
     rt_game3d_animator *animator =
         (rt_game3d_animator *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID);
@@ -244,6 +275,9 @@ int8_t rt_game3d_animator_needs_game_update(void *obj) {
 
 /// @brief Play `name` immediately, refreshing the event buffer on success; returns 0
 ///   if the animator is invalid or the clip is unknown.
+/// @param obj Animator3D wrapper that will start playback.
+/// @param name Runtime string naming the state or clip.
+/// @return 1 when at least one wrapped driver starts the clip, or 0 on failure.
 int8_t rt_game3d_animator_play(void *obj, rt_string name) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.play: invalid animator");
@@ -265,6 +299,10 @@ int8_t rt_game3d_animator_play(void *obj, rt_string name) {
 
 /// @brief Cross-fade to `name` over `seconds`, refreshing the event buffer on success;
 ///   returns 0 if the animator is invalid or the clip is unknown.
+/// @param obj Animator3D wrapper that will transition playback.
+/// @param name Runtime string naming the destination state or clip.
+/// @param seconds Blend duration, sanitized to the supported non-negative range.
+/// @return 1 when at least one wrapped driver accepts the transition, or 0 on failure.
 int8_t rt_game3d_animator_crossfade(void *obj, rt_string name, double seconds) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.crossfade: invalid animator");
@@ -286,6 +324,10 @@ int8_t rt_game3d_animator_crossfade(void *obj, rt_string name, double seconds) {
 }
 
 /// @brief Play `name` as a true additive overlay on `layer`, refreshing events on success.
+/// @param obj Animator3D wrapper containing the skeletal controller.
+/// @param layer Additive animation-layer index.
+/// @param name Runtime string naming the overlay state or clip.
+/// @return 1 when the skeletal controller starts the overlay, or 0 on failure.
 int8_t rt_game3d_animator_play_layer_additive(void *obj, int64_t layer, rt_string name) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.playLayerAdditive: invalid animator");
@@ -303,6 +345,11 @@ int8_t rt_game3d_animator_play_layer_additive(void *obj, int64_t layer, rt_strin
 }
 
 /// @brief Cross-fade `name` as a true additive overlay on `layer`, refreshing events on success.
+/// @param obj Animator3D wrapper containing the skeletal controller.
+/// @param layer Additive animation-layer index.
+/// @param name Runtime string naming the destination overlay state or clip.
+/// @param seconds Blend duration, sanitized to the supported non-negative range.
+/// @return 1 when the skeletal controller accepts the transition, or 0 on failure.
 int8_t rt_game3d_animator_crossfade_layer_additive(void *obj,
                                                    int64_t layer,
                                                    rt_string name,
@@ -324,6 +371,9 @@ int8_t rt_game3d_animator_crossfade_layer_additive(void *obj,
 }
 
 /// @brief Set a BlendTree3D as the wrapped controller's base pose source.
+/// @param obj Animator3D wrapper containing the skeletal controller.
+/// @param blend_tree BlendTree3D handle to bind as the controller's base source.
+/// @return 1 when the controller accepts the binding, or 0 when unavailable or invalid.
 int8_t rt_game3d_animator_set_blend_tree(void *obj, void *blend_tree) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.setBlendTree: invalid animator");
@@ -334,6 +384,9 @@ int8_t rt_game3d_animator_set_blend_tree(void *obj, void *blend_tree) {
 }
 
 /// @brief Set an IKSolver3D as the wrapped controller's final-pose constraint.
+/// @param obj Animator3D wrapper containing the skeletal controller.
+/// @param ik_solver IKSolver3D handle to apply after animation sampling.
+/// @return 1 when the controller accepts the solver, or 0 when unavailable or invalid.
 int8_t rt_game3d_animator_set_ik_solver(void *obj, void *ik_solver) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.setIKSolver: invalid animator");
@@ -344,6 +397,11 @@ int8_t rt_game3d_animator_set_ik_solver(void *obj, void *ik_solver) {
 }
 
 /// @brief Set the playback speed multiplier for the named state/clip.
+/// @details Skeletal controllers apply the value to @p name; node animators use it as their global
+///   clip speed. Invalid values fall back to 1 and magnitudes are bounded by the Game3D limit.
+/// @param obj Animator3D wrapper to configure.
+/// @param name Runtime string naming the skeletal state or clip.
+/// @param speed Requested playback-speed multiplier.
 void rt_game3d_animator_set_speed(void *obj, rt_string name, double speed) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.setSpeed: invalid animator");
@@ -357,6 +415,9 @@ void rt_game3d_animator_set_speed(void *obj, rt_string name, double speed) {
 }
 
 /// @brief True if `name` is the active state (0 if invalid).
+/// @param obj Animator3D wrapper to query.
+/// @param name Runtime string naming the state or clip to compare.
+/// @return 1 when either wrapped driver is actively playing @p name, or 0 otherwise.
 int8_t rt_game3d_animator_is_playing(void *obj, rt_string name) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.isPlaying: invalid animator");
@@ -375,6 +436,8 @@ int8_t rt_game3d_animator_is_playing(void *obj, rt_string name) {
 }
 
 /// @brief Get the current state's elapsed time in seconds (0 if invalid).
+/// @param obj Animator3D wrapper to query.
+/// @return The sanitized elapsed state time in seconds, or 0 when no driver is available.
 double rt_game3d_animator_state_time(void *obj) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.stateTime: invalid animator");
@@ -390,6 +453,8 @@ double rt_game3d_animator_state_time(void *obj) {
 }
 
 /// @brief Count animation events buffered from the most recent play/update.
+/// @param obj Animator3D wrapper whose event buffer is repaired and queried.
+/// @return The number of valid buffered event names.
 int64_t rt_game3d_animator_event_count(void *obj) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.eventCount: invalid animator");
@@ -397,6 +462,9 @@ int64_t rt_game3d_animator_event_count(void *obj) {
 }
 
 /// @brief Get the i-th buffered event name, or "" if out of range.
+/// @param obj Animator3D wrapper to query.
+/// @param index Zero-based event-buffer index.
+/// @return A retained event-name string, or an empty runtime string when out of range.
 rt_string rt_game3d_animator_event_name(void *obj, int64_t index) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.eventName: invalid animator");
@@ -409,6 +477,10 @@ rt_string rt_game3d_animator_event_name(void *obj, int64_t index) {
 
 /// @brief Advance the animator by `dt` seconds (clamped to ≥0), sampling poses and
 ///   refreshing the event buffer.
+/// @details Skeletal controllers advance directly; bound node animators defer their authoritative
+///   advance to scene synchronization so a world update cannot double-step them.
+/// @param obj Animator3D wrapper to advance.
+/// @param dt Requested simulation interval in seconds.
 void rt_game3d_animator_update(void *obj, double dt) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.update: invalid animator");
@@ -440,6 +512,10 @@ void rt_game3d_animator_update(void *obj, double dt) {
 ///   controller/node-animator handles are wrapped into a Game3D.Animator3D here. The skeletal
 ///   controller binding and node-animator binding are applied independently so imported models
 ///   can keep both Animation3D and NodeAnimation3D playback attached to one entity.
+/// @param obj Entity3D that will retain and bind the animator.
+/// @param animator_or_controller Animator3D, AnimController3D, or NodeAnimator3D handle; NULL clears
+///   the current binding.
+/// @return @p obj for fluent chaining.
 void *rt_game3d_entity_attach_animator(void *obj, void *animator_or_controller) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.attachAnimator: invalid entity");
@@ -485,6 +561,9 @@ void *rt_game3d_entity_attach_animator(void *obj, void *animator_or_controller) 
 
 /// @brief Get the model-space matrix for a bone from the wrapped controller's
 ///   final pose (freshly allocated Mat4, or NULL when unavailable).
+/// @param obj Animator3D wrapper containing the skeletal controller.
+/// @param bone_index Zero-based skeleton bone index.
+/// @return A new Mat4 containing the final model-space transform, or NULL when unavailable.
 void *rt_game3d_animator_get_bone_matrix(void *obj, int64_t bone_index) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.getBoneMatrix: invalid animator");
@@ -496,6 +575,9 @@ void *rt_game3d_animator_get_bone_matrix(void *obj, int64_t bone_index) {
 
 /// @brief Resolve a bone index by name via the wrapped controller's skeleton
 ///   (-1 when the animator has no controller/skeleton or the name is unknown).
+/// @param obj Animator3D wrapper containing the skeletal controller.
+/// @param name Runtime string naming the skeleton bone.
+/// @return The zero-based bone index, or -1 when no matching bone is available.
 int64_t rt_game3d_animator_find_bone(void *obj, rt_string name) {
     rt_game3d_animator *animator =
         game3d_animator_checked(obj, "Game3D.Animator3D.findBone: invalid animator");

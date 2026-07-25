@@ -20,6 +20,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file vgfx3d_frustum.c
+ * @brief Implements conservative view-frustum extraction and bounding-volume operations.
+ *
+ * The implementation derives inward-facing normalized planes from row-major view-projection
+ * matrices, classifies axis-aligned boxes and spheres, transforms local AABBs through arbitrary
+ * affine matrices, and computes bounds from strided vertex positions. Invalid numeric input
+ * deliberately produces conservative results so suspect geometry is not incorrectly culled.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "vgfx3d_frustum.h"
@@ -41,6 +51,7 @@
 
 /// @brief Zero out all six planes, yielding a degenerate frustum that classifies every
 ///   object as intersecting — the conservative fallback when VP extraction is unusable.
+/// @param f Frustum to invalidate; null is a no-op.
 static void vgfx3d_frustum_make_conservative(vgfx3d_frustum_t *f) {
     if (!f)
         return;
@@ -51,6 +62,8 @@ static void vgfx3d_frustum_make_conservative(vgfx3d_frustum_t *f) {
 }
 
 /// @brief True if all three components of a vec3 are finite (no NaN/Inf).
+/// @param v Borrowed three-component vector.
+/// @return Non-zero when @p v is non-null and every component is finite.
 static int vgfx3d_vec3_is_finite(const float v[3]) {
     return v && isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]);
 }
@@ -95,6 +108,9 @@ static float vgfx3d_float_step_outward(float value, int toward_positive) {
 ///   signed distance means "inside the frustum". Each plane is normalized so that
 ///   subsequent distance tests yield true metric distances (needed for the sphere
 ///   test, which compares against `radius` directly).
+/// @param f Caller-owned frustum receiving six planes and their validity state; null is a no-op.
+/// @param vp Borrowed 16-element row-major view-projection matrix. Null, non-finite, or degenerate
+///           input produces a conservative invalid frustum.
 void vgfx3d_frustum_extract(vgfx3d_frustum_t *f, const float vp[16]) {
     if (!f)
         return;
@@ -178,6 +194,9 @@ void vgfx3d_frustum_extract(vgfx3d_frustum_t *f, const float vp[16]) {
 ///   p-vertex is behind the plane the entire box is outside — that single test
 ///   rejects without checking the remaining 7 corners. The opposite corner
 ///   (n-vertex) disambiguates fully-inside from straddling.
+/// @param f Borrowed frustum with inward-facing normalized planes.
+/// @param min Borrowed minimum AABB corner.
+/// @param max Borrowed maximum AABB corner.
 /// @return 0 outside, 1 intersecting, 2 fully inside. The 3-valued result lets
 ///   callers skip recursive culling when the parent volume is fully inside.
 int vgfx3d_frustum_test_aabb(const vgfx3d_frustum_t *f, const float min[3], const float max[3]) {
@@ -223,6 +242,12 @@ int vgfx3d_frustum_test_aabb(const vgfx3d_frustum_t *f, const float min[3], cons
 /// @details The padding is applied symmetrically in all three axes and then canonicalized so
 ///   callers can pass local or transformed bounds directly. If the padding cannot be represented
 ///   safely, the function falls back to the unpadded test instead of manufacturing invalid bounds.
+/// @param f Borrowed frustum with inward-facing normalized planes.
+/// @param min Borrowed first AABB corner; per-axis ordering is canonicalized when padding applies.
+/// @param max Borrowed opposite AABB corner.
+/// @param pad Finite positive expansion in world units; non-positive or invalid values request the
+///            unpadded classification.
+/// @return 0 outside, 1 intersecting, or 2 fully inside.
 int vgfx3d_frustum_test_aabb_padded(const vgfx3d_frustum_t *f,
                                     const float min[3],
                                     const float max[3],
@@ -257,6 +282,9 @@ int vgfx3d_frustum_test_aabb_padded(const vgfx3d_frustum_t *f,
 ///   units directly comparable against `radius`. A sphere is outside when any
 ///   single plane distance is < -radius, intersecting when any distance is
 ///   within [-radius, +radius], otherwise fully inside.
+/// @param f Borrowed frustum with inward-facing normalized planes.
+/// @param center Borrowed sphere center in the frustum's coordinate space.
+/// @param radius Finite non-negative sphere radius in matching world units.
 /// @return 0 outside, 1 intersecting, 2 fully inside.
 int vgfx3d_frustum_test_sphere(const vgfx3d_frustum_t *f, const float center[3], float radius) {
     int result = 2; /* assume fully inside */
@@ -289,6 +317,13 @@ int vgfx3d_frustum_test_sphere(const vgfx3d_frustum_t *f, const float center[3],
 ///   corners would under-fit the result. The 3x3 translation column in row-major
 ///   convention is `world_matrix[3,7,11]`; the 4th row is ignored because an
 ///   affine transform leaves w unchanged.
+/// @param obj_min Borrowed first object-space AABB corner.
+/// @param obj_max Borrowed opposite object-space AABB corner; per-axis ordering is canonicalized.
+/// @param world_matrix Borrowed 16-element row-major affine transform using column vectors.
+/// @param out_min Receives the conservatively rounded world-space minimum corner.
+/// @param out_max Receives the conservatively rounded world-space maximum corner.
+/// @return 1 on success, otherwise 0 for null, non-finite, or unrepresentable input. Output values
+///         are not meaningful on failure.
 int vgfx3d_transform_aabb_checked(const float obj_min[3],
                                   const float obj_max[3],
                                   const double world_matrix[16],
@@ -373,6 +408,11 @@ int vgfx3d_transform_aabb_checked(const float obj_min[3],
 }
 
 /// @brief Legacy AABB transform wrapper that preserves the historical zero-on-error behavior.
+/// @param obj_min Borrowed first object-space AABB corner.
+/// @param obj_max Borrowed opposite object-space AABB corner.
+/// @param world_matrix Borrowed 16-element row-major affine transform.
+/// @param out_min Receives the transformed minimum, or zero on failure.
+/// @param out_max Receives the transformed maximum, or zero on failure.
 void vgfx3d_transform_aabb(const float obj_min[3],
                            const float obj_max[3],
                            const double world_matrix[16],
@@ -399,7 +439,11 @@ void vgfx3d_transform_aabb(const float obj_min[3],
 ///   vertices are ignored when at least one finite vertex is present; an array
 ///   with no finite positions returns a deliberately huge conservative box so
 ///   culling and occlusion cannot accidentally hide suspect geometry.
+/// @param vertices Borrowed byte-addressable vertex array whose first three floats are position.
+/// @param vertex_count Number of strided vertex records.
 /// @param vertex_stride Byte distance between consecutive vertex position slots.
+/// @param out_min Receives the minimum finite position on each axis.
+/// @param out_max Receives the maximum finite position on each axis.
 void vgfx3d_compute_mesh_aabb(const void *vertices,
                               uint32_t vertex_count,
                               uint32_t vertex_stride,

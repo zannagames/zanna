@@ -138,7 +138,7 @@ final MAX_OBJECT_TREE_ROWS: Integer = 4096;
 final MAX_OBJECT_HIERARCHY_DEPTH: Integer = 256;
 final OBJECT_PARENT_TARGET_MIXED: Integer = -2;
 final COMPACT_SCENE_2D_WIDTH: Number = 640.0;
-final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 1000.0;
+final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 820.0;
 final CANVAS_MARQUEE_COLOR: Integer = 0x70BEFF;
 final TILE_RECTANGLE_COLOR: Integer = 0xFFC86B;
 
@@ -901,8 +901,13 @@ class SceneEditor2D {
             GUI.Button.New(objectButtons, "Add Child");
         addChildObjectButton.SetTooltip(
             "Create one child beneath the selected object in a single undo step");
-        var objectOrderButtons = GUI.HBox.New();
-        objectOrderButtons.SetSpacing(4.0);
+        // Wrapping row: four ordering buttons exceed the narrow hierarchy
+        // pane, so they wrap instead of bleeding into the canvas pane.
+        var objectOrderButtons = GUI.Flex.New();
+        objectOrderButtons.SetDirection(GUI.FlexDirection.Row);
+        objectOrderButtons.SetWrap(GUI.FlexWrap.Wrap);
+        objectOrderButtons.SetAlign(GUI.Align.Center);
+        objectOrderButtons.SetGap(4.0);
         objectPane.AddChild(objectOrderButtons);
         duplicateObjectButton = GUI.Button.New(objectOrderButtons, "Duplicate");
         duplicateObjectButton.SetTooltip(
@@ -4978,6 +4983,12 @@ class SceneEditor2D {
         componentPalette.group.SetVisible(objectScope);
         componentAssetHost.SetVisible(objectScope);
         tilesetInspector.group.SetVisible(hasScene);
+        // Scope storms reflow the whole inspector column; force a complete
+        // re-measure/arrange/repaint so no child keeps partial-pass geometry.
+        if inspectorScroll != null {
+            inspectorScroll.InvalidateLayout();
+            inspectorScroll.InvalidatePaint();
+        }
     }
 
     /// @brief Choose the Object or Scene inspector tab (workspace-only).

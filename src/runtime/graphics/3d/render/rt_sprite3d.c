@@ -22,6 +22,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements camera-facing Sprite3D billboards with spritesheet, tint, and blend controls.
+/// @details Sprite3D retains its source Pixels plus reusable mesh and material objects, sanitizes
+///   runtime inputs, rebuilds camera-relative quad geometry per draw, and parks cached resources
+///   on the canvas until deferred submission completes.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_sprite3d.h"
@@ -82,16 +88,21 @@ typedef struct {
 /// @details Used for the three cached refs (`texture`, `cached_mesh`, `cached_material`)
 ///   when the sprite is finalized or when the material needs to be rebuilt because the
 ///   texture changed. Nulling the slot makes subsequent calls idempotent.
+/// @param[in,out] slot Address of the retained reference to release and clear.
 static void sprite3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Return true when @p texture is a live Pixels object.
+/// @param texture Candidate runtime object.
+/// @return 1 when the object validates as Pixels, or 0 otherwise.
 static int sprite3d_texture_valid(void *texture) {
     return rt_pixels_checked_impl_or_null(texture) != NULL;
 }
 
 /// @brief Release a retained Pixels slot only if it still points at Pixels.
+/// @param[in,out] slot Address of the texture reference; invalid unowned values are cleared without
+///   release.
 static void sprite3d_release_texture_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -103,6 +114,8 @@ static void sprite3d_release_texture_slot(void **slot) {
 }
 
 /// @brief Release a retained Mesh3D slot only if it still points at Mesh3D.
+/// @param[in,out] slot Address of the mesh reference; invalid unowned values are cleared without
+///   release.
 static void sprite3d_release_mesh_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -114,6 +127,8 @@ static void sprite3d_release_mesh_slot(void **slot) {
 }
 
 /// @brief Release a retained Material3D slot only if it still points at Material3D.
+/// @param[in,out] slot Address of the material reference; invalid unowned values are cleared
+///   without release.
 static void sprite3d_release_material_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -125,6 +140,7 @@ static void sprite3d_release_material_slot(void **slot) {
 }
 
 /// @brief Clear corrupted cached refs before draw paths dereference them.
+/// @param s Sprite whose texture, mesh, material, and material-texture tracking are repaired.
 static void sprite3d_repair_refs(rt_sprite3d *s) {
     if (!s)
         return;
@@ -142,11 +158,17 @@ static void sprite3d_repair_refs(rt_sprite3d *s) {
 }
 
 /// @brief Return @p value when finite, else @p fallback. Sanitizes Vec3 inputs.
+/// @param value Candidate runtime floating-point value.
+/// @param fallback Replacement for NaN or infinity.
+/// @return @p value when finite, otherwise @p fallback.
 static double sprite3d_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Clamp world-space coordinates to a range that remains drawable in the backend.
+/// @param value Candidate world-space coordinate.
+/// @param fallback Replacement used for non-finite input.
+/// @return A finite coordinate constrained to the supported world-space range.
 static double sprite3d_coord_or(double value, double fallback) {
     value = sprite3d_finite_or(value, fallback);
     if (value < -SPRITE3D_WORLD_ABS_MAX)
@@ -157,6 +179,9 @@ static double sprite3d_coord_or(double value, double fallback) {
 }
 
 /// @brief Clamp positive billboard dimensions to avoid overflowing generated vertices.
+/// @param value Candidate width or height.
+/// @param fallback Replacement for non-finite or non-positive input.
+/// @return A positive finite scale no greater than `SPRITE3D_SCALE_MAX`.
 static double sprite3d_positive_scale_or(double value, double fallback) {
     value = sprite3d_finite_or(value, fallback);
     if (value <= 0.0)
@@ -169,6 +194,14 @@ static double sprite3d_positive_scale_or(double value, double fallback) {
 }
 
 /// @brief Normalize a vector, replacing invalid/zero vectors with a fallback axis.
+/// @param[in,out] x Address of the vector's x component.
+/// @param[in,out] y Address of the vector's y component.
+/// @param[in,out] z Address of the vector's z component.
+/// @param fallback_x Fallback x component.
+/// @param fallback_y Fallback y component.
+/// @param fallback_z Fallback z component.
+/// @return 1 when a finite unit vector was produced, or 0 for null outputs or an unusable vector
+///   and fallback.
 static int sprite3d_normalize3(
     double *x, double *y, double *z, double fallback_x, double fallback_y, double fallback_z) {
     double len;
@@ -200,6 +233,12 @@ static int sprite3d_normalize3(
 }
 
 /// @brief Choose an axis that is not parallel to the supplied normalized vector.
+/// @param x Normalized source x component.
+/// @param y Normalized source y component.
+/// @param z Normalized source z component.
+/// @param[out] out_x Destination for the seed axis x component.
+/// @param[out] out_y Destination for the seed axis y component.
+/// @param[out] out_z Destination for the seed axis z component.
 static void sprite3d_perpendicular_seed(
     double x, double y, double z, double *out_x, double *out_y, double *out_z) {
     if (fabs(y) < 0.9) {
@@ -218,6 +257,8 @@ static void sprite3d_perpendicular_seed(
 }
 
 /// @brief Clamp @p value to [0, 1], substituting 0.5 for non-finite input. Used for anchor coords.
+/// @param value Candidate normalized anchor coordinate.
+/// @return A finite value in the closed unit interval.
 static double sprite3d_clamp01(double value) {
     if (!isfinite(value))
         return 0.5;
@@ -230,6 +271,9 @@ static double sprite3d_clamp01(double value) {
 
 /// @brief Clamp an int64 frame component to int32: negatives become @p fallback, values above
 ///   INT32_MAX saturate to INT32_MAX.
+/// @param value Candidate frame offset or extent.
+/// @param fallback Replacement for negative input.
+/// @return The value represented in `int32_t` after fallback and upper saturation.
 static int32_t sprite3d_clamp_frame_component_i32(int64_t value, int32_t fallback) {
     if (value < 0)
         return fallback;
@@ -239,6 +283,8 @@ static int32_t sprite3d_clamp_frame_component_i32(int64_t value, int32_t fallbac
 }
 
 /// @brief Build a row-major model matrix that translates by @p origin (identity rotation/scale).
+/// @param origin Optional three-element camera-relative origin; `NULL` leaves an identity matrix.
+/// @param[out] out Sixteen-element row-major destination matrix.
 static void sprite3d_origin_model_matrix(const double origin[3], double out[16]) {
     static const double identity[16] = {
         1.0,
@@ -274,6 +320,7 @@ static void sprite3d_origin_model_matrix(const double origin[3], double out[16])
 ///   objects still hold the texture. `cached_texture` is only a
 ///   tracking pointer (not a retained ref) so it's just nulled, not
 ///   released — the actual release happened through `texture`.
+/// @param obj Sprite3D runtime object being finalized; ignored when `NULL`.
 static void sprite3d_finalizer(void *obj) {
     rt_sprite3d *s = (rt_sprite3d *)obj;
     if (!s)
@@ -341,6 +388,10 @@ void *rt_sprite3d_new(void *texture) {
 }
 
 /// @brief Set the world-space position where the sprite is rendered.
+/// @param obj Sprite3D instance.
+/// @param x World-space x coordinate.
+/// @param y World-space y coordinate.
+/// @param z World-space z coordinate.
 void rt_sprite3d_set_position(void *obj, double x, double y, double z) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
     if (!s)
@@ -351,6 +402,9 @@ void rt_sprite3d_set_position(void *obj, double x, double y, double z) {
 }
 
 /// @brief Set the width and height scale of the sprite in world units.
+/// @param obj Sprite3D instance.
+/// @param w Positive billboard width, sanitized and bounded for vertex generation.
+/// @param h Positive billboard height, sanitized and bounded for vertex generation.
 void rt_sprite3d_set_scale(void *obj, double w, double h) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
     if (!s)
@@ -360,6 +414,9 @@ void rt_sprite3d_set_scale(void *obj, double w, double h) {
 }
 
 /// @brief Set the anchor point (0,0 = bottom-left, 0.5,0.5 = center, 1,1 = top-right).
+/// @param obj Sprite3D instance.
+/// @param ax Horizontal anchor coordinate clamped to the unit interval.
+/// @param ay Vertical anchor coordinate clamped to the unit interval.
 void rt_sprite3d_set_anchor(void *obj, double ax, double ay) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
     if (!s)
@@ -369,6 +426,11 @@ void rt_sprite3d_set_anchor(void *obj, double ax, double ay) {
 }
 
 /// @brief Set the spritesheet sub-rectangle to display (for animated sprites).
+/// @param obj Sprite3D instance.
+/// @param fx Horizontal frame origin in texture pixels.
+/// @param fy Vertical frame origin in texture pixels.
+/// @param fw Frame width; non-positive input selects the available texture width.
+/// @param fh Frame height; non-positive input selects the available texture height.
 void rt_sprite3d_set_frame(void *obj, int64_t fx, int64_t fy, int64_t fw, int64_t fh) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
     if (!s)
@@ -400,6 +462,8 @@ void rt_sprite3d_set_frame(void *obj, int64_t fx, int64_t fy, int64_t fw, int64_
 }
 
 /// @brief Toggle additive blending (1 = additive for glows/tracers, 0 = alpha blend).
+/// @param obj Sprite3D instance.
+/// @param additive Non-zero for additive blending, or zero for the non-additive path.
 void rt_sprite3d_set_additive(void *obj, int8_t additive) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
     if (!s)
@@ -408,12 +472,16 @@ void rt_sprite3d_set_additive(void *obj, int8_t additive) {
 }
 
 /// @brief Current additive-blend flag.
+/// @param obj Candidate Sprite3D instance.
+/// @return 1 when additive blending is enabled, or 0 for non-additive or invalid input.
 int8_t rt_sprite3d_get_additive(void *obj) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
     return s ? s->additive : 0;
 }
 
 /// @brief Set a packed 0xRRGGBB tint multiplied into the texture (Particles3D convention).
+/// @param obj Sprite3D instance.
+/// @param rgb Packed red, green, and blue bytes; higher bits are ignored.
 void rt_sprite3d_set_color(void *obj, int64_t rgb) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
     if (!s)
@@ -424,6 +492,10 @@ void rt_sprite3d_set_color(void *obj, int64_t rgb) {
 }
 
 /// @brief Shift standalone Sprite3D world-space position by -delta for floating-origin rebases.
+/// @param obj Sprite3D instance.
+/// @param dx World-space x displacement subtracted from the stored position.
+/// @param dy World-space y displacement subtracted from the stored position.
+/// @param dz World-space z displacement subtracted from the stored position.
 void rt_sprite3d_rebase_origin(void *obj, double dx, double dy, double dz) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
     if (!s)
@@ -444,6 +516,9 @@ void rt_sprite3d_rebase_origin(void *obj, double dx, double dy, double dz) {
 /// @details Constructs a billboard quad each frame using the camera's right and
 ///          up vectors, applies the anchor offset, and renders as a textured mesh.
 ///          The quad geometry is cached and reused between frames.
+/// @param canvas Canvas3D receiving the deferred mesh draw.
+/// @param obj Sprite3D instance supplying texture, frame, position, and appearance.
+/// @param camera Camera3D whose view basis orients the billboard.
 void rt_canvas3d_draw_sprite3d(void *canvas, void *obj, void *camera) {
     if (!canvas || !obj || !camera)
         return;

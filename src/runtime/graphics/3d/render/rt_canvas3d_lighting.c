@@ -17,6 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements Canvas3D light sanitization, prioritization, and snapshot revisioning.
+/// @details Sparse canvas and scene light slots are flattened into deterministic
+///   backend records. The forward-light budget favors globally affecting lights,
+///   scores local lights by estimated camera contribution with hysteresis, and
+///   stamps byte-stable snapshots so backends can avoid redundant uploads.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -28,22 +35,35 @@
 #include <string.h>
 
 /// @brief Clamp a Light3D type id to a backend-supported value.
+/// @param type Candidate internal light type identifier.
+/// @return @p type when it is in the supported range zero through six;
+///   otherwise the directional-light identifier zero.
 static int32_t canvas3d_sanitize_light_type(int32_t type) {
     return (type >= 0 && type <= 6) ? type : 0;
 }
 
 /// @brief Return whether a sanitized light type affects every cluster.
+/// @param type Sanitized Light3D type identifier.
+/// @return Non-zero for directional and ambient lights; zero for local lights.
 static int canvas3d_light_type_is_global(int32_t type) {
     return type == 0 || type == 2;
 }
 
 /// @brief Clamp a finite positive area/volume parameter for backend consumption.
+/// @param value Width, height, radius, or range value to sanitize.
+/// @return A finite positive float; invalid or near-zero input becomes one.
 static float canvas3d_sanitize_positive_light_param(double value) {
     return isfinite(value) && value > 1e-6 ? canvas3d_sanitize_f64_to_float(value, 1.0f) : 1.0f;
 }
 
 /// @brief Compact one canvas light into a backend param struct (camera-relative rebased,
 ///        value-sanitized). NULL inputs are ignored.
+/// @details The output is cleared before population, positional lights are
+///   translated by the active camera-relative origin, unsupported enum values
+///   receive safe defaults, and volume lights are forced non-shadowing.
+/// @param c Borrowed Canvas3D supplying the optional rebase origin.
+/// @param l Borrowed Light3D payload to flatten; `NULL` is ignored.
+/// @param out Non-`NULL` backend record overwritten in full.
 static void canvas3d_copy_light_params(const rt_canvas3d *c,
                                        const rt_light3d *l,
                                        vgfx3d_light_params_t *out) {
@@ -95,6 +115,10 @@ static void canvas3d_copy_light_params(const rt_canvas3d *c,
 }
 
 /// @brief Return the active light payload limit for the selected lighting path.
+/// @param c Borrowed Canvas3D whose clustered-lighting setting and backend
+///   capability are queried.
+/// @return VGFX3D_MAX_LIGHTS for supported clustered lighting; otherwise the
+///   forward-renderer limit.
 int32_t canvas3d_active_light_limit(rt_canvas3d *c) {
     if (c && c->clustered_lighting) {
         rt_string capability = rt_const_cstr("clustered-lighting");
@@ -111,6 +135,9 @@ int32_t canvas3d_active_light_limit(rt_canvas3d *c) {
 ///   light's strongest possible contribution to visible geometry. Incumbents from the
 ///   previous flatten receive a small boost so near-ties never swap membership
 ///   frame-to-frame (whole-scene light popping).
+/// @param c Borrowed Canvas3D supplying the cached world-space camera position.
+/// @param l Borrowed enabled local Light3D to score.
+/// @return Finite non-negative estimated contribution score.
 static double canvas3d_local_light_score(const rt_canvas3d *c, const rt_light3d *l) {
     double dx = l->position[0] - (double)c->cached_world_cam_pos[0];
     double dy = l->position[1] - (double)c->cached_world_cam_pos[1];
@@ -139,6 +166,9 @@ static double canvas3d_local_light_score(const rt_canvas3d *c, const rt_light3d 
 }
 
 /// @brief True when @p l was selected by the previous over-budget flatten.
+/// @param c Borrowed Canvas3D containing the preceding selected-light identities.
+/// @param l Borrowed Light3D identity to find.
+/// @return Non-zero when @p l occurs in the bounded previous selection.
 static int canvas3d_light_was_selected(const rt_canvas3d *c, const rt_light3d *l) {
     for (int32_t i = 0; i < c->selected_light_id_count && i < VGFX3D_MAX_LIGHTS; i++) {
         if (c->selected_light_ids[i] == (uintptr_t)l)
@@ -169,6 +199,10 @@ typedef struct {
 ///   incumbent hysteresis, instead of arbitrary slot order — slot-order truncation
 ///   made "which lights render" depend on assignment history and pop scene-wide when
 ///   counts fluctuated around the cap.
+/// @param c Mutable Canvas3D supplying sparse lights, camera state, prior
+///   selection, and dropped-light telemetry.
+/// @param out Non-`NULL` output array with capacity for at least @p max backend records.
+/// @param max Positive output capacity; callers normally use canvas3d_active_light_limit().
 /// @return The number of lights actually copied into `out`.
 int32_t build_light_params(rt_canvas3d *c, vgfx3d_light_params_t *out, int32_t max) {
     canvas3d_light_candidate_t locals[VGFX3D_MAX_LIGHTS * 2];
@@ -291,6 +325,11 @@ int32_t build_light_params(rt_canvas3d *c, vgfx3d_light_params_t *out, int32_t m
 ///          so backends can skip re-uploading scene/light constants across
 ///          runs of draws that share it. Never returns 0 (0 = "unknown,
 ///          always upload" in the draw command).
+/// @param c Mutable Canvas3D owning the previous snapshot and revision counter.
+/// @param lights Borrowed dense array of @p light_count fully initialized records.
+/// @param light_count Number of records, clamped to the supported maximum.
+/// @return Stable non-zero revision for a valid canvas, incremented only when
+///   the light bytes or ambient color change; zero when @p c is `NULL`.
 uint32_t canvas3d_stamp_light_snapshot(rt_canvas3d *c,
                                        const vgfx3d_light_params_t *lights,
                                        int32_t light_count) {

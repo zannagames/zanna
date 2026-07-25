@@ -3,11 +3,27 @@
 // File: src/runtime/graphics/3d/anim/rt_skeleton3d_blend.inc  (#included from rt_skeleton3d.c; not a standalone translation unit)
 // Purpose: AnimBlend3D multi-state animation blending
 //===----------------------------------------------------------------------===//
+/**
+ * @file rt_skeleton3d_blend.inc
+ * @brief Implements weighted multi-clip animation blending for `AnimBlend3D`.
+ *
+ * This implementation fragment owns blend-state registration, independent
+ * playback clocks, bind-pose fallbacks, TRS-space pose accumulation, palette
+ * generation, and the canvas bridge used to draw a mesh with the blended
+ * result. It is included by `rt_skeleton3d.c` and is not compiled on its own.
+ *
+ * Animation and skeleton objects are retained by a blender. Returned pose and
+ * palette pointers remain owned by the blender and may be invalidated by a
+ * subsequent update, skeleton-capacity change, or object destruction.
+ */
 /*==========================================================================
  * AnimBlend3D — multi-state animation blending
  *=========================================================================*/
 
-/// @brief GC finalizer for AnimBlend3D — releases per-state animation refs and the bone palette.
+/// @brief Release every resource owned by an animation blender.
+/// @param[in,out] obj Blender object being finalized.
+/// @details Releases retained animation and skeleton references, frees all
+/// pose, palette, accumulator, and scratch buffers, and clears their fields.
 static void anim_blend3d_finalizer(void *obj) {
     rt_anim_blend3d *b = (rt_anim_blend3d *)obj;
     for (int32_t i = 0, count = anim_blend3d_state_slot_limit(b); i < count; i++) {
@@ -27,6 +43,12 @@ static void anim_blend3d_finalizer(void *obj) {
     b->state_count = 0;
 }
 
+/// @brief Ensure that every blender pose buffer can hold a requested skeleton.
+/// @param[in,out] b Blender whose synchronized pose buffers may be enlarged.
+/// @param[in] bone_count Number of bone matrices the buffers must accommodate.
+/// @return Nonzero when all buffers have sufficient capacity; otherwise zero.
+/// @details Capacity is rounded according to the shared skeleton allocation
+/// policy. Existing contents are preserved by the individual growth helpers.
 static int anim_blend3d_ensure_pose_capacity(rt_anim_blend3d *b, int32_t bone_count) {
     if (!b)
         return 0;
@@ -51,6 +73,13 @@ static int anim_blend3d_ensure_pose_capacity(rt_anim_blend3d *b, int32_t bone_co
 /// Useful for blendspaces (e.g. mixing walk + run by speed) and
 /// additive layering. Each registered "state" carries its own
 /// time, speed, and weight.
+///
+/// @param[in] skel_obj Skeleton used to validate clips and generate palettes.
+/// @return A retained runtime `AnimBlend3D` object, or `NULL` when the
+/// skeleton is invalid or allocation fails.
+/// @details The skeleton is frozen, its bind pose initializes the local and
+/// skinning palettes, and all blend weights initially equal zero. The returned
+/// object retains the skeleton and owns all of its pose buffers.
 void *rt_anim_blend3d_new(void *skel_obj) {
     rt_skeleton3d *skel =
         (rt_skeleton3d *)rt_g3d_checked_or_null(skel_obj, RT_G3D_SKELETON3D_CLASS_ID);
@@ -103,7 +132,16 @@ void *rt_anim_blend3d_new(void *skel_obj) {
     return b;
 }
 
-/// @brief Register a new blend state by name and animation; returns its index.
+/// @brief Register a named animation as a new blend state.
+/// @param[in,out] obj Blender that will retain the animation.
+/// @param[in] name Optional state name copied into fixed internal storage and
+/// truncated to 63 bytes.
+/// @param[in] anim_obj Animation clip whose channel indices must fit the
+/// blender's skeleton.
+/// @return The zero-based state index, or `-1` for invalid objects, an
+/// incompatible clip, or a full state table.
+/// @details A new state starts at time zero with weight zero, unit speed, and
+/// the clip's current looping setting.
 int64_t rt_anim_blend3d_add_state(void *obj, rt_string name, void *anim_obj) {
     rt_anim_blend3d *b =
         (rt_anim_blend3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMBLEND3D_CLASS_ID);
@@ -140,7 +178,13 @@ int64_t rt_anim_blend3d_add_state(void *obj, rt_string name, void *anim_obj) {
     return b->state_count++;
 }
 
-/// @brief Set state `state`'s blend weight; the blender renormalises across all states each frame.
+/// @brief Set one state's contribution to the blended pose.
+/// @param[in,out] obj Blender containing the state.
+/// @param[in] state Zero-based state index.
+/// @param[in] weight Requested weight, clamped to the inclusive range
+/// `[0, 1]`; non-finite values become zero.
+/// @details Active weights are normalized relative to their total during the
+/// next update. Invalid objects and indices are ignored.
 void rt_anim_blend3d_set_weight(void *obj, int64_t state, double weight) {
     rt_anim_blend3d *b = anim_blend3d_checked(obj);
     if (!b)
@@ -156,7 +200,14 @@ void rt_anim_blend3d_set_weight(void *obj, int64_t state, double weight) {
     b->states[state].weight = (float)weight;
 }
 
-/// @brief Convenience: look the state up by name and call `set_weight`.
+/// @brief Set the first blend state whose stored name matches a string.
+/// @param[in,out] obj Blender to search.
+/// @param[in] name Exact case-sensitive state name; lookup uses at most the
+/// first 63 bytes to match the storage policy used at registration.
+/// @param[in] weight Requested weight, clamped to `[0, 1]`; non-finite values
+/// become zero.
+/// @details A null or empty name, invalid blender, or missing state has no
+/// effect.
 void rt_anim_blend3d_set_weight_by_name(void *obj, rt_string name, double weight) {
     rt_anim_blend3d *b = anim_blend3d_checked(obj);
     char target_buf[64];
@@ -186,7 +237,11 @@ void rt_anim_blend3d_set_weight_by_name(void *obj, rt_string name, double weight
     }
 }
 
-/// @brief Read a state's current blend weight (0.0 for out-of-range or NULL).
+/// @brief Read a state's sanitized current blend weight.
+/// @param[in] obj Blender containing the state.
+/// @param[in] state Zero-based state index.
+/// @return The stored weight clamped to `[0, 1]`, or `0.0` for an invalid
+/// object, invalid index, non-finite value, or nonpositive value.
 double rt_anim_blend3d_get_weight(void *obj, int64_t state) {
     rt_anim_blend3d *b = anim_blend3d_checked(obj);
     if (!b)
@@ -202,6 +257,12 @@ double rt_anim_blend3d_get_weight(void *obj, int64_t state) {
 
 /// @brief Set the per-state time-scale (independent of the others — each clip can run at its own
 /// rate).
+/// @param[in,out] obj Blender containing the state.
+/// @param[in] state Zero-based state index.
+/// @param[in] speed Playback multiplier; non-finite values become `1.0` and
+/// finite values are clamped to the representable `float` range.
+/// @details Negative speeds are accepted and cause the state's clock to move
+/// backward until wrapping or non-looping clamping is applied by an update.
 void rt_anim_blend3d_set_speed(void *obj, int64_t state, double speed) {
     rt_anim_blend3d *b = anim_blend3d_checked(obj);
     if (!b)
@@ -219,6 +280,14 @@ void rt_anim_blend3d_set_speed(void *obj, int64_t state, double speed) {
 /// time, weights them by the normalised state weights, and lerps
 /// (positions / scales) and slerps (rotations) to produce the
 /// final pose. Output palette is then ready for skinning.
+///
+/// @param[in,out] obj Blender whose clocks and output pose are updated.
+/// @param[in] dt Nonnegative finite elapsed time in seconds.
+/// @details Every valid state's clock advances even when its current weight is
+/// zero. Looping states wrap within the clip duration; non-looping states
+/// clamp to the clip interval. Active clips are sampled over the skeleton bind
+/// pose and combined as a normalized weighted average in TRS space. If no
+/// state contributes, the output remains the bind pose.
 void rt_anim_blend3d_update(void *obj, double dt) {
     rt_anim_blend3d *b = anim_blend3d_checked(obj);
     if (!b || dt < 0 || !isfinite(dt))
@@ -332,19 +401,34 @@ void rt_anim_blend3d_update(void *obj, double dt) {
     compute_palette_from_locals(skel, b->local_transforms, b->globals_buf, b->bone_palette);
 }
 
-/// @brief Number of registered states (0 for NULL).
+/// @brief Report the number of registered blend states.
+/// @param[in] obj Blender to query.
+/// @return The sanitized state count, or zero for an invalid object.
 int64_t rt_anim_blend3d_state_count(void *obj) {
     rt_anim_blend3d *b = anim_blend3d_checked(obj);
     return b ? animblend3d_safe_state_count(b) : 0;
 }
 
-/// @brief Borrow the skeleton handle this blender was constructed with.
+/// @brief Borrow the skeleton associated with a blender.
+/// @param[in,out] obj Blender to query.
+/// @return The retained skeleton, or `NULL` when the blender or stored
+/// skeleton reference is invalid.
+/// @note The returned pointer remains owned by the blender and is not retained
+/// for the caller.
 void *rt_anim_blend3d_get_skeleton(void *obj) {
     rt_anim_blend3d *b = anim_blend3d_checked(obj);
     return b ? animation3d_skeleton_slot((void **)&b->skeleton) : NULL;
 }
 
-/// @brief Borrow the current blended local transform buffer for controller integration.
+/// @brief Borrow the current blended local-transform matrix array.
+/// @param[in,out] obj Blender whose pose is requested.
+/// @param[out] bone_count Optional destination for the number of matrices;
+/// initialized to zero before validation.
+/// @return A pointer to `bone_count` consecutive row-major 4-by-4 local
+/// matrices, or `NULL` when the blender, skeleton, buffer, or capacity is
+/// invalid.
+/// @note The array is owned by the blender and is overwritten by later
+/// updates; callers must not free it.
 const float *rt_anim_blend3d_get_local_transform_data(void *obj, int32_t *bone_count) {
     rt_anim_blend3d *b = anim_blend3d_checked(obj);
     rt_skeleton3d *skel;
@@ -362,7 +446,15 @@ const float *rt_anim_blend3d_get_local_transform_data(void *obj, int32_t *bone_c
     return b->local_transforms;
 }
 
-/// @brief Same role as `anim_player_prepare_prev_palette` but for the blender — see that function.
+/// @brief Select and advance the previous-frame palette for motion rendering.
+/// @param[in,out] b Blender whose current palette is snapshotted.
+/// @param[in] frame_serial Canvas frame identifier used to ensure the snapshot
+/// advances at most once per frame.
+/// @return The previous-frame palette when one exists, otherwise `NULL`.
+/// @details On the first frame the current palette is recorded without
+/// advertising previous data. On each later distinct frame, the prior snapshot
+/// becomes the previous palette and the current palette becomes the new
+/// snapshot.
 static const float *anim_blend_prepare_prev_palette(rt_anim_blend3d *b, int64_t frame_serial) {
     rt_skeleton3d *skel;
     if (!b || !b->bone_palette)
@@ -394,6 +486,16 @@ static const float *anim_blend_prepare_prev_palette(rt_anim_blend3d *b, int64_t 
 ///   forwards to `rt_canvas3d_draw_mesh_matrix_skinned_keyed`. The transform
 ///   object supplies both the model matrix (via its `mat4_impl`) and a
 ///   stable identity pointer used as the motion key for temporal effects.
+/// @param[in,out] canvas Canvas receiving the skinned draw command.
+/// @param[in,out] mesh_obj Mesh whose vertices and skinning attributes are
+/// drawn.
+/// @param[in] transform Runtime matrix object supplying the model transform
+/// and stable temporal-motion identity.
+/// @param[in] material Material passed through to the keyed skinned draw.
+/// @param[in,out] blend_obj Either an `AnimBlend3D` or a blend-tree object
+/// from which an underlying blender can be borrowed.
+/// @details Invalid inputs, an empty mesh or skeleton, or failure to retain the
+/// blender temporarily on the canvas causes the draw request to be ignored.
 void rt_canvas3d_draw_mesh_blended(
     void *canvas, void *mesh_obj, void *transform, void *material, void *blend_obj) {
     if (!canvas || !mesh_obj || !transform || !material || !blend_obj)

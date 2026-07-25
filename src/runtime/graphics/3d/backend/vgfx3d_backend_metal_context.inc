@@ -18,6 +18,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file vgfx3d_backend_metal_context.inc
+/// @brief Implements Metal context creation, pipeline and fixed-state construction,
+///   frame initialization, and backend capability reporting.
+/// @details Objective-C resources created here are strongly retained by
+///   `VGFXMetalContext`. Context creation assembles mandatory state before publishing
+///   the opaque backend handle, while optional compact pipelines fail back to full vertices.
+
 /// @brief Build the MTLVertexDescriptor describing the interleaved 92-byte vgfx3d_vertex_t layout
 ///   (a single per-vertex buffer at index 0) that every render pipeline consumes.
 /// @return A newly-allocated descriptor owned by the caller.
@@ -57,6 +64,7 @@ static MTLVertexDescriptor *create_vertex_descriptor(void) {
 ///   (R20). Attribute slots match create_vertex_descriptor(); fixed-function format
 ///   conversion decodes the packed fields to the same float shader inputs, so every vertex
 ///   function is shared between the full and compact pipeline variants.
+/// @return A newly allocated descriptor owned by the caller.
 static MTLVertexDescriptor *create_vertex_descriptor_compact(void) {
     MTLVertexDescriptor *d = [[MTLVertexDescriptor alloc] init];
     d.attributes[0].format = MTLVertexFormatFloat3; /* position */
@@ -92,6 +100,8 @@ static MTLVertexDescriptor *create_vertex_descriptor_compact(void) {
 /// @brief Configure a pipeline color attachment's blend state for a material alpha mode.
 /// @details Sets the blend factors/equation for opaque, alpha-blend, or additive modes (and enables
 ///          or disables blending accordingly).
+/// @param[in,out] attachment Color-attachment descriptor to configure.
+/// @param[in] blend_mode Sanitized opaque, alpha, or additive mode.
 static void metal_configure_blend_state(MTLRenderPipelineColorAttachmentDescriptor *attachment,
                                         vgfx3d_metal_blend_mode_t blend_mode) {
     if (!attachment)
@@ -112,6 +122,14 @@ static void metal_configure_blend_state(MTLRenderPipelineColorAttachmentDescript
 
 /// @brief Compile a render pipeline state for a given vertex/fragment function and blend/format
 /// config.
+/// @param[in] device Metal device that creates the pipeline.
+/// @param[in] vertex_function Required vertex entry point.
+/// @param[in] fragment_function Required fragment entry point.
+/// @param[in] vertex_descriptor Vertex layout, or `nil` for generated vertices.
+/// @param[in] color0_format Primary color attachment format.
+/// @param[in] blend_mode Blend configuration for the primary attachment.
+/// @param[in] disable_motion_writes Nonzero to mask all writes to attachment one.
+/// @param[out] error Optional receiver for pipeline compilation diagnostics.
 /// @return The pipeline state, or nil on compilation failure.
 static id<MTLRenderPipelineState> metal_create_pipeline_state(
     id<MTLDevice> device,
@@ -141,6 +159,12 @@ static id<MTLRenderPipelineState> metal_create_pipeline_state(
 }
 
 /// @brief Compile the skybox render pipeline state (full-screen triangle sampling a cubemap).
+/// @param[in] device Metal device that creates the pipeline.
+/// @param[in] vertex_function Skybox vertex entry point.
+/// @param[in] fragment_function Skybox fragment entry point.
+/// @param[in] color0_format Destination color attachment format.
+/// @param[out] error Optional receiver for pipeline compilation diagnostics.
+/// @return Newly created pipeline state, or `nil` on failure.
 static id<MTLRenderPipelineState> metal_create_skybox_pipeline_state(
     id<MTLDevice> device,
     id<MTLFunction> vertex_function,
@@ -166,6 +190,8 @@ static id<MTLRenderPipelineState> metal_create_skybox_pipeline_state(
 /// @brief Get or build the cached pipeline state matching a draw's shading model, blend, and
 /// formats.
 /// @details Keyed by the render-state config so identical draws reuse one compiled pipeline.
+/// @param[in] ctx Context whose active target is inspected.
+/// @return `YES` when the target uses RGBA16F scene or RTT color; otherwise `NO`.
 static BOOL metal_target_uses_hdr_color(VGFXMetalContext *ctx) {
     if (!ctx)
         return NO;
@@ -178,6 +204,10 @@ static BOOL metal_target_uses_hdr_color(VGFXMetalContext *ctx) {
 }
 
 /// @brief Select the material pipeline whose attachment formats match the current target.
+/// @param[in] ctx Context containing pipeline variants and the active target.
+/// @param[in] cmd Optional draw command controlling blend and compact layout.
+/// @param[in] instanced Nonzero to select an instanced vertex function.
+/// @return Matching pipeline state, or `nil` when the context is unavailable.
 static id<MTLRenderPipelineState> metal_select_pipeline_state(VGFXMetalContext *ctx,
                                                               const vgfx3d_draw_cmd_t *cmd,
                                                               BOOL instanced) {
@@ -247,6 +277,9 @@ static id<MTLRenderPipelineState> metal_select_pipeline_state(VGFXMetalContext *
 /// @details Particles are always transparent; additive emitters select the additive twin and all
 ///   other emitters select standard alpha. The unit-quad stream uses the full retained vertex
 ///   layout, while per-particle data arrives independently at buffer index 6.
+/// @param[in] ctx Context containing particle pipeline variants.
+/// @param[in] cmd Draw command whose blend mode is inspected.
+/// @return Pipeline matching target format and additive/alpha blending, or `nil`.
 static id<MTLRenderPipelineState> metal_select_particle_pipeline_state(
     VGFXMetalContext *ctx, const vgfx3d_draw_cmd_t *cmd) {
     BOOL additive;
@@ -260,6 +293,8 @@ static id<MTLRenderPipelineState> metal_select_particle_pipeline_state(
 }
 
 /// @brief Map a material texture-wrap mode to the corresponding MTLSamplerAddressMode.
+/// @param[in] mode Runtime material wrap-mode value.
+/// @return Clamp-to-edge, mirror-repeat, or repeat Metal address mode.
 static MTLSamplerAddressMode metal_material_address_mode(int32_t mode) {
     if (mode == RT_MATERIAL3D_TEXTURE_WRAP_CLAMP_TO_EDGE)
         return MTLSamplerAddressModeClampToEdge;
@@ -370,6 +405,11 @@ typedef struct metal_main_functions_t {
 } metal_main_functions_t;
 
 /// @brief Allocate the Objective-C context and initialize cache/default fields.
+/// @param[in] device Metal device retained by the context.
+/// @param[in] win Backend window handle associated with the context.
+/// @param[in] w Initial drawable width.
+/// @param[in] h Initial drawable height.
+/// @return Newly allocated context with caches and defaults initialized.
 static VGFXMetalContext *metal_create_context_base(id<MTLDevice> device,
                                                    vgfx_window_t win,
                                                    int32_t w,
@@ -393,6 +433,9 @@ static VGFXMetalContext *metal_create_context_base(id<MTLDevice> device,
 }
 
 /// @brief Attach a CAMetalLayer to the native view and sync its drawable size.
+/// @param[in,out] ctx Context receiving the layer.
+/// @param[in,out] view Native AppKit view that hosts the layer.
+/// @param[in] device Metal device assigned to the new layer.
 static void metal_attach_layer_to_view(VGFXMetalContext *ctx, NSView *view, id<MTLDevice> device) {
     view.wantsLayer = YES;
     if (!view.layer)
@@ -408,6 +451,9 @@ static void metal_attach_layer_to_view(VGFXMetalContext *ctx, NSView *view, id<M
 }
 
 /// @brief Create the command queue and reset frame matrices/state.
+/// @param[in,out] ctx Context receiving the queue, semaphore, and default matrices.
+/// @param[in] device Metal device used to create the command queue.
+/// @return `YES` when the queue and defaults are ready; otherwise `NO`.
 static BOOL metal_create_command_queue_and_defaults(VGFXMetalContext *ctx, id<MTLDevice> device) {
     ctx.commandQueue = [device newCommandQueue];
     if (!ctx.commandQueue) {
@@ -427,6 +473,9 @@ static BOOL metal_create_command_queue_and_defaults(VGFXMetalContext *ctx, id<MT
 }
 
 /// @brief Compile the main in-memory Metal shader library.
+/// @param[in,out] ctx Context receiving the compiled library.
+/// @param[in] device Metal device used for source compilation.
+/// @return `YES` when the library compiles; otherwise `NO`.
 static BOOL metal_compile_main_library(VGFXMetalContext *ctx, id<MTLDevice> device) {
     NSError *error = nil;
     ctx.library = [device newLibraryWithSource:metal_shader_source options:nil error:&error];
@@ -438,6 +487,9 @@ static BOOL metal_compile_main_library(VGFXMetalContext *ctx, id<MTLDevice> devi
 }
 
 /// @brief Resolve the required main/shadow shader entry points from the main library.
+/// @param[in] ctx Context containing the compiled main library.
+/// @param[out] funcs Receives all required function objects.
+/// @return `YES` when every required entry point is found; otherwise `NO`.
 static BOOL metal_load_main_functions(VGFXMetalContext *ctx, metal_main_functions_t *funcs) {
     funcs->vertex = nil;
     funcs->vertexInstanced = nil;
@@ -467,6 +519,10 @@ static BOOL metal_load_main_functions(VGFXMetalContext *ctx, metal_main_function
 }
 
 /// @brief Build all main and instanced pipeline-state variants.
+/// @param[in,out] ctx Context receiving mandatory pipeline states.
+/// @param[in] device Metal device used for compilation.
+/// @param[in] funcs Resolved main, particle, and shadow functions.
+/// @return `YES` when every mandatory full-layout pipeline is created.
 static BOOL metal_create_main_pipeline_states(VGFXMetalContext *ctx,
                                               id<MTLDevice> device,
                                               const metal_main_functions_t *funcs) {
@@ -621,6 +677,9 @@ static BOOL metal_create_main_pipeline_states(VGFXMetalContext *ctx,
 /// @details The same vertex/fragment functions compile against the 48-byte compact
 ///   vertex descriptor. Failure is non-fatal: compactPipelinesReady stays NO and the
 ///   backend keeps uploading/drawing the full 92-byte layout.
+/// @param[in,out] ctx Context receiving optional compact pipeline states.
+/// @param[in] device Metal device used for compilation.
+/// @param[in] funcs Resolved mesh and shadow shader functions.
 static void metal_create_compact_pipeline_states(VGFXMetalContext *ctx,
                                                  id<MTLDevice> device,
                                                  const metal_main_functions_t *funcs) {
@@ -762,6 +821,8 @@ static void metal_create_compact_pipeline_states(VGFXMetalContext *ctx,
 ///   far = 0), which concentrates float-depth precision in the distance. The shadow
 ///   pass keeps its own standard Less state (metal_create_shadow_resources) because
 ///   light view-projections stay in the standard convention.
+/// @param[in,out] ctx Context receiving the depth-state variants.
+/// @param[in] device Metal device used to create the states.
 static void metal_create_depth_state_variants(VGFXMetalContext *ctx, id<MTLDevice> device) {
     MTLDepthStencilDescriptor *dd = [[MTLDepthStencilDescriptor alloc] init];
     dd.depthCompareFunction = MTLCompareFunctionGreater;
@@ -776,6 +837,8 @@ static void metal_create_depth_state_variants(VGFXMetalContext *ctx, id<MTLDevic
 }
 
 /// @brief Create default white 2D/cubemap textures plus the default sampler.
+/// @param[in,out] ctx Context receiving fallback textures, sampler, and BRDF LUT.
+/// @param[in] device Metal device used to create the resources.
 static void metal_create_default_texture_resources(VGFXMetalContext *ctx, id<MTLDevice> device) {
     MTLTextureDescriptor *dtd =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -831,6 +894,8 @@ static void metal_create_default_texture_resources(VGFXMetalContext *ctx, id<MTL
 }
 
 /// @brief Create shared texture and cubemap samplers.
+/// @param[in,out] ctx Context receiving shared 2D and cube sampler states.
+/// @param[in] device Metal device used to create the samplers.
 static void metal_create_shared_sampler_resources(VGFXMetalContext *ctx, id<MTLDevice> device) {
     MTLSamplerDescriptor *sd = [[MTLSamplerDescriptor alloc] init];
     sd.minFilter = MTLSamplerMinMagFilterLinear;
@@ -851,6 +916,9 @@ static void metal_create_shared_sampler_resources(VGFXMetalContext *ctx, id<MTLD
 }
 
 /// @brief Create shadow pipeline, comparison sampler, and shadow depth state.
+/// @param[in,out] ctx Context receiving the shadow resources.
+/// @param[in] device Metal device used for resource creation.
+/// @param[in] funcs Resolved shadow vertex and fragment functions.
 static void metal_create_shadow_resources(VGFXMetalContext *ctx,
                                           id<MTLDevice> device,
                                           const metal_main_functions_t *funcs) {
@@ -880,6 +948,9 @@ static void metal_create_shadow_resources(VGFXMetalContext *ctx,
 ///   acquires the system default MTLDevice, attaches a CAMetalLayer to the native NSView, and
 ///   initializes the per-context resource caches
 ///   (texture/cubemap/geometry/morph/render-target/sampler).
+/// @param[in] win Window whose native view hosts the Metal layer.
+/// @param[in] w Initial drawable width.
+/// @param[in] h Initial drawable height.
 /// @return An opaque VGFXMetalContext* handle (cast to void*), or NULL if no Metal device or native
 ///   view is available.
 static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
@@ -1589,6 +1660,7 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
 }
 
 /// @brief Destroy the Metal backend context and release all GPU resources and caches.
+/// @param[in] ctx_ptr Opaque retained Metal context handle to consume and release.
 static void metal_destroy_ctx(void *ctx_ptr) {
     if (!ctx_ptr)
         return;
@@ -1604,6 +1676,11 @@ static void metal_destroy_ctx(void *ctx_ptr) {
 }
 
 /// @brief Set the clear color used when the next frame's scene pass begins.
+/// @param[in,out] ctx_ptr Opaque Metal context handle.
+/// @param[in] win Window associated with the clear request; unused by Metal.
+/// @param[in] r Requested red component, clamped to the unit interval.
+/// @param[in] g Requested green component, clamped to the unit interval.
+/// @param[in] b Requested blue component, clamped to the unit interval.
 static void metal_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, float b) {
     (void)win;
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -1614,9 +1691,10 @@ static void metal_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, floa
     ctx.clearB = vgfx3d_clamp_float_param(b, 0.0f, 1.0f, 0.0f);
 }
 
-/// @brief Begin a 3D frame: advance the frame serial, set up camera uniforms, and open the scene
-/// pass.
 /// @brief Radical-inverse Halton sequence sample for TAA sub-pixel jitter.
+/// @param[in] index One-based sequence index.
+/// @param[in] base Radix whose digits are reflected.
+/// @return Radical-inverse sample in the half-open interval `[0, 1)`.
 static float metal_halton(uint32_t index, uint32_t base) {
     float f = 1.0f;
     float r = 0.0f;
@@ -1629,6 +1707,9 @@ static float metal_halton(uint32_t index, uint32_t base) {
 }
 
 /// @brief True when the exported postfx chain contains an effect of @p type_value.
+/// @param[in] chain Post-processing chain to inspect.
+/// @param[in] type_value Effect type to locate.
+/// @return One when the usable chain contains the requested type.
 static int metal_chain_has_effect(const vgfx3d_postfx_chain_t *chain, int32_t type_value) {
     if (!vgfx3d_postfx_chain_is_usable(chain))
         return 0;
@@ -1644,6 +1725,7 @@ static int metal_chain_has_effect(const vgfx3d_postfx_chain_t *chain, int32_t ty
 ///   the scene encoder is closed, the depth texture is blit-copied into a
 ///   sampleable snapshot, and the encoder is reopened with load-existing
 ///   color+depth. Blend draws then read the snapshot for soft-particle fade.
+/// @param[in,out] ctx_ptr Opaque Metal context whose opaque-depth snapshot is refreshed.
 static void metal_resolve_opaque_targets(void *ctx_ptr) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -1694,6 +1776,8 @@ static void metal_resolve_opaque_targets(void *ctx_ptr) {
 /// @brief 1x1 depth stand-in bound when no snapshot exists, keeping fragment
 ///        texture 16 valid for the shared fragment shader (never sampled:
 ///        pbrScalars1.z is forced to 0 while the snapshot is invalid).
+/// @param[in,out] ctx Context that lazily owns the dummy texture.
+/// @return Borrowed one-by-one depth texture, or `nil` if allocation fails.
 static id<MTLTexture> metal_opaque_depth_dummy(VGFXMetalContext *ctx) {
     if (!ctx.opaqueDepthDummy) {
         MTLTextureDescriptor *desc =
@@ -1708,6 +1792,12 @@ static id<MTLTexture> metal_opaque_depth_dummy(VGFXMetalContext *ctx) {
     return ctx.opaqueDepthDummy;
 }
 
+/// @brief Begin a Metal frame by latching camera state and opening the selected scene encoder.
+/// @details Sanitizes matrices, applies temporal jitter when TAA is latched, updates
+///   scene and overlay history, acquires or reuses a command buffer, periodically
+///   prunes caches, and begins the RTT, scene, overlay, or drawable render pass.
+/// @param[in,out] ctx_ptr Opaque Metal context handle.
+/// @param[in] cam Camera and per-frame rendering parameters to sanitize and latch.
 static void metal_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -1885,6 +1975,8 @@ static void metal_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
 }
 
 /// @brief Add @p bytes to the context's running per-frame texture-upload total (saturating).
+/// @param[in,out] ctx Context containing the upload counter.
+/// @param[in] bytes Completed upload bytes to add.
 static void metal_record_texture_upload_bytes(VGFXMetalContext *ctx, uint64_t bytes) {
     if (!ctx || bytes == 0)
         return;
@@ -1899,6 +1991,8 @@ static void metal_record_texture_upload_bytes(VGFXMetalContext *ctx, uint64_t by
 /// (BC7/ASTC/ETC2).
 /// @details Apple-silicon GPUs support ASTC/ETC2; Intel Macs support BC7. Returns the matching
 ///          RT_CANVAS3D_BACKEND_CAP_* bitmask.
+/// @param[in] ctx_ptr Opaque Metal context handle.
+/// @return Bitmask of supported compression and anisotropy capabilities.
 static int64_t metal_get_native_texture_caps(void *ctx_ptr) {
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
     int64_t caps = 0;

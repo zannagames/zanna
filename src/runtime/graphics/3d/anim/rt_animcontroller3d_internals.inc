@@ -5,86 +5,160 @@
 // state/transition/event/layer tables and repair helpers
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines AnimController3D private storage and state-machine helpers.
+/// @details This fragment is included into `rt_animcontroller3d.c`; it is not a
+///          standalone translation unit. It centralizes bounded storage,
+///          defensive invariant repair, state lookup and event queuing, layer
+///          selection/masking, matrix and quaternion utilities, and direct
+///          animation-channel sampling used by the other controller fragments.
+
+/// Number of animation layers, including the base layer at index zero.
 #define RT_ANIM_CONTROLLER3D_MAX_LAYERS 4
+/// Bytes per queued event-name slot, including its NUL terminator.
 #define RT_ANIM_CONTROLLER3D_EVENT_NAME_MAX 64
+/// Bytes per stored state name, including its NUL terminator.
 #define RT_ANIM_CONTROLLER3D_STATE_NAME_MAX 64
+/// Maximum number of pending event names retained by the ring buffer.
 #define RT_ANIM_CONTROLLER3D_EVENT_QUEUE_MAX 64
+/// Largest finite distance metadata accepted by animation LOD configuration.
 #define RT_ANIM_CONTROLLER3D_LOD_DISTANCE_MAX 1000000.0
+/// Largest animation evaluation frequency accepted by the LOD gate.
 #define RT_ANIM_CONTROLLER3D_LOD_RATE_MAX 240.0
+/// Safety bound on loop cycles compensated during one root-motion update.
 #define RT_ANIM_CONTROLLER3D_ROOT_MOTION_CYCLE_MAX 1024
 
+/// @brief One named controller state and its retained animation clip.
 typedef struct {
+    /// Canonical bounded lookup name.
     char name[RT_ANIM_CONTROLLER3D_STATE_NAME_MAX];
+    /// Retained Animation3D played when this state is selected.
     rt_animation3d *animation;
+    /// Signed per-state playback multiplier.
     float speed;
+    /// Nonzero when playback wraps at the clip duration.
     int8_t looping;
 } anim_controller3d_state_t;
 
+/// @brief Directional state transition with a default blend duration.
 typedef struct {
+    /// Source index in the controller's state table.
     int32_t from_state;
+    /// Destination index in the controller's state table.
     int32_t to_state;
+    /// Sanitized nonnegative blend duration in seconds.
     float blend_seconds;
 } anim_controller3d_transition_t;
 
+/// @brief Scheduled named event on one state's playback timeline.
 typedef struct {
+    /// Owning index in the controller's state table.
     int32_t state_index;
+    /// Clamped event timestamp in seconds.
     float time_seconds;
+    /// Bounded event name copied into pending queue slots when fired.
     char name[RT_ANIM_CONTROLLER3D_EVENT_NAME_MAX];
 } anim_controller3d_event_t;
 
+/// @brief Playback, transition, weight, and bone-mask state for one layer.
 typedef struct {
+    /// Retained AnimPlayer3D dedicated to this layer.
     rt_anim_player3d *player;
+    /// Selected state-table index, or `-1`.
     int32_t current_state;
+    /// Prior state-table index used during transition reporting, or `-1`.
     int32_t previous_state;
+    /// Elapsed time within the current transition.
     float transition_time;
+    /// Total transition duration in seconds.
     float transition_duration;
+    /// Nonzero while transition time is below duration.
     int8_t transitioning;
+    /// Nonzero to composite a bind-pose-relative delta instead of replacement.
     int8_t additive;
+    /// Layer contribution in `[0,1]`; the base is always `1`.
     float weight;
+    /// Root of the included skeleton subtree, or `-1` for every bone.
     int32_t mask_root_bone;
+    /// Bone count for which @ref mask_bits was last built.
     int32_t mask_bone_count_seen;
+    /// One inclusion flag per supported skeleton bone.
     uint8_t mask_bits[VGFX3D_MAX_SKELETON_BONES];
 } anim_controller3d_layer_t;
 
+/// @brief Private GC-managed AnimController3D object representation.
 typedef struct {
+    /// Runtime object header / virtual table slot.
     void *vptr;
+    /// Retained Skeleton3D shared by states, layers, blend tree, and IK.
     rt_skeleton3d *skeleton;
 
+    /// Geometrically grown array of registered states.
     anim_controller3d_state_t *states;
+    /// Logical number of initialized state entries.
     int32_t state_count;
+    /// Allocated state-array capacity.
     int32_t state_capacity;
+    /// Open-addressing hash slots for large state tables.
     uint64_t *state_name_hashes;
+    /// State indexes corresponding to @ref state_name_hashes.
     int32_t *state_name_indices;
+    /// Power-of-two slot count in each name-index array.
     int32_t state_name_index_capacity;
+    /// Nonzero when the name index must be rebuilt before use.
     int8_t state_name_index_dirty;
 
+    /// Geometrically grown array of directional transitions.
     anim_controller3d_transition_t *transitions;
+    /// Logical number of initialized transitions.
     int32_t transition_count;
+    /// Allocated transition-array capacity.
     int32_t transition_capacity;
 
+    /// Geometrically grown array of scheduled events.
     anim_controller3d_event_t *events;
+    /// Logical number of initialized event entries.
     int32_t event_count;
+    /// Allocated event-array capacity.
     int32_t event_capacity;
 
+    /// Fixed base-plus-overlay layer storage.
     anim_controller3d_layer_t layers[RT_ANIM_CONTROLLER3D_MAX_LAYERS];
+    /// Optional retained BlendTree3D pose source.
     void *blend_tree;
+    /// Optional retained IKSolver3D post-process.
     void *ik_solver;
 
+    /// Current skinning matrices (`global * inverse_bind`), 16 floats per bone.
     float *final_palette;
+    /// Current model-space global matrices, 16 floats per bone.
     float *final_globals;
+    /// Previous update's skinning matrices for temporal rendering.
     float *prev_final_palette;
+    /// Nonzero once @ref prev_final_palette contains a valid snapshot.
     int8_t has_prev_final_palette;
+    /// Accumulated model-space root translation since the last consume.
     double root_motion_delta[3];
+    /// Accumulated normalized root rotation since the last consume.
     double root_motion_rotation[4];
+    /// Caller-provided distance metadata associated with update-rate LOD.
     double animation_lod_distance;
+    /// Enabled batched evaluation frequency, or zero.
     double animation_lod_rate_hz;
+    /// Unconsumed time carried by the animation LOD gate.
     double animation_lod_accum;
+    /// Positive leading-bone evaluation count, or zero to disable bone LOD.
     int32_t animation_lod_max_bones; /* >0 freezes bones at/after this index to bind-local (LOD) */
+    /// Root-motion source bone, or `-1` when extraction is disabled.
     int32_t root_motion_bone;
 
+    /// Fixed FIFO ring storage for fired event names.
     char event_queue[RT_ANIM_CONTROLLER3D_EVENT_QUEUE_MAX][RT_ANIM_CONTROLLER3D_EVENT_NAME_MAX];
+    /// Index of the oldest pending event slot.
     int32_t event_queue_head;
+    /// Number of valid pending event slots.
     int32_t event_queue_count;
+    /// Lifetime count of pending events dropped on queue overflow.
     int64_t events_dropped;
     /// Reusable scratch for controller_compute_final_palette's per-call local-matrix buffer,
     /// sized like the palettes (VGFX3D_MAX_BONES*16 floats). Owned per-controller (one updater
@@ -97,26 +171,40 @@ typedef struct {
     /// sample_scratch_bones*32 floats (locals + globals) so repeated samples stop
     /// paying a calloc/free each call. Appended at the struct's end (see above).
     float *sample_scratch;
+    /// Bone capacity currently available in @ref sample_scratch.
     int32_t sample_scratch_bones;
 } rt_anim_controller3d;
 
 /// @brief Validate that @p obj is a live AnimController3D handle, returning NULL otherwise.
+/// @param[in] obj Opaque borrowed runtime object handle.
+/// @return Borrowed typed controller pointer, or `NULL` on class/liveness
+///         mismatch.
 static rt_anim_controller3d *anim_controller3d_checked(void *obj) {
     return (rt_anim_controller3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMCONTROLLER3D_CLASS_ID);
 }
 
 /// @brief Validate that @p obj is a live Skeleton3D handle, returning NULL otherwise.
+/// @param[in] obj Opaque borrowed runtime object handle.
+/// @return Borrowed typed skeleton pointer, or `NULL` on class/liveness
+///         mismatch.
 static rt_skeleton3d *skeleton3d_checked(void *obj) {
     return (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
 }
 
 /// @brief Validate that @p obj is a live Animation3D handle, returning NULL otherwise.
+/// @param[in] obj Opaque borrowed runtime object handle.
+/// @return Borrowed typed animation pointer, or `NULL` on class/liveness
+///         mismatch.
 static rt_animation3d *animation3d_checked(void *obj) {
     return (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
 }
 
 /// @brief Narrow a double to float, returning `fallback` for non-finite input and
 ///   saturating to ±FLT_MAX on overflow (keeps NaN/Inf out of the float pipeline).
+/// @param[in] value Double-precision value to narrow.
+/// @param[in] fallback Finite replacement used for NaN or infinity.
+/// @return Narrowed finite float, the fallback, or the appropriate signed
+///         `FLT_MAX` saturation value.
 static float controller_clamp_to_float(double value, float fallback) {
     if (!isfinite(value))
         return fallback;
@@ -129,6 +217,8 @@ static float controller_clamp_to_float(double value, float fallback) {
 
 /// @brief Narrow a double to a non-negative float; non-finite or ≤0 yields 0, overflow
 ///   saturates to FLT_MAX. For durations/speeds that must stay ≥ 0.
+/// @param[in] value Value to normalize and narrow.
+/// @return Finite float in `[0,FLT_MAX]`.
 static float controller_clamp_nonnegative_float(double value) {
     if (!isfinite(value) || value <= 0.0)
         return 0.0f;
@@ -142,11 +232,17 @@ static float controller_clamp_nonnegative_float(double value) {
 ///          retain-then-release discipline is shared across every animated-
 ///          object pointer the controller owns. NULL slot or NULL contents
 ///          are no-ops.
+/// @param[in,out] slot Address of a retained object slot to release and clear.
 static void controller_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Release a retained controller-owned object only when its class still matches.
+/// @details A non-null object of the wrong class is treated as an unowned
+///          corrupt slot and cleared without releasing through the expected
+///          class path.
+/// @param[in,out] slot Address of the retained object slot.
+/// @param[in] class_id Expected graphics-runtime class identifier.
 static void controller_release_class_ref(void **slot, int64_t class_id) {
     if (!slot || !*slot)
         return;
@@ -158,6 +254,9 @@ static void controller_release_class_ref(void **slot, int64_t class_id) {
 }
 
 /// @brief Borrow the controller skeleton only if the private slot still has the right class.
+/// @details A stale or wrong-class slot is cleared defensively.
+/// @param[in,out] controller Controller whose skeleton reference to validate.
+/// @return Borrowed typed skeleton pointer, or `NULL`.
 static rt_skeleton3d *controller_skeleton_ref(rt_anim_controller3d *controller) {
     if (!controller || !controller->skeleton)
         return NULL;
@@ -169,6 +268,9 @@ static rt_skeleton3d *controller_skeleton_ref(rt_anim_controller3d *controller) 
 }
 
 /// @brief Return a C string only for a valid runtime string handle.
+/// @param[in] name Borrowed runtime string handle.
+/// @return Borrowed NUL-terminated byte view, or `NULL` for a null or invalid
+///         string handle.
 static const char *controller_string_cstr_or_null(rt_string name) {
     if (!name || !rt_string_is_handle(name))
         return NULL;
@@ -180,6 +282,9 @@ static const char *controller_string_cstr_or_null(rt_string name) {
 ///          empty string when `name` is NULL or the buffer is zero-sized.
 ///          Used to snapshot state and event names into the fixed-size
 ///          arrays in `anim_controller3d_state_t` / `_event_t`.
+/// @param[out] dst Destination character buffer; may be `NULL`.
+/// @param[in] cap Destination capacity in bytes, including the terminator.
+/// @param[in] name Borrowed runtime string to copy.
 static void controller_copy_name(char *dst, size_t cap, rt_string name) {
     const char *src = controller_string_cstr_or_null(name);
     size_t len = src ? strlen(src) : 0;
@@ -197,6 +302,11 @@ static void controller_copy_name(char *dst, size_t cap, rt_string name) {
 /// @details Doubles capacity (or jumps to `need`, whichever is larger) and
 ///          `realloc`s in place. Used by the states / transitions / events
 ///          arrays — capacity starts at 0, jumps to 4, then doubles.
+/// @param[in,out] buffer Address of the heap-buffer pointer updated by
+///                       successful `realloc`.
+/// @param[in,out] capacity Current element capacity and success output.
+/// @param[in] need Minimum required element count.
+/// @param[in] elem_size Size of one element in bytes.
 /// @return 1 on success (buffer + capacity updated); 0 on allocation failure
 ///         (buffer + capacity left untouched).
 static int controller_grow_array(void **buffer, int32_t *capacity, int32_t need, size_t elem_size) {
@@ -226,6 +336,10 @@ static int controller_grow_array(void **buffer, int32_t *capacity, int32_t need,
 
 /// @brief Clamp a (count, capacity) pair to a safe element count: 0 when the array or sizes
 ///   are invalid, otherwise min(count, capacity).
+/// @param[in] items Array pointer whose presence gates readability.
+/// @param[in] count Claimed logical count.
+/// @param[in] capacity Claimed allocation capacity.
+/// @return Zero for invalid storage metadata; otherwise `min(count,capacity)`.
 static int32_t controller_clamped_array_count(const void *items, int32_t count, int32_t capacity) {
     if (!items || count <= 0 || capacity <= 0)
         return 0;
@@ -235,6 +349,8 @@ static int32_t controller_clamped_array_count(const void *items, int32_t count, 
 }
 
 /// @brief Number of animation states safe to read directly (live count clamped to capacity).
+/// @param[in] controller Controller to inspect.
+/// @return Safe readable state count, or zero.
 static int32_t controller_safe_state_count(const rt_anim_controller3d *controller) {
     return controller ? controller_clamped_array_count(
                             controller->states, controller->state_count, controller->state_capacity)
@@ -242,6 +358,8 @@ static int32_t controller_safe_state_count(const rt_anim_controller3d *controlle
 }
 
 /// @brief Number of transitions safe to read directly (live count clamped to capacity).
+/// @param[in] controller Controller to inspect.
+/// @return Safe readable transition count, or zero.
 static int32_t controller_safe_transition_count(const rt_anim_controller3d *controller) {
     return controller ? controller_clamped_array_count(controller->transitions,
                                                        controller->transition_count,
@@ -250,6 +368,8 @@ static int32_t controller_safe_transition_count(const rt_anim_controller3d *cont
 }
 
 /// @brief Number of events safe to read directly (live count clamped to capacity).
+/// @param[in] controller Controller to inspect.
+/// @return Safe readable scheduled-event count, or zero.
 static int32_t controller_safe_event_count(const rt_anim_controller3d *controller) {
     return controller ? controller_clamped_array_count(
                             controller->events, controller->event_count, controller->event_capacity)
@@ -258,6 +378,7 @@ static int32_t controller_safe_event_count(const rt_anim_controller3d *controlle
 
 /// @brief Normalize the state-table count/capacity invariants: reset both when the array is
 ///   absent, clamp a negative capacity, and re-clamp the count (marks the name index dirty).
+/// @param[in,out] controller Controller whose state metadata to repair.
 static void controller_repair_state_table(rt_anim_controller3d *controller) {
     if (!controller)
         return;
@@ -273,6 +394,7 @@ static void controller_repair_state_table(rt_anim_controller3d *controller) {
 }
 
 /// @brief Normalize the transition-table count/capacity invariants (defensive clamp).
+/// @param[in,out] controller Controller whose transition metadata to repair.
 static void controller_repair_transition_table(rt_anim_controller3d *controller) {
     if (!controller)
         return;
@@ -287,6 +409,8 @@ static void controller_repair_transition_table(rt_anim_controller3d *controller)
 }
 
 /// @brief Normalize the event-table count/capacity invariants (defensive clamp).
+/// @param[in,out] controller Controller whose scheduled-event metadata to
+///                           repair.
 static void controller_repair_event_table(rt_anim_controller3d *controller) {
     if (!controller)
         return;
@@ -302,6 +426,7 @@ static void controller_repair_event_table(rt_anim_controller3d *controller) {
 
 /// @brief Clamp every animation layer's current/previous state indices, transition timers,
 ///   and blend weight into valid ranges (layer 0 is forced to full weight).
+/// @param[in,out] controller Controller whose fixed layer records to sanitize.
 static void controller_repair_layer_state_indices(rt_anim_controller3d *controller) {
     int32_t state_count;
     if (!controller)
@@ -339,17 +464,22 @@ static void controller_repair_layer_state_indices(rt_anim_controller3d *controll
 }
 
 /// @brief True if @p value is a positive power of two.
+/// @param[in] value Signed integer to classify.
+/// @return Nonzero only for positive powers of two.
 static int controller_is_power_of_two_i32(int32_t value) {
     return value > 0 && (value & (value - 1)) == 0;
 }
 
 /// @brief Number of skeleton bones safe to read (delegates to skeleton3d_safe_bone_count).
+/// @param[in] skeleton Skeleton to inspect.
+/// @return Sanitized readable bone count.
 static int32_t controller_safe_bone_count(const rt_skeleton3d *skeleton) {
     return skeleton3d_safe_bone_count(skeleton);
 }
 
 /// @brief Clamp the event ring-buffer's head/tail/size indices back into range after any
 ///   potential corruption, keeping the queue traversable.
+/// @param[in,out] controller Controller whose queue metadata to sanitize.
 static void controller_sanitize_event_queue(rt_anim_controller3d *controller) {
     if (!controller)
         return;
@@ -365,6 +495,8 @@ static void controller_sanitize_event_queue(rt_anim_controller3d *controller) {
 /// @brief FNV-1a 64-bit hash of a state name, used as the key in the open-addressing
 ///   name index. Returns 0 for a NULL name; otherwise a non-zero hash (a hash that would
 ///   be 0 is remapped to 1 so 0 stays reserved as the empty-slot sentinel).
+/// @param[in] name Borrowed NUL-terminated byte string.
+/// @return Zero for `NULL`; otherwise a nonzero FNV-1a hash.
 static uint64_t controller_hash_name_cstr(const char *name) {
     uint64_t hash = UINT64_C(1469598103934665603);
     if (!name)
@@ -379,6 +511,7 @@ static uint64_t controller_hash_name_cstr(const char *name) {
 /// @brief Rebuild the open-addressing (linear-probe) name index that maps state-name
 ///   hashes to state-array slots, growing to a power-of-two capacity sized to keep the
 ///   load factor below 50%, and clear the dirty flag.
+/// @param[in,out] controller Controller whose auxiliary index to rebuild.
 /// @return 1 on success, 0 if `controller` is NULL or an index allocation fails.
 static int controller_rebuild_state_name_index(rt_anim_controller3d *controller) {
     int32_t capacity = 16;
@@ -434,6 +567,9 @@ static int controller_rebuild_state_name_index(rt_anim_controller3d *controller)
 /// @details Shared by the rt_string entry point and C-internal callers (e.g. the
 ///   per-frame combat window check) that already hold a plain C string, so hot
 ///   paths need not allocate a transient rt_string per query.
+/// @param[in,out] controller Controller whose repaired state table and optional
+///                           hash index to search.
+/// @param[in] target Borrowed exact canonical NUL-terminated name.
 /// @return State index, or -1 if `target` is NULL/empty or no match.
 static int32_t controller_find_state_cstr(rt_anim_controller3d *controller, const char *target) {
     int32_t state_count;
@@ -473,6 +609,10 @@ linear_scan:
 }
 
 /// @brief Find a state by name, using an open-addressed name index for larger controllers.
+/// @details Copies and truncates the runtime string through the same
+///          canonicalization used when states are inserted.
+/// @param[in,out] controller Controller whose state table to search.
+/// @param[in] name Borrowed runtime state name.
 /// @return State index, or -1 if `name` is NULL/empty or no match.
 static int32_t controller_find_state(rt_anim_controller3d *controller, rt_string name) {
     char target_buf[RT_ANIM_CONTROLLER3D_STATE_NAME_MAX];
@@ -483,6 +623,9 @@ static int32_t controller_find_state(rt_anim_controller3d *controller, rt_string
 }
 
 /// @brief Linear-scan the transition table for an exact `(from, to)` pair.
+/// @param[in] controller Controller whose sanitized transition range to scan.
+/// @param[in] from_state Source state index.
+/// @param[in] to_state Destination state index.
 /// @return Transition index, or -1 if no match is registered.
 static int32_t controller_find_transition(const rt_anim_controller3d *controller,
                                           int32_t from_state,
@@ -504,6 +647,8 @@ static int32_t controller_find_transition(const rt_anim_controller3d *controller
 ///          event, never silently drop the freshest one." NULL or empty
 ///          event names are silently ignored. Names longer than the
 ///          fixed-size slot are truncated (NUL-terminated within `slot`).
+/// @param[in,out] controller Controller whose pending-event ring to extend.
+/// @param[in] event_name Borrowed nonempty NUL-terminated name.
 static void controller_enqueue_event(rt_anim_controller3d *controller, const char *event_name) {
     int32_t slot;
     size_t len;
@@ -533,6 +678,9 @@ static void controller_enqueue_event(rt_anim_controller3d *controller, const cha
 ///          would otherwise be missed by the prev_time→curr_time window
 ///          tracking in `controller_process_events` because the player
 ///          hasn't ticked yet. Threshold is 1µs.
+/// @param[in,out] controller Controller whose scheduled events to inspect and
+///                           pending queue to extend.
+/// @param[in] state_index Valid selected state-table index.
 static void controller_fire_entry_events(rt_anim_controller3d *controller, int32_t state_index) {
     int32_t event_count;
     if (!controller || state_index < 0 || state_index >= controller_safe_state_count(controller))
@@ -547,10 +695,9 @@ static void controller_fire_entry_events(rt_anim_controller3d *controller, int32
 }
 
 /// @brief Fire state events crossed by the last playback step.
-/// @details Three cases:
-///          - **Zero-duration animation** (no real timeline): any event with
-///            `time_seconds <= curr_time` fires. Treats the animation as a
-///            single-frame impulse.
+/// @details Zero-duration clips have no traversable interval and are ignored
+///          here; their time-zero events are handled on state entry. For clips
+///          with duration, two cases are distinguished:
 ///          - **Non-looping**: half-open forward/reverse windows fire only
 ///            events crossed by the clamped step.
 ///          - **Looping**: forward and reverse wrap split the window at the
@@ -558,6 +705,13 @@ static void controller_fire_entry_events(rt_anim_controller3d *controller, int32
 ///            fires each registered event once.
 ///          Lower-bound exclusivity prevents an event exactly at `prev_time`
 ///          from firing twice on consecutive ticks.
+/// @param[in,out] controller Controller owning the schedule and pending queue.
+/// @param[in] state_index State whose events are eligible.
+/// @param[in] prev_time Player time before the update.
+/// @param[in] curr_time Player time after clamping or wrapping.
+/// @param[in] duration Positive clip duration in seconds.
+/// @param[in] looping Nonzero when the state timeline wraps.
+/// @param[in] elapsed_time Signed unclamped clip-time step after speed.
 static void controller_process_events(rt_anim_controller3d *controller,
                                       int32_t state_index,
                                       double prev_time,
@@ -615,6 +769,9 @@ static void controller_process_events(rt_anim_controller3d *controller,
 /// @details Used for the base layer (layer 0) which always covers the full
 ///          skeleton, and as the reset state when an overlay layer's
 ///          `mask_root_bone` is invalid or out of range.
+/// @param[in,out] layer Layer whose fixed bit array to rebuild.
+/// @param[in] bone_count Requested included prefix, clamped to the supported
+///                       skeleton maximum.
 static void controller_set_all_mask_bits(anim_controller3d_layer_t *layer, int32_t bone_count) {
     if (!layer)
         return;
@@ -635,6 +792,8 @@ static void controller_set_all_mask_bits(anim_controller3d_layer_t *layer, int32
 ///          This is the standard "this layer animates an arm subtree only"
 ///          construction — the upper-body layer of a character that
 ///          composites a wave / aim / reload pose over a running base.
+/// @param[in,out] controller Controller providing the skeleton and layer.
+/// @param[in] layer_index Zero-based valid layer index to rebuild.
 static void controller_rebuild_layer_mask(rt_anim_controller3d *controller, int32_t layer_index) {
     anim_controller3d_layer_t *layer;
     int32_t bone_count;
@@ -665,6 +824,8 @@ static void controller_rebuild_layer_mask(rt_anim_controller3d *controller, int3
 /// @details Always enables the player's loop-override so the controller's
 ///          per-state looping decision wins over whatever the underlying
 ///          Animation3D defaults to.
+/// @param[in,out] player Layer player to configure.
+/// @param[in] state State providing speed and looping policy.
 static void controller_apply_state_settings(rt_anim_player3d *player,
                                             const anim_controller3d_state_t *state) {
     if (!player || !state)
@@ -674,6 +835,10 @@ static void controller_apply_state_settings(rt_anim_player3d *player,
     rt_anim_player3d_set_speed(player, state->speed);
 }
 
+/// @brief Evaluate and composite the controller's final globals and skinning
+///        palette.
+/// @param[in,out] controller Controller whose active pose sources and output
+///                           buffers to evaluate.
 static void controller_compute_final_palette(rt_anim_controller3d *controller);
 
 /// @brief Switch a layer to a new state, optionally crossfading from the current state.
@@ -684,6 +849,11 @@ static void controller_compute_final_palette(rt_anim_controller3d *controller);
 ///          pose data into the bone palette so the next render sees the
 ///          new state without a one-frame lag, and time-zero entry events
 ///          for the new state are fired.
+/// @param[in,out] controller Controller whose layer selection to change.
+/// @param[in] layer_index Zero-based layer index.
+/// @param[in] state_index Valid registered state index.
+/// @param[in] blend_seconds Requested nonnegative fade duration; invalid
+///                          values normalize to zero.
 /// @return 1 on success, 0 on bad layer index, missing state, or missing
 ///         underlying player/animation.
 static int8_t controller_set_layer_state(rt_anim_controller3d *controller,
@@ -729,6 +899,9 @@ static int8_t controller_set_layer_state(rt_anim_controller3d *controller,
 }
 
 /// @brief Multiply two row-major 4x4 float matrices.
+/// @param[in] a Borrowed left operand of 16 floats.
+/// @param[in] b Borrowed right operand of 16 floats.
+/// @param[out] out Writable 16-float result; must not alias either input.
 static void controller_mat4f_mul(const float *a, const float *b, float *out) {
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 4; c++) {
@@ -739,6 +912,11 @@ static void controller_mat4f_mul(const float *a, const float *b, float *out) {
 }
 
 /// @brief Reset final globals to bind pose and final palette to skinning identity.
+/// @details Computes globals from a temporary heap copy of bind-local matrices,
+///          then multiplies each global by its inverse bind. Missing storage,
+///          an empty skeleton, or scratch allocation failure leaves outputs
+///          unchanged.
+/// @param[in,out] controller Controller whose output buffers to initialize.
 static void controller_bind_pose_palette(rt_anim_controller3d *controller) {
     int32_t bone_count;
     float *bind_locals;
@@ -766,6 +944,17 @@ static void controller_bind_pose_palette(rt_anim_controller3d *controller) {
     free(bind_locals);
 }
 
+/// @brief Convert a 3-by-3 rotation basis to a normalized quaternion.
+/// @param[in] m00 Row-zero, column-zero basis lane.
+/// @param[in] m01 Row-zero, column-one basis lane.
+/// @param[in] m02 Row-zero, column-two basis lane.
+/// @param[in] m10 Row-one, column-zero basis lane.
+/// @param[in] m11 Row-one, column-one basis lane.
+/// @param[in] m12 Row-one, column-two basis lane.
+/// @param[in] m20 Row-two, column-zero basis lane.
+/// @param[in] m21 Row-two, column-one basis lane.
+/// @param[in] m22 Row-two, column-two basis lane.
+/// @param[out] out Writable four-double quaternion in `(x,y,z,w)` order.
 static void controller_quat_from_matrix_rows(double m00,
                                              double m01,
                                              double m02,
@@ -783,6 +972,11 @@ static void controller_quat_from_matrix_rows(double m00,
 ///          parallel inputs (dot > 0.9995) where the `sin(theta)` divisor would
 ///          approach zero. The result is renormalized, with an identity-quaternion
 ///          guard for the degenerate zero-length case.
+/// @param[in] a Borrowed four-float unit quaternion.
+/// @param[in] b Borrowed four-float unit quaternion.
+/// @param[in] t Interpolation weight clamped to `[0,1]`; non-finite becomes
+///              zero.
+/// @param[out] out Writable normalized four-float result.
 static void controller_quat_slerp_float(const float *a, const float *b, float t, float *out) {
     float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
     float nb[4] = {b[0], b[1], b[2], b[3]};
@@ -828,6 +1022,8 @@ static void controller_quat_slerp_float(const float *a, const float *b, float t,
 }
 
 /// @brief Quaternion conjugate (negated vector part) — the inverse for a unit quaternion.
+/// @param[in] q Borrowed four-float quaternion.
+/// @param[out] out Writable four-float conjugate; may alias @p q.
 static void controller_quat_conjugate_float(const float *q, float *out) {
     if (!q || !out)
         return;
@@ -838,6 +1034,9 @@ static void controller_quat_conjugate_float(const float *q, float *out) {
 }
 
 /// @brief Hamilton product out = a * b (apply b then a), normalized; identity on degenerate result.
+/// @param[in] a Borrowed left quaternion operand.
+/// @param[in] b Borrowed right quaternion operand.
+/// @param[out] out Writable normalized product; must not alias either input.
 static void controller_quat_mul_float(const float *a, const float *b, float *out) {
     float w;
     float x;
@@ -869,6 +1068,10 @@ static void controller_quat_mul_float(const float *a, const float *b, float *out
 /// @details Standard quaternion-to-basis expansion with each basis column
 ///          pre-multiplied by its scale component and the translation written
 ///          into the 4th column.
+/// @param[in] pos Borrowed three-float translation.
+/// @param[in] quat Borrowed normalized four-float quaternion.
+/// @param[in] scl Borrowed three-float scale.
+/// @param[out] out Writable row-major matrix of 16 floats.
 static void controller_build_trs_float(const float *pos,
                                        const float *quat,
                                        const float *scl,
@@ -899,6 +1102,10 @@ static void controller_build_trs_float(const float *pos,
 /// @details Scale per axis is the length of each basis column, guarded to 1.0
 ///          when near-zero or non-finite so the subsequent divide that
 ///          orthonormalizes the basis before quaternion extraction stays finite.
+/// @param[in] m Borrowed row-major matrix of 16 floats.
+/// @param[out] out_pos Writable three-float translation.
+/// @param[out] out_rot Writable normalized four-float quaternion.
+/// @param[out] out_scl Writable three-float scale.
 static void controller_decompose_trs_float(const float *m,
                                            float *out_pos,
                                            float *out_rot,
@@ -934,6 +1141,9 @@ static void controller_decompose_trs_float(const float *m,
 
 /// @brief Find the animation channel targeting @p bone_index, or NULL if the clip has
 ///   no channel for that bone.
+/// @param[in] anim Animation3D whose sanitized channel range to scan.
+/// @param[in] bone_index Nonnegative target skeleton-bone index.
+/// @return Borrowed matching channel pointer, or `NULL`.
 static const vgfx3d_anim_channel_t *controller_find_animation_channel(const rt_animation3d *anim,
                                                                       int32_t bone_index) {
     int32_t channel_count;
@@ -948,12 +1158,18 @@ static const vgfx3d_anim_channel_t *controller_find_animation_channel(const rt_a
 }
 
 /// @brief Return @p value when finite, else @p fallback (float scalar sanitizer).
+/// @param[in] value Candidate float value.
+/// @param[in] fallback Replacement for NaN or infinity.
+/// @return @p value when finite; otherwise @p fallback.
 static float controller_finite_float_or(float value, float fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Normalize a float quaternion in place, falling back to @p fallback (then to identity)
 ///   when its length is non-finite or ~zero.
+/// @param[in,out] q Writable four-float quaternion; `NULL` is ignored.
+/// @param[in] fallback Optional borrowed four-float replacement, itself
+///                     normalized before use.
 static void controller_normalize_quat_float_or(float *q, const float *fallback) {
     float len;
     if (!q)
@@ -976,6 +1192,12 @@ static void controller_normalize_quat_float_or(float *q, const float *fallback) 
 
 /// @brief Sanitize a TRS sample in place: finite-guard each position/scale lane (using the
 ///   supplied fallbacks) and re-normalize the rotation quaternion.
+/// @param[in,out] pos Writable three-float translation.
+/// @param[in,out] rot Writable four-float quaternion.
+/// @param[in,out] scl Writable three-float scale.
+/// @param[in] fallback_pos Optional three-float translation fallback.
+/// @param[in] fallback_rot Optional four-float quaternion fallback.
+/// @param[in] fallback_scl Optional three-float nonzero scale fallback.
 static void controller_sanitize_trs_sample(float *pos,
                                            float *rot,
                                            float *scl,
@@ -1001,6 +1223,13 @@ static void controller_sanitize_trs_sample(float *pos,
 /// @brief Resolve a keyframe's translation/rotation/scale, substituting the bind-pose
 ///   fallback for any channel component the keyframe's presence masks leave unset
 ///   (rotation is all-or-nothing: only used when all four quaternion lanes are present).
+/// @param[in] key Keyframe whose masked values to resolve.
+/// @param[in] fallback_pos Borrowed three-float bind translation.
+/// @param[in] fallback_rot Borrowed four-float bind quaternion.
+/// @param[in] fallback_scl Borrowed three-float bind scale.
+/// @param[out] out_pos Writable resolved translation.
+/// @param[out] out_rot Writable resolved normalized quaternion.
+/// @param[out] out_scl Writable resolved nondegenerate scale.
 static void controller_keyframe_effective_trs(const vgfx3d_keyframe_t *key,
                                               const float *fallback_pos,
                                               const float *fallback_rot,
@@ -1026,6 +1255,15 @@ static void controller_keyframe_effective_trs(const vgfx3d_keyframe_t *key,
 /// @brief Sample a channel's TRS at @p time, interpolating between the surrounding
 ///   keyframes (linear for position/scale, SLERP for rotation). Empty channels return
 ///   the fallback bind-pose; single-keyframe channels return that key directly.
+/// @param[in] channel Optional animation channel with time-ordered keyframes.
+/// @param[in] time Sample time; non-finite input becomes zero and out-of-range
+///                 input clamps to the first or last keyframe.
+/// @param[in] fallback_pos Borrowed three-float bind translation.
+/// @param[in] fallback_rot Borrowed four-float bind quaternion.
+/// @param[in] fallback_scl Borrowed three-float bind scale.
+/// @param[out] out_pos Writable sampled translation.
+/// @param[out] out_rot Writable sampled normalized quaternion.
+/// @param[out] out_scl Writable sampled scale.
 static void controller_sample_channel_trs(const vgfx3d_anim_channel_t *channel,
                                           float time,
                                           const float *fallback_pos,
@@ -1110,6 +1348,11 @@ static void controller_sample_channel_trs(const vgfx3d_anim_channel_t *channel,
 
 /// @brief Compute one bone's local transform matrix for @p animation at @p time: sample
 ///   the bone's channel (falling back to its bind pose) and recompose into @p out_local.
+/// @param[in] skeleton Skeleton providing the indexed bone's bind-local matrix.
+/// @param[in] animation Animation clip whose matching channel to sample.
+/// @param[in] bone_index Valid skeleton bone index.
+/// @param[in] time Clip sample time.
+/// @param[out] out_local Writable row-major local matrix of 16 floats.
 static void controller_sample_animation_local_matrix(const rt_skeleton3d *skeleton,
                                                      const rt_animation3d *animation,
                                                      int32_t bone_index,

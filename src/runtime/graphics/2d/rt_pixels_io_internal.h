@@ -10,7 +10,27 @@
 //   for the image codec translation units (rt_pixels_io.c BMP/GIF/dispatch,
 //   rt_pixels_png.c, rt_pixels_jpeg.c).
 //
+// Key invariants:
+//   - Every size calculation reports overflow before a codec allocates or
+//     indexes storage.
+//   - Exact stream helpers loop across short successful transfers and fail on
+//     a zero-progress read or write.
+//   - Image codecs use the shared UTF-8 stdio adapter's signed 64-bit
+//     seek/tell operations rather than platform conditionals.
+//
+// Ownership/Lifetime:
+//   - Helpers borrow streams and buffers for the duration of each call.
+//   - Successful size helpers write caller-owned scalar outputs only.
+//
+// Links: src/runtime/graphics/2d/rt_pixels_io.c (BMP/GIF and dispatch),
+//        src/runtime/graphics/2d/rt_pixels_png.c (PNG codec),
+//        src/runtime/graphics/2d/rt_pixels_jpeg.c (JPEG codec),
+//        src/runtime/io/rt_file_stdio.h (portable UTF-8 stdio)
+//
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Shares checked size and exact stdio operations among image codecs.
 
 #pragma once
 
@@ -33,13 +53,25 @@
 
 // Use the shared UTF-8 stdio wrapper's 64-bit seek/tell helpers so image codecs
 // do not carry their own platform-specific branches.
+/// Seek an image stream with the portable signed 64-bit stdio adapter.
+/// @param fp Open stream.
+/// @param off Signed byte offset.
+/// @param whence Standard `SEEK_SET`, `SEEK_CUR`, or `SEEK_END` origin.
+/// @return Zero on success and nonzero on failure.
 #define px_fseek(fp, off, whence) rt_file_stdio_seek64((fp), (off), (whence))
+
+/// Query an image stream position with the portable signed 64-bit adapter.
+/// @param fp Open stream.
+/// @return Current byte offset, or a negative value on failure.
 #define px_ftell(fp) rt_file_stdio_tell64((fp))
 
 /// @brief Multiply two size_t values, returning 0 on overflow.
 /// @details Writes the product to @p out only on success.  Used by the PNG
-
 ///   decoder to compute row-stride and total buffer sizes without wrapping.
+/// @param a First factor.
+/// @param b Second factor.
+/// @param out Optional destination for the product.
+/// @return Nonzero when multiplication is representable; zero on overflow.
 static inline int px_mul_size(size_t a, size_t b, size_t *out) {
     if (a != 0 && b > SIZE_MAX / a)
         return 0;
@@ -51,6 +83,10 @@ static inline int px_mul_size(size_t a, size_t b, size_t *out) {
 /// @brief Add two size_t values, returning 0 on overflow.
 /// @details Writes the sum to @p out only on success.  Companion to px_mul_size
 ///   for computing PNG row strides that involve both multiplication and addition.
+/// @param a First addend.
+/// @param b Second addend.
+/// @param out Optional destination for the sum.
+/// @return Nonzero when addition is representable; zero on overflow.
 static inline int px_add_size(size_t a, size_t b, size_t *out) {
     if (b > SIZE_MAX - a)
         return 0;

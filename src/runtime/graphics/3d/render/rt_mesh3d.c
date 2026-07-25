@@ -24,6 +24,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements mutable Mesh3D storage, validation, cloning, and geometry transforms.
+/// @details Meshes own their authored vertex/index arrays and optional double-precision position
+///          sidecars, while retaining animation objects referenced by the mesh. Mutation advances
+///          revision epochs so deferred draws and derived caches never reuse stale geometry.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_asset_error.h"
@@ -83,15 +89,22 @@ extern const char *rt_string_cstr(rt_string s);
 
 static volatile uint64_t g_mesh3d_geometry_epoch = 1u;
 
+/// @brief Publish a process-wide notification that mesh geometry changed.
+/// @details The release-ordered increment invalidates consumers that cache scene-wide geometry
+///          decisions independently of an individual mesh revision.
 void rt_mesh3d_note_global_geometry_change(void) {
     (void)rt_atomic_fetch_add_u64(&g_mesh3d_geometry_epoch, UINT64_C(1), __ATOMIC_RELEASE);
 }
 
+/// @brief Read the process-wide mesh geometry revision epoch.
+/// @return Acquire-loaded epoch value suitable for detecting geometry changes since a prior read.
 uint64_t rt_mesh3d_global_geometry_epoch(void) {
     return rt_atomic_load_u64(&g_mesh3d_geometry_epoch, __ATOMIC_ACQUIRE);
 }
 
 /// @brief Validate @p obj as a Mesh3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Candidate runtime object handle.
+/// @return Borrowed Mesh3D pointer, or NULL when @p obj is NULL or belongs to another class.
 static rt_mesh3d *mesh3d_checked(void *obj) {
     return (rt_mesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_MESH3D_CLASS_ID);
 }
@@ -110,6 +123,8 @@ static void mesh3d_increment_counter(uint64_t *counter) {
 ///          churn. Very large one-off meshes, however, should not pin vertex/index/positions64
 ///          memory after they become empty, so this helper frees capacities above conservative
 ///          thresholds.
+/// @param m Empty mesh whose reusable allocations may be reduced; NULL and nonempty meshes are
+///          ignored.
 static void mesh3d_shrink_empty_storage_if_oversized(rt_mesh3d *m) {
     if (!m || m->vertex_count != 0 || m->index_count != 0)
         return;
@@ -135,6 +150,10 @@ static void mesh3d_shrink_empty_storage_if_oversized(rt_mesh3d *m) {
 /// @details Small meshes use caller-provided stack storage. Larger meshes reuse a buffer owned by
 ///          the mesh so repeated `RecalcNormals` calls and importer normal repairs do not allocate
 ///          and free a large accumulator each time.
+/// @param m Mesh that owns reusable heap scratch for large accumulators.
+/// @param stack_accum Caller-provided scratch used when @p accum_values fits.
+/// @param stack_values Number of double elements available in @p stack_accum.
+/// @param accum_values Number of zeroed double elements requested.
 /// @return Pointer to @p accum_values zeroed doubles, or NULL when allocation fails.
 static double *mesh3d_prepare_normal_accumulator(rt_mesh3d *m,
                                                  double *stack_accum,
@@ -163,6 +182,8 @@ static double *mesh3d_prepare_normal_accumulator(rt_mesh3d *m,
 /// @brief Bump the mesh's geometry-revision counter to invalidate cached GPU/derived data
 ///   (wrapping past UINT32_MAX to 1, since 0 marks "never set"); optionally also drops the
 ///   cached tangents so they are recomputed.
+/// @param m Mesh whose geometry-dependent revisions and caches are invalidated; NULL is ignored.
+/// @param invalidate_tangents Nonzero to mark cached tangents stale in addition to geometry.
 static void mesh3d_bump_vertex_revision(rt_mesh3d *m, int invalidate_tangents) {
     if (!m)
         return;
@@ -192,6 +213,8 @@ static void mesh3d_bump_vertex_revision(rt_mesh3d *m, int invalidate_tangents) {
 }
 
 /// @brief Estimate vertex/index payload bytes, saturating to INT64_MAX for ABI stability.
+/// @param m Mesh whose safe live element counts are measured.
+/// @return Combined live vertex and index bytes, zero for NULL, or `INT64_MAX` on overflow.
 static int64_t mesh3d_estimate_payload_bytes(const rt_mesh3d *m) {
     uint64_t vertex_bytes;
     uint64_t index_bytes;
@@ -213,6 +236,9 @@ static int64_t mesh3d_estimate_payload_bytes(const rt_mesh3d *m) {
 ///          cannot later feed undefined vertex fetches to GPU backends. Existing public
 ///          count-repair semantics are preserved; draw submission still rejects incomplete
 ///          triangle-list tails.
+/// @param m Mesh whose live index range is repaired; NULL is rejected.
+/// @param op Reserved caller context for diagnostics.
+/// @return One after successful validation or repair, or zero for a NULL mesh.
 static int mesh3d_sanitize_triangle_indices(rt_mesh3d *m, const char *op) {
     uint32_t vertex_count;
     uint32_t index_count;
@@ -241,6 +267,10 @@ static int mesh3d_sanitize_triangle_indices(rt_mesh3d *m, const char *op) {
 }
 
 /// @brief Check a planned vertex/index allocation against a predictable procedural budget.
+/// @param vertex_count Planned vertex count.
+/// @param index_count Planned scalar index count.
+/// @param trap_name Optional trap message used when arithmetic or budget validation fails.
+/// @return One when counts and their worst-case storage fit the limit; otherwise zero after trapping.
 static int mesh3d_check_planned_payload(uint64_t vertex_count,
                                         uint64_t index_count,
                                         const char *trap_name) {
@@ -278,7 +308,7 @@ too_large:
 /// comparatively expensive general-purpose `pow(10.0, n)` path for every numeric token. Overflow or
 /// underflow is left to IEEE-754 multiplication and rejected by the caller's `isfinite` check.
 /// @param exponent Signed base-10 exponent to evaluate.
-/// @return A double scale factor approximately equal to `10^exponent`.
+/// @return A double scale factor approximately equal to ten raised to @p exponent.
 static double mesh_pow10_i64(int64_t exponent) {
     uint64_t remaining;
     double base = exponent < 0 ? 0.1 : 10.0;
@@ -298,6 +328,14 @@ static double mesh_pow10_i64(int64_t exponent) {
 }
 
 /// @brief Parse an OBJ/STL ASCII float with '.' decimal semantics, independent of locale.
+/// @details Accepts an optional sign, fractional component, and bounded decimal exponent. The
+///          parser stops at the first nonnumeric byte and rejects non-finite results.
+/// @param p First byte of the numeric token.
+/// @param limit Optional one-past-end bound; NULL permits parsing through the terminating byte.
+/// @param out_end Receives the first unconsumed byte on success.
+/// @param out Receives the finite parsed value on success.
+/// @return One on success, or zero for invalid pointers, malformed input, excessive exponent, or
+///         non-finite output.
 static int mesh_parse_ascii_double_span(const char *p,
                                         const char *limit,
                                         const char **out_end,
@@ -366,6 +404,8 @@ static int mesh_parse_ascii_double_span(const char *p,
 /// @brief Return 1 if any vertex carries a non-zero bone weight, else 0.
 /// @details Used by Mesh3D.Clone to decide whether to propagate `bone_count` —
 ///          meshes without skinning data clone with `bone_count = 0`.
+/// @param mesh Mesh whose live vertices are inspected.
+/// @return One when any finite weight has meaningful magnitude; otherwise zero.
 static int mesh3d_has_bone_weights(const rt_mesh3d *mesh) {
     uint32_t vertex_count = rt_mesh3d_safe_vertex_count(mesh);
     if (!mesh || !mesh->vertices)
@@ -381,6 +421,8 @@ static int mesh3d_has_bone_weights(const rt_mesh3d *mesh) {
 }
 
 /// @brief Validate @p obj is a live Mat4 heap object.
+/// @param obj Candidate runtime matrix handle.
+/// @return Borrowed Mat4 implementation pointer, or NULL for invalid input.
 static mat4_impl *mesh3d_mat4_checked(void *obj) {
     if (!obj || !rt_obj_is_instance(obj, RT_MAT4_CLASS_ID, sizeof(mat4_impl)))
         return NULL;
@@ -388,6 +430,8 @@ static mat4_impl *mesh3d_mat4_checked(void *obj) {
 }
 
 /// @brief Test whether @p value is finite and within ±FLT_MAX for safe `double → float` narrowing.
+/// @param value Double-precision value to test.
+/// @return Nonzero when conversion to float stays finite and in range; otherwise zero.
 static int mesh_value_fits_float(double value) {
     return isfinite(value) && value >= -MESH3D_FLOAT_ABS_MAX && value <= MESH3D_FLOAT_ABS_MAX;
 }
@@ -398,6 +442,8 @@ static int mesh_value_fits_float(double value) {
 ///          large enough to need camera-relative vertex rebasing, or whose float narrowing loses a
 ///          material amount of precision. This mirrors the Canvas3D rebase predicate so AddVertex
 ///          meshes pay the memory cost only when the extra precision can affect rendering.
+/// @param value Authored double-precision position component.
+/// @return Nonzero when the coordinate cannot safely rely on float-only storage.
 static int mesh_position_component_needs_positions64(double value) {
     float narrowed;
     if (!mesh_value_fits_float(value))
@@ -409,6 +455,10 @@ static int mesh_position_component_needs_positions64(double value) {
 }
 
 /// @brief Return whether a vertex position should allocate the optional double-position sidecar.
+/// @param x Authored X coordinate.
+/// @param y Authored Y coordinate.
+/// @param z Authored Z coordinate.
+/// @return Nonzero when any coordinate requires double-precision sidecar storage.
 static int mesh_position_needs_positions64(double x, double y, double z) {
     return mesh_position_component_needs_positions64(x) ||
            mesh_position_component_needs_positions64(y) ||
@@ -416,6 +466,9 @@ static int mesh_position_needs_positions64(double x, double y, double z) {
 }
 
 /// @brief Sanitize copied vertex data that may have come from imported or direct internal storage.
+/// @details Non-finite position, normal, tangent, UV, and weight lanes are replaced with safe
+///          defaults; tangent handedness is canonicalized to negative or positive one.
+/// @param v Vertex record to sanitize in place; NULL is ignored.
 static void mesh3d_sanitize_vertex_copy(vgfx3d_vertex_t *v) {
     if (!v)
         return;
@@ -448,6 +501,9 @@ static void mesh3d_sanitize_vertex_copy(vgfx3d_vertex_t *v) {
 ///          camera-relative upload path can subtract the frame origin before float
 ///          narrowing. Meshes loaded by importers that directly assign float vertex
 ///          buffers simply leave this NULL and use the existing float positions.
+/// @param m Mesh that should own the sidecar.
+/// @param label Operation label embedded in allocation trap messages.
+/// @return One when the sidecar already exists or was populated successfully; otherwise zero.
 static int mesh3d_ensure_positions64(rt_mesh3d *m, const char *label) {
     char msg[160];
     if (!m)
@@ -474,6 +530,8 @@ static int mesh3d_ensure_positions64(rt_mesh3d *m, const char *label) {
 }
 
 /// @brief True if all 16 lanes of a 4x4 float matrix are finite (no NaN/Inf).
+/// @param m Pointer to sixteen matrix elements.
+/// @return One when every element is finite; zero for NULL or any non-finite lane.
 static int mesh_matrix4f_is_finite(const float *m) {
     if (!m)
         return 0;
@@ -485,6 +543,10 @@ static int mesh_matrix4f_is_finite(const float *m) {
 }
 
 /// @brief Squared face-normal length for three float positions.
+/// @param a First three-component position.
+/// @param b Second three-component position.
+/// @param c Third three-component position.
+/// @return Squared magnitude of the two-edge cross product, proportional to area squared.
 static double mesh_triangle_area_sq_f32(const float *a, const float *b, const float *c) {
     double abx = (double)b[0] - (double)a[0];
     double aby = (double)b[1] - (double)a[1];
@@ -502,6 +564,10 @@ static double mesh_triangle_area_sq_f32(const float *a, const float *b, const fl
 /// magnitude²).
 /// @details Used as a degeneracy test that avoids a sqrt; near-zero means a sliver/collinear
 /// triangle.
+/// @param a First three-component position.
+/// @param b Second three-component position.
+/// @param c Third three-component position.
+/// @return Squared magnitude of the two-edge cross product, proportional to area squared.
 static double mesh_triangle_area_sq_f64(const double *a, const double *b, const double *c) {
     double abx = b[0] - a[0];
     double aby = b[1] - a[1];
@@ -516,6 +582,9 @@ static double mesh_triangle_area_sq_f64(const double *a, const double *b, const 
 }
 
 /// @brief Return one mesh position as double precision, preferring authoritative positions64.
+/// @param mesh Mesh containing the position.
+/// @param index Vertex index to read.
+/// @param out Three-element destination; invalid sources produce the zero vector.
 static void mesh_position_f64_at(const rt_mesh3d *mesh, uint32_t index, double out[3]) {
     if (!out)
         return;
@@ -536,9 +605,14 @@ static void mesh_position_f64_at(const rt_mesh3d *mesh, uint32_t index, double o
 }
 
 /// @brief Scale-aware squared-area threshold for triangle degeneracy tests.
-/// @details Area squared has length^4 units, so the epsilon scales with the square of the largest
+/// @details Area squared has fourth-power length units, so the epsilon scales with the square of
+///   the largest
 ///   edge length squared. This avoids rejecting valid large-world triangles because of a tiny
 ///   absolute threshold, while still filtering sub-ULP slivers near the origin.
+/// @param a First three-component position.
+/// @param b Second three-component position.
+/// @param c Third three-component position.
+/// @return Finite squared-area threshold derived from the longest edge.
 static double mesh_triangle_area_epsilon_sq_f64(const double *a, const double *b, const double *c) {
     double abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
     double acx = c[0] - a[0], acy = c[1] - a[1], acz = c[2] - a[2];
@@ -553,6 +627,10 @@ static double mesh_triangle_area_epsilon_sq_f64(const double *a, const double *b
 }
 
 /// @brief Return non-zero when three float positions define a usable triangle.
+/// @param a First three-component position.
+/// @param b Second three-component position.
+/// @param c Third three-component position.
+/// @return Nonzero when inputs form a finite triangle above the scale-aware degeneracy threshold.
 static int mesh_positions_form_triangle(const float *a, const float *b, const float *c) {
     double da[3], db[3], dc[3];
     double area_sq;
@@ -572,6 +650,11 @@ static int mesh_positions_form_triangle(const float *a, const float *b, const fl
 }
 
 /// @brief Return non-zero when three mesh indices define a usable, non-degenerate face.
+/// @param mesh Mesh containing the indexed positions.
+/// @param i0 First vertex index.
+/// @param i1 Second vertex index.
+/// @param i2 Third vertex index.
+/// @return Nonzero when indices are distinct, in range, and form a finite nondegenerate triangle.
 static int mesh_indices_form_triangle(const rt_mesh3d *mesh,
                                       uint32_t i0,
                                       uint32_t i1,
@@ -594,6 +677,11 @@ static int mesh_indices_form_triangle(const rt_mesh3d *mesh,
 /// @details Shares mesh_indices_form_triangle so asset loaders filter with exactly
 ///   the criterion AddTriangle enforces — a fixed loader-side epsilon that diverges
 ///   from the mesh's scale-relative epsilon lets slivers through and traps imports.
+/// @param obj Mesh3D handle to inspect.
+/// @param v0 First candidate vertex index.
+/// @param v1 Second candidate vertex index.
+/// @param v2 Third candidate vertex index.
+/// @return Nonzero when all indices form a valid triangle; otherwise zero without trapping.
 int rt_mesh3d_triangle_indices_valid(void *obj, int64_t v0, int64_t v1, int64_t v2) {
     const rt_mesh3d *m = (const rt_mesh3d *)obj;
     if (!m || v0 < 0 || v1 < 0 || v2 < 0)
@@ -609,6 +697,9 @@ int rt_mesh3d_triangle_indices_valid(void *obj, int64_t v0, int64_t v1, int64_t 
 ///   require strictly positive, finite extents; any other value would produce degenerate
 ///   geometry or runaway loops. The trap message includes `label` so the caller site
 ///   (e.g. "Mesh3D.NewBox: sx") is identifiable in the user-facing error.
+/// @param value Dimension to validate.
+/// @param label Parameter label included in the trap message.
+/// @return One for a positive finite float-representable value; otherwise zero after trapping.
 static int mesh_validate_positive_finite(double value, const char *label) {
     char msg[128];
     if (mesh_value_fits_float(value) && value > 0.0)
@@ -626,6 +717,8 @@ static int mesh_validate_positive_finite(double value, const char *label) {
 ///   releases the GC reference so the partially-constructed mesh is freed, and
 ///   returns NULL to the caller.  NULL input and a clean mesh are both forwarded
 ///   unchanged, so the generator can use this as a tail-call return.
+/// @param mesh Nullable newly built Mesh3D handle.
+/// @return @p mesh when clean, or NULL after releasing a failed partial build.
 static void *mesh_return_null_if_build_failed(void *mesh) {
     if (!mesh || !((rt_mesh3d *)mesh)->build_failed)
         return mesh;
@@ -639,6 +732,7 @@ static void *mesh_return_null_if_build_failed(void *mesh) {
 ///   state. Rather than mutating in place and risking inconsistent index/vertex counts,
 ///   we sticky-set this flag and let the OBJ/STL loader detect it and free the partially
 ///   built mesh.
+/// @param mesh Mesh whose build is marked failed; NULL is ignored.
 static void mesh_mark_build_failed(rt_mesh3d *mesh) {
     if (mesh)
         mesh->build_failed = 1;
@@ -705,6 +799,13 @@ static int mesh3d_alloc_grown_vertex_storage(rt_mesh3d *m,
 }
 
 /// @brief Ensure vertex and index buffers can hold at least the requested capacities.
+/// @details Vertex storage and its optional position sidecar are committed atomically. Index
+///          growth uses realloc only after overflow checks; existing capacities are preserved.
+/// @param m Mesh whose backing arrays may grow.
+/// @param vertex_capacity Minimum vertex-element capacity.
+/// @param index_capacity Minimum scalar-index capacity.
+/// @param label Operation label embedded in allocation trap messages.
+/// @return One when requested capacities are available; otherwise zero.
 static int mesh3d_reserve_storage(rt_mesh3d *m,
                                   uint32_t vertex_capacity,
                                   uint32_t index_capacity,
@@ -743,6 +844,8 @@ static int mesh3d_reserve_storage(rt_mesh3d *m,
 }
 
 /// @brief Build a stable tangent orthogonal to `normal` when UVs are degenerate.
+/// @param normal Optional source normal; invalid or near-zero values use positive Z.
+/// @param tangent Four-element destination receiving a unit tangent and positive handedness.
 static void mesh_default_tangent_from_normal(const float *normal, float *tangent) {
     float n[3] = {0.0f, 0.0f, 1.0f};
     if (normal && isfinite(normal[0]) && isfinite(normal[1]) && isfinite(normal[2])) {
@@ -779,6 +882,7 @@ static void mesh_default_tangent_from_normal(const float *normal, float *tangent
 /// @details Paired with `mesh_assign_ref` to implement `retain-then-release` ordering on
 ///   the `morph_targets_ref` field. The slot is cleared to NULL after release so a
 ///   subsequent assignment can't accidentally double-release.
+/// @param slot Address of an owned GC reference to release and clear.
 static void mesh_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
@@ -786,6 +890,7 @@ static void mesh_release_ref(void **slot) {
 /// @brief Release an owned Skeleton3D slot only when it still stores a Skeleton3D.
 /// @details Wrong-class private state is treated as borrowed corruption and cleared without
 ///          releasing; matching Skeleton3D slots are owned and released normally.
+/// @param slot Address of the retained skeleton slot.
 static void mesh_release_skeleton_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -799,6 +904,7 @@ static void mesh_release_skeleton_slot(void **slot) {
 /// @brief Release an owned MorphTarget3D slot only when it still stores a MorphTarget3D.
 /// @details Wrong-class private state is treated as borrowed corruption and cleared without
 ///          releasing; matching MorphTarget3D slots are owned and released normally.
+/// @param slot Address of the retained morph-target slot.
 static void mesh_release_morph_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -810,6 +916,8 @@ static void mesh_release_morph_slot(void **slot) {
 }
 
 /// @brief Safely assign a Skeleton3D ref into a retained mesh slot.
+/// @param slot Address of the retained skeleton slot; NULL is ignored.
+/// @param value Nullable replacement Skeleton3D, retained before the current value is released.
 static void mesh_assign_skeleton_ref(void **slot, void *value) {
     if (!slot || *slot == value)
         return;
@@ -819,6 +927,8 @@ static void mesh_assign_skeleton_ref(void **slot, void *value) {
 }
 
 /// @brief Safely assign a MorphTarget3D ref into a retained mesh slot.
+/// @param slot Address of the retained morph-target slot; NULL is ignored.
+/// @param value Nullable replacement MorphTarget3D, retained before the current value is released.
 static void mesh_assign_morph_ref(void **slot, void *value) {
     if (!slot || *slot == value)
         return;
@@ -828,6 +938,7 @@ static void mesh_assign_morph_ref(void **slot, void *value) {
 }
 
 /// @brief Release and clear corrupted animation refs.
+/// @param m Mesh whose retained skeleton and morph-target classes are validated; NULL is ignored.
 static void mesh_repair_animation_refs(rt_mesh3d *m) {
     if (!m)
         return;
@@ -843,6 +954,7 @@ static void mesh_repair_animation_refs(rt_mesh3d *m) {
 ///          animation controllers during draw submission. Mesh3D owns only the retained skeleton
 ///          and morph-target handles, so Clear must null these transient pointers rather than
 ///          attempting to free storage that belongs to another subsystem.
+/// @param m Mesh whose frame-borrowed animation state is detached; NULL is ignored.
 static void mesh3d_clear_transient_animation_payloads(rt_mesh3d *m) {
     if (!m)
         return;
@@ -865,6 +977,9 @@ static void mesh3d_clear_transient_animation_payloads(rt_mesh3d *m) {
 }
 
 /// @brief GC finalizer for Mesh3D — releases the owned vertex and index buffers.
+/// @details Also releases retained geometry revisions, acceleration structures, scratch buffers,
+///          skinning maps, and owned animation references.
+/// @param obj Mesh3D instance being finalized.
 static void rt_mesh3d_finalize(void *obj) {
     rt_mesh3d *m = (rt_mesh3d *)obj;
     rt_mesh3d_invalidate_retained_geometry(m);
@@ -903,6 +1018,8 @@ static void rt_mesh3d_finalize(void *obj) {
 ///          default vertex/index arrays used by programmatic append workflows; otherwise the mesh
 ///          starts with zero capacity and callers must assign or reserve storage before adding
 ///          geometry.
+/// @param allocate_default_storage Nonzero to allocate append-friendly initial arrays.
+/// @return New initialized Mesh3D, or NULL after trapping on object or storage allocation failure.
 static rt_mesh3d *mesh3d_new_initialized(int allocate_default_storage) {
     rt_mesh3d *m = (rt_mesh3d *)rt_obj_new_i64(RT_G3D_MESH3D_CLASS_ID, (int64_t)sizeof(rt_mesh3d));
     if (!m) {
@@ -1006,11 +1123,16 @@ void *rt_mesh3d_new(void) {
 /// @details Exact-size importers use this to avoid the allocation/free pair that would otherwise
 ///          happen when replacing `Mesh3D.New`'s small default buffers with decoded asset payloads.
 ///          The object is otherwise a normal Mesh3D and is finalized by `rt_mesh3d_finalize`.
+/// @return New zero-capacity Mesh3D handle, or NULL on allocation failure.
 void *rt_mesh3d_new_empty_storage(void) {
     return mesh_return_null_if_build_failed(mesh3d_new_initialized(0));
 }
 
 /// @brief Remove all vertices and indices from the mesh, resetting to empty.
+/// @details Clears submesh metadata, animation bindings, acceleration structures, build status,
+///          and bounds. Small buffers remain available for reuse; oversized empty allocations are
+///          released before the geometry revision is advanced.
+/// @param obj Mesh3D receiver; invalid handles are ignored.
 void rt_mesh3d_clear(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     if (!m)
@@ -1048,6 +1170,11 @@ void rt_mesh3d_clear(void *obj) {
 }
 
 /// @brief Reserve backing storage for at least vertex_count vertices and triangle_count triangles.
+/// @details Counts must be non-negative and fit the uint32 index representation. Existing live
+///          geometry is preserved and capacities never shrink.
+/// @param obj Mesh3D receiver; invalid or failed-build meshes are ignored.
+/// @param vertex_count Minimum vertex capacity.
+/// @param triangle_count Minimum triangle capacity, converted to three scalar indices per face.
 void rt_mesh3d_reserve(void *obj, int64_t vertex_count, int64_t triangle_count) {
     rt_mesh3d *m = mesh3d_checked(obj);
     uint32_t vertex_capacity;
@@ -1074,6 +1201,15 @@ void rt_mesh3d_reserve(void *obj, int64_t vertex_count, int64_t triangle_count) 
 ///          normalized (or recalculated later with recalc_normals). UV coords
 ///          use the standard [0,1] range. The vertex is stored as float internally
 ///          (vgfx3d_vertex_t), converted from the double parameters.
+/// @param obj Mesh3D receiver; invalid or failed-build meshes are ignored.
+/// @param x Vertex X coordinate.
+/// @param y Vertex Y coordinate.
+/// @param z Vertex Z coordinate.
+/// @param nx Vertex-normal X component.
+/// @param ny Vertex-normal Y component.
+/// @param nz Vertex-normal Z component.
+/// @param u Primary texture U coordinate, also copied to the secondary UV set.
+/// @param v Primary texture V coordinate, also copied to the secondary UV set.
 void rt_mesh3d_add_vertex(
     void *obj, double x, double y, double z, double nx, double ny, double nz, double u, double v) {
     rt_mesh3d *m = mesh3d_checked(obj);
@@ -1143,6 +1279,13 @@ void rt_mesh3d_add_vertex(
 }
 
 /// @brief Add a triangle defined by three vertex indices (CCW winding = front-facing).
+/// @details Negative, out-of-range, repeated, or geometrically degenerate indices trap and latch
+///          the mesh's failed-build state. Successful insertion grows index storage as needed and
+///          advances the geometry revision.
+/// @param obj Mesh3D receiver; invalid or failed-build meshes are ignored.
+/// @param v0 First vertex index.
+/// @param v1 Second vertex index.
+/// @param v2 Third vertex index.
 void rt_mesh3d_add_triangle(void *obj, int64_t v0, int64_t v1, int64_t v2) {
     rt_mesh3d *m = mesh3d_checked(obj);
     if (!m)
@@ -1211,18 +1354,27 @@ void rt_mesh3d_add_triangle(void *obj, int64_t v0, int64_t v1, int64_t v2) {
 }
 
 /// @brief Get the number of vertices in the mesh.
+/// @param obj Mesh3D receiver.
+/// @return Repaired live vertex count, or zero for an invalid mesh.
 int64_t rt_mesh3d_get_vertex_count(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     return m ? (int64_t)rt_mesh3d_safe_vertex_count(m) : 0;
 }
 
 /// @brief Get the number of triangles in the mesh (index_count / 3).
+/// @param obj Mesh3D receiver.
+/// @return Number of complete triangles in the safe live index range, or zero for invalid input.
 int64_t rt_mesh3d_get_triangle_count(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     return m ? (int64_t)(rt_mesh3d_safe_index_count(m) / 3u) : 0;
 }
 
 /// @brief Read one vertex's position/normal/uv (internal: HLOD proxy bake readback).
+/// @param obj Mesh3D receiver.
+/// @param index Zero-based vertex index.
+/// @param out_pos Optional three-double position destination.
+/// @param out_normal Optional three-double normal destination.
+/// @param out_uv Optional two-double primary UV destination.
 /// @return 1 on success, 0 for an invalid mesh or out-of-range index.
 int8_t rt_mesh3d_get_vertex_raw(
     void *obj, int64_t index, double out_pos[3], double out_normal[3], double out_uv[2]) {
@@ -1248,6 +1400,9 @@ int8_t rt_mesh3d_get_vertex_raw(
 }
 
 /// @brief Read one triangle's vertex indices (internal: HLOD proxy bake readback).
+/// @param obj Mesh3D receiver.
+/// @param triangle Zero-based triangle index.
+/// @param out_indices Optional three-element destination for scalar vertex indices.
 /// @return 1 on success, 0 for an invalid mesh or out-of-range triangle.
 int8_t rt_mesh3d_get_triangle_raw(void *obj, int64_t triangle, int64_t out_indices[3]) {
     rt_mesh3d *m = mesh3d_checked(obj);
@@ -1262,6 +1417,8 @@ int8_t rt_mesh3d_get_triangle_raw(void *obj, int64_t triangle, int64_t out_indic
 }
 
 /// @brief Return whether this mesh's vertex/index payload is resident.
+/// @param obj Mesh3D receiver.
+/// @return One when draw/upload residency is enabled, or zero for invalid or nonresident meshes.
 int8_t rt_mesh3d_get_resident(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     return (m && m->resident) ? 1 : 0;
@@ -1273,6 +1430,8 @@ int8_t rt_mesh3d_get_resident(void *obj) {
 ///          a conservative draw/cache hint: nonresident meshes are skipped by draw
 ///          submission, and setting resident true makes the preserved payload drawable
 ///          again without data loss.
+/// @param obj Mesh3D receiver; invalid handles are ignored.
+/// @param resident Zero to disable draw residency, or nonzero to enable it.
 void rt_mesh3d_set_resident(void *obj, int8_t resident) {
     rt_mesh3d *m = mesh3d_checked(obj);
     if (!m)
@@ -1286,6 +1445,8 @@ void rt_mesh3d_set_resident(void *obj, int8_t resident) {
 ///          CPU payload, software rendering, skinning, morphing, and physics are
 ///          unchanged. Toggling bumps the geometry revision so backend caches re-upload
 ///          in the newly selected encoding.
+/// @param obj Mesh3D receiver; invalid handles are ignored.
+/// @param enabled Zero for the full stream, or nonzero for compact cached GPU streams.
 void rt_mesh3d_set_compact_streams(void *obj, int8_t enabled) {
     rt_mesh3d *m = mesh3d_checked(obj);
     if (!m)
@@ -1298,6 +1459,8 @@ void rt_mesh3d_set_compact_streams(void *obj, int8_t enabled) {
 }
 
 /// @brief Whether the mesh opted into the compact GPU vertex-stream encoding.
+/// @param obj Mesh3D receiver.
+/// @return One when compact streams are enabled, or zero for invalid or full-stream meshes.
 int8_t rt_mesh3d_get_compact_streams(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     return (m && m->compact_streams) ? 1 : 0;
@@ -1308,6 +1471,9 @@ int8_t rt_mesh3d_get_compact_streams(void *obj) {
 ///          ownership: the geometry remains retained so a later `SetResident(true)`
 ///          can restore drawing without a source reload. Nonresident meshes report
 ///          zero resident bytes while still keeping CPU payloads intact.
+/// @param obj Mesh3D receiver.
+/// @return Live vertex/index byte estimate while resident, zero while nonresident or invalid, or
+///         `INT64_MAX` when the estimate saturates.
 int64_t rt_mesh3d_get_resident_bytes(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     if (!m || !m->resident)
@@ -1319,6 +1485,9 @@ int64_t rt_mesh3d_get_resident_bytes(void *obj) {
 /// @details `Mesh3D.Resident = false` prevents draw/upload submission but does not release
 ///          procedural or imported CPU payloads. This accessor reports the retained payload
 ///          size so streaming systems can distinguish hidden resident bytes from actual RAM use.
+/// @param obj Mesh3D receiver.
+/// @return Live retained vertex/index byte estimate, zero for invalid input, or `INT64_MAX` on
+///         saturation.
 int64_t rt_mesh3d_get_retained_bytes(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     if (!m)
@@ -1336,6 +1505,8 @@ int64_t rt_mesh3d_get_retained_bytes(void *obj) {
 ///   fall back to them (float precision) once positions64 is gone. Returns the
 ///   number of bytes released. Safe to call at any time; a later AddVertex
 ///   simply re-promotes precision from that point on.
+/// @param obj Mesh3D receiver.
+/// @return Number of position-sidecar and normal-scratch bytes released, or zero for invalid input.
 int64_t rt_mesh3d_release_cpu_scratch(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     int64_t released = 0;
@@ -1358,6 +1529,10 @@ int64_t rt_mesh3d_release_cpu_scratch(void *obj) {
 }
 
 /// @brief Recalculate smooth vertex normals by averaging face normals per-vertex.
+/// @details Uses double accumulation and scale-aware degeneracy rejection. Meshes without complete
+///          faces receive the positive-Y fallback normal; completion invalidates tangents and all
+///          geometry-derived caches.
+/// @param obj Mesh3D receiver; invalid handles are ignored.
 void rt_mesh3d_recalc_normals(void *obj) {
     rt_mesh3d *m = mesh3d_checked(obj);
     uint32_t vertex_count;
@@ -1453,6 +1628,8 @@ void rt_mesh3d_recalc_normals(void *obj) {
 /// @brief Compute per-vertex normals from the mesh's triangle faces when the source provided
 ///   none, accumulating area-weighted face normals and normalizing. Traps on accumulator
 ///   allocation overflow.
+/// @param m Imported mesh whose zero-length normals are filled in place.
+/// @return One on success or when no faces need processing; zero on allocation failure or overflow.
 static int mesh3d_fill_missing_normals(rt_mesh3d *m) {
     double stack_accum[MESH3D_NORMAL_STACK_VERTS * 3u];
     double *accum;
@@ -1527,6 +1704,12 @@ static int mesh3d_fill_missing_normals(rt_mesh3d *m) {
 }
 
 /// @brief Create a deep copy of a mesh (independent vertex/index arrays).
+/// @details Copies and sanitizes authored geometry, submesh metadata, retained precision data,
+///          skin maps, bounds, and residency flags. Skeletons are shared through a retained
+///          reference, morph targets are cloned, and transient frame animation payloads and
+///          acceleration caches are not copied.
+/// @param obj Source Mesh3D handle.
+/// @return New independent Mesh3D, or NULL for invalid/failed source state or allocation failure.
 void *rt_mesh3d_clone(void *obj) {
     rt_mesh3d *src = mesh3d_checked(obj);
     uint32_t vertex_count;

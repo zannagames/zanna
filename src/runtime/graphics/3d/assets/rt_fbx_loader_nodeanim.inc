@@ -18,14 +18,36 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_fbx_loader_nodeanim.inc
+ * @brief Imports FBX model transforms, camera properties, and morph weights into
+ *        runtime NodeAnimation3D clips.
+ *
+ * Each AnimationStack is sampled through the same layered transform and constraint
+ * machinery used by skeletal animation. The importer emits channels targeted by the
+ * stable `Objects` ordinal used by the runtime scene hierarchy, includes inherited and
+ * constraint-dependent source times, derives canonical camera projection values, and
+ * converts progressive BlendShapeChannel percentages into weight vectors.
+ *
+ * Builder tables, sample arrays, and evaluated poses are load-local. Successfully
+ * published clips transfer to the caller-provided reference array.
+ */
+
 /// @brief One non-skeletal Model participating in an FBX object-animation stack.
 typedef struct {
+    /// FBX Model object identifier.
     int64_t id;
+    /// Identifier of the connected parent Model, or zero for a root.
     int64_t parent_id;
+    /// Index of the parent in the builder table, or -1.
     int32_t parent_index;
+    /// Stable ordinal of the Model in the FBX `Objects` child array.
     int32_t import_index;
+    /// Non-zero when the Model represents a skeletal node.
     int is_skeleton;
+    /// Borrowed source Model node.
     fbx_node_t *source;
+    /// Base transform plus curves/layer-stack sampling state.
     fbx_anim_bone_builder_t animation;
 } fbx_node_anim_model_builder_t;
 
@@ -33,6 +55,11 @@ typedef struct {
 /// @details Before the first FullWeights threshold the first shape ramps from the base. Between
 ///          thresholds the adjacent shapes cross-fade, and values beyond the final threshold hold
 ///          the final shape. Negative channel values extrapolate the first shape down to -1.
+/// @param binding Imported channel metadata containing ordered shape thresholds.
+/// @param percent Sampled FBX `DeformPercent` value.
+/// @param local_shape Zero-based shape within the channel.
+/// @return The shape's normalized weight, clamped to the progressive interval semantics,
+///         or zero for invalid input or a shape outside the active interval.
 static double fbx_morph_progressive_shape_weight(const fbx_morph_channel_binding_t *binding,
                                                  double percent,
                                                  int32_t local_shape) {
@@ -61,7 +88,11 @@ static double fbx_morph_progressive_shape_weight(const fbx_morph_channel_binding
     return local_shape == binding->shape_count - 1 ? 1.0 : 0.0;
 }
 
-/// @brief Populate one curve view from a typed AnimationCurve node.
+/// @brief Populate a validated borrowed curve view from a typed AnimationCurve node.
+/// @param curve Parsed FBX `AnimationCurve` node.
+/// @param[out] out_view Receives pointers into the node's key arrays.
+/// @return Non-zero when time/value arrays and optional interpolation metadata form a
+///         valid curve; otherwise zero.
 static int fbx_node_anim_read_curve_view(fbx_node_t *curve, fbx_anim_curve_view_t *out_view) {
     uint32_t time_count = 0;
     uint32_t value_count = 0;
@@ -97,7 +128,18 @@ static int fbx_node_anim_read_curve_view(fbx_node_t *curve, fbx_anim_curve_view_
     return 1;
 }
 
-/// @brief Allocate and initialize the stable non-skeleton Model table for node animation.
+/// @brief Allocate and initialize the stable Model table used by node animation.
+/// @details Includes skeletal Models so parent transforms and constraints can be sampled,
+///          while emission later skips skeletal targets. A sorted ID table resolves parent
+///          indices without changing the stable `Objects` ordinals.
+/// @param objects Parsed FBX `Objects` node.
+/// @param ct Connection table used to resolve Model parents.
+/// @param[out] out_models Receives the newly allocated builder array.
+/// @param[out] out_count Receives the number of Model builders.
+/// @param[out] out_ids Receives a newly allocated, ID-sorted lookup table.
+/// @param[in,out] context Loader context charged for both arrays.
+/// @return Non-zero on success, including an empty table, or zero for invalid input,
+///         overflow, budget rejection, or allocation failure.
 static int fbx_node_anim_make_model_table(fbx_node_t *objects,
                                           const fbx_conn_table_t *ct,
                                           fbx_node_anim_model_builder_t **out_models,
@@ -164,7 +206,16 @@ static int fbx_node_anim_make_model_table(fbx_node_t *objects,
     return 1;
 }
 
-/// @brief Collect a stack's Lcl T/R/S curve graph into the non-skeleton Model table.
+/// @brief Collect an animation stack's local T/R/S curve graph into the Model table.
+/// @details When @p layer_stack is available it becomes the authoritative layered sampler
+///          for every model. The legacy graph walk is retained for callers without one.
+/// @param objects Parsed FBX `Objects` node.
+/// @param ct Connection table linking stacks, layers, curve nodes, curves, and Models.
+/// @param stack_id AnimationStack object identifier.
+/// @param layer_stack Optional parsed layered-animation stack.
+/// @param[in,out] models Model builders receiving curve views or the layered stack.
+/// @param model_count Number of entries in @p models.
+/// @param ids Sorted Model-ID lookup table parallel to @p models.
 static void fbx_node_anim_collect_transform_curves(fbx_node_t *objects,
                                                    const fbx_conn_table_t *ct,
                                                    int64_t stack_id,
@@ -232,7 +283,13 @@ static void fbx_node_anim_collect_transform_curves(fbx_node_t *objects,
     }
 }
 
-/// @brief Collect one DeformPercent curve per imported BlendShapeChannel for a stack.
+/// @brief Collect one `DeformPercent` curve per imported BlendShapeChannel for a stack.
+/// @param objects Parsed FBX `Objects` node.
+/// @param ct Connection table linking stacks through layers and curve nodes to channels.
+/// @param stack_id AnimationStack object identifier.
+/// @param bindings Imported morph-channel binding array.
+/// @param binding_count Number of entries in @p bindings and @p curves.
+/// @param[out] curves Zero-initialized curve-view array populated by binding index.
 static void fbx_node_anim_collect_morph_curves(fbx_node_t *objects,
                                                const fbx_conn_table_t *ct,
                                                int64_t stack_id,
@@ -296,7 +353,12 @@ static void fbx_node_anim_collect_morph_curves(fbx_node_t *objects,
     }
 }
 
-/// @brief Compute key bounds across all transform curves in a Model builder table.
+/// @brief Compute source-time bounds across all transform animation in a Model table.
+/// @param models Model builder array containing layered or legacy curve state.
+/// @param model_count Number of entries in @p models.
+/// @param[out] out_min Receives the earliest source tick.
+/// @param[out] out_max Receives the latest source tick.
+/// @return Non-zero when at least one transform curve contributes bounds; otherwise zero.
 static int fbx_node_anim_transform_bounds(const fbx_node_anim_model_builder_t *models,
                                           int32_t model_count,
                                           int64_t *out_min,
@@ -331,7 +393,13 @@ static int fbx_node_anim_transform_bounds(const fbx_node_anim_model_builder_t *m
     return 1;
 }
 
-/// @brief Expand a clip's source-time bounds to cover every animated morph channel.
+/// @brief Expand source-time bounds to cover every animated morph channel.
+/// @param curves Morph-channel curve views.
+/// @param curve_count Number of entries in @p curves.
+/// @param have_bounds Non-zero when @p minimum and @p maximum already contain bounds.
+/// @param[in,out] minimum Earliest source tick, initialized when needed and widened in place.
+/// @param[in,out] maximum Latest source tick, initialized when needed and widened in place.
+/// @return Non-zero when existing or morph-derived bounds are available.
 static int fbx_node_anim_include_morph_bounds(const fbx_anim_curve_view_t *curves,
                                               int32_t curve_count,
                                               int have_bounds,
@@ -351,6 +419,13 @@ static int fbx_node_anim_include_morph_bounds(const fbx_anim_curve_view_t *curve
     return have_bounds;
 }
 
+/// @brief Determine whether a constraint can write the evaluated transform at a Model index.
+/// @details Ordinary constraints write their explicit target. A single-chain IK constraint
+///          writes every joint from its effector ancestor chain through the target.
+/// @param constraint Constraint record to inspect.
+/// @param pose Pose whose ID and parent tables define Model indices.
+/// @param model_index Candidate Model index in @p pose.
+/// @return Non-zero when the active supported constraint writes that Model.
 static int fbx_node_anim_constraint_writes_index(const fbx_constraint_t *constraint,
                                                  const fbx_constraint_pose_t *pose,
                                                  int32_t model_index) {
@@ -370,7 +445,21 @@ static int fbx_node_anim_constraint_writes_index(const fbx_constraint_t *constra
     return 0;
 }
 
-/// @brief Append transform times from hierarchy and constraint dependencies of one Model.
+/// @brief Append transform sample times from all hierarchy and constraint dependencies of a Model.
+/// @details Computes a transitive dependency closure containing the target, its ancestors,
+///          and every source/world-up/IK role that can affect a constraint writing one of
+///          those Models. Times from all marked layered or legacy curves are appended.
+/// @param[in,out] times Address of the heap-grown source-tick array.
+/// @param[in,out] count Number of initialized ticks in @p times.
+/// @param[in,out] capacity Allocated tick capacity.
+/// @param models Complete Model builder table.
+/// @param model_count Number of entries in @p models.
+/// @param model_index Target Model whose dependencies are traced.
+/// @param constraints Optional parsed constraint set.
+/// @param[in,out] pose Pose providing dependency IDs, parents, and scratch flags.
+/// @param[in,out] context Loader context charged when the tick array grows.
+/// @return Non-zero on success, or zero for invalid topology, sampling metadata,
+///         budget rejection, or allocation failure.
 static int fbx_node_anim_append_inherited_times(int64_t **times,
                                                 int32_t *count,
                                                 int32_t *capacity,
@@ -455,6 +544,23 @@ static int fbx_node_anim_append_inherited_times(int64_t **times,
 }
 
 /// @brief Sample the complete Model graph, apply constraints, and derive one runtime local TRS.
+/// @details Rebuilds every authored local matrix at @p source_time, converts coordinate
+///          systems, evaluates hierarchy globals and constraints, then removes the runtime
+///          parent transform. Skeletal parents are intentionally omitted because skeletal
+///          motion is represented by the skeleton animation rather than scene-node parenting.
+/// @param models Complete Model builder table.
+/// @param model_count Number of entries in @p models.
+/// @param model_index Target Model to decompose.
+/// @param source_time FBX source tick to sample.
+/// @param z_up Non-zero to convert matrices into runtime Y-up coordinates.
+/// @param[in,out] pose Reusable evaluated pose scratch storage.
+/// @param constraints Optional constraints applied after hierarchy composition.
+/// @param[in,out] context Loader context used by constraint evaluation.
+/// @param[out] position Receives local translation XYZ.
+/// @param[out] quaternion Receives local rotation quaternion XYZW.
+/// @param[out] scale Receives local scale XYZ.
+/// @return Non-zero on success, or zero for invalid input, curve/constraint failure,
+///         or a non-invertible parent transform.
 static int fbx_node_anim_sample_runtime_trs(const fbx_node_anim_model_builder_t *models,
                                             int32_t model_count,
                                             int32_t model_index,
@@ -503,6 +609,18 @@ static int fbx_node_anim_sample_runtime_trs(const fbx_node_anim_model_builder_t 
 }
 
 /// @brief Add the T/R/S channels for one Model affected by this animation stack.
+/// @details Samples all inherited dependency ticks, preserves quaternion hemisphere
+///          continuity, and publishes translation, rotation, and scale channels targeted
+///          by the Model's stable import index.
+/// @param[in,out] clip Runtime NodeAnimation3D receiving new channels.
+/// @param models Complete Model builder table.
+/// @param model_count Number of entries in @p models.
+/// @param model_index Model to sample and target.
+/// @param clip_start Earliest FBX source tick, mapped to runtime time zero.
+/// @param z_up Non-zero to convert evaluated transforms to runtime Y-up space.
+/// @param[in,out] pose Reusable evaluated pose storage.
+/// @param constraints Optional constraint set applied at every sample.
+/// @param[in,out] context Loader context charged for samples and runtime channels.
 /// @return 1 when channels were emitted, 0 when unaffected, or -1 on hard failure.
 static int fbx_node_anim_emit_model_channels(void *clip,
                                              const fbx_node_anim_model_builder_t *models,
@@ -642,23 +760,39 @@ fail:
     return -1;
 }
 
+/// @brief Bit flags for raw FBX camera properties that affect canonical runtime channels.
 enum {
+    /// Projection-mode enum.
     FBX_CAMERA_ANIM_PROJECTION = 1u << 0,
+    /// Aperture-mode enum used while deriving vertical field of view.
     FBX_CAMERA_ANIM_APERTURE_MODE = 1u << 1,
+    /// Generic field-of-view angle.
     FBX_CAMERA_ANIM_FOV = 1u << 2,
+    /// Horizontal field-of-view angle.
     FBX_CAMERA_ANIM_FOV_X = 1u << 3,
+    /// Vertical field-of-view angle.
     FBX_CAMERA_ANIM_FOV_Y = 1u << 4,
+    /// Camera focal length.
     FBX_CAMERA_ANIM_FOCAL_LENGTH = 1u << 5,
+    /// Film aperture width.
     FBX_CAMERA_ANIM_FILM_WIDTH = 1u << 6,
+    /// Film aperture height.
     FBX_CAMERA_ANIM_FILM_HEIGHT = 1u << 7,
+    /// Render aspect-width component.
     FBX_CAMERA_ANIM_ASPECT_WIDTH = 1u << 8,
+    /// Render aspect-height component.
     FBX_CAMERA_ANIM_ASPECT_HEIGHT = 1u << 9,
+    /// Near clipping plane.
     FBX_CAMERA_ANIM_NEAR = 1u << 10,
+    /// Far clipping plane.
     FBX_CAMERA_ANIM_FAR = 1u << 11,
+    /// Orthographic zoom/size.
     FBX_CAMERA_ANIM_ORTHO_ZOOM = 1u << 12
 };
 
 /// @brief Map a raw FBX camera property to its canonical animation dependency bit.
+/// @param property FBX connection property name.
+/// @return One @ref FBX_CAMERA_ANIM_PROJECTION-style bit, or zero when unrecognized.
 static uint32_t fbx_node_anim_camera_property_flag(const char *property) {
     if (fbx_ascii_streq_ignore_case(property, "CameraProjectionType"))
         return FBX_CAMERA_ANIM_PROJECTION;
@@ -690,7 +824,19 @@ static uint32_t fbx_node_anim_camera_property_flag(const char *property) {
     return 0;
 }
 
-/// @brief Append every active raw camera-curve/weight time and report affected properties.
+/// @brief Append all active camera curve/layer-weight times and report affected properties.
+/// @details Step-valued enum curves also contribute the tick immediately before each
+///          transition so runtime STEP interpolation preserves the old value.
+/// @param[in,out] times Address of the heap-grown source-tick array.
+/// @param[in,out] count Number of initialized ticks.
+/// @param[in,out] capacity Allocated tick capacity.
+/// @param stack Parsed layered-animation stack.
+/// @param attribute_id Camera NodeAttribute identifier, or zero.
+/// @param model_id Owning Camera Model identifier.
+/// @param[out] out_flags Receives the union of animated raw-property flags.
+/// @param[in,out] context Loader context charged when the tick array grows.
+/// @return Non-zero on success, or zero for invalid input, budget rejection,
+///         or allocation failure.
 static int fbx_node_anim_append_camera_times(int64_t **times,
                                              int32_t *count,
                                              int32_t *capacity,
@@ -745,6 +891,13 @@ static int fbx_node_anim_append_camera_times(int64_t **times,
 }
 
 /// @brief Find one canonical camera property channel on a layer, preferring NodeAttribute.
+/// @param stack Parsed layered-animation stack.
+/// @param layer_index Layer whose channels are searched.
+/// @param attribute_id Camera NodeAttribute identifier, or zero.
+/// @param model_id Owning Camera Model identifier.
+/// @param property_flag Canonical raw-property bit to match.
+/// @return Borrowed matching NodeAttribute channel, otherwise a Model-targeted fallback,
+///         or NULL when the property is absent.
 static const fbx_anim_layer_channel_t *fbx_node_anim_find_camera_channel(
     const fbx_anim_layer_stack_t *stack,
     int32_t layer_index,
@@ -767,7 +920,15 @@ static const fbx_anim_layer_channel_t *fbx_node_anim_find_camera_channel(
     return model_channel;
 }
 
-/// @brief Compose one canonical camera scalar across all active FBX animation layers.
+/// @brief Compose one raw camera scalar across all active FBX animation layers.
+/// @param stack Parsed layered-animation stack.
+/// @param attribute_id Camera NodeAttribute identifier, or zero.
+/// @param model_id Owning Camera Model identifier.
+/// @param property_flag Canonical property bit to sample.
+/// @param base Static property value used before layer composition.
+/// @param source_time FBX source tick to evaluate.
+/// @param[out] out Receives the finite composed scalar.
+/// @return Non-zero on success, or zero when input or channel evaluation is invalid.
 static int fbx_node_anim_sample_camera_scalar(const fbx_anim_layer_stack_t *stack,
                                               int64_t attribute_id,
                                               int64_t model_id,
@@ -810,6 +971,18 @@ static int fbx_node_anim_sample_camera_scalar(const fbx_anim_layer_stack_t *stac
 }
 
 /// @brief Evaluate all animated raw camera properties at one source tick.
+/// @details Starts from the static property state, composes only flagged lanes,
+///          canonicalizes blended enum values at half-integer boundaries, and validates
+///          the resulting projection/aperture modes.
+/// @param stack Parsed layered-animation stack.
+/// @param attribute_id Camera NodeAttribute identifier, or zero.
+/// @param model_id Owning Camera Model identifier.
+/// @param flags Union of raw camera-property bits to sample.
+/// @param base Valid static camera-property state.
+/// @param source_time FBX source tick to evaluate.
+/// @param[out] out Receives the composed and enum-normalized state.
+/// @return Non-zero on success, or zero for invalid input, sampling failure,
+///         non-finite enum values, or unsupported enum ranges.
 static int fbx_node_anim_sample_camera_state(const fbx_anim_layer_stack_t *stack,
                                              int64_t attribute_id,
                                              int64_t model_id,
@@ -864,6 +1037,16 @@ static int fbx_node_anim_sample_camera_state(const fbx_anim_layer_stack_t *stack
 }
 
 /// @brief Emit derived runtime camera projection channels for one FBX camera Model.
+/// @details Samples raw FBX camera attributes at every contributing curve/weight time,
+///          derives canonical projection mode, aspect, vertical field of view, clip
+///          planes, and orthographic size, then publishes only affected runtime lanes.
+/// @param[in,out] clip Runtime NodeAnimation3D receiving derived camera channels.
+/// @param objects Parsed FBX `Objects` node.
+/// @param ct Connection table used to resolve the Camera NodeAttribute.
+/// @param model Camera Model builder and stable target index.
+/// @param stack Parsed layered-animation stack.
+/// @param clip_start Earliest FBX source tick, mapped to runtime time zero.
+/// @param[in,out] context Loader context charged for samples and runtime channels.
 /// @return 1 when channels were emitted, 0 when the stack does not animate this camera, -1 on
 ///         allocation, validation, or channel-publication failure.
 static int fbx_node_anim_emit_camera_channels(void *clip,
@@ -1021,7 +1204,11 @@ fail:
     return -1;
 }
 
-/// @brief Whether a Model has a standard FBX object connection to a Geometry.
+/// @brief Test whether a Model has a standard FBX object connection to a Geometry.
+/// @param ct Connection table containing Geometry-to-Model adjacency.
+/// @param model_id Candidate Model identifier.
+/// @param geometry_id Candidate Geometry identifier.
+/// @return Non-zero when the Geometry is connected as a child of the Model.
 static int fbx_node_anim_model_uses_geometry(const fbx_conn_table_t *ct,
                                              int64_t model_id,
                                              int64_t geometry_id) {
@@ -1038,6 +1225,15 @@ static int fbx_node_anim_model_uses_geometry(const fbx_conn_table_t *ct,
 /// @details FullWeights turns a scalar curve into a piecewise-linear vector. Authored/adaptive
 ///          scalar samples alone can straddle a breakpoint and would then interpolate the wrong
 ///          shape vector, so crossings are located by integer-tick bisection and inserted.
+/// @param[in,out] times Address of the heap-grown, initially populated source-tick array.
+/// @param[in,out] count Number of ticks, sorted/deduplicated before breakpoint analysis.
+/// @param[in,out] capacity Allocated tick capacity.
+/// @param binding Progressive channel metadata and ordered thresholds.
+/// @param curve Legacy scalar curve used when @p layer_stack is NULL.
+/// @param layer_stack Optional layered sampler for the channel.
+/// @param[in,out] context Loader context charged when new crossing ticks are appended.
+/// @return Non-zero on success or when no usable curve exists; zero on sampling,
+///         budget, or allocation failure.
 static int fbx_node_anim_append_morph_threshold_times(int64_t **times,
                                                       int32_t *count,
                                                       int32_t *capacity,
@@ -1134,6 +1330,21 @@ static int fbx_node_anim_append_morph_threshold_times(int64_t **times,
 }
 
 /// @brief Emit one combined weight-vector channel per Model instance of each animated morph mesh.
+/// @details Groups bindings by mesh, combines all channel percentages into the mesh's
+///          full runtime shape vector at every source/breakpoint tick, and duplicates
+///          the resulting channel for every scene Model that instances the Geometry.
+/// @param[in,out] clip Runtime NodeAnimation3D receiving weight channels.
+/// @param objects Parsed FBX `Objects` node; currently reserved for graph extensions.
+/// @param ct Connection table used to find Model instances of each Geometry.
+/// @param models Complete Model builder table.
+/// @param model_count Number of entries in @p models.
+/// @param asset Loaded asset providing per-mesh MorphTarget3D resources.
+/// @param bindings Imported progressive morph-channel metadata.
+/// @param curves Legacy scalar curve views parallel to @p bindings.
+/// @param layer_stack Optional authoritative layered-animation sampler.
+/// @param binding_count Number of entries in @p bindings and @p curves.
+/// @param clip_start Earliest FBX source tick, mapped to runtime time zero.
+/// @param[in,out] context Loader context charged for samples and runtime channels.
 /// @return 1 when any channel was emitted, 0 when none were targetable, or -1 on hard failure.
 static int fbx_node_anim_emit_morph_channels(void *clip,
                                              fbx_node_t *objects,
@@ -1321,7 +1532,13 @@ static int fbx_node_anim_emit_morph_channels(void *clip,
     return emitted;
 }
 
-/// @brief Extract non-skeletal transform clips from all FBX AnimationStack records.
+/// @brief Allocate an evaluable constraint pose matching the Model builder table.
+/// @param models Complete Model builder table.
+/// @param model_count Number of entries in @p models.
+/// @param[in,out] context Loader context charged for pose arrays.
+/// @param[out] pose Zeroed pose that receives IDs, parents, sources, and a sorted lookup table.
+/// @return Non-zero on success, or zero for invalid input, budget rejection,
+///         or allocation failure.
 static int fbx_node_anim_initialize_pose(const fbx_node_anim_model_builder_t *models,
                                          int32_t model_count,
                                          fbx_load_context_t *context,
@@ -1340,6 +1557,25 @@ static int fbx_node_anim_initialize_pose(const fbx_node_anim_model_builder_t *mo
     return 1;
 }
 
+/// @brief Extract NodeAnimation3D clips from every animated FBX AnimationStack.
+/// @details Builds a stable Model table per stack, parses layered animation, establishes
+///          complete transform/morph/camera bounds, samples non-skeletal Models through
+///          constraints, emits derived camera and morph channels, and publishes only clips
+///          containing at least one channel. Any hard failure releases all clips already
+///          published by this call.
+/// @param root Parsed FBX document root.
+/// @param ct Validated object connection table.
+/// @param constraints Optional constraint set applied during transform sampling.
+/// @param z_up Non-zero to convert evaluated transforms into runtime Y-up space.
+/// @param asset Loaded asset supplying MorphTarget3D resources.
+/// @param morph_bindings Imported progressive morph-channel bindings.
+/// @param morph_binding_count Number of entries in @p morph_bindings.
+/// @param[out] out_animations Receives the owned reference array of emitted clips.
+/// @param[out] out_count Receives the number of emitted clips.
+/// @param[out] out_capacity Receives the allocated reference-array capacity.
+/// @param[in,out] context Loader context charged for all scratch and published storage.
+/// @return Non-zero on success, including when no clips are emitted; zero on invalid
+///         input, malformed animation data, budget exhaustion, or allocation failure.
 static int fbx_extract_node_animations(fbx_node_t *root,
                                        const fbx_conn_table_t *ct,
                                        fbx_constraint_set_t *constraints,

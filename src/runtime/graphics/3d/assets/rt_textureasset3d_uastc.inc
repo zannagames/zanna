@@ -10,6 +10,17 @@
 //     description tables (bit layouts verified against the specification's tables).
 //   - Invalid modes/patterns/etq values fail the block decode (recoverable error).
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements a clean-room UASTC LDR 4-by-4 software decoder.
+///
+/// The decoder consumes the UASTC mode prefix, transcoder hints, partition
+/// selection, BISE-encoded endpoints, anchor-shortened weights, and optional
+/// dual-plane component selection directly from each 128-bit block. Supported
+/// blocks are expanded to row-major RGBA8 without external codec dependencies;
+/// reserved modes and malformed bit budgets fail closed.
+///
+/// @note This file is included by `rt_textureasset3d.c` and is not a standalone
+///       translation unit.
 
 /// @brief Mode Huffman acceleration table (spec): low 7 bits of byte 0 -> mode index.
 static const uint8_t uastc_mode_lut[128] = {
@@ -41,11 +52,18 @@ static const uint8_t uastc_mode_has_alpha[19] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
 
 /// @brief BISE endpoint range parameters: bits, has-trit, has-quint (spec ranges table).
 typedef struct {
+    /// Number of directly encoded low bits per endpoint value.
     uint8_t bits;
+    /// Nonzero when values also carry a base-3 trit.
     uint8_t trits;
+    /// Nonzero when values also carry a base-5 quint.
     uint8_t quints;
 } uastc_range_desc;
 
+/// @brief Resolve a UASTC endpoint-range code to its BISE representation.
+/// @param[in] range Endpoint range identifier from the selected mode.
+/// @param[out] out Destination for direct-bit, trit, and quint metadata.
+/// @return 1 for a supported range code, otherwise 0.
 static int uastc_range_lookup(int range, uastc_range_desc *out) {
     switch (range) {
     case 7:
@@ -87,6 +105,9 @@ static const uint8_t uastc_weights5[32] = {0,  2,  4,  6,  8,  10, 12, 14, 16, 1
                                            22, 24, 26, 28, 30, 34, 36, 38, 40, 42, 44,
                                            46, 48, 50, 52, 54, 56, 58, 60, 62, 64};
 
+/// @brief Select the ASTC dequantization table for a stored weight width.
+/// @param[in] bits Encoded weight width in the inclusive range 1-5.
+/// @return Pointer to the immutable weight table, or NULL for an unsupported width.
 static const uint8_t *uastc_weight_table(int bits) {
     switch (bits) {
     case 1:
@@ -191,6 +212,10 @@ static const uint8_t uastc_pattern2_3_anchors[19][2] = {
 /// @details Bounds-guarded like the BC6H reader: blocks come from disk, so a
 ///   per-mode bit-budget table error must return zeros (cursor saturated past
 ///   the block) instead of reading past the 16-byte block.
+/// @param[in] block Pointer to the complete 16-byte UASTC block.
+/// @param[in,out] cursor Zero-based bit cursor, advanced or saturated to 129 on overflow.
+/// @param[in] count Number of bits to consume.
+/// @return The requested bits right-aligned, or zero when the read exceeds the block.
 static uint32_t uastc_read_bits(const uint8_t *block, uint32_t *cursor, uint32_t count) {
     uint32_t value = 0;
     if (*cursor > 128u || count > 128u - *cursor) {
@@ -207,6 +232,9 @@ static uint32_t uastc_read_bits(const uint8_t *block, uint32_t *cursor, uint32_t
 }
 
 /// @brief Replicate an n-bit value's MSBs to produce an 8-bit value (bit-only ranges).
+/// @param[in] v Right-aligned quantized endpoint value.
+/// @param[in] n Number of significant bits in @p v.
+/// @return The value expanded to eight bits by repeated-bit replication.
 static uint8_t uastc_replicate_bits(uint32_t v, int n) {
     uint32_t r;
     int shift;
@@ -222,8 +250,12 @@ static uint8_t uastc_replicate_bits(uint32_t v, int n) {
 }
 
 /// @brief ASTC color endpoint unquantization (Data Format spec §18.13, Table 93).
-/// @details unq = D*C + B; unq ^= A; unq = (A & 0x80) | (unq >> 2), with A = 9 copies
-///          of the bit-field LSB and B a per-range scatter of the remaining bits.
+/// @details Forms `unq` from the trit/quint contribution and scattered direct bits, XORs it
+///          with the replicated low bit, then folds the nine-bit result to the ASTC endpoint.
+/// @param[in] bits_val Directly encoded endpoint bits.
+/// @param[in] tq Decoded trit or quint value, or zero for a bit-only range.
+/// @param[in] rd BISE range description governing the reconstruction.
+/// @return The endpoint unquantized to eight bits, or zero for an unsupported descriptor.
 static uint8_t uastc_unquant_endpoint(uint32_t bits_val, uint32_t tq, const uastc_range_desc *rd) {
     uint32_t A;
     uint32_t B = 0;
@@ -276,6 +308,10 @@ static uint8_t uastc_unquant_endpoint(uint32_t bits_val, uint32_t tq, const uast
 }
 
 /// @brief ASTC endpoint interpolation (weights in [0,64], srgb = false).
+/// @param[in] l Low endpoint component.
+/// @param[in] h High endpoint component.
+/// @param[in] w Dequantized interpolation weight in the inclusive range 0-64.
+/// @return The interpolated eight-bit component.
 static uint8_t uastc_interpolate(uint32_t l, uint32_t h, uint32_t w) {
     uint32_t k;
     l = (l << 8) | l;
@@ -285,6 +321,8 @@ static uint8_t uastc_interpolate(uint32_t l, uint32_t h, uint32_t w) {
 }
 
 /// @brief Decode one 128-bit UASTC block into a 4x4 RGBA texel array.
+/// @param[in] block Pointer to a complete 16-byte UASTC block.
+/// @param[out] out_rgba Destination buffer for 16 four-byte row-major RGBA texels.
 /// @return 1 on success, 0 for reserved/invalid encodings.
 static int rt_textureasset3d_decode_uastc_block(const uint8_t *block, uint8_t *out_rgba) {
     uint32_t cursor = 0;
@@ -475,6 +513,11 @@ static int rt_textureasset3d_decode_uastc_block(const uint8_t *block, uint8_t *o
 
 /// @brief Block-decode adapter for UASTC LDR 4x4, matching the generic block-decode
 ///   function pointer used by textureasset3d_decode_compressed_mips.
+/// @param[in] block Pointer to a complete 16-byte UASTC block.
+/// @param[in] block_width Expected block footprint width, which must be four.
+/// @param[in] block_height Expected block footprint height, which must be four.
+/// @param[out] out_rgba Destination buffer for 16 four-byte row-major RGBA texels.
+/// @return 1 when dimensions and block encoding are valid, otherwise 0.
 static int textureasset3d_decode_uastc_block_adapter(const uint8_t *block,
                                                      int32_t block_width,
                                                      int32_t block_height,

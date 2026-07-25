@@ -882,6 +882,12 @@ func main() {
     var prevStatusLineCount = engine.GetLineCount();
     var prevStatusCursorCount = engine.editor.GetCursorCount();
     var didPostFirstFrameActivate = false;
+    // Session restore and first-frame responsive layout keep moving panes and
+    // docks after their earliest paints, and retained damage cannot see
+    // widgets that moved inside internally-painted subtrees. Litter from the
+    // startup cascade can therefore survive in dock-row gaps until an
+    // unrelated full repaint. Count a few settled frames, then erase it once.
+    var startupRepaintFrames = 3;
     var autoSaveRevision = ActiveContentRevision(
         docMgr, engine, scene2DEditor, scene3DEditor);
     var autoSaveActiveIndex = docMgr.activeIndex;
@@ -1840,6 +1846,12 @@ func main() {
         prevStatusLineCount = statusLineCount;
         prevStatusCursorCount = statusCursorCount;
 
+        if startupRepaintFrames > 0 {
+            startupRepaintFrames = startupRepaintFrames - 1;
+            if startupRepaintFrames == 0 {
+                shell.mainVBox.InvalidatePaint();
+            }
+        }
         var perfSpan = perfMon.StartSpan();
         shell.Render();
         if didPostFirstFrameActivate == false {

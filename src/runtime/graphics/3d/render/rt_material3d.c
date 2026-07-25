@@ -32,6 +32,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements legacy and physically based Material3D surface state.
+/// @details This translation unit owns material initialization, cloning, texture-reference
+///          lifetime management, sampler metadata, and the sanitized scalar state copied into
+///          3D draw commands. Texture accessors return borrowed views; material texture and
+///          cubemap slots retain accepted GC-managed source objects until replacement or
+///          finalization.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -64,6 +72,18 @@ extern int rt_obj_release_check0(void *obj);
 extern void rt_obj_free(void *obj);
 #include "rt_trap.h"
 
+/// @brief Apply compatibility sampler and UV metadata to one imported texture slot.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param slot Material texture-slot index.
+/// @param uv_set Source UV-set index, normalized to zero or one.
+/// @param offset_u Horizontal UV translation.
+/// @param offset_v Vertical UV translation.
+/// @param scale_u Horizontal UV scale.
+/// @param scale_v Vertical UV scale.
+/// @param rotation Counter-clockwise UV rotation in radians.
+/// @param wrap_s Horizontal texture wrapping mode.
+/// @param wrap_t Vertical texture wrapping mode.
+/// @param filter Shared minification and magnification filtering mode.
 void rt_material3d_set_import_texture_slot(void *obj,
                                            int64_t slot,
                                            int64_t uv_set,
@@ -82,6 +102,7 @@ static int32_t material_sanitize_mip_filter(int64_t value);
 /// @brief Release the GC reference at `*slot` and NULL it. NULL-safe both ways (slot ==
 /// NULL or *slot == NULL). Only frees the underlying object when the release drops its
 /// retain count to zero — bystander references keep the texture alive.
+/// @param slot Address of an owned reference slot to release and clear.
 static void material_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
@@ -89,6 +110,7 @@ static void material_release_ref(void **slot) {
 /// @brief Release an owned material texture slot only when it still stores a supported texture.
 /// @details Wrong-class private state is treated as borrowed corruption and is cleared without
 ///          releasing; matching texture slots are owned and released normally.
+/// @param slot Address of the material texture slot to validate, release, and clear.
 static void material_release_texture_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -102,6 +124,7 @@ static void material_release_texture_slot(void **slot) {
 /// @brief Release an owned environment-map slot only when it still stores a CubeMap3D.
 /// @details Wrong-class private state is cleared without releasing; matching Cubemap3D slots are
 ///          owned and released normally.
+/// @param slot Address of the environment-map slot to validate, release, and clear.
 static void material_release_env_map_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -116,6 +139,7 @@ static void material_release_env_map_slot(void **slot) {
 /// specular, emissive, metallic-roughness, AO, environment) and releases each, regardless
 /// of which subset the material actually used. Unused slots are NULL and release is
 /// NULL-safe, so legacy-Phong materials pay the same teardown cost as full PBR ones.
+/// @param obj Material3D instance being finalized; NULL is ignored.
 static void rt_material3d_finalize(void *obj) {
     rt_material3d *mat = (rt_material3d *)obj;
     if (!mat)
@@ -135,6 +159,8 @@ static void rt_material3d_finalize(void *obj) {
 /// before-release keeps the refcount above zero through the transition so re-assigning
 /// a slot to its own contents (or to a shared texture whose only owner is this slot)
 /// can't briefly drop the refcount and trigger a finalize.
+/// @param slot Address of the owned reference slot; NULL is ignored.
+/// @param value New nullable GC-managed object, retained when different from the current value.
 static void material_assign_ref(void **slot, void *value) {
     if (!slot)
         return;
@@ -146,16 +172,22 @@ static void material_assign_ref(void **slot, void *value) {
 }
 
 /// @brief Validate @p obj as a Material3D handle and return its typed pointer (NULL on mismatch).
+/// @param obj Candidate runtime object handle.
+/// @return Borrowed Material3D pointer, or NULL when @p obj is NULL or has another class.
 static rt_material3d *material_checked(void *obj) {
     return (rt_material3d *)rt_g3d_checked_or_null(obj, RT_G3D_MATERIAL3D_CLASS_ID);
 }
 
 /// @brief Validate that @p pixels is a live `Zanna.Graphics.Pixels` handle.
+/// @param pixels Candidate runtime object handle.
+/// @return Nonzero when @p pixels is a valid Pixels object; otherwise zero.
 static int material_pixels_handle_valid(void *pixels) {
     return rt_pixels_checked_impl_or_null(pixels) != NULL;
 }
 
 /// @brief Validate that @p cubemap is a live `Zanna.Graphics3D.Cubemap3D` handle.
+/// @param cubemap Candidate runtime cubemap handle.
+/// @return Nonzero only for a complete six-face CubeMap3D; otherwise zero.
 static int material_cubemap_handle_valid(void *cubemap) {
     return cubemap && rt_cubemap3d_is_complete(cubemap);
 }
@@ -163,6 +195,8 @@ static int material_cubemap_handle_valid(void *cubemap) {
 /// @brief Resolve a texture reference to its RGBA8 Pixels source, if it has one.
 /// @details A reference may be a Pixels handle (returned as-is) or a TextureAsset3D (its decoded
 ///          RGBA fallback is returned). Returns NULL when there is no drawable Pixels source.
+/// @param texture_ref Nullable Pixels, TextureAsset3D, or RenderTarget3D source handle.
+/// @return Borrowed drawable Pixels handle, or NULL when no decoded/render-target source exists.
 void *rt_material3d_resolve_texture_pixels(void *texture_ref) {
     if (!texture_ref)
         return NULL;
@@ -174,6 +208,7 @@ void *rt_material3d_resolve_texture_pixels(void *texture_ref) {
 }
 
 /// @brief Resolve a texture reference to a TextureAsset3D with uploadable native compressed blocks.
+/// @param texture_ref Nullable candidate texture source.
 /// @return The asset handle if it is a TextureAsset3D with a native cache key, else NULL.
 void *rt_material3d_resolve_texture_native_asset(void *texture_ref) {
     if (!texture_ref || !rt_g3d_has_class(texture_ref, RT_G3D_TEXTUREASSET3D_CLASS_ID))
@@ -182,6 +217,10 @@ void *rt_material3d_resolve_texture_native_asset(void *texture_ref) {
 }
 
 /// @brief Borrow an unresolved texture reference in stable VSCN persistence order.
+/// @param obj Material3D receiver.
+/// @param slot Persisted texture-slot identifier.
+/// @return Borrowed original source reference, or NULL for an invalid receiver, empty slot, or
+///         unsupported slot identifier.
 void *rt_material3d_get_persisted_texture_ref(void *obj, int64_t slot) {
     rt_material3d *material = material_checked(obj);
     if (!material)
@@ -210,52 +249,73 @@ void *rt_material3d_get_persisted_texture_ref(void *obj, int64_t slot) {
 /// @details The returned object remains owned by the material's retained source. TextureAsset3D
 ///          and RenderTarget3D references are resolved without discarding their original source
 ///          identity, so inspection does not change later rendering or VSCN serialization.
+/// @param obj Material3D receiver.
+/// @param slot Persisted texture-slot identifier.
+/// @return Borrowed resolved Pixels handle, or NULL when the receiver or source is unavailable.
 static void *material_texture_pixels_for_slot(void *obj, int64_t slot) {
     return rt_material3d_resolve_texture_pixels(rt_material3d_get_persisted_texture_ref(obj, slot));
 }
 
 /// @brief Borrow the current base-color/albedo map as decoded Pixels, or NULL.
+/// @param obj Material3D receiver.
+/// @return Borrowed base-color Pixels fallback, or NULL when unavailable.
 void *rt_material3d_get_texture_pixels(void *obj) {
     return material_texture_pixels_for_slot(obj, RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR);
 }
 
 /// @brief Borrow the current tangent-space normal map as decoded Pixels, or NULL.
+/// @param obj Material3D receiver.
+/// @return Borrowed normal-map Pixels fallback, or NULL when unavailable.
 void *rt_material3d_get_normal_map_pixels(void *obj) {
     return material_texture_pixels_for_slot(obj, RT_MATERIAL3D_TEXTURE_SLOT_NORMAL);
 }
 
 /// @brief Borrow the current legacy specular map as decoded Pixels, or NULL.
+/// @param obj Material3D receiver.
+/// @return Borrowed specular-map Pixels fallback, or NULL when unavailable.
 void *rt_material3d_get_specular_map_pixels(void *obj) {
     return material_texture_pixels_for_slot(obj, RT_MATERIAL3D_TEXTURE_SLOT_SPECULAR);
 }
 
 /// @brief Borrow the current emissive map as decoded Pixels, or NULL.
+/// @param obj Material3D receiver.
+/// @return Borrowed emissive-map Pixels fallback, or NULL when unavailable.
 void *rt_material3d_get_emissive_map_pixels(void *obj) {
     return material_texture_pixels_for_slot(obj, RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE);
 }
 
 /// @brief Borrow the current packed metallic/roughness map as decoded Pixels, or NULL.
+/// @param obj Material3D receiver.
+/// @return Borrowed packed-map Pixels fallback, or NULL when unavailable.
 void *rt_material3d_get_metallic_roughness_map_pixels(void *obj) {
     return material_texture_pixels_for_slot(obj, RT_MATERIAL3D_TEXTURE_SLOT_METALLIC_ROUGHNESS);
 }
 
 /// @brief Borrow the current ambient-occlusion map as decoded Pixels, or NULL.
+/// @param obj Material3D receiver.
+/// @return Borrowed ambient-occlusion Pixels fallback, or NULL when unavailable.
 void *rt_material3d_get_ao_map_pixels(void *obj) {
     return material_texture_pixels_for_slot(obj, RT_MATERIAL3D_TEXTURE_SLOT_AO);
 }
 
 /// @brief Borrow the current baked lightmap as decoded Pixels, or NULL.
+/// @param obj Material3D receiver.
+/// @return Borrowed lightmap Pixels fallback, or NULL when unavailable.
 void *rt_material3d_get_lightmap_pixels(void *obj) {
     return material_texture_pixels_for_slot(obj, RT_MATERIAL3D_PERSISTED_TEXTURE_SLOT_LIGHTMAP);
 }
 
 /// @brief Whether a texture reference has any usable source (RGBA Pixels or native blocks).
+/// @param texture_ref Nullable material texture source.
+/// @return Nonzero when decoded pixels or uploadable native blocks are currently available.
 static int material_texture_ref_has_drawable_source(void *texture_ref) {
     return rt_material3d_resolve_texture_pixels(texture_ref) ||
            rt_material3d_resolve_texture_native_asset(texture_ref);
 }
 
 /// @brief Whether a texture slot points at a supported material texture handle type.
+/// @param texture_ref Candidate material texture source.
+/// @return Nonzero for live Pixels, TextureAsset3D, or RenderTarget3D handles; otherwise zero.
 static int material_texture_ref_supported(void *texture_ref) {
     return texture_ref && (material_pixels_handle_valid(texture_ref) ||
                            rt_g3d_has_class(texture_ref, RT_G3D_TEXTUREASSET3D_CLASS_ID) ||
@@ -265,6 +325,8 @@ static int material_texture_ref_supported(void *texture_ref) {
 /// @brief Return whether a texture slot is currently drawable, clearing stale invalid refs.
 /// @details TextureAsset3D refs are kept even when their residency window is empty; they may
 ///          become drawable again after streaming without rebinding the material.
+/// @param slot Address of a retained material texture slot.
+/// @return Nonzero when the slot currently supplies decoded pixels or native blocks.
 static int material_texture_slot_has_drawable_source(void **slot) {
     if (!slot || !*slot)
         return 0;
@@ -276,6 +338,7 @@ static int material_texture_slot_has_drawable_source(void **slot) {
 }
 
 /// @brief Clear unsupported texture refs from all material texture slots.
+/// @param mat Material whose texture references are repaired; NULL is ignored.
 static void material_repair_texture_refs(rt_material3d *mat) {
     if (!mat)
         return;
@@ -288,6 +351,7 @@ static void material_repair_texture_refs(rt_material3d *mat) {
 }
 
 /// @brief Clear an invalid env-map reference before exposing it to inspectors/renderers.
+/// @param mat Material whose environment-map slot is repaired; NULL is ignored.
 static void material_repair_env_map(rt_material3d *mat) {
     if (!mat || !mat->env_map || material_cubemap_handle_valid(mat->env_map))
         return;
@@ -303,6 +367,9 @@ static void material_repair_env_map(rt_material3d *mat) {
 ///          their current residency window is empty; draw submission resolves them lazily so
 ///          streaming can make the same material drawable again without rebinding. Non-texture
 ///          handles trap via @p method. Returns 1 if supported.
+/// @param texture Nullable candidate texture source.
+/// @param method Optional trap message used for an unsupported source.
+/// @return One for NULL or a supported texture source; zero after trapping on invalid input.
 static int material_texture_ref_valid_or_trap(void *texture, const char *method) {
     if (!texture)
         return 1;
@@ -319,6 +386,9 @@ static int material_texture_ref_valid_or_trap(void *texture, const char *method)
 
 /// @brief Validate then retain-swap a texture reference into @p *slot; no-op-fails on invalid
 /// input.
+/// @param slot Address of the owned material texture slot.
+/// @param texture Nullable replacement Pixels, TextureAsset3D, or RenderTarget3D handle.
+/// @param method Optional trap message for an invalid slot or texture.
 /// @return 1 on a successful assignment (including clearing with NULL), 0 if validation trapped.
 static int material_assign_texture_ref_checked(void **slot, void *texture, const char *method) {
     if (!slot) {
@@ -336,6 +406,8 @@ static int material_assign_texture_ref_checked(void **slot, void *texture, const
 /// @brief Internal hook used by rt_cubemap3d to assign an env-map cubemap on a material.
 /// @details Validates the inputs (live Material3D + Cubemap3D handle), then performs the
 ///   retain-then-release swap on the env_map slot. NULL @p cubemap clears the slot.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param cubemap Nullable complete CubeMap3D to retain, or NULL to clear the slot.
 void rt_material3d_assign_env_map_checked(void *obj, void *cubemap) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -350,6 +422,8 @@ void rt_material3d_assign_env_map_checked(void *obj, void *cubemap) {
 
 /// @brief Clamp into the closed `[0, 1]` range — the common normalized-parameter guard
 /// used across PBR material setters (metallic, roughness, AO, alpha, reflectivity, etc.).
+/// @param value Value to sanitize; non-finite values become zero.
+/// @return Finite value clamped to the inclusive range from zero through one.
 static double clamp01(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -361,6 +435,10 @@ static double clamp01(double value) {
 }
 
 /// @brief Clamp `value` into `[min_value, max_value]`; non-finite input maps to `min_value`.
+/// @param value Value to sanitize.
+/// @param min_value Inclusive lower bound and non-finite fallback.
+/// @param max_value Inclusive upper bound.
+/// @return @p value clamped to the requested interval.
 static double clamp_range(double value, double min_value, double max_value) {
     if (!isfinite(value))
         return min_value;
@@ -373,6 +451,9 @@ static double clamp_range(double value, double min_value, double max_value) {
 
 /// @brief Clamp a UV-transform component into ±MATERIAL3D_UV_TRANSFORM_ABS_MAX, falling
 ///        back on non-finite input. Used to bound material UV scale/offset/rotation.
+/// @param value Transform component to sanitize.
+/// @param fallback Value returned for NaN or infinity.
+/// @return Finite component bounded to the supported absolute limit.
 static double material_clamp_uv_transform(double value, double fallback) {
     if (!isfinite(value))
         return fallback;
@@ -390,6 +471,8 @@ static int32_t material_sanitize_anisotropy(int64_t value);
 ///   intent at call sites — a reader scanning a setter sees "this channel
 ///   is a color component with normalized range" rather than a generic
 ///   01 clamp that happens to be applied to RGBA.
+/// @param value Color component to sanitize.
+/// @return Finite component clamped to the inclusive range from zero through one.
 static double sanitize_color(double value) {
     return clamp01(value);
 }
@@ -399,6 +482,8 @@ static double sanitize_color(double value) {
 ///          Negative and non-finite inputs collapse to zero; large finite values are capped at
 ///          the same bounded scalar used for emissive intensity so shader constants remain
 ///          finite and predictable across CPU/GPU backends.
+/// @param value HDR emissive component to sanitize.
+/// @return Finite non-negative component capped at the material emissive limit.
 static double sanitize_emissive_color(double value) {
     return clamp_range(value, 0.0, MATERIAL3D_EMISSIVE_INTENSITY_MAX);
 }
@@ -414,6 +499,7 @@ static double sanitize_emissive_color(double value) {
 ///          The legacy material-wide `texture_wrap_s` / `_t` / `_filter` scalars are
 ///          mirrored from slot 0 (base color) so older code reading those fields
 ///          directly sees a sensible default instead of an uninitialized value.
+/// @param mat Fresh material storage to initialize; NULL is ignored.
 static void material_init_texture_slots(rt_material3d *mat) {
     if (!mat)
         return;
@@ -450,6 +536,7 @@ static void material_init_texture_slots(rt_material3d *mat) {
 /// roughness 0.5 (safe PBR fallback even though workflow starts legacy), opaque alpha
 /// mode, no textures bound. Zeroes the custom-param scratch buffer so backends see a
 /// stable initial state.
+/// @param mat Freshly allocated Material3D storage; NULL is ignored.
 static void material_init_defaults(rt_material3d *mat) {
     if (!mat)
         return;
@@ -494,6 +581,7 @@ static void material_init_defaults(rt_material3d *mat) {
 
 /// @brief Re-sanitize copied material state that may have been imported through legacy direct
 /// fields.
+/// @param mat Material whose scalar, enum, sampler, transform, and reference state is normalized.
 static void material_sanitize_state(rt_material3d *mat) {
     if (!mat)
         return;
@@ -591,6 +679,7 @@ static void material_sanitize_state(rt_material3d *mat) {
 /// so a caller that touches those fields automatically opts into the PBR lighting path
 /// without having to call a separate "SetPBR" entry. Legacy-only setters leave the
 /// workflow alone so a pure-Phong material stays in that mode.
+/// @param mat Material to promote; NULL is ignored.
 static void material_promote_to_pbr(rt_material3d *mat) {
     if (!mat)
         return;
@@ -602,6 +691,9 @@ static void material_promote_to_pbr(rt_material3d *mat) {
 /// through `material_assign_ref` so the clone holds its own retain count. Shared texture
 /// data keeps GPU uploads cheap — callers who want independent textures clone them
 /// separately. Returns NULL if `rt_material3d_new` fails to allocate.
+/// @param obj Source Material3D handle.
+/// @return New independently mutable Material3D retaining the source's texture objects, or NULL
+///         for an invalid source or allocation failure.
 static void *material_clone_like(void *obj) {
     rt_material3d *src = material_checked(obj);
     rt_material3d *dst;
@@ -737,6 +829,10 @@ void *rt_material3d_new_textured(void *pixels) {
 }
 
 /// @brief Create a metallic-roughness PBR material with a solid base color.
+/// @param r Red base-color component, clamped to the inclusive normalized range.
+/// @param g Green base-color component, clamped to the inclusive normalized range.
+/// @param b Blue base-color component, clamped to the inclusive normalized range.
+/// @return New opaque PBR material handle, or NULL on allocation failure.
 void *rt_material3d_new_pbr(double r, double g, double b) {
     rt_material3d *mat = (rt_material3d *)rt_material3d_new_color(r, g, b);
     if (!mat)
@@ -753,17 +849,26 @@ void *rt_material3d_new_pbr(double r, double g, double b) {
 }
 
 /// @brief Deep-copy a material, including all texture references (which are retained).
+/// @param obj Source Material3D handle.
+/// @return Independent material shell sharing retained texture sources, or NULL on invalid input
+///         or allocation failure.
 void *rt_material3d_clone(void *obj) {
     return material_clone_like(obj);
 }
 
 /// @brief Alias for `_clone` — produce an independent material instance for per-renderable
 /// tweaks without affecting the source. Same texture-retention semantics.
+/// @param obj Source Material3D handle.
+/// @return Independent material instance sharing retained texture sources, or NULL on failure.
 void *rt_material3d_make_instance(void *obj) {
     return material_clone_like(obj);
 }
 
 /// @brief Set the diffuse color of a material (overrides existing color, keeps texture).
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param r Red diffuse component, clamped to the normalized range.
+/// @param g Green diffuse component, clamped to the normalized range.
+/// @param b Blue diffuse component, clamped to the normalized range.
 void rt_material3d_set_color(void *obj, double r, double g, double b) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -774,6 +879,8 @@ void rt_material3d_set_color(void *obj, double r, double g, double b) {
 }
 
 /// @brief Read the material diffuse/base color as a fresh Vec3.
+/// @param obj Material3D receiver.
+/// @return Newly allocated Vec3 containing sanitized RGB channels; invalid materials yield white.
 void *rt_material3d_get_color(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -784,6 +891,10 @@ void *rt_material3d_get_color(void *obj) {
 }
 
 /// @brief Set or replace the diffuse texture map.
+/// @details The material retain-swaps a supported source. Passing NULL clears the slot; a non-null
+///          unsupported runtime object traps and leaves the existing source unchanged.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param pixels Nullable Pixels, TextureAsset3D, or RenderTarget3D source.
 void rt_material3d_set_texture(void *obj, void *pixels) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -798,6 +909,8 @@ void rt_material3d_set_texture(void *obj, void *pixels) {
 /// @details The material samples the target's last completed frame; the mirror
 ///   refreshes automatically whenever a frame rendered into the target ends, so
 ///   security-monitor/scope setups need no per-frame readback or rebinding.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param target RenderTarget3D source to retain; NULL or a wrong-class object traps.
 void rt_material3d_set_albedo_render_target(void *obj, void *target) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -811,6 +924,8 @@ void rt_material3d_set_albedo_render_target(void *obj, void *target) {
 }
 
 /// @brief Detach a render-target albedo binding (leaves the material textureless).
+/// @details A Pixels or TextureAsset3D albedo source is deliberately left unchanged.
+/// @param obj Material3D receiver; invalid handles are ignored.
 void rt_material3d_clear_albedo_render_target(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -820,6 +935,8 @@ void rt_material3d_clear_albedo_render_target(void *obj) {
 }
 
 /// @brief Bind a RenderTarget3D's live contents as the emissive map (glowing monitors).
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param target RenderTarget3D source to retain; NULL or a wrong-class object traps.
 void rt_material3d_set_emissive_render_target(void *obj, void *target) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -839,6 +956,8 @@ void rt_material3d_set_emissive_render_target(void *obj, void *target) {
 ///   unknown future modes or out-of-range values from importers) falls back to
 ///   REPEAT, which is the safe default and matches the texture-slot init in
 ///   material_init_texture_slots.
+/// @param value Candidate `RT_MATERIAL3D_TEXTURE_WRAP_*` value.
+/// @return A valid wrapping constant, defaulting to repeat.
 static int32_t material_sanitize_wrap(int64_t value) {
     if (value == RT_MATERIAL3D_TEXTURE_WRAP_CLAMP_TO_EDGE ||
         value == RT_MATERIAL3D_TEXTURE_WRAP_MIRRORED_REPEAT)
@@ -850,6 +969,8 @@ static int32_t material_sanitize_wrap(int64_t value) {
 /// @details Only NEAREST is accepted as an explicit override; everything else
 ///   maps to LINEAR so unknown future filter modes degrade gracefully rather
 ///   than producing undefined backend behaviour.
+/// @param value Candidate `RT_MATERIAL3D_TEXTURE_FILTER_*` value.
+/// @return Nearest for the explicit nearest constant; otherwise linear.
 static int32_t material_sanitize_filter(int64_t value) {
     return value == RT_MATERIAL3D_TEXTURE_FILTER_NEAREST ? RT_MATERIAL3D_TEXTURE_FILTER_NEAREST
                                                          : RT_MATERIAL3D_TEXTURE_FILTER_LINEAR;
@@ -867,6 +988,8 @@ static int32_t material_sanitize_mip_filter(int64_t value) {
 }
 
 /// @brief Clamp requested texture anisotropy into the script-facing [1,16] range.
+/// @param value Requested anisotropy level.
+/// @return Integer anisotropy level clamped from one through the backend-independent maximum.
 static int32_t material_sanitize_anisotropy(int64_t value) {
     if (value < 1)
         return 1;
@@ -879,6 +1002,8 @@ static int32_t material_sanitize_anisotropy(int64_t value) {
 /// @details Returns -1 for any out-of-range value so that callers can perform a
 ///   single negative-check before indexing the per-slot arrays, keeping bounds
 ///   enforcement in one place rather than scattered across every importer hook.
+/// @param slot Candidate texture-slot index.
+/// @return Narrowed valid index, or negative one when out of bounds.
 static int32_t material_sanitize_texture_slot(int64_t slot) {
     if (slot < 0 || slot >= RT_MATERIAL3D_TEXTURE_SLOT_COUNT)
         return -1;
@@ -886,6 +1011,12 @@ static int32_t material_sanitize_texture_slot(int64_t slot) {
 }
 
 /// @brief Internal importer hook: store glTF-style sampler state on the material.
+/// @details Applies the sampler to the base-color slot with identity UV transform and no mip
+///          filter, preserving the behavior of importers using the legacy material-wide fields.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param wrap_s Horizontal texture wrapping mode.
+/// @param wrap_t Vertical texture wrapping mode.
+/// @param filter Shared minification and magnification filter.
 void rt_material3d_set_import_sampler(void *obj, int64_t wrap_s, int64_t wrap_t, int64_t filter) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1019,11 +1150,15 @@ void rt_material3d_set_import_texture_slot(void *obj,
 }
 
 /// @brief Alias for `_set_texture` using PBR-style "albedo" terminology.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param pixels Nullable Pixels, TextureAsset3D, or RenderTarget3D source.
 void rt_material3d_set_albedo_map(void *obj, void *pixels) {
     rt_material3d_set_texture(obj, pixels);
 }
 
 /// @brief Set the Phong specular shininess exponent (higher = tighter highlight).
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param s Exponent clamped to the supported range; non-finite input becomes zero.
 void rt_material3d_set_shininess(void *obj, double s) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1032,6 +1167,8 @@ void rt_material3d_set_shininess(void *obj, double s) {
 }
 
 /// @brief Enable or disable unlit mode (ignores scene lighting, renders flat color/texture).
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param unlit Zero to restore lighting, or any nonzero value to enable unlit rendering.
 void rt_material3d_set_unlit(void *obj, int8_t unlit) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1043,6 +1180,8 @@ void rt_material3d_set_unlit(void *obj, int8_t unlit) {
 /// @details SSR composites scene reflections over the env-map term for surfaces
 ///          flagged here (water, glossy floors) on backends that support it;
 ///          the flag is ignored (env-map only) elsewhere.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param enabled Zero to disable SSR, or nonzero to enable it.
 void rt_material3d_set_ssr_enabled(void *obj, int8_t enabled) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1051,6 +1190,8 @@ void rt_material3d_set_ssr_enabled(void *obj, int8_t enabled) {
 }
 
 /// @brief Return whether screen-space reflections are enabled for this material.
+/// @param obj Material3D receiver.
+/// @return One when enabled, or zero for disabled and invalid materials.
 int8_t rt_material3d_get_ssr_enabled(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1059,6 +1200,8 @@ int8_t rt_material3d_get_ssr_enabled(void *obj) {
 }
 
 /// @brief Return whether unlit mode is enabled.
+/// @param obj Material3D receiver.
+/// @return One when unlit rendering is enabled, or zero for disabled and invalid materials.
 int8_t rt_material3d_get_unlit(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1069,6 +1212,8 @@ int8_t rt_material3d_get_unlit(void *obj) {
 /// @brief Select the renderer shading model (0=Phong, 1=Toon, 3=Unlit, 4=Fresnel, 5=Emissive).
 /// @details Model values outside [0,5] are clamped to 0. Model 2 is kept for
 ///          Game3D's PBR enum and promotes the material to the PBR workflow.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param model Shading-model identifier; unsupported values select Phong.
 void rt_material3d_set_shading_model(void *obj, int64_t model) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1081,6 +1226,8 @@ void rt_material3d_set_shading_model(void *obj, int64_t model) {
 }
 
 /// @brief Read the current shading model.
+/// @param obj Material3D receiver.
+/// @return Sanitized model identifier from zero through five; invalid state returns Phong zero.
 int64_t rt_material3d_get_shading_model(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1091,6 +1238,9 @@ int64_t rt_material3d_get_shading_model(void *obj) {
 }
 
 /// @brief Set a custom shader parameter by index (0–11) for advanced shading effects.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param index Custom parameter index from zero through eleven; invalid indices are ignored.
+/// @param value Finite parameter value, clamped to the backend-safe absolute limit.
 void rt_material3d_set_custom_param(void *obj, int64_t index, double value) {
     rt_material3d *mat = material_checked(obj);
     if (!mat || index < 0 || index >= 12)
@@ -1103,6 +1253,8 @@ void rt_material3d_set_custom_param(void *obj, int64_t index, double value) {
 /// @details Values are clamped to [0,1]. Setting alpha below 1.0 promotes an
 ///          opaque material to BLEND so the visible result matches the scalar.
 ///          Call SetAlphaMode afterwards when explicit MASK/OPAQUE behavior is needed.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param alpha Opacity value, clamped to the inclusive normalized range.
 void rt_material3d_set_alpha(void *obj, double alpha) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1119,6 +1271,8 @@ void rt_material3d_set_alpha(void *obj, double alpha) {
 }
 
 /// @brief Get the current transparency level of the material.
+/// @param obj Material3D receiver.
+/// @return Sanitized opacity in the normalized range; invalid materials return fully opaque.
 double rt_material3d_get_alpha(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1128,6 +1282,8 @@ double rt_material3d_get_alpha(void *obj) {
 
 /// @brief Set PBR metallic factor [0, 1]. 0 = dielectric (plastic, wood), 1 = pure metal. Auto-
 /// promotes the material to PBR shading model on first use.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param value Metallic factor, clamped to the inclusive normalized range.
 void rt_material3d_set_metallic(void *obj, double value) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1137,6 +1293,8 @@ void rt_material3d_set_metallic(void *obj, double value) {
 }
 
 /// @brief Read the metallic factor (default 0).
+/// @param obj Material3D receiver.
+/// @return Sanitized metallic factor, or zero for an invalid material.
 double rt_material3d_get_metallic(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1145,6 +1303,8 @@ double rt_material3d_get_metallic(void *obj) {
 }
 
 /// @brief Set PBR roughness [0, 1]. 0 = mirror smooth, 1 = fully diffuse. Auto-promotes to PBR.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param value Roughness factor, clamped to the inclusive normalized range.
 void rt_material3d_set_roughness(void *obj, double value) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1154,6 +1314,8 @@ void rt_material3d_set_roughness(void *obj, double value) {
 }
 
 /// @brief Read the roughness factor (default 0.5).
+/// @param obj Material3D receiver.
+/// @return Sanitized roughness factor, or the 0.5 default for an invalid material.
 double rt_material3d_get_roughness(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1163,6 +1325,8 @@ double rt_material3d_get_roughness(void *obj) {
 
 /// @brief Set ambient-occlusion factor [0, 1]. 1 = no occlusion, 0 = fully shadowed in cavities.
 /// Multiplied into the indirect lighting. Auto-promotes to PBR.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param value Ambient-occlusion factor, clamped to the inclusive normalized range.
 void rt_material3d_set_ao(void *obj, double value) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1172,6 +1336,8 @@ void rt_material3d_set_ao(void *obj, double value) {
 }
 
 /// @brief Read the AO factor (default 1.0 = no occlusion).
+/// @param obj Material3D receiver.
+/// @return Sanitized ambient-occlusion factor, or one for an invalid material.
 double rt_material3d_get_ao(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1181,6 +1347,8 @@ double rt_material3d_get_ao(void *obj) {
 
 /// @brief Multiply the emissive output by `value` (≥ 0). Useful for HDR/bloom: values > 1 push
 /// emissive surfaces past clamping range.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param value Non-negative HDR multiplier, finite-clamped to the emissive scalar limit.
 void rt_material3d_set_emissive_intensity(void *obj, double value) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1189,6 +1357,8 @@ void rt_material3d_set_emissive_intensity(void *obj, double value) {
 }
 
 /// @brief Read the emissive intensity multiplier (default 1.0).
+/// @param obj Material3D receiver.
+/// @return Sanitized non-negative emissive multiplier, or one for an invalid material.
 double rt_material3d_get_emissive_intensity(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1197,6 +1367,10 @@ double rt_material3d_get_emissive_intensity(void *obj) {
 }
 
 /// @brief Assign a normal map texture for per-pixel bump/detail lighting.
+/// @details The material retains the supported source; NULL clears the slot and unsupported
+///          non-null runtime objects trap without replacing the current source.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param pixels Nullable Pixels, TextureAsset3D, or RenderTarget3D source.
 void rt_material3d_set_normal_map(void *obj, void *pixels) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1208,12 +1382,18 @@ void rt_material3d_set_normal_map(void *obj, void *pixels) {
 }
 
 /// @brief Return whether the base-color/albedo texture slot is populated.
+/// @details Stale wrong-class references are cleared. A streaming asset with no current residency
+///          remains retained but reports false until decoded pixels or native blocks are present.
+/// @param obj Material3D receiver.
+/// @return One when the slot has a drawable source; otherwise zero.
 int8_t rt_material3d_get_has_texture(void *obj) {
     rt_material3d *mat = material_checked(obj);
     return (mat && material_texture_slot_has_drawable_source(&mat->texture)) ? 1 : 0;
 }
 
 /// @brief Return whether the normal-map slot is populated.
+/// @param obj Material3D receiver.
+/// @return One when the slot has a drawable source; otherwise zero.
 int8_t rt_material3d_get_has_normal_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
     return (mat && material_texture_slot_has_drawable_source(&mat->normal_map)) ? 1 : 0;
@@ -1221,6 +1401,8 @@ int8_t rt_material3d_get_has_normal_map(void *obj) {
 
 /// @brief Assign a glTF-style metallic-roughness texture (B = metallic, G = roughness, R/A
 /// unused). Auto-promotes the material to PBR shading.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param pixels Nullable Pixels, TextureAsset3D, or RenderTarget3D source retained by the slot.
 void rt_material3d_set_metallic_roughness_map(void *obj, void *pixels) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1233,6 +1415,8 @@ void rt_material3d_set_metallic_roughness_map(void *obj, void *pixels) {
 }
 
 /// @brief Return whether the metallic-roughness texture slot is populated.
+/// @param obj Material3D receiver.
+/// @return One when the packed slot has a drawable source; otherwise zero.
 int8_t rt_material3d_get_has_metallic_roughness_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
     return (mat && material_texture_slot_has_drawable_source(&mat->metallic_roughness_map)) ? 1 : 0;
@@ -1240,6 +1424,8 @@ int8_t rt_material3d_get_has_metallic_roughness_map(void *obj) {
 
 /// @brief Assign an ambient-occlusion texture (R channel). Multiplied into indirect lighting.
 /// Auto-promotes the material to PBR shading.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param pixels Nullable Pixels, TextureAsset3D, or RenderTarget3D source retained by the slot.
 void rt_material3d_set_ao_map(void *obj, void *pixels) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1254,6 +1440,8 @@ void rt_material3d_set_ao_map(void *obj, void *pixels) {
 /// @brief Assign a baked lightmap atlas sampled with TEXCOORD_1. When present, the
 ///   draw's flat-ambient term is replaced by lightmap radiance x albedo (values are
 ///   stored with 2x headroom by the baker: texel 255 = radiance 2.0). Pass NULL to clear.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param pixels Nullable Pixels, TextureAsset3D, or RenderTarget3D lightmap source.
 void rt_material3d_set_lightmap(void *obj, void *pixels) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1265,18 +1453,24 @@ void rt_material3d_set_lightmap(void *obj, void *pixels) {
 }
 
 /// @brief Return whether the baked lightmap slot is populated.
+/// @param obj Material3D receiver.
+/// @return One when the lightmap slot has a drawable source; otherwise zero.
 int8_t rt_material3d_get_has_lightmap(void *obj) {
     rt_material3d *mat = material_checked(obj);
     return (mat && material_texture_slot_has_drawable_source(&mat->lightmap)) ? 1 : 0;
 }
 
 /// @brief Return whether the ambient-occlusion texture slot is populated.
+/// @param obj Material3D receiver.
+/// @return One when the ambient-occlusion slot has a drawable source; otherwise zero.
 int8_t rt_material3d_get_has_ao_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
     return (mat && material_texture_slot_has_drawable_source(&mat->ao_map)) ? 1 : 0;
 }
 
 /// @brief Assign a specular map texture to control per-pixel highlight intensity.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param pixels Nullable Pixels, TextureAsset3D, or RenderTarget3D source retained by the slot.
 void rt_material3d_set_specular_map(void *obj, void *pixels) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1288,12 +1482,16 @@ void rt_material3d_set_specular_map(void *obj, void *pixels) {
 }
 
 /// @brief Return whether the specular texture slot is populated.
+/// @param obj Material3D receiver.
+/// @return One when the specular slot has a drawable source; otherwise zero.
 int8_t rt_material3d_get_has_specular_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
     return (mat && material_texture_slot_has_drawable_source(&mat->specular_map)) ? 1 : 0;
 }
 
 /// @brief Assign an emissive map texture for self-illuminated surface regions.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param pixels Nullable Pixels, TextureAsset3D, or RenderTarget3D source retained by the slot.
 void rt_material3d_set_emissive_map(void *obj, void *pixels) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1305,12 +1503,18 @@ void rt_material3d_set_emissive_map(void *obj, void *pixels) {
 }
 
 /// @brief Return whether the emissive texture slot is populated.
+/// @param obj Material3D receiver.
+/// @return One when the emissive slot has a drawable source; otherwise zero.
 int8_t rt_material3d_get_has_emissive_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
     return (mat && material_texture_slot_has_drawable_source(&mat->emissive_map)) ? 1 : 0;
 }
 
 /// @brief Return whether an environment cubemap is populated.
+/// @details Incomplete cubemaps are released and wrong-class stale state is cleared before the
+///          result is reported.
+/// @param obj Material3D receiver.
+/// @return One for a retained complete CubeMap3D, or zero otherwise.
 int8_t rt_material3d_get_has_env_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
     material_repair_env_map(mat);
@@ -1321,6 +1525,10 @@ int8_t rt_material3d_get_has_env_map(void *obj) {
 /// @details Emissive channels intentionally accept HDR values above 1.0. Use
 ///          `Material3D.SetEmissiveIntensity` as an additional scalar multiplier; both are
 ///          sanitized to finite, non-negative ranges before rendering.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param r Red emissive component.
+/// @param g Green emissive component.
+/// @param b Blue emissive component.
 void rt_material3d_set_emissive_color(void *obj, double r, double g, double b) {
     rt_material3d *m = material_checked(obj);
     if (!m)
@@ -1331,6 +1539,8 @@ void rt_material3d_set_emissive_color(void *obj, double r, double g, double b) {
 }
 
 /// @brief Set normal-map intensity (≥ 0). 1.0 = no scaling, > 1 amplifies bumps, < 1 flattens.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param value Non-negative scale, finite-clamped to the supported normal-map limit.
 void rt_material3d_set_normal_scale(void *obj, double value) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1339,6 +1549,8 @@ void rt_material3d_set_normal_scale(void *obj, double value) {
 }
 
 /// @brief Read the normal-map scale factor (default 1.0).
+/// @param obj Material3D receiver.
+/// @return Sanitized normal-map scale, or one for an invalid material.
 double rt_material3d_get_normal_scale(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1347,6 +1559,10 @@ double rt_material3d_get_normal_scale(void *obj) {
 }
 
 /// @brief Set material texture anisotropy (1 disables anisotropic filtering; clamps to 16).
+/// @details The sanitized value is copied to every texture slot and the legacy material-wide
+///          mirror so all samplers use a consistent setting.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param anisotropy Requested anisotropy level.
 void rt_material3d_set_anisotropy(void *obj, int64_t anisotropy) {
     rt_material3d *mat = material_checked(obj);
     int32_t sanitized;
@@ -1359,6 +1575,8 @@ void rt_material3d_set_anisotropy(void *obj, int64_t anisotropy) {
 }
 
 /// @brief Read material texture anisotropy, clamped to the public [1,16] range.
+/// @param obj Material3D receiver.
+/// @return Sanitized anisotropy level, or one for an invalid material.
 int64_t rt_material3d_get_anisotropy(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1369,6 +1587,8 @@ int64_t rt_material3d_get_anisotropy(void *obj) {
 /// @brief Set the alpha-handling mode (RT_MATERIAL3D_ALPHA_MODE_OPAQUE / MASK / BLEND).
 /// OPAQUE: ignore alpha. MASK: discard fragments below cutoff. BLEND: depth-sorted transparency.
 /// Out-of-range values are clamped to OPAQUE.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param mode Requested alpha-mode constant; invalid values select opaque.
 void rt_material3d_set_alpha_mode(void *obj, int64_t mode) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1380,6 +1600,8 @@ void rt_material3d_set_alpha_mode(void *obj, int64_t mode) {
 }
 
 /// @brief Read the alpha mode (default OPAQUE).
+/// @param obj Material3D receiver.
+/// @return Valid alpha-mode constant, defaulting to opaque for invalid material or state.
 int64_t rt_material3d_get_alpha_mode(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1396,6 +1618,8 @@ int64_t rt_material3d_get_alpha_mode(void *obj) {
 ///          CAST forces the shadow pass to include the material even when it is alpha-blended,
 ///          useful for glass, translucent cloth, and other authored cases where a shadow is
 ///          visually expected despite the main pass requiring blending.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param mode Requested shadow-mode constant; invalid values select automatic behavior.
 void rt_material3d_set_shadow_mode(void *obj, int64_t mode) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1406,6 +1630,7 @@ void rt_material3d_set_shadow_mode(void *obj, int64_t mode) {
 }
 
 /// @brief Read the material's shadow casting mode.
+/// @param obj Material3D receiver.
 /// @return One of RT_MATERIAL3D_SHADOW_MODE_AUTO, NONE, or CAST.
 int64_t rt_material3d_get_shadow_mode(void *obj) {
     rt_material3d *mat = material_checked(obj);
@@ -1419,6 +1644,8 @@ int64_t rt_material3d_get_shadow_mode(void *obj) {
 
 /// @brief Toggle double-sided rendering. Disables backface culling for this material — useful
 /// for foliage, banners, anything that should look correct from both sides. Increases fillrate.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param enabled Zero to enable backface culling, or nonzero to render both sides.
 void rt_material3d_set_double_sided(void *obj, int8_t enabled) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1427,6 +1654,8 @@ void rt_material3d_set_double_sided(void *obj, int8_t enabled) {
 }
 
 /// @brief Returns 1 if double-sided rendering is enabled, 0 otherwise.
+/// @param obj Material3D receiver.
+/// @return One when double-sided rendering is enabled, or zero for invalid or single-sided state.
 int8_t rt_material3d_get_double_sided(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
@@ -1442,6 +1671,9 @@ int8_t rt_material3d_get_double_sided(void *obj) {
 ///          geometry away. The slope term is added by GPU backends on steep polygons where
 ///          constant bias alone often fails to separate two nearly coplanar surfaces. Both
 ///          inputs are finite-clamped so malformed values cannot poison backend raster state.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param constant_bias Constant depth offset, clamped to the supported signed range.
+/// @param slope_scaled_bias Slope-dependent multiplier, clamped to the supported signed range.
 void rt_material3d_set_depth_bias(void *obj, double constant_bias, double slope_scaled_bias) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)

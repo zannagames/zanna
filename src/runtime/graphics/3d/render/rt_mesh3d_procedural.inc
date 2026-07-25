@@ -3,8 +3,21 @@
 // File: src/runtime/graphics/3d/render/rt_mesh3d_procedural.inc  (#included from rt_mesh3d.c; not a
 // standalone translation unit) Purpose: Mesh3D procedural generators: box, sphere, plane, cylinder
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements bounded procedural Mesh3D box, sphere, plane, and cylinder generators.
+/// @details This include fragment is compiled as part of `rt_mesh3d.c`. Each generator validates
+///          dimensions, preflights storage, batches geometry mutations, and returns either a
+///          complete CCW-wound mesh or NULL after releasing a failed partial build.
+
 /* Procedural generators — NewBox, NewSphere, NewPlane, NewCylinder */
 /// @brief Generate a box mesh centered at the origin with full size (sx, sy, sz).
+/// @details Emits four independent vertices per face so each face has a constant outward normal
+///          and full rectangular UV chart. The result contains 24 vertices and 12 triangles.
+/// @param sx Positive finite full extent along X.
+/// @param sy Positive finite full extent along Y.
+/// @param sz Positive finite full extent along Z.
+/// @return New box Mesh3D, or NULL for invalid dimensions or allocation/build failure.
 void *rt_mesh3d_new_box(double sx, double sy, double sz) {
     if (!mesh_validate_positive_finite(sx, "Mesh3D.NewBox: sx") ||
         !mesh_validate_positive_finite(sy, "Mesh3D.NewBox: sy") ||
@@ -75,6 +88,13 @@ void *rt_mesh3d_new_box(double sx, double sy, double sz) {
 }
 
 /// @brief Generate a UV sphere mesh with the given radius and segment count.
+/// @details Uses single pole vertices and seam-duplicated intermediate rings to preserve UV
+///          continuity without zero-area cap triangles. Segment counts below four are promoted to
+///          four and counts above the configured safety maximum trap.
+/// @param radius Positive finite sphere radius.
+/// @param segments Requested latitude-ring count; longitude uses twice this sanitized count.
+/// @return New UV sphere Mesh3D, or NULL for invalid dimensions, excessive complexity, or
+///         allocation/build failure.
 void *rt_mesh3d_new_sphere(double radius, int64_t segments) {
     if (!mesh_validate_positive_finite(radius, "Mesh3D.NewSphere: radius"))
         return NULL;
@@ -180,6 +200,11 @@ void *rt_mesh3d_new_sphere(double radius, int64_t segments) {
 }
 
 /// @brief Generate a flat plane mesh on the XZ plane (facing +Y) with the given size.
+/// @details Emits four vertices and two counter-clockwise triangles centered at the origin, with a
+///          full normalized UV rectangle and positive-Y normals.
+/// @param sx Positive finite full extent along X.
+/// @param sz Positive finite full extent along Z.
+/// @return New plane Mesh3D, or NULL for invalid dimensions or allocation/build failure.
 void *rt_mesh3d_new_plane(double sx, double sz) {
     if (!mesh_validate_positive_finite(sx, "Mesh3D.NewPlane: sx") ||
         !mesh_validate_positive_finite(sz, "Mesh3D.NewPlane: sz"))
@@ -209,6 +234,14 @@ void *rt_mesh3d_new_plane(double sx, double sz) {
 }
 
 /// @brief Generate a cylinder mesh with circular caps, centered at the origin.
+/// @details Side vertices are seam-duplicated for continuous cylindrical UVs; each cap receives
+///          independent vertices with planar UVs and constant axial normals. Segment counts below
+///          three are promoted to three and excessive counts trap.
+/// @param radius Positive finite cylinder radius.
+/// @param height Positive finite full height along Y.
+/// @param segments Requested radial segment count.
+/// @return New capped cylinder Mesh3D, or NULL for invalid dimensions, excessive complexity, or
+///         allocation/build failure.
 void *rt_mesh3d_new_cylinder(double radius, double height, int64_t segments) {
     if (!mesh_validate_positive_finite(radius, "Mesh3D.NewCylinder: radius") ||
         !mesh_validate_positive_finite(height, "Mesh3D.NewCylinder: height"))

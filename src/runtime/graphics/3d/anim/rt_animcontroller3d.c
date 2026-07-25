@@ -28,6 +28,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Assembles the graphics-enabled AnimController3D implementation.
+/// @details The controller is split into private storage/lifecycle helpers,
+///          pose-sampling helpers, and public ABI entry points included below.
+///          When graphics support is disabled this translation unit exports no
+///          controller implementation.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_animcontroller3d.h"

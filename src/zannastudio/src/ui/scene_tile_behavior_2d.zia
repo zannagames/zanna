@@ -20,6 +20,8 @@
 
 module scene_tile_behavior_2d;
 
+bind "inspector_rows";
+
 bind GUI = Zanna.GUI;
 bind SceneDocument = Zanna.Game2D.SceneDocument;
 bind Seq = Zanna.Collections.Seq;
@@ -105,8 +107,7 @@ class SceneTileBehavior2D {
             + "for the selected palette tile.");
         summary.SetWordWrap(true);
 
-        var collisionRow = GUI.HBox.New();
-        collisionRow.SetSpacing(4.0);
+        var collisionRow = inspector_rows.NewWrapRow();
         group.AddChild(collisionRow);
         var collisionLabel = GUI.Label.New(collisionRow, "Collision");
         collisionLabel.SetTooltip(
@@ -128,8 +129,7 @@ class SceneTileBehavior2D {
         propertyKeyInput.SetAccessibleName("Tile property key");
         propertyKeyInput.SetPlaceholder("Tile property key");
 
-        var propertyValueRow = GUI.HBox.New();
-        propertyValueRow.SetSpacing(4.0);
+        var propertyValueRow = inspector_rows.NewWrapRow();
         group.AddChild(propertyValueRow);
         propertyTypeDropdown = GUI.Dropdown.New(propertyValueRow);
         propertyTypeDropdown.SetAccessibleName("Tile property type");
@@ -141,8 +141,7 @@ class SceneTileBehavior2D {
         propertyValueInput.SetPlaceholder("Property value");
         propertyValueInput.SetFlex(1.0);
 
-        var propertyActions = GUI.HBox.New();
-        propertyActions.SetSpacing(4.0);
+        var propertyActions = inspector_rows.NewWrapRow();
         group.AddChild(propertyActions);
         propertyNewButton = GUI.Button.New(propertyActions, "New");
         propertyNewButton.SetTooltip("Clear the fields to add a tile property");
@@ -161,8 +160,7 @@ class SceneTileBehavior2D {
         animDurationsInput = GUI.TextInput.New(group);
         animDurationsInput.SetAccessibleName("Tile animation durations");
         animDurationsInput.SetPlaceholder("Durations in ms, e.g. 120, 90, 120");
-        var animActions = GUI.HBox.New();
-        animActions.SetSpacing(4.0);
+        var animActions = inspector_rows.NewWrapRow();
         group.AddChild(animActions);
         animSetButton = GUI.Button.New(animActions, "Set Animation");
         animSetButton.SetTooltip(
@@ -176,8 +174,7 @@ class SceneTileBehavior2D {
         autotileInput = GUI.TextInput.New(group);
         autotileInput.SetAccessibleName("Autotile variants");
         autotileInput.SetPlaceholder("16 neighbor-mask variant tile ids");
-        var autotileActions = GUI.HBox.New();
-        autotileActions.SetSpacing(4.0);
+        var autotileActions = inspector_rows.NewWrapRow();
         group.AddChild(autotileActions);
         autotileSetButton = GUI.Button.New(autotileActions, "Set Rule");
         autotileSetButton.SetTooltip(

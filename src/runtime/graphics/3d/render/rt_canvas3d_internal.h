@@ -24,6 +24,14 @@
 //        docs/adr/0168-windowless-canvas3d-rendering.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines private Graphics3D runtime payloads and cross-module helpers.
+/// @details This header is shared only by Graphics3D implementation units. It
+///   centralizes renderer-facing object layouts, ownership-sensitive transient
+///   storage, checked internal casts, and contracts for helpers implemented
+///   across the Canvas3D, mesh, camera, material, lighting, and cubemap modules.
+
 #pragma once
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -108,6 +116,7 @@ typedef struct rt_mesh3d_geometry_revision {
 /// @brief Notify shared spatial caches that some Mesh3D geometry changed.
 void rt_mesh3d_note_global_geometry_change(void);
 /// @brief Process-wide monotonic epoch for Mesh3D geometry mutations.
+/// @return The current non-zero mutation epoch.
 uint64_t rt_mesh3d_global_geometry_epoch(void);
 
 //=============================================================================
@@ -267,6 +276,8 @@ void *rt_mesh3d_new_empty_storage(void);
 
 /// @brief Vertex count safe to read directly — the live count clamped to capacity, 0 when
 ///   the vertex buffer is absent or empty.
+/// @param mesh Borrowed mesh to inspect; may be `NULL`.
+/// @return Readable vertex count clamped to allocated capacity, or zero.
 static inline uint32_t rt_mesh3d_safe_vertex_count(const rt_mesh3d *mesh) {
     if (!mesh || !mesh->vertices || mesh->vertex_count == 0 || mesh->vertex_capacity == 0)
         return 0;
@@ -276,6 +287,8 @@ static inline uint32_t rt_mesh3d_safe_vertex_count(const rt_mesh3d *mesh) {
 /// @brief Index count safe to read directly.
 /// @details The live count is clamped to capacity, but otherwise preserved. Callers that require a
 ///   complete triangle-list count should use rt_mesh3d_validated_index_count() instead.
+/// @param mesh Borrowed mesh to inspect; may be `NULL`.
+/// @return Readable index count clamped to allocated capacity, or zero.
 static inline uint32_t rt_mesh3d_safe_index_count(const rt_mesh3d *mesh) {
     if (!mesh || !mesh->indices || mesh->index_count == 0 || mesh->index_capacity == 0)
         return 0;
@@ -284,6 +297,7 @@ static inline uint32_t rt_mesh3d_safe_index_count(const rt_mesh3d *mesh) {
 
 /// @brief Clamp a mesh's vertex/index counts to their safe values, marking bounds dirty
 ///   when either count changed.
+/// @param mesh Mutable mesh to repair; `NULL` is ignored.
 static inline void rt_mesh3d_repair_geometry_counts(rt_mesh3d *mesh) {
     uint32_t vertex_count;
     uint32_t index_count;
@@ -306,6 +320,9 @@ static inline void rt_mesh3d_repair_geometry_counts(rt_mesh3d *mesh) {
 ///   indices invalidate the cache with a zero count so consumers skip the draw safely. Revision
 ///   zero is reserved for stack/transient meshes and is always scanned instead of trusting the
 ///   zero-initialized cache stamp.
+/// @param mesh Mutable mesh whose index stream and validation cache are inspected.
+/// @return Complete in-range triangle-list index count, or zero for invalid or
+///   empty geometry.
 static inline uint32_t rt_mesh3d_validated_index_count(rt_mesh3d *mesh) {
     uint32_t vertex_count;
     uint32_t index_count;
@@ -330,6 +347,7 @@ static inline uint32_t rt_mesh3d_validated_index_count(rt_mesh3d *mesh) {
 }
 
 /// @brief Zero a mesh's cached AABB/bounding-sphere and clear the dirty flag.
+/// @param mesh Mutable mesh whose cached bounds are reset; `NULL` is ignored.
 static inline void rt_mesh3d_reset_bounds(rt_mesh3d *mesh) {
     if (!mesh)
         return;
@@ -340,6 +358,7 @@ static inline void rt_mesh3d_reset_bounds(rt_mesh3d *mesh) {
 }
 
 /// @brief Flag a mesh's cached bounds as stale (recomputed lazily on next use).
+/// @param mesh Mutable mesh to invalidate; `NULL` is ignored.
 static inline void rt_mesh3d_mark_bounds_dirty(rt_mesh3d *mesh) {
     if (mesh)
         mesh->bounds_dirty = 1;
@@ -349,6 +368,9 @@ static inline void rt_mesh3d_mark_bounds_dirty(rt_mesh3d *mesh) {
 /// @details Meshes authored through the runtime can retain authoritative double positions while
 ///   their GPU vertices store narrowed floats. Bounds should be derived from the double positions
 ///   so culling remains conservative for large worlds, then clamped to the backend float domain.
+/// @param value Double-precision coordinate to sanitize.
+/// @return A finite float: zero for non-finite input, otherwise @p value
+///   clamped to the inclusive float range.
 static inline float rt_mesh3d_bounds_f32_from_f64(double value) {
     if (!isfinite(value))
         return 0.0f;
@@ -361,6 +383,8 @@ static inline float rt_mesh3d_bounds_f32_from_f64(double value) {
 
 /// @brief Immediately mark geometry changed: dirties bounds, bumps geometry_revision (wrapping
 ///        past UINT32_MAX to 1), and invalidates cached tangents. Bypasses batch deferral.
+/// @param mesh Mutable mesh whose geometry-dependent caches are invalidated;
+///   `NULL` is ignored.
 static inline void rt_mesh3d_touch_geometry_now(rt_mesh3d *mesh) {
     if (!mesh)
         return;
@@ -393,6 +417,8 @@ static inline void rt_mesh3d_touch_geometry_now(rt_mesh3d *mesh) {
 
 /// @brief Mark geometry changed: dirties bounds and bumps geometry_revision
 ///        (wrapping past UINT32_MAX to 1) so GPU buffers know to re-upload.
+/// @param mesh Mutable mesh to touch; a live edit batch defers the actual
+///   invalidation until its outermost end.
 static inline void rt_mesh3d_touch_geometry(rt_mesh3d *mesh) {
     if (!mesh)
         return;
@@ -406,6 +432,8 @@ static inline void rt_mesh3d_touch_geometry(rt_mesh3d *mesh) {
 /// @brief Open a geometry-edit batch: defers per-edit revision bumps until the batch ends.
 /// @details Re-entrant via a depth counter (saturates at UINT8_MAX), so bulk vertex edits trigger
 ///          a single re-upload instead of one per change. Pair with rt_mesh3d_end_geometry_batch.
+/// @param mesh Mutable mesh whose edit-batch depth is incremented; `NULL` and
+///   saturated depth are ignored.
 static inline void rt_mesh3d_begin_geometry_batch(rt_mesh3d *mesh) {
     if (!mesh || mesh->geometry_batch_depth == UINT8_MAX)
         return;
@@ -414,6 +442,8 @@ static inline void rt_mesh3d_begin_geometry_batch(rt_mesh3d *mesh) {
 
 /// @brief Close a geometry-edit batch; when the outermost batch closes and edits occurred,
 ///        applies a single deferred geometry touch.
+/// @param mesh Mutable mesh whose edit-batch depth is decremented; `NULL` and
+///   an already-zero depth are ignored.
 static inline void rt_mesh3d_end_geometry_batch(rt_mesh3d *mesh) {
     if (!mesh || mesh->geometry_batch_depth == 0)
         return;
@@ -428,6 +458,7 @@ static inline void rt_mesh3d_end_geometry_batch(rt_mesh3d *mesh) {
 /// @details No-op when clean; resets to zero bounds when the mesh has no
 ///          vertices; otherwise calls vgfx3d_compute_mesh_aabb over the
 ///          vertex buffer and clears the dirty flag.
+/// @param mesh Mutable mesh whose cached bounds are refreshed when dirty.
 static inline void rt_mesh3d_refresh_bounds(rt_mesh3d *mesh) {
     uint32_t vertex_count;
     if (!mesh || !mesh->bounds_dirty)
@@ -515,19 +546,44 @@ typedef struct {
 } rt_camera3d;
 
 /// @brief Update a camera's cached projection for the given viewport aspect.
+/// @param cam Borrowed Camera3D handle; invalid handles are ignored.
+/// @param aspect Positive viewport width-to-height ratio.
 void rt_camera3d_sync_render_aspect(void *cam, double aspect);
 /// @brief Set the retained perspective FOV even while an orthographic projection is active.
+/// @param cam Borrowed Camera3D handle; invalid handles are ignored.
+/// @param fov Vertical perspective field of view in degrees.
 void rt_camera3d_set_retained_fov(void *cam, double fov);
 /// @brief Compute a camera's 4x4 projection matrix into @p out_projection,
 ///        optionally overriding the aspect ratio (<= 0 keeps the camera's).
+/// @param cam Borrowed Camera3D handle supplying projection parameters.
+/// @param aspect_override Positive width-to-height override, or non-positive to
+///   use the retained camera aspect.
+/// @param out_projection Non-`NULL` output array receiving 16 row-major floats.
 void rt_camera3d_get_render_projection(void *cam, double aspect_override, float *out_projection);
 /// @brief Internal: advance camera shake by @p dt seconds and refresh the shaken view.
+/// @param cam Borrowed Camera3D handle to update.
+/// @param dt Non-negative elapsed time in seconds.
 void rt_camera3d_update_shake_for_frame(void *cam, double dt);
 /// @brief Internal: advance camera shake at most once for a renderer timing token.
+/// @param cam Borrowed Camera3D handle to update.
+/// @param dt Non-negative elapsed time in seconds.
+/// @param frame_token Renderer frame identity used to suppress duplicate advances.
 void rt_camera3d_update_shake_for_frame_token(void *cam, double dt, int64_t frame_token);
 /// @brief Internal deep copy used when instantiating scene-template cameras.
+/// @param cam Borrowed live Camera3D to copy.
+/// @return New GC-managed Camera3D with independent cached state, or `NULL` on failure.
 void *rt_camera3d_clone(void *cam);
 /// @brief Internal scalar look-at path used by importers and scene-node camera coupling.
+/// @param obj Borrowed Camera3D handle to orient.
+/// @param eye_x Camera world-position X component.
+/// @param eye_y Camera world-position Y component.
+/// @param eye_z Camera world-position Z component.
+/// @param target_x Look target X component.
+/// @param target_y Look target Y component.
+/// @param target_z Look target Z component.
+/// @param up_x Preferred up-vector X component.
+/// @param up_y Preferred up-vector Y component.
+/// @param up_z Preferred up-vector Z component.
 void rt_camera3d_look_at_components(void *obj,
                                     double eye_x,
                                     double eye_y,
@@ -540,16 +596,29 @@ void rt_camera3d_look_at_components(void *obj,
                                     double up_z);
 
 /// @brief Internal Mesh3D tangent generator for already-validated mesh storage.
+/// @param mesh Mutable Mesh3D whose tangent lanes and geometry revision are updated.
 void rt_mesh3d_calc_tangents_impl(rt_mesh3d *mesh);
 
+/// @brief One material-group result produced while importing an OBJ mesh.
+/// @details The importer owns both the NUL-terminated material name and retained
+///   Mesh3D handle until rt_mesh3d_obj_groups_free() releases the array.
 typedef struct {
     char *material_name;
     void *mesh;
 } rt_mesh3d_obj_group_t;
 
+/// @brief Load an OBJ file into independently material-addressable mesh groups.
+/// @param path Borrowed runtime path string naming the OBJ input.
+/// @param out_groups Non-`NULL` output receiving an owned group array on success.
+/// @param out_count Non-`NULL` output receiving the number of array entries.
+/// @return Non-zero on successful parsing, including an empty valid result;
+///   zero on I/O, parse, validation, or allocation failure.
 int rt_mesh3d_from_obj_groups(rt_string path,
                               rt_mesh3d_obj_group_t **out_groups,
                               int32_t *out_count);
+/// @brief Release an OBJ material-group array and every name/mesh it owns.
+/// @param groups Owned array returned by rt_mesh3d_from_obj_groups(); `NULL` is accepted.
+/// @param count Number of initialized entries in @p groups.
 void rt_mesh3d_obj_groups_free(rt_mesh3d_obj_group_t *groups, int32_t count);
 
 //=============================================================================
@@ -626,17 +695,25 @@ typedef struct {
 
 /// @brief Monotonic allocation generation for pointer-keyed history salting
 ///   (rt_canvas3d_motion.c). Never returns 0; main-thread only, like object creation.
+/// @return A new non-zero process-local object identity serial.
 uint32_t rt_g3d_next_identity_serial(void);
 
 /// @brief Resolve a Material3D texture slot source to the currently resident Pixels fallback.
+/// @param texture_ref Borrowed Pixels, TextureAsset3D, RenderTarget3D, or `NULL`.
+/// @return Borrowed resident Pixels backing the reference, or `NULL` when unavailable.
 void *rt_material3d_resolve_texture_pixels(void *texture_ref);
 /// @brief Resolve a Material3D texture slot source to a native TextureAsset3D, if any.
+/// @param texture_ref Borrowed texture source to inspect.
+/// @return Borrowed TextureAsset3D handle, or `NULL` for other source kinds.
 void *rt_material3d_resolve_texture_native_asset(void *texture_ref);
 /// @brief Private persistence/fidelity slot index for the baked lightmap reference.
 #define RT_MATERIAL3D_PERSISTED_TEXTURE_SLOT_LIGHTMAP 6
 #define RT_MATERIAL3D_PERSISTED_TEXTURE_SLOT_COUNT 7
 /// @brief Borrow one original material texture reference without resolving it to Pixels.
 /// @details Slots 0..5 use RT_MATERIAL3D_TEXTURE_SLOT_* ordering; slot 6 is the lightmap.
+/// @param obj Borrowed Material3D handle.
+/// @param slot Persisted texture slot in the inclusive range zero through six.
+/// @return Borrowed original texture reference, or `NULL` for invalid input or an empty slot.
 void *rt_material3d_get_persisted_texture_ref(void *obj, int64_t slot);
 
 #define RT_MATERIAL3D_TEXTURE_WRAP_REPEAT 0
@@ -837,10 +914,13 @@ typedef struct {
     uint64_t ibl_identity; /* distinct GPU cache key for the prefiltered chain */
 } rt_cubemap3d;
 
-/// @brief Return 1 when @p cubemap is a live CubeMap3D with all six matching square faces.
 #ifdef __cplusplus
 extern "C" {
 #endif
+/// @brief Return 1 when @p cubemap is a live CubeMap3D with all six matching square faces.
+/// @param cubemap Borrowed candidate CubeMap3D runtime handle.
+/// @return One when all six faces are present, square, and dimensionally
+///   consistent; otherwise zero.
 int rt_cubemap3d_is_complete(void *cubemap);
 #ifdef __cplusplus
 }
@@ -851,7 +931,14 @@ int rt_cubemap3d_is_complete(void *cubemap);
 //=============================================================================
 
 typedef struct vgfx3d_rendertarget vgfx3d_rendertarget_t;
+/// @brief Callback that refreshes a render target's CPU color mirror from backend storage.
+/// @param userdata Borrowed backend-defined callback context.
+/// @param target Borrowed live target whose CPU mirror must be updated.
+/// @return Non-zero on successful synchronization; zero on failure.
 typedef int (*vgfx3d_rendertarget_sync_fn)(void *userdata, vgfx3d_rendertarget_t *target);
+/// @brief Callback that detaches a render target from its owning backend cache.
+/// @param userdata Borrowed backend-defined callback context.
+/// @param target Borrowed target shell that remains valid throughout the callback.
 typedef void (*vgfx3d_rendertarget_release_fn)(void *userdata, vgfx3d_rendertarget_t *target);
 
 /// @brief Render-target color format: 8-bit UNORM (LDR) or 16-bit float (HDR).
@@ -887,12 +974,18 @@ struct vgfx3d_rendertarget {
 };
 
 /// @brief True if the render target uses the HDR (16-bit float) color format.
+/// @param target Borrowed render target to inspect; may be `NULL`.
+/// @return Non-zero only for a non-`NULL` HDR-format target.
 static inline int vgfx3d_rendertarget_is_hdr(const vgfx3d_rendertarget_t *target) {
     return target && target->color_format == VGFX3D_RENDERTARGET_COLOR_FORMAT_HDR16F;
 }
 
 /// @brief Validate the render target's dimensions and compute its pixel count into
 ///   *out_pixel_count; returns 0 (count 0) on degenerate, oversized, or overflowing sizes.
+/// @param target Borrowed render target whose dimensions are validated.
+/// @param out_pixel_count Optional output initialized to zero and set to the
+///   validated width-times-height product on success.
+/// @return One for valid bounded dimensions whose product fits `size_t`; otherwise zero.
 static inline int vgfx3d_rendertarget_valid_pixels(const vgfx3d_rendertarget_t *target,
                                                    size_t *out_pixel_count) {
     size_t pixels;
@@ -912,6 +1005,9 @@ static inline int vgfx3d_rendertarget_valid_pixels(const vgfx3d_rendertarget_t *
 
 /// @brief Validate the render target's color stride against its width/format and compute the
 ///   color buffer byte size into *out_bytes; returns 0 on an invalid or overflowing layout.
+/// @param target Borrowed render target whose dimensions and RGBA stride are validated.
+/// @param out_bytes Optional output initialized to zero and set to total color bytes on success.
+/// @return One when the color layout is valid and its byte size fits `size_t`; otherwise zero.
 static inline int vgfx3d_rendertarget_valid_color_layout(const vgfx3d_rendertarget_t *target,
                                                          size_t *out_bytes) {
     size_t min_stride;
@@ -937,6 +1033,7 @@ static inline int vgfx3d_rendertarget_valid_color_layout(const vgfx3d_rendertarg
 
 /// @brief Lazily allocate the 8-bit LDR color buffer (zero-filled).
 /// @details No-op if already allocated; fails on invalid dims or overflow.
+/// @param target Mutable render target that owns the resulting allocation.
 /// @return 1 if the buffer is available, 0 on failure.
 static inline int vgfx3d_rendertarget_ensure_color(vgfx3d_rendertarget_t *target) {
     size_t bytes;
@@ -952,6 +1049,7 @@ static inline int vgfx3d_rendertarget_ensure_color(vgfx3d_rendertarget_t *target
 
 /// @brief Lazily allocate the RGBA float HDR color buffer (zero-filled).
 /// @details Only valid for HDR-format targets; fails otherwise or on overflow.
+/// @param target Mutable HDR render target that owns the resulting allocation.
 /// @return 1 if the HDR buffer is available, 0 on failure.
 static inline int vgfx3d_rendertarget_ensure_hdr_color(vgfx3d_rendertarget_t *target) {
     size_t pixel_count;
@@ -972,6 +1070,8 @@ static inline int vgfx3d_rendertarget_ensure_hdr_color(vgfx3d_rendertarget_t *ta
 /// @brief Flood a depth buffer with FLT_MAX (the "infinitely far" clear value) using
 ///   exponential-doubling memcpy — write one float, then repeatedly copy the filled
 ///   prefix over the rest, doubling each pass (memset can't write a 4-byte pattern).
+/// @param depth Mutable array containing at least @p pixel_count floats.
+/// @param pixel_count Number of depth elements to clear; zero is a no-op.
 static inline void vgfx3d_rendertarget_fill_depth_max(float *depth, size_t pixel_count) {
     size_t filled = 1u;
     if (!depth || pixel_count == 0)
@@ -988,6 +1088,7 @@ static inline void vgfx3d_rendertarget_fill_depth_max(float *depth, size_t pixel
 
 /// @brief Lazily allocate the float depth buffer and initialize it to FLT_MAX.
 /// @details No-op if already allocated; fails on invalid dims or size overflow.
+/// @param target Mutable render target that owns the resulting depth allocation.
 /// @return 1 if the depth buffer is available, 0 on failure.
 static inline int vgfx3d_rendertarget_ensure_depth(vgfx3d_rendertarget_t *target) {
     size_t pixel_count;
@@ -1008,7 +1109,10 @@ static inline int vgfx3d_rendertarget_ensure_depth(vgfx3d_rendertarget_t *target
 
 /// @brief Pull the latest GPU/backend color into the CPU buffer if dirty.
 /// @details Invokes the registered sync_color callback; clears color_dirty on
-///          success. @return 1 if color is up to date, 0 on failure.
+///          success.
+/// @param target Mutable render target whose CPU mirror is requested.
+/// @return One when the color mirror was already current or synchronized
+///   successfully; zero for invalid layout or unavailable/failed synchronization.
 static inline int vgfx3d_rendertarget_sync_color_if_needed(vgfx3d_rendertarget_t *target) {
     if (!target)
         return 0;
@@ -1026,6 +1130,7 @@ static inline int vgfx3d_rendertarget_sync_color_if_needed(vgfx3d_rendertarget_t
 
 /// @brief Detach any color-sync callback and clear dirty/HDR-valid flags
 ///        (used when a target stops being backed by a live GPU surface).
+/// @param target Mutable render target to detach; `NULL` is ignored.
 static inline void vgfx3d_rendertarget_clear_sync(vgfx3d_rendertarget_t *target) {
     if (!target)
         return;
@@ -1040,6 +1145,7 @@ static inline void vgfx3d_rendertarget_clear_sync(vgfx3d_rendertarget_t *target)
 /// readback.
 ///   The CPU mirror is no longer trustworthy, but clearing `color_dirty` would make `AsPixels`
 ///   return stale bytes. Leaving dirty set with no callback makes readback fail explicitly.
+/// @param target Mutable render target to detach while retaining its prior dirty state.
 static inline void vgfx3d_rendertarget_detach_sync_preserve_dirty(vgfx3d_rendertarget_t *target) {
     int8_t dirty;
     if (!target)
@@ -1052,6 +1158,7 @@ static inline void vgfx3d_rendertarget_detach_sync_preserve_dirty(vgfx3d_rendert
 /// @brief Clear a backend-release hook without invoking it.
 /// @details Backend cache teardown uses this after it has already removed the corresponding
 /// native entry. The color-sync hook is independent and is intentionally left unchanged.
+/// @param target Mutable render target whose release callback is cleared.
 static inline void vgfx3d_rendertarget_clear_backend_release(vgfx3d_rendertarget_t *target) {
     if (!target)
         return;
@@ -1063,6 +1170,8 @@ static inline void vgfx3d_rendertarget_clear_backend_release(vgfx3d_rendertarget
 /// @details Clears the hook before invoking it so callbacks may safely remove cache entries or
 /// re-enter cleanup without a double notification. The target shell remains valid for the entire
 /// callback.
+/// @param target Mutable render target whose backend owner is notified; `NULL`
+///   or a missing callback is a no-op.
 static inline void vgfx3d_rendertarget_release_backend(vgfx3d_rendertarget_t *target) {
     vgfx3d_rendertarget_release_fn release_fn;
     void *userdata;
@@ -1088,6 +1197,9 @@ typedef struct {
 /// @brief Resolve a RenderTarget3D handle to its material-binding Pixels mirror,
 ///   refreshing the mirror only when the target's content changed since the last
 ///   completed frame into it. Returns NULL for invalid handles.
+/// @param obj Borrowed RenderTarget3D runtime handle.
+/// @return Borrowed cached Pixels mirror refreshed to the current content
+///   revision, or `NULL` when validation, synchronization, or allocation fails.
 void *rt_rendertarget3d_material_pixels(void *obj);
 
 /// @brief Canvas3D payload — the central 3D rendering context. Holds the window and
@@ -1521,6 +1633,8 @@ typedef struct {
 ///   may opt into plain stack rt_canvas3d fixtures by compiling graphics runtime code
 ///   with `RT_G3D_ALLOW_STACK_FIXTURES=1`; production builds should leave it unset so
 ///   arbitrary non-heap pointers are rejected before any Canvas3D fields are read.
+/// @param obj Borrowed candidate Canvas3D payload.
+/// @return Validated mutable Canvas3D pointer, an allowed stack fixture, or `NULL`.
 static inline rt_canvas3d *rt_canvas3d_checked_or_stack(void *obj) {
     rt_canvas3d *c = (rt_canvas3d *)rt_g3d_checked_or_null(obj, RT_G3D_CANVAS3D_CLASS_ID);
     if (c)
@@ -1533,6 +1647,8 @@ static inline rt_canvas3d *rt_canvas3d_checked_or_stack(void *obj) {
 }
 
 /// @brief Validate a Camera3D handle while optionally preserving internal stack fixtures.
+/// @param obj Borrowed candidate Camera3D payload.
+/// @return Validated mutable Camera3D pointer, an allowed stack fixture, or `NULL`.
 static inline rt_camera3d *rt_camera3d_checked_or_stack(void *obj) {
     rt_camera3d *cam = (rt_camera3d *)rt_g3d_checked_or_null(obj, RT_G3D_CAMERA3D_CLASS_ID);
     if (cam)
@@ -1555,12 +1671,23 @@ typedef struct {
 } mat4_impl;
 
 /// @brief Internal: submit a mesh draw with an explicit row-major Mat4 (skips Mat4 wrapper alloc).
+/// @param obj Borrowed Canvas3D handle with an active frame.
+/// @param mesh_obj Borrowed live Mesh3D to queue.
+/// @param model_matrix Borrowed array of 16 row-major doubles captured by submission.
+/// @param material_obj Borrowed live Material3D applied to the draw.
 void rt_canvas3d_draw_mesh_matrix(void *obj,
                                   void *mesh_obj,
                                   const double *model_matrix,
                                   void *material_obj);
 /// @brief Internal: submit a mesh draw with motion-key + previous bone/morph data for TAA + motion
 /// blur.
+/// @param obj Borrowed Canvas3D handle with an active frame.
+/// @param mesh_obj Borrowed live Mesh3D to queue.
+/// @param model_matrix Borrowed array of 16 row-major doubles.
+/// @param material_obj Borrowed live Material3D applied to the draw.
+/// @param motion_key Optional stable instance identity for temporal history.
+/// @param prev_bone_palette Optional borrowed previous-frame bone matrices.
+/// @param prev_morph_weights Optional borrowed previous-frame morph weights.
 void rt_canvas3d_draw_mesh_matrix_keyed(void *obj,
                                         void *mesh_obj,
                                         const double *model_matrix,
@@ -1575,6 +1702,20 @@ void rt_canvas3d_draw_mesh_matrix_keyed(void *obj,
 ///   skips both CPU occlusion testing and occluder writes for draws whose coverage is not a solid
 ///   projection of their AABB. `culling_pad` expands only CPU frustum tests, which is useful for
 ///   terrain chunks whose edge triangles must survive small CPU/GPU precision differences.
+/// @param obj Borrowed Canvas3D handle with an active frame.
+/// @param mesh_obj Borrowed live Mesh3D to queue.
+/// @param model_matrix Borrowed array of 16 row-major doubles.
+/// @param material_obj Borrowed live Material3D applied to the draw.
+/// @param motion_key Optional stable identity for temporal history and ordering.
+/// @param prev_bone_palette Optional borrowed previous-frame bone matrices.
+/// @param prev_morph_weights Optional borrowed previous-frame morph weights.
+/// @param local_bounds_min Optional three-component local AABB minimum.
+/// @param local_bounds_max Optional three-component local AABB maximum paired
+///   with @p local_bounds_min.
+/// @param conservative_bounds Non-zero when the supplied bounds conservatively
+///   enclose dynamic geometry.
+/// @param disable_occlusion Non-zero to skip occlusion testing and writes.
+/// @param culling_pad Non-negative world-space frustum-culling expansion.
 void rt_canvas3d_draw_mesh_matrix_keyed_bounds(void *obj,
                                                void *mesh_obj,
                                                const double *model_matrix,
@@ -1588,12 +1729,25 @@ void rt_canvas3d_draw_mesh_matrix_keyed_bounds(void *obj,
                                                int8_t disable_occlusion,
                                                float culling_pad);
 /// @brief Internal: enable camera-relative float upload for large-world Game3D frames.
+/// @param obj Borrowed Canvas3D handle.
+/// @param enabled Non-zero to rebase uploads around the active camera; zero for
+///   absolute float coordinates.
 void rt_canvas3d_set_camera_relative_upload(void *obj, int8_t enabled);
 /// @brief Internal: copy the active camera-relative origin; returns 1 when upload rebasing is on.
+/// @param obj Borrowed Canvas3D handle.
+/// @param out_origin Non-`NULL` three-double output receiving the current origin.
+/// @return One when rebasing is enabled and the origin was copied; otherwise zero.
 int rt_canvas3d_get_camera_relative_origin(void *obj, double out_origin[3]);
 /// @brief Internal: invalidate and release the cached CPU skybox fallback image.
+/// @param canvas Mutable Canvas3D owning the cache; `NULL` is ignored.
 void rt_canvas3d_invalidate_skybox_cache(rt_canvas3d *canvas);
 /// @brief Internal: submit a mesh draw after applying morph targets.
+/// @param canvas Borrowed Canvas3D handle with an active frame.
+/// @param mesh Borrowed live Mesh3D to deform and submit.
+/// @param model_matrix Borrowed array of 16 row-major doubles.
+/// @param material Borrowed live Material3D applied to the draw.
+/// @param motion_key Optional stable instance identity for temporal history.
+/// @param morph_targets Borrowed MorphTarget3D supplying deltas and weights.
 void rt_canvas3d_draw_mesh_matrix_morphed(void *canvas,
                                           void *mesh,
                                           const double *model_matrix,
@@ -1604,6 +1758,17 @@ void rt_canvas3d_draw_mesh_matrix_morphed(void *canvas,
 /// @details Scene3D precomputes expanded local bounds for animated/morphed geometry. This variant
 ///          carries those bounds plus occlusion safety flags through the attached-MorphTarget fast
 ///          path so morphed vertices are not culled or CPU-occluded against the static mesh AABB.
+/// @param canvas Borrowed Canvas3D handle with an active frame.
+/// @param mesh Borrowed live Mesh3D to deform and submit.
+/// @param model_matrix Borrowed array of 16 row-major doubles.
+/// @param material Borrowed live Material3D applied to the draw.
+/// @param motion_key Optional stable instance identity for temporal history.
+/// @param morph_targets Borrowed MorphTarget3D supplying deltas and weights.
+/// @param local_bounds_min Optional three-component conservative local AABB minimum.
+/// @param local_bounds_max Optional three-component local AABB maximum paired
+///   with @p local_bounds_min.
+/// @param conservative_bounds Non-zero when supplied bounds include all deformation.
+/// @param disable_occlusion Non-zero to skip occlusion testing and writes.
 void rt_canvas3d_draw_mesh_matrix_morphed_bounds(void *canvas,
                                                  void *mesh,
                                                  const double *model_matrix,
@@ -1615,16 +1780,41 @@ void rt_canvas3d_draw_mesh_matrix_morphed_bounds(void *canvas,
                                                  int8_t conservative_bounds,
                                                  int8_t disable_occlusion);
 /// @brief Internal: retain a GC-managed object until the current frame is fully submitted.
+/// @param obj Borrowed Canvas3D handle that will own the temporary reference.
+/// @param value Borrowed GC-managed object to retain once.
+/// @return Non-zero when the object is already tracked or retained successfully.
 int rt_canvas3d_add_temp_object(void *obj, void *value);
 /// @brief Internal: sample a cubemap direction into linear RGB components.
+/// @param cm Borrowed complete CubeMap3D payload.
+/// @param dx Direction X component.
+/// @param dy Direction Y component.
+/// @param dz Direction Z component.
+/// @param out_r Non-`NULL` red-channel output.
+/// @param out_g Non-`NULL` green-channel output.
+/// @param out_b Non-`NULL` blue-channel output.
 void rt_cubemap_sample(
     const rt_cubemap3d *cm, float dx, float dy, float dz, float *out_r, float *out_g, float *out_b);
 /// @brief Internal: sample a cubemap with an already normalized finite direction.
 /// @details This avoids the sampler's defensive normalization in CPU hot paths that already
 ///          sanitized the direction, such as the Canvas3D software skybox cache.
+/// @param cm Borrowed complete CubeMap3D payload.
+/// @param dx Normalized finite direction X component.
+/// @param dy Normalized finite direction Y component.
+/// @param dz Normalized finite direction Z component.
+/// @param out_r Non-`NULL` red-channel output.
+/// @param out_g Non-`NULL` green-channel output.
+/// @param out_b Non-`NULL` blue-channel output.
 void rt_cubemap_sample_unit(
     const rt_cubemap3d *cm, float dx, float dy, float dz, float *out_r, float *out_g, float *out_b);
 /// @brief Internal: sample a cubemap reflection with a roughness-dependent blur kernel.
+/// @param cm Borrowed complete CubeMap3D payload.
+/// @param dx Reflection direction X component.
+/// @param dy Reflection direction Y component.
+/// @param dz Reflection direction Z component.
+/// @param roughness Normalized surface roughness controlling blur width.
+/// @param out_r Non-`NULL` red-channel output.
+/// @param out_g Non-`NULL` green-channel output.
+/// @param out_b Non-`NULL` blue-channel output.
 void rt_cubemap_sample_roughness(const rt_cubemap3d *cm,
                                  float dx,
                                  float dy,
@@ -1635,10 +1825,21 @@ void rt_cubemap_sample_roughness(const rt_cubemap3d *cm,
                                  float *out_b);
 /// @brief Internal: lazily compute the cubemap's IBL payload (SH-9 irradiance +
 ///   GGX-prefiltered specular mip chain). Idempotent; returns 1 when ready.
+/// @param cubemap Borrowed live complete CubeMap3D to prepare.
+/// @return One when the IBL payload is already or newly ready; zero on invalid
+///   input or allocation/precomputation failure.
 int rt_cubemap3d_ensure_ibl(void *cubemap);
 /// @brief Internal: sample the prefiltered specular chain (trilinear across
 ///   roughness levels). Falls back to rt_cubemap_sample_roughness when the IBL
 ///   payload has not been prepared.
+/// @param cm Borrowed CubeMap3D payload.
+/// @param dx Reflection direction X component.
+/// @param dy Reflection direction Y component.
+/// @param dz Reflection direction Z component.
+/// @param roughness Normalized roughness selecting and blending prefiltered levels.
+/// @param out_r Non-`NULL` red-channel output.
+/// @param out_g Non-`NULL` green-channel output.
+/// @param out_b Non-`NULL` blue-channel output.
 void rt_cubemap_sample_ibl(const rt_cubemap3d *cm,
                            float dx,
                            float dy,
@@ -1651,12 +1852,27 @@ void rt_cubemap_sample_ibl(const rt_cubemap3d *cm,
 ///   rt_cubemap3d.ibl_sh) along a unit normal. Output is linear RGB with the
 ///   Lambertian 1/pi already folded in (a constant environment of color C
 ///   evaluates to C for every normal).
+/// @param sh Borrowed array of 27 RGB-interleaved SH-9 coefficients.
+/// @param nx Unit surface-normal X component.
+/// @param ny Unit surface-normal Y component.
+/// @param nz Unit surface-normal Z component.
+/// @param out_rgb Non-`NULL` three-float linear RGB output.
 void rt_sh9_eval_irradiance(const float sh[27], float nx, float ny, float nz, float *out_rgb);
 /// @brief Internal: apply a canvas's active post-processing chain.
+/// @param canvas Borrowed Canvas3D handle whose completed frame is processed.
 void rt_postfx3d_apply_to_canvas(void *canvas);
 /// @brief Internal: inject a mouse delta without changing absolute position.
+/// @param dx Horizontal relative-motion delta in input units.
+/// @param dy Vertical relative-motion delta in input units.
 void rt_mouse_force_delta(int64_t dx, int64_t dy);
 /// @brief Internal: queue an instanced batch (one draw call rendering many transforms of @p mesh).
+/// @param canvas_obj Borrowed Canvas3D handle with an active frame.
+/// @param mesh_obj Borrowed live Mesh3D used as shared geometry.
+/// @param material_obj Borrowed live Material3D shared by all instances.
+/// @param instance_matrices Borrowed current row-major matrix array.
+/// @param instance_count Number of matrices and instances.
+/// @param prev_instance_matrices Optional borrowed previous-frame matrix array.
+/// @param has_prev_instance_matrices Non-zero when the previous array is present.
 void rt_canvas3d_queue_instanced_batch(void *canvas_obj,
                                        void *mesh_obj,
                                        void *material_obj,
@@ -1665,6 +1881,13 @@ void rt_canvas3d_queue_instanced_batch(void *canvas_obj,
                                        const float *prev_instance_matrices,
                                        int8_t has_prev_instance_matrices);
 /// @brief Internal: queue an instanced batch whose matrices are already frame-relative.
+/// @param canvas_obj Borrowed Canvas3D handle with an active frame.
+/// @param mesh_obj Borrowed live Mesh3D used as shared geometry.
+/// @param material_obj Borrowed live Material3D shared by all instances.
+/// @param instance_matrices Borrowed current matrices already in frame render space.
+/// @param instance_count Number of matrices and instances.
+/// @param prev_instance_matrices Optional borrowed prior matrices in the same space.
+/// @param has_prev_instance_matrices Non-zero when the previous array is present.
 void rt_canvas3d_queue_instanced_batch_frame_matrices(void *canvas_obj,
                                                       void *mesh_obj,
                                                       void *material_obj,
@@ -1673,6 +1896,18 @@ void rt_canvas3d_queue_instanced_batch_frame_matrices(void *canvas_obj,
                                                       const float *prev_instance_matrices,
                                                       int8_t has_prev_instance_matrices);
 /// @brief Internal: queue an instanced batch with explicit local bounds and occlusion flags.
+/// @param canvas_obj Borrowed Canvas3D handle with an active frame.
+/// @param mesh_obj Borrowed live Mesh3D used as shared geometry.
+/// @param material_obj Borrowed live Material3D shared by all instances.
+/// @param instance_matrices Borrowed current row-major matrix array.
+/// @param instance_count Number of matrices and instances.
+/// @param prev_instance_matrices Optional borrowed previous-frame matrix array.
+/// @param has_prev_instance_matrices Non-zero when the previous array is present.
+/// @param local_bounds_min Optional three-component local AABB minimum.
+/// @param local_bounds_max Optional three-component local AABB maximum paired
+///   with @p local_bounds_min.
+/// @param conservative_bounds Non-zero when the supplied bounds are conservative.
+/// @param disable_occlusion Non-zero to disable batch occlusion.
 void rt_canvas3d_queue_instanced_batch_bounds(void *canvas_obj,
                                               void *mesh_obj,
                                               void *material_obj,
@@ -1714,6 +1949,16 @@ int rt_canvas3d_queue_particle_batch(void *canvas_obj,
 ///   bones each (total_bone_count matrices, <= VGFX3D_MAX_BONES); storage must outlive the
 ///   frame flush. Returns 1 when queued, 0 when the draw cannot take the hardware path and
 ///   the caller must fall back to individual skinned draws.
+/// @param canvas_obj Borrowed Canvas3D handle with an active frame.
+/// @param mesh_obj Borrowed live skinned Mesh3D.
+/// @param material_obj Borrowed live Material3D shared by all instances.
+/// @param instance_matrices Borrowed current row-major instance matrices.
+/// @param instance_count Number of instances in the chunk.
+/// @param bone_palettes Borrowed packed current-pose matrices grouped by instance.
+/// @param prev_bone_palettes Optional borrowed packed previous-pose matrices.
+/// @param total_bone_count Total number of matrices in @p bone_palettes.
+/// @param instance_bone_stride Number of bone matrices per instance.
+/// @return One when queued; zero when hardware instancing cannot represent the palettes.
 int rt_canvas3d_queue_instanced_batch_skinned(void *canvas_obj,
                                               void *mesh_obj,
                                               void *material_obj,
@@ -1724,22 +1969,57 @@ int rt_canvas3d_queue_instanced_batch_skinned(void *canvas_obj,
                                               int32_t total_bone_count,
                                               int32_t instance_bone_stride);
 /// @brief Internal: get the monotonic per-frame counter (used to seed motion-blur history).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Positive current frame serial, or zero for invalid/unstarted canvases.
 int64_t rt_canvas3d_get_frame_serial(void *obj);
 /// @brief Internal: begin a HUD/overlay sub-pass; @p preserve_existing_color skips the initial
 /// clear.
+/// @param c Borrowed Canvas3D prepared to begin an overlay pass.
+/// @param preserve_existing_color Non-zero to load existing scene color.
+/// @return Non-zero when the overlay frame began successfully.
 int canvas3d_begin_overlay_frame(rt_canvas3d *c, int8_t preserve_existing_color);
 /// @brief Internal: borrow the most recently used scene VP matrix for billboard alignment.
+/// @param c Borrowed Canvas3D to inspect.
+/// @return Borrowed 16-float view-projection matrix, or `NULL` when unavailable.
 const float *canvas3d_active_scene_vp(const rt_canvas3d *c);
 /// @brief Internal: queue a 2D rect into the overlay pass at clip-space position with RGBA color.
+/// @param c Borrowed Canvas3D receiving the overlay command.
+/// @param x Left edge in screen pixels.
+/// @param y Top edge in screen pixels.
+/// @param w Width in screen pixels.
+/// @param h Height in screen pixels.
+/// @param r Normalized red component.
+/// @param g Normalized green component.
+/// @param b Normalized blue component.
+/// @param a Normalized alpha component.
+/// @return Non-zero when visible geometry is queued; zero on invalid or clipped input.
 int canvas3d_queue_screen_rect(
     rt_canvas3d *c, float x, float y, float w, float h, float r, float g, float b, float a);
 /// @brief Internal: queue a screen-space textured quad sampling `pixels` over UV (0,0)-(1,1).
+/// @param c Borrowed Canvas3D receiving the overlay command.
+/// @param x Left destination edge in screen pixels.
+/// @param y Top destination edge in screen pixels.
+/// @param w Destination width in screen pixels.
+/// @param h Destination height in screen pixels.
+/// @param pixels Borrowed Pixels object retained through deferred replay.
+/// @return Non-zero when the image command is queued; otherwise zero.
 int canvas3d_queue_screen_image(rt_canvas3d *c, float x, float y, float w, float h, void *pixels);
 /// @brief Internal: register the Canvas3D Game.UI widget draw-ops binding (ADR 0065).
 void canvas3d_register_gameui_ops(void);
 /* Plan 07: clustered forward+ binning — declarations live in
  * rt_canvas3d_clusters.h (they use backend types this header stays free of). */
 /// @brief Internal: queue a screen-space rounded rectangle as a triangle fan (Plan 08).
+/// @param c Borrowed Canvas3D receiving the overlay command.
+/// @param x Left edge in screen pixels.
+/// @param y Top edge in screen pixels.
+/// @param w Width in screen pixels.
+/// @param h Height in screen pixels.
+/// @param radius Corner radius in pixels.
+/// @param r Normalized red component.
+/// @param g Normalized green component.
+/// @param b Normalized blue component.
+/// @param a Normalized alpha component.
+/// @return Non-zero when visible fan geometry is queued; otherwise zero.
 int canvas3d_queue_screen_round_rect(rt_canvas3d *c,
                                      float x,
                                      float y,
@@ -1752,6 +2032,17 @@ int canvas3d_queue_screen_round_rect(rt_canvas3d *c,
                                      float a);
 /// @brief Internal: queue a screen-space textured quad sampling `pixels` over an explicit
 /// normalized UV sub-rect (u0,v0)-(u1,v1). Plan 08 region blits build on this.
+/// @param c Borrowed Canvas3D receiving the overlay command.
+/// @param x Left destination edge in screen pixels.
+/// @param y Top destination edge in screen pixels.
+/// @param w Destination width in screen pixels.
+/// @param h Destination height in screen pixels.
+/// @param pixels Borrowed Pixels object retained through deferred replay.
+/// @param u0 Source U coordinate at the left edge.
+/// @param v0 Source V coordinate at the top edge.
+/// @param u1 Source U coordinate at the right edge.
+/// @param v1 Source V coordinate at the bottom edge.
+/// @return Non-zero when the image command is queued; otherwise zero.
 int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
                                    float x,
                                    float y,
@@ -1764,16 +2055,37 @@ int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
                                    float v1);
 /// @brief Internal: retain a GC object referenced by a final-overlay draw until the overlay
 /// replays.
+/// @param c Canvas3D that owns the final-overlay lifetime.
+/// @param obj Borrowed GC-managed object to retain.
+/// @return Non-zero when already tracked or retained successfully.
 int canvas3d_track_final_overlay_temp_object(rt_canvas3d *c, void *obj);
 /// @brief Internal: untrack and release a final-overlay temp object after a queueing failure.
+/// @param c Canvas3D that owns the tracking set.
+/// @param obj Tracked object whose overlay reference is released.
 void canvas3d_release_tracked_final_overlay_temp_object(rt_canvas3d *c, void *obj);
 /// @brief Internal: apply a height-weighted XZ wind sway to a mesh's vertices in place.
 /// @details Base vertices (lowest local-Y) stay planted; displacement scales with
-///   (normalized height)^2 along (dir_x, dir_z), modulated by sin(phase). Marks geometry
+///   the square of normalized height along (dir_x, dir_z), modulated by sin(phase). Marks geometry
 ///   dirty. NULL/degenerate-safe. Exposed (non-static) so wind deformation is unit-testable.
+/// @param mesh Mutable Mesh3D to deform in place.
+/// @param dir_x Horizontal sway-direction X component.
+/// @param dir_z Horizontal sway-direction Z component.
+/// @param strength Maximum displacement scale; non-positive values are a no-op.
+/// @param phase Animation phase in radians.
 void canvas3d_deform_mesh_wind(
     rt_mesh3d *mesh, double dir_x, double dir_z, double strength, double phase);
 /// @brief Internal: queue a 2D line into the overlay pass with thickness and RGBA color.
+/// @param c Borrowed Canvas3D receiving the overlay command.
+/// @param x0 First endpoint X coordinate in screen pixels.
+/// @param y0 First endpoint Y coordinate in screen pixels.
+/// @param x1 Second endpoint X coordinate in screen pixels.
+/// @param y1 Second endpoint Y coordinate in screen pixels.
+/// @param thickness Line thickness in pixels.
+/// @param r Normalized red component.
+/// @param g Normalized green component.
+/// @param b Normalized blue component.
+/// @param a Normalized alpha component.
+/// @return Non-zero when line geometry is queued; otherwise zero.
 int canvas3d_queue_screen_line(rt_canvas3d *c,
                                float x0,
                                float y0,
@@ -1785,6 +2097,7 @@ int canvas3d_queue_screen_line(rt_canvas3d *c,
                                float b,
                                float a);
 /// @brief Internal: discard recorded final-overlay commands and their temp buffers.
+/// @param c Canvas3D whose retained overlay state is reset.
 void canvas3d_clear_final_overlay(rt_canvas3d *c);
 
 /// @brief Per-object previous-frame transforms for motion-vector derivation.
@@ -1799,28 +2112,59 @@ typedef struct {
 
 // Motion-history (rt_canvas3d_motion.c) + the shared open-addressing hash-table
 // utilities, also used by the transient-resource tracker.
+/// @brief Mix a pointer-sized identity into a well-distributed 32-bit hash.
+/// @param value Integer or pointer identity to hash.
+/// @return Deterministic 32-bit hash suitable for open-addressing tables.
 uint32_t canvas3d_hash_u64(uintptr_t value);
+/// @brief Round a positive table-size request up to a representable power of two.
+/// @param value Requested minimum capacity.
+/// @return Smallest supported power of two at least @p value, subject to the
+///   implementation's saturation behavior.
 int32_t canvas3d_next_power_of_two_i32(int32_t value);
 /// @brief Drop all retained previous-model matrices after an external coordinate-space shift.
 /// @details Floating-origin rebases change every world transform by the same delta. Retaining
 ///   history across that discontinuity would compare matrices from different origins, producing
 ///   bogus motion vectors and temporal shimmer.
+/// @param c Canvas3D whose temporal transform table is cleared.
 void canvas3d_clear_motion_history(rt_canvas3d *c);
 /// @brief Drop all CPU occlusion covered-streak history after a visibility-space discontinuity.
 /// @details CPU occlusion culling is deliberately history-gated. Floating-origin rebases, camera
 ///          cuts, projection/viewport changes, and render-target switches invalidate the prior
 ///          projected coverage relation, so retaining covered streaks across them can hide visible
 ///          triangles for one or more frames.
+/// @param c Canvas3D whose occlusion history and duplicate counters are cleared.
 void canvas3d_clear_occlusion_history(rt_canvas3d *c);
+/// @brief Remove motion-history entries older than the canvas retention window.
+/// @param c Canvas3D whose table is compacted for the current frame serial.
 void canvas3d_prune_motion_history(rt_canvas3d *c);
+/// @brief Resolve and update the previous model matrix for one stable motion key.
+/// @details The current matrix becomes the retained history value for the next
+///   frame. First sightings return the current transform with no previous flag.
+/// @param c Canvas3D owning the temporal history table.
+/// @param motion_key Non-zero stable identity for the logical draw instance.
+/// @param current_model Borrowed current row-major 16-float model matrix.
+/// @param out_prev_model Non-`NULL` array receiving the previous or fallback matrix.
+/// @param out_has_prev Non-`NULL` flag set when genuine previous-frame data exists.
 void canvas3d_resolve_previous_model(rt_canvas3d *c,
                                      uintptr_t motion_key,
                                      const float *current_model,
                                      float *out_prev_model,
                                      int8_t *out_has_prev);
+/// @brief Derive a stable temporal key for a mesh/material/transform object tuple.
+/// @param mesh_obj Borrowed Mesh3D identity.
+/// @param material_obj Borrowed Material3D identity.
+/// @param transform_obj Borrowed Mat4 identity.
+/// @return Non-zero mixed key salted against runtime object reuse.
 uintptr_t canvas3d_mesh_transform_motion_key(const void *mesh_obj,
                                              const void *material_obj,
                                              const void *transform_obj);
+/// @brief Derive a stable temporal key for one instance in a submitted batch.
+/// @param mesh_obj Borrowed shared Mesh3D identity.
+/// @param material_obj Borrowed shared Material3D identity.
+/// @param batch_obj Borrowed stable identity of the original matrix batch.
+/// @param instance_count Original number of instances in the unsplit batch.
+/// @param index Original zero-based instance index.
+/// @return Non-zero mixed per-instance key salted against object reuse.
 uintptr_t canvas3d_instance_motion_key(const void *mesh_obj,
                                        const void *material_obj,
                                        const void *batch_obj,
@@ -1828,6 +2172,9 @@ uintptr_t canvas3d_instance_motion_key(const void *mesh_obj,
                                        int32_t index);
 
 // Shared finite-range check (rt_canvas3d.c) used by the geometry snapshotter.
+/// @brief Test whether a double can be represented as a finite backend float.
+/// @param value Double-precision value to test.
+/// @return Non-zero when @p value is finite and within the float range.
 int canvas3d_double_fits_float(double value);
 
 /// @brief Record one Canvas3D submission failure in the sticky public diagnostics.
@@ -1853,26 +2200,64 @@ void rt_canvas3d_test_fail_next_queue_reserve(void *canvas);
 void rt_canvas3d_test_fail_next_mesh_snapshot(void *canvas);
 
 // Mesh-geometry snapshotting (rt_canvas3d_snapshot.c).
+/// @brief Copy safe mesh geometry into frame-owned immutable snapshot storage.
+/// @param c Canvas3D whose frame arena owns the copied arrays.
+/// @param mesh Borrowed source mesh with validated geometry.
+/// @param out_vertices Non-`NULL` output receiving the snapshot vertex pointer.
+/// @param out_indices Non-`NULL` output receiving the snapshot index pointer.
+/// @return Non-zero on success; zero on invalid geometry, limits, or allocation failure.
 int canvas3d_snapshot_mesh_geometry(rt_canvas3d *c,
                                     const rt_mesh3d *mesh,
                                     vgfx3d_vertex_t **out_vertices,
                                     uint32_t **out_indices);
+/// @brief Compute an axis-aligned bounding box over a vertex array.
+/// @param vertices Borrowed vertex array.
+/// @param vertex_count Number of readable vertices.
+/// @param out_min Non-`NULL` three-component minimum output.
+/// @param out_max Non-`NULL` three-component maximum output.
 void canvas3d_compute_vertices_aabb(const vgfx3d_vertex_t *vertices,
                                     uint32_t vertex_count,
                                     float out_min[3],
                                     float out_max[3]);
+/// @brief Snapshot mesh geometry while subtracting a double-precision origin from positions.
+/// @param c Canvas3D whose frame storage owns the copied arrays.
+/// @param mesh Borrowed source mesh, including optional authoritative double positions.
+/// @param origin Borrowed three-double origin subtracted from every position.
+/// @param out_vertices Non-`NULL` output receiving rebased snapshot vertices.
+/// @param out_indices Non-`NULL` output receiving copied indices.
+/// @return Non-zero on success; zero on invalid input, range failure, or allocation failure.
 int canvas3d_snapshot_mesh_geometry_rebased(rt_canvas3d *c,
                                             const rt_mesh3d *mesh,
                                             const double origin[3],
                                             vgfx3d_vertex_t **out_vertices,
                                             uint32_t **out_indices);
+/// @brief Ensure the per-frame mesh snapshot cache can hold at least @p needed entries.
+/// @param c Canvas3D owning the cache arrays.
+/// @param needed Non-negative minimum entry capacity.
+/// @return Non-zero when capacity is available; zero on invalid input or allocation failure.
 int canvas3d_reserve_mesh_snapshot_cache(rt_canvas3d *c, int32_t needed);
+/// @brief Clear the snapshot-cache hash index without releasing retained entry payloads.
+/// @param c Canvas3D owning the hash table.
 void canvas3d_mesh_snapshot_hash_clear(rt_canvas3d *c);
+/// @brief Reuse or build one frame snapshot for a mutable mesh object.
+/// @param c Canvas3D owning the per-frame cache and snapshot storage.
+/// @param mesh Borrowed validated Mesh3D payload.
+/// @param mesh_obj Borrowed runtime identity used as the cache key.
+/// @param out_vertices Non-`NULL` output receiving cached snapshot vertices.
+/// @param out_indices Non-`NULL` output receiving cached snapshot indices.
+/// @return Non-zero when a valid cached or new snapshot is returned.
 int canvas3d_snapshot_mesh_geometry_cached(rt_canvas3d *c,
                                            rt_mesh3d *mesh,
                                            void *mesh_obj,
                                            vgfx3d_vertex_t **out_vertices,
                                            uint32_t **out_indices);
+/// @brief Reuse or build a frame snapshot whose vertex stream includes generated tangents.
+/// @param c Canvas3D owning the per-frame cache and snapshot storage.
+/// @param mesh Borrowed validated Mesh3D payload.
+/// @param mesh_obj Borrowed runtime identity used as the cache key.
+/// @param out_vertices Non-`NULL` output receiving tangent-ready snapshot vertices.
+/// @param out_indices Non-`NULL` output receiving cached snapshot indices.
+/// @return Non-zero when tangent-ready geometry is returned.
 int canvas3d_snapshot_mesh_geometry_with_tangents_cached(rt_canvas3d *c,
                                                          rt_mesh3d *mesh,
                                                          void *mesh_obj,
@@ -1881,47 +2266,99 @@ int canvas3d_snapshot_mesh_geometry_with_tangents_cached(rt_canvas3d *c,
 /// @brief Drop the canvas references held by retained mesh revisions in its frame snapshot table.
 /// @param c Canvas whose current snapshot entries are about to be reset or destroyed.
 void canvas3d_release_retained_mesh_revisions(rt_canvas3d *c);
+/// @brief Decide whether a draw must snapshot geometry instead of borrowing live storage.
+/// @param mesh Borrowed Mesh3D whose storage and mutation mode are inspected.
+/// @param mesh_obj Borrowed runtime handle corresponding to @p mesh.
+/// @return Non-zero when deferred submission cannot safely borrow the live arrays.
 int canvas3d_should_snapshot_geometry(const rt_mesh3d *mesh, void *mesh_obj);
 
 // Shared pixel utilities (rt_canvas3d.c) used by the CPU skybox.
+/// @brief Convert a normalized float channel to an unsigned byte with clamping.
+/// @param value Floating-point channel value.
+/// @return Nearest unsigned byte after non-finite input becomes zero and the
+///   channel is clamped to the inclusive normalized range.
 uint8_t canvas3d_clamp01_to_u8(float value);
+/// @brief Validate dimensions and row stride for an RGBA8 image layout.
+/// @param w Image width in pixels.
+/// @param h Image height in pixels.
+/// @param stride Row stride in bytes.
+/// @return Non-zero when dimensions are positive and the full layout is representable.
 int canvas3d_rgba8_stride_valid(int32_t w, int32_t h, int32_t stride);
 
 // CPU skybox fallback (rt_canvas3d_skybox.c).
+/// @brief Ensure a canvas-owned CPU skybox cache matches the requested output size.
+/// @param c Canvas3D owning the cached pixel buffer.
+/// @param w Requested positive width in pixels.
+/// @param h Requested positive height in pixels.
+/// @return Non-zero when a current cache is available; zero on invalid input or failure.
 int canvas3d_ensure_skybox_cpu_cache(rt_canvas3d *c, int32_t w, int32_t h);
+/// @brief Copy the cached CPU skybox into an RGBA8 destination layout.
+/// @param c Borrowed Canvas3D containing a compatible skybox cache.
+/// @param dst_pixels Mutable destination byte buffer.
+/// @param dst_w Destination width in pixels.
+/// @param dst_h Destination height in pixels.
+/// @param dst_stride Destination row stride in bytes.
 void canvas3d_blit_skybox_cpu_cache(
     rt_canvas3d *c, uint8_t *dst_pixels, int32_t dst_w, int32_t dst_h, int32_t dst_stride);
 
 // Value-sanitizing utilities (rt_canvas3d.c) used by the light flattener.
+/// @brief Clamp a finite double to the normalized float interval.
+/// @param value Value to convert.
+/// @return Float in the inclusive range zero through one.
 float canvas3d_clamp01_f64(double value);
+/// @brief Report whether a canvas currently rebases uploads around the camera.
+/// @param c Borrowed Canvas3D to inspect.
+/// @return Non-zero when camera-relative upload is active.
 int canvas3d_uses_camera_relative_upload(const rt_canvas3d *c);
+/// @brief Convert a finite non-negative double to float or use a fallback.
+/// @param value Preferred value.
+/// @param fallback Float returned for non-finite or negative input.
+/// @return Sanitized non-negative float.
 float canvas3d_sanitize_nonnegative_f64(double value, float fallback);
+/// @brief Convert a finite float-range double or use a fallback.
+/// @param value Preferred value.
+/// @param fallback Float returned when @p value is non-finite or out of range.
+/// @return Converted value or @p fallback.
 float canvas3d_sanitize_f64_to_float(double value, float fallback);
+/// @brief Sanitize and clamp a double to caller-supplied bounds.
+/// @param value Preferred value.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @param fallback Float returned for invalid input or bounds.
+/// @return Finite float clamped to the requested interval, or @p fallback.
 float canvas3d_clamp_f64_to_float(double value, double lo, double hi, float fallback);
 
 // Light flattening (rt_canvas3d_lighting.c).
+/// @brief Resolve the active per-draw light limit for the selected renderer path.
+/// @param c Borrowed Canvas3D whose backend and clustered-lighting state are inspected.
+/// @return Non-negative maximum number of lights considered for a draw.
 int32_t canvas3d_active_light_limit(rt_canvas3d *c);
 
 /// @brief Effective directional-shadow coverage distance for this canvas (rt_canvas3d.c).
 /// @details Resolves the auto default (min(camera far, 300)) when shadow_distance is 0 and
 ///   clamps explicit values to the camera far plane. Always returns a positive finite
 ///   distance usable for cascade-split capping and shadow-caster sweep extrusion.
+/// @param c Borrowed Canvas3D supplying shadow and cached camera distances.
+/// @return Positive finite effective distance in world units.
 float canvas3d_effective_shadow_distance(const rt_canvas3d *c);
 
 /// @brief Refresh the shadow-caster sweep vector from the canvas + scene light slots
 ///   (rt_canvas3d.c). Call after scene lights are collected, before draw traversal.
+/// @param c Mutable Canvas3D whose sweep vector and validity state are updated.
 void canvas3d_update_shadow_caster_sweep(rt_canvas3d *c);
 
 /// @brief Monotonic Light3D mutation generation (rt_light3d.c); never returns 0.
 /// @details The per-frame flattened-light cache compares this against the generation it
 ///   flattened at, so any Light3D property change forces one re-flatten instead of
 ///   per-draw rebuilds.
+/// @return Current non-zero process-wide light mutation generation.
 uint64_t rt_light3d_mutation_revision(void);
 
 /// @brief Drop the canvas's per-frame flattened-light cache.
 /// @details Call after any change build_light_params reads that the Light3D mutation
 ///   generation cannot observe: canvas light-slot assignment, ambient color, scene-light
 ///   swaps, and camera-relative-origin changes at frame begin.
+/// @param c Mutable Canvas3D whose per-frame flattened-light cache is invalidated.
 static inline void canvas3d_invalidate_light_flatten_cache(rt_canvas3d *c) {
     if (c)
         c->frame_light_cache_valid = 0;
@@ -1929,13 +2366,41 @@ static inline void canvas3d_invalidate_light_flatten_cache(rt_canvas3d *c) {
 
 // Per-frame transient-resource tracking (rt_canvas3d_tempmgr.c): temp buffers,
 // final-overlay temp buffers, and the GC-managed transient-object hash set.
+/// @brief Transfer a heap buffer into the canvas's ordinary frame lifetime.
+/// @param c Canvas3D that will free the buffer during frame cleanup.
+/// @param buffer Owned allocation to track; ownership transfers only on success.
+/// @return Non-zero when tracked; zero for invalid input or tracking allocation failure.
 int canvas3d_track_temp_buffer(rt_canvas3d *c, void *buffer);
+/// @brief Remove a frame buffer from tracking without freeing it.
+/// @param c Canvas3D owning the tracking list.
+/// @param buffer Borrowed buffer identity to remove.
+/// @return Non-zero when a matching entry was removed.
 int canvas3d_untrack_temp_buffer(rt_canvas3d *c, void *buffer);
+/// @brief Remove and free one ordinary frame-tracked buffer.
+/// @param c Canvas3D owning the tracking list.
+/// @param buffer Tracked allocation to release; absent values are ignored.
 void canvas3d_release_tracked_temp_buffer(rt_canvas3d *c, void *buffer);
+/// @brief Release a tracked vertex/index snapshot and update snapshot-byte accounting.
+/// @param c Canvas3D owning both allocations and diagnostic counters.
+/// @param vertices Tracked vertex allocation, or `NULL`.
+/// @param vertex_bytes Accounted size of @p vertices.
+/// @param indices Tracked index allocation, or `NULL`.
+/// @param index_bytes Accounted size of @p indices.
 void canvas3d_release_tracked_mesh_snapshot(
     rt_canvas3d *c, void *vertices, size_t vertex_bytes, void *indices, size_t index_bytes);
+/// @brief Transfer a heap buffer into the retained final-overlay lifetime.
+/// @param c Canvas3D that will free the buffer after overlay replay/reset.
+/// @param buffer Owned allocation to track; ownership transfers only on success.
+/// @return Non-zero when tracked; zero for invalid input or allocation failure.
 int canvas3d_track_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer);
+/// @brief Remove a final-overlay buffer from tracking without freeing it.
+/// @param c Canvas3D owning the overlay tracking list.
+/// @param buffer Borrowed buffer identity to remove.
+/// @return Non-zero when a matching entry was removed.
 int canvas3d_untrack_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer);
+/// @brief Remove and free one final-overlay-tracked buffer.
+/// @param c Canvas3D owning the overlay tracking list.
+/// @param buffer Tracked allocation to release; absent values are ignored.
 void canvas3d_release_tracked_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer);
 /// @brief Allocate stable storage from the retained final-overlay vertex/index arena.
 /// @details The arena is only used for HUD commands that replay after the normal frame temp
@@ -1954,22 +2419,55 @@ void *canvas3d_alloc_final_overlay_arena(rt_canvas3d *c, size_t bytes, size_t al
 /// transient captures after unusual frames.
 /// @param c Canvas whose final-overlay arena should be reset.
 void canvas3d_reset_final_overlay_arena(rt_canvas3d *c);
+/// @brief Clear the transient-object membership hash without releasing objects.
+/// @param c Canvas3D owning the hash table.
 void canvas3d_temp_object_set_clear(rt_canvas3d *c);
+/// @brief Ensure transient-object membership storage for an anticipated live count.
+/// @param c Canvas3D owning the membership table.
+/// @param count_hint Non-negative anticipated number of tracked objects.
+/// @return Non-zero when suitable storage exists.
 int canvas3d_ensure_temp_object_set(rt_canvas3d *c, int32_t count_hint);
+/// @brief Test whether a GC object is already in the transient-object membership set.
+/// @param c Borrowed Canvas3D whose set is queried.
+/// @param obj Borrowed object identity to find.
+/// @return Non-zero when the object is present.
 int canvas3d_temp_object_set_contains(rt_canvas3d *c, void *obj);
+/// @brief Insert a GC object identity into the transient membership set.
+/// @param c Canvas3D owning the set.
+/// @param obj Borrowed non-`NULL` object identity.
+/// @return Non-zero when present after the call, including an existing entry.
 int canvas3d_temp_object_set_insert(rt_canvas3d *c, void *obj);
+/// @brief Rebuild transient-object membership from the authoritative retained list.
+/// @param c Canvas3D whose membership index is reconstructed.
 void canvas3d_rebuild_temp_object_set(rt_canvas3d *c);
+/// @brief Retain a GC object through ordinary frame cleanup, deduplicating identities.
+/// @param c Canvas3D that owns the temporary reference.
+/// @param obj Borrowed GC-managed object to retain.
+/// @return Non-zero when already tracked or newly retained successfully.
 int canvas3d_track_temp_object(rt_canvas3d *c, void *obj);
+/// @brief Untrack and release one ordinary frame-retained GC object.
+/// @param c Canvas3D owning the temporary reference.
+/// @param obj Tracked object to release; absent identities are ignored.
 void canvas3d_release_tracked_temp_object(rt_canvas3d *c, void *obj);
+/// @brief Free all ordinary frame-tracked native buffers.
+/// @param c Canvas3D whose buffer list is emptied.
 void canvas3d_clear_temp_buffers(rt_canvas3d *c);
+/// @brief Release all ordinary frame-retained GC objects and reset membership.
+/// @param c Canvas3D whose object list is emptied.
 void canvas3d_clear_temp_objects(rt_canvas3d *c);
 /// @brief Release every persistent DrawText2DAA raster owned by @p c.
+/// @param c Canvas3D whose anti-aliased text cache is cleared.
 void canvas3d_clear_aa_text_cache(rt_canvas3d *c);
 
 /// @brief Resolve the vgfx frame limiter for Canvas3D's selected presentation path.
 /// @details Native GPU backends pace through swap-interval/display-sync APIs and must leave
 ///          vgfx unlimited to avoid a second independent limiter. The software backend retains
 ///          the window's configured creation limit while requested vsync is enabled.
+/// @param software_backend Non-zero when the selected renderer is the software backend.
+/// @param vsync_enabled Non-zero when presentation synchronization was requested.
+/// @param software_frame_limit Configured software-window frame limit in frames per second.
+/// @return @p software_frame_limit only for synchronized software rendering;
+///   otherwise negative one to disable the vgfx limiter.
 static inline int32_t canvas3d_window_pacing_fps(int software_backend,
                                                  int vsync_enabled,
                                                  int32_t software_frame_limit) {
@@ -1982,10 +2480,16 @@ extern "C" {
 /// @details Chunked: growth adds chunks and never relocates, so recorded draw
 ///   commands keep valid pointers until the end-of-frame reset. Returns NULL
 ///   only on allocation failure (callers treat it like a malloc failure).
+/// @param c Canvas3D owning the frame arena.
+/// @param bytes Number of payload bytes to allocate; implementation-defined
+///   zero-size handling applies.
+/// @return Stable 16-byte-aligned frame storage, or `NULL` on failure.
 void *canvas3d_frame_arena_alloc(rt_canvas3d *c, size_t bytes);
 /// @brief Rewind the frame arena (frame flush); retains a bounded chunk set.
+/// @param c Canvas3D whose arena allocations are invalidated for reuse.
 void canvas3d_frame_arena_reset(rt_canvas3d *c);
 /// @brief Free every frame-arena chunk (canvas teardown).
+/// @param c Canvas3D whose arena storage is destroyed.
 void canvas3d_frame_arena_free(rt_canvas3d *c);
 #ifdef __cplusplus
 }

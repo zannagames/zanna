@@ -23,6 +23,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements dependency-free three-dimensional QuickHull and point-cloud reduction.
+///
+/// Hull construction maintains triangular faces with per-face outside-point conflict lists,
+/// removes each visible region around the globally farthest point, and stitches a new fan
+/// across the horizon. A separate farthest-point sampler preserves axis extrema when callers
+/// must reduce large clouds before hull construction.
+
 #include "rt_quickhull3d.h"
 
 #include <math.h>
@@ -50,32 +58,55 @@ typedef struct {
     double eps;
 } qh_ctx;
 
+/// @brief Returns a borrowed point from the context's packed xyz coordinate array.
+/// @param ctx Borrowed hull context.
+/// @param i Zero-based point index.
+/// @return Pointer to the first of the point's three coordinates.
 static const double *qh_p(const qh_ctx *ctx, int32_t i) {
     return ctx->pts + (size_t)i * 3u;
 }
 
+/// @brief Subtracts one three-dimensional vector from another.
+/// @param a Borrowed minuend vector.
+/// @param b Borrowed subtrahend vector.
+/// @param[out] out Three-element destination for `a - b`.
 static void qh_sub(const double *a, const double *b, double *out) {
     out[0] = a[0] - b[0];
     out[1] = a[1] - b[1];
     out[2] = a[2] - b[2];
 }
 
+/// @brief Computes the right-handed cross product of two three-dimensional vectors.
+/// @param a Borrowed first vector.
+/// @param b Borrowed second vector.
+/// @param[out] out Three-element destination for `a` crossed with `b`.
 static void qh_cross(const double *a, const double *b, double *out) {
     out[0] = a[1] * b[2] - a[2] * b[1];
     out[1] = a[2] * b[0] - a[0] * b[2];
     out[2] = a[0] * b[1] - a[1] * b[0];
 }
 
+/// @brief Computes the Euclidean dot product of two three-dimensional vectors.
+/// @param a Borrowed first vector.
+/// @param b Borrowed second vector.
+/// @return Scalar dot product.
 static double qh_dot(const double *a, const double *b) {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
 /// @brief Signed distance (unnormalized) of point i from face f's plane.
+/// @param ctx Borrowed context supplying point coordinates.
+/// @param f Borrowed face containing its outward plane equation.
+/// @param i Zero-based point index.
+/// @return Positive for a point outside the face, negative inside, and zero on its plane, scaled
+///         by the face normal's magnitude.
 static double qh_face_dist(const qh_ctx *ctx, const qh_face *f, int32_t i) {
     return qh_dot(f->normal, qh_p(ctx, i)) - f->offset;
 }
 
 /// @brief Compute a face's plane from its current winding (no reorientation).
+/// @param ctx Borrowed context supplying vertex coordinates.
+/// @param[out] f Face whose unnormalized normal and plane offset are recomputed.
 static void qh_face_plane_raw(qh_ctx *ctx, qh_face *f) {
     double e1[3];
     double e2[3];
@@ -90,6 +121,9 @@ static void qh_face_plane_raw(qh_ctx *ctx, qh_face *f) {
 ///        initial tetrahedron): flipping reorders the edges that neighbor
 ///        slots key on. Horizon faces inherit outward winding from the
 ///        visible face they replace and must use qh_face_plane_raw.
+/// @param ctx Borrowed context supplying vertex coordinates.
+/// @param[in,out] f Face whose winding and plane equation may be reversed.
+/// @param interior Borrowed point known to lie inside the initial tetrahedron.
 static void qh_face_plane(qh_ctx *ctx, qh_face *f, const double *interior) {
     qh_face_plane_raw(ctx, f);
     if (qh_dot(f->normal, interior) - f->offset > 0.0) {
@@ -103,6 +137,10 @@ static void qh_face_plane(qh_ctx *ctx, qh_face *f, const double *interior) {
     }
 }
 
+/// @brief Appends one outside-point index to a face's growable conflict list.
+/// @param[in,out] f Face whose owned conflict allocation may grow geometrically.
+/// @param point Input point index to append.
+/// @return `1` on success, or `0` when list allocation fails.
 static int qh_face_push_conflict(qh_face *f, int32_t point) {
     if (f->conflict_count >= f->conflict_cap) {
         int32_t cap = f->conflict_cap > 0 ? f->conflict_cap * 2 : 8;
@@ -116,6 +154,9 @@ static int qh_face_push_conflict(qh_face *f, int32_t point) {
     return 1;
 }
 
+/// @brief Allocates and initializes the next face slot in a hull context.
+/// @param[in,out] ctx Context whose owned face array may grow geometrically.
+/// @return Index of a new alive zeroed face, or `-1` on allocation failure.
 static int32_t qh_alloc_face(qh_ctx *ctx) {
     if (ctx->face_count >= ctx->face_cap) {
         int32_t cap = ctx->face_cap > 0 ? ctx->face_cap * 2 : 64;
@@ -130,6 +171,8 @@ static int32_t qh_alloc_face(qh_ctx *ctx) {
     return ctx->face_count++;
 }
 
+/// @brief Releases every conflict list and the face array owned by a hull context.
+/// @param[in,out] ctx Context to clear after either successful output or failure.
 static void qh_free_all(qh_ctx *ctx) {
     for (int32_t i = 0; i < ctx->face_count; i++)
         free(ctx->faces[i].conflicts);
@@ -140,6 +183,9 @@ static void qh_free_all(qh_ctx *ctx) {
 }
 
 /// @brief Locate the neighbor slot on face `f` that points to face `old`.
+/// @param f Borrowed triangular face.
+/// @param old Neighbor face index to locate.
+/// @return Edge-slot index in `[0, 2]`, or `-1` when @p old is not adjacent.
 static int32_t qh_neighbor_slot(const qh_face *f, int32_t old) {
     for (int32_t i = 0; i < 3; i++) {
         if (f->neighbor[i] == old)
@@ -149,6 +195,11 @@ static int32_t qh_neighbor_slot(const qh_face *f, int32_t old) {
 }
 
 /// @brief Choose the four initial tetrahedron corners from the extremes.
+/// @details Selects the most separated axis-extreme pair, the point farthest from that line, and
+///          finally the point farthest from the resulting plane. Context-scaled epsilon tests
+///          reject coincident, collinear, and coplanar clouds.
+/// @param ctx Borrowed initialized context containing at least four finite points.
+/// @param[out] out Four-element destination for distinct input point indices.
 /// @return 1 on success, 0 when the cloud is degenerate (flat/collinear).
 static int qh_initial_tetra(qh_ctx *ctx, int32_t out[4]) {
     int32_t min_axis[3] = {0, 0, 0};
@@ -229,6 +280,23 @@ static int qh_initial_tetra(qh_ctx *ctx, int32_t out[4]) {
     return 1;
 }
 
+/// @brief Builds an outward-wound triangular convex hull from a finite point cloud.
+/// @details A scale-adjusted epsilon makes degeneracy and outside-face tests consistent across
+///          coordinate magnitudes. The builder transfers compact vertex and optional triangle
+///          arrays only after the entire hull succeeds; all output pointers and counts are reset
+///          before validation, and every transient allocation is released on failure.
+/// @param points Borrowed packed xyz coordinates for @p point_count input points.
+/// @param point_count Number of input points; at least four are required.
+/// @param[out] out_vertices Required destination for a caller-owned packed xyz allocation.
+/// @param[out] out_vertex_count Required destination for the compact hull vertex count.
+/// @param[out] out_indices Optional destination for a caller-owned packed triangle-index
+///        allocation. When omitted, the hull is still constructed and vertices are returned.
+/// @param[out] out_index_count Optional destination for the emitted scalar index count; set only
+///        when @p out_indices is requested.
+/// @return `1` when a nondegenerate hull is produced; `0` for invalid or non-finite input,
+///         coincident/collinear/coplanar geometry, pathological growth, or allocation failure.
+/// @note The caller releases successful @p out_vertices and @p out_indices allocations with
+///       `free()`.
 int rt_quickhull3d_build(const double *points,
                          int32_t point_count,
                          double **out_vertices,
@@ -551,6 +619,18 @@ fail:
     return 0;
 }
 
+/// @brief Reduces a packed point cloud with deterministic farthest-point sampling.
+/// @details The six axis extrema are selected first, with duplicate indices removed, so support
+///          bounds survive when capacity permits. Remaining slots greedily choose the point whose
+///          nearest selected neighbor is farthest. Input order is preserved only when no reduction
+///          is required.
+/// @param points Borrowed packed xyz coordinates for @p point_count points.
+/// @param point_count Positive input point count.
+/// @param max_points Positive maximum number of points to retain.
+/// @param[out] out_points Caller-owned packed xyz buffer with capacity for at least
+///        `min(point_count, max_points)` points.
+/// @return Number of points written, which may be smaller than @p max_points when all remaining
+///         coordinates coincide; zero for invalid arguments or scratch allocation failure.
 int32_t rt_quickhull3d_reduce(const double *points,
                               int32_t point_count,
                               int32_t max_points,

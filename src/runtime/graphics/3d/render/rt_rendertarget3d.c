@@ -30,6 +30,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements budgeted off-screen RenderTarget3D storage, readback, and canvas binding.
+/// @details Render-target shells reserve their maximum CPU/GPU footprint up front, allocate
+///   buffers lazily through the active backend, expose copied or cached Pixels mirrors, and retain
+///   safely while bound to a Canvas3D.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -59,9 +65,11 @@ extern void *rt_pixels_new(int64_t width, int64_t height);
 //=============================================================================
 
 /// @brief Multiply two size_t values with overflow detection, writing the product to *@p out.
-/// @return 1 with *@p out set on success; 0 (with *@p out cleared) when @p out is NULL or @p a * @p
-/// b
-///   would exceed SIZE_MAX.
+/// @param a First factor.
+/// @param b Second factor.
+/// @param[out] out Destination for the product; cleared before validation when non-null.
+/// @return 1 with *@p out set on success, or 0 when @p out is `NULL` or the product would exceed
+///   `SIZE_MAX`.
 static int rt_checked_mul_size(size_t a, size_t b, size_t *out) {
     if (out)
         *out = 0u;
@@ -80,6 +88,10 @@ static int rt_checked_mul_size(size_t a, size_t b, size_t *out) {
 ///   color/depth); HDR targets reserve 36 bytes/texel (HDR16F GPU color, GPU depth, RGBA32F HDR
 ///   mirror, RGBA8 tonemapped mirror, and CPU depth). This deliberately budgets the maximum rather
 ///   than only the shell's initial allocation so lazy readback cannot bypass the process ceiling.
+/// @param w Target width in pixels.
+/// @param h Target height in pixels.
+/// @param color_format LDR or HDR backend color format.
+/// @param[out] out_bytes Destination for the maximum owned footprint estimate.
 /// @return 1 with @p out_bytes set on success; 0 for non-positive dimensions or on overflow.
 static int rt_rendertarget_estimate_bytes(int32_t w,
                                           int32_t h,
@@ -103,6 +115,7 @@ static int rt_rendertarget_estimate_bytes(int32_t w,
 /// @details Render-target CPU mirrors and GPU textures are allocated lazily by the active backend,
 ///   but the dimensions define a predictable maximum footprint. Reserving that estimate up front
 ///   prevents scripts from creating many huge targets and deferring failure to backend OOM.
+/// @param bytes Maximum target footprint to add to the atomic process-wide reservation.
 /// @return 1 when the reservation was accepted; 0 when it would exceed the default budget.
 static int rt_rendertarget_reserve_budget(uint64_t bytes) {
     const size_t budget_bytes = (size_t)RT_RENDERTARGET3D_DEFAULT_BUDGET_BYTES;
@@ -129,6 +142,7 @@ static int rt_rendertarget_reserve_budget(uint64_t bytes) {
 /// @brief Release a previous RenderTarget3D footprint reservation.
 /// @details Saturates to zero on accounting mismatch so finalization remains idempotent even if a
 ///   partially constructed target is torn down during error recovery.
+/// @param bytes Previously reserved footprint to subtract from the process-wide total.
 static void rt_rendertarget_release_budget(uint64_t bytes) {
     size_t release_bytes;
     size_t old_value;
@@ -149,8 +163,8 @@ static void rt_rendertarget_release_budget(uint64_t bytes) {
 
 /// @brief Allocate a monotonic non-zero cache identity for a render-target shell.
 /// @details Backends use this instead of raw C pointers when caching native textures, avoiding
-/// stale
-///   cache hits if the allocator reuses a recently freed target address.
+///   stale cache hits if the allocator reuses a recently freed target address.
+/// @return A process-unique non-zero identity, subject only to full 64-bit counter wraparound.
 static uint64_t rt_rendertarget_next_cache_identity(void) {
     uint64_t identity =
         rt_atomic_fetch_add_u64(&g_rendertarget3d_next_identity, UINT64_C(1), __ATOMIC_RELAXED);
@@ -165,6 +179,11 @@ static uint64_t rt_rendertarget_next_cache_identity(void) {
 /// on first read or when the software backend binds the target — see
 /// `vgfx3d_rendertarget_ensure_color` / `_ensure_depth` in `rt_canvas3d_internal.h`. Returns
 /// NULL on calloc failure; the caller traps with a user-visible message.
+/// @param w Target width in pixels.
+/// @param h Target height in pixels.
+/// @param color_format Backend color storage format.
+/// @return An owned zero-initialized backend shell with a budget reservation, or `NULL` on invalid
+///   layout, exhausted budget, or allocation failure.
 static vgfx3d_rendertarget_t *rt_alloc(int32_t w,
                                        int32_t h,
                                        vgfx3d_rendertarget_color_format_t color_format) {
@@ -194,6 +213,7 @@ static vgfx3d_rendertarget_t *rt_alloc(int32_t w,
 
 /// @brief Tear down a `vgfx3d_rendertarget_t`. Frees both CPU-side buffers (NULL-safe — they
 /// may never have been allocated under the lazy-ensure model) and then the shell itself.
+/// @param rt Owned backend shell to release; ignored when `NULL`.
 static void rt_free(vgfx3d_rendertarget_t *rt) {
     if (!rt)
         return;
@@ -216,6 +236,7 @@ static void rt_free(vgfx3d_rendertarget_t *rt) {
 /// @brief GC finalizer for `RenderTarget3D`. Frees the underlying backend rendertarget if
 /// still live. The Canvas3D side releases its own retained reference separately, so the
 /// finalizer only owns `target` itself, not the canvas pointer.
+/// @param obj RenderTarget3D runtime object being finalized; ignored when `NULL`.
 static void rt_rendertarget3d_finalize(void *obj) {
     rt_rendertarget3d *rtd = (rt_rendertarget3d *)obj;
     if (!rtd)
@@ -233,17 +254,20 @@ static void rt_rendertarget3d_finalize(void *obj) {
 
 /// @brief Validate @p obj as a RenderTarget3D handle and return its typed pointer (NULL on
 /// mismatch).
+/// @param obj Candidate runtime object.
+/// @return The typed RenderTarget3D pointer, or `NULL` for a null or wrong-class object.
 static rt_rendertarget3d *rendertarget3d_checked(void *obj) {
     return (rt_rendertarget3d *)rt_g3d_checked_or_null(obj, RT_G3D_RENDERTARGET3D_CLASS_ID);
 }
 
 /// @brief Create an offscreen render target for render-to-texture effects.
-/// @details Allocates a software framebuffer at the specified resolution. Once
-///          bound to a Canvas3D via rt_canvas3d_bind_render_target, all subsequent
-///          Begin/DrawMesh/End calls render to this target instead of the window.
-///          The result can be read back as a Pixels object via as_pixels.
-/// @param width  Target width in pixels (1–VGFX3D_RENDERTARGET_DIM_MAX).
+/// @details Allocates a backend shell and reserves the target's maximum footprint; actual buffers
+///          remain lazy until backend binding or CPU readback. Once bound to a Canvas3D, rendering
+///          is redirected from the window and results can be copied into Pixels.
+/// @param width Target width in pixels (1–VGFX3D_RENDERTARGET_DIM_MAX).
 /// @param height Target height in pixels (1–VGFX3D_RENDERTARGET_DIM_MAX).
+/// @param color_format Requested LDR or HDR backend color storage.
+/// @param trap_name Diagnostic used when dimensions are outside the supported range.
 /// @return Opaque render target handle, or NULL on failure.
 static void *rt_rendertarget3d_new_with_format(int64_t width,
                                                int64_t height,
@@ -284,6 +308,8 @@ static void *rt_rendertarget3d_new_with_format(int64_t width,
 /// @details Thin wrapper around the shared constructor that selects the
 ///   `UNORM8` color format. Dimensions outside the supported render-target range
 ///   trap with a descriptive message rather than silently clamping.
+/// @param width Target width in pixels.
+/// @param height Target height in pixels.
 /// @return Retained pointer to the new `rt_rendertarget3d`, or traps on failure.
 void *rt_rendertarget3d_new(int64_t width, int64_t height) {
     return rt_rendertarget3d_new_with_format(width,
@@ -297,6 +323,10 @@ void *rt_rendertarget3d_new(int64_t width, int64_t height) {
 ///   format so tone-mapping and bloom effects can work with values > 1.0
 ///   without early clamping. Callers that don't need HDR should use the plain
 ///   `new` variant — HDR targets consume 2x the VRAM per pixel.
+/// @param width Target width in pixels.
+/// @param height Target height in pixels.
+/// @return Retained pointer to the new HDR `rt_rendertarget3d`, or `NULL` after trapping on
+///   invalid dimensions or allocation failure.
 void *rt_rendertarget3d_new_hdr(int64_t width, int64_t height) {
     return rt_rendertarget3d_new_with_format(width,
                                              height,
@@ -305,6 +335,8 @@ void *rt_rendertarget3d_new_hdr(int64_t width, int64_t height) {
 }
 
 /// @brief Get the width of the render target in pixels.
+/// @param obj Candidate RenderTarget3D handle.
+/// @return The validated width, or zero when object and backend metadata disagree.
 int64_t rt_rendertarget3d_get_width(void *obj) {
     rt_rendertarget3d *rtd = rendertarget3d_checked(obj);
     if (!rtd || !rtd->target || rtd->width <= 0 || rtd->width > VGFX3D_RENDERTARGET_DIM_MAX ||
@@ -315,6 +347,8 @@ int64_t rt_rendertarget3d_get_width(void *obj) {
 }
 
 /// @brief Get the height of the render target in pixels.
+/// @param obj Candidate RenderTarget3D handle.
+/// @return The validated height, or zero when object and backend metadata disagree.
 int64_t rt_rendertarget3d_get_height(void *obj) {
     rt_rendertarget3d *rtd = rendertarget3d_checked(obj);
     if (!rtd || !rtd->target || rtd->height <= 0 || rtd->height > VGFX3D_RENDERTARGET_DIM_MAX ||
@@ -325,6 +359,8 @@ int64_t rt_rendertarget3d_get_height(void *obj) {
 }
 
 /// @brief Return whether the target stores HDR color on the GPU path.
+/// @param obj Candidate RenderTarget3D handle.
+/// @return 1 for a valid HDR target, or 0 for LDR or invalid input.
 int32_t rt_rendertarget3d_get_is_hdr(void *obj) {
     const rt_rendertarget3d *rtd = rendertarget3d_checked(obj);
     return (rtd && vgfx3d_rendertarget_is_hdr(rtd->target)) ? 1 : 0;
@@ -391,6 +427,8 @@ void *rt_rendertarget3d_as_pixels(void *obj) {
 }
 
 /// @brief Sync the target's CPU color mirror and convert it into @p pv's uint32 buffer.
+/// @param rtd RenderTarget3D whose backend color storage is read.
+/// @param pv Existing same-size Pixels implementation receiving packed RGBA values.
 /// @return 1 on success, 0 when the target has no readable color or sizes disagree.
 static int rendertarget3d_read_into_pixels(rt_rendertarget3d *rtd, rt_pixels_impl *pv) {
     if (!rtd || !rtd->target || !pv || !pv->data)
@@ -456,6 +494,9 @@ void rt_rendertarget3d_copy_to(void *obj, void *pixels) {
 ///   the target is being rendered to, its revision has not advanced yet, so a
 ///   material bound to it keeps sampling the previous completed frame — this is
 ///   what makes self-referential monitor setups safe without a hazard trap.
+/// @param obj Candidate RenderTarget3D handle.
+/// @return A borrowed target-owned Pixels mirror, or `NULL` when validation, allocation, or
+///   readback fails.
 void *rt_rendertarget3d_material_pixels(void *obj) {
     rt_rendertarget3d *rtd = rendertarget3d_checked(obj);
     if (!rtd || !rtd->target)
@@ -481,6 +522,8 @@ void *rt_rendertarget3d_material_pixels(void *obj) {
 /// @brief Bind an offscreen render target. All subsequent Begin/DrawMesh/End
 /// calls render to the target instead of the window. The active backend
 /// (Metal, software, etc.) handles RTT natively — no backend switching needed.
+/// @param canvas Canvas3D whose output destination is changed.
+/// @param target RenderTarget3D retained by the canvas, or `NULL` to reset window rendering.
 void rt_canvas3d_set_render_target(void *canvas, void *target) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     if (!c)
@@ -518,6 +561,7 @@ void rt_canvas3d_set_render_target(void *canvas, void *target) {
 }
 
 /// @brief Unbind the render target. Subsequent rendering goes to the window.
+/// @param canvas Window-backed Canvas3D whose retained target is released.
 void rt_canvas3d_reset_render_target(void *canvas) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     if (!c)

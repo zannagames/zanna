@@ -18,6 +18,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+/**
+ * @file rt_path3d.c
+ * @brief Implements runtime-managed three-dimensional Catmull-Rom paths.
+ *
+ * Path3D stores control-point coordinates in parallel arrays, supports legacy
+ * uniform and centripetal spline evaluation, lazily caches sampled arc length,
+ * and exposes normalized position and tangent queries. All public inputs are
+ * repaired or bounded before interpolation so invalid handles and non-finite
+ * coordinates cannot escape into returned Vec3 values.
+ */
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_path3d.h"
@@ -45,18 +56,31 @@ extern double rt_vec3_z(void *v);
 
 #define PATH3D_SPLINE_SUBSTEPS 64
 
+/**
+ * @brief Mutable storage and derived-data caches for one Path3D object.
+ */
 typedef struct {
+    ///< Reserved runtime object header slot.
     void *vptr;
+    ///< Parallel control-point coordinate arrays owned by this object.
     double *xs, *ys, *zs;
+    ///< Number of initialized entries shared by the three coordinate arrays.
     int32_t point_count;
+    ///< Allocated entry capacity shared by the three coordinate arrays.
     int32_t point_capacity;
+    ///< Nonzero when normalized parameters wrap across the closing segment.
     int8_t looping;
+    ///< Lazily computed length of the legacy uniformly parameterized curve.
     double cached_length;
+    ///< Nonzero when @ref cached_length must be recomputed.
     int8_t length_dirty;
     /* Centripetal Catmull-Rom arclength cache (rt_path3d_eval_spline_raw):
      * cumulative length at every segment substep, rebuilt when dirty. */
+    ///< Owned cumulative-length lookup table for constant-speed evaluation.
     double *spline_cumulative;
+    ///< Number of initialized values in @ref spline_cumulative.
     int32_t spline_sample_count;
+    ///< Nonzero when the centripetal cumulative-length table is stale.
     int8_t spline_dirty;
 } rt_path3d;
 
@@ -68,6 +92,7 @@ typedef struct {
 ///   finalizer releases each independently and zeros the counts so a
 ///   stale post-finalize read sees an empty path rather than dangling
 ///   pointers.
+/// @param obj Path3D allocation whose owned arrays are released; may be NULL.
 static void path3d_finalizer(void *obj) {
     rt_path3d *p = (rt_path3d *)obj;
     if (!p)
@@ -83,6 +108,9 @@ static void path3d_finalizer(void *obj) {
 }
 
 /// @brief Sanitize one coordinate lane, capping finite extremes so interpolation stays finite.
+/// @param value Coordinate candidate to sanitize.
+/// @param fallback Replacement used when @p value is non-finite; itself normalized to zero.
+/// @return Finite coordinate clamped to `[-PATH3D_COORD_ABS_MAX, PATH3D_COORD_ABS_MAX]`.
 static double path3d_coord_or(double value, double fallback) {
     if (!isfinite(fallback))
         fallback = 0.0;
@@ -96,6 +124,7 @@ static double path3d_coord_or(double value, double fallback) {
 }
 
 /// @brief Repair defensive invariants before public operations touch the parallel point arrays.
+/// @param p Path storage to normalize; a null pointer is ignored.
 static void path3d_repair(rt_path3d *p) {
     if (!p)
         return;
@@ -132,6 +161,9 @@ static void path3d_repair(rt_path3d *p) {
 ///   any failure the new buffers are freed before returning so the path stays
 ///   in its previous valid state. Returns 1 on success, 0 (after `rt_trap`) on
 ///   overflow or OOM.
+/// @param p Path whose parallel coordinate arrays may be replaced.
+/// @param min_capacity Minimum number of point slots required.
+/// @return One when the requested capacity is available, otherwise zero.
 static int path3d_reserve(rt_path3d *p, int32_t min_capacity) {
     if (!p || min_capacity < 0)
         return 0;
@@ -211,6 +243,8 @@ void *rt_path3d_new(void) {
 }
 
 /// @brief Append a control point to the path (invalidates cached arc length).
+/// @param obj Path3D handle to modify.
+/// @param pos Vec3 control point whose sanitized coordinates are copied.
 void rt_path3d_add_point(void *obj, void *pos) {
     if (!obj || !rt_g3d_is_vec3(pos))
         return;
@@ -233,7 +267,23 @@ void rt_path3d_add_point(void *obj, void *pos) {
     p->spline_dirty = 1;
 }
 
-/// @brief 3D Catmull-Rom spline evaluation (mirrors rt_spline.c pattern).
+/// @brief Evaluate one uniformly parameterized three-dimensional Catmull-Rom segment.
+/// @param p0x X coordinate of the control point preceding the segment.
+/// @param p0y Y coordinate of the control point preceding the segment.
+/// @param p0z Z coordinate of the control point preceding the segment.
+/// @param p1x X coordinate of the segment start.
+/// @param p1y Y coordinate of the segment start.
+/// @param p1z Z coordinate of the segment start.
+/// @param p2x X coordinate of the segment end.
+/// @param p2y Y coordinate of the segment end.
+/// @param p2z Z coordinate of the segment end.
+/// @param p3x X coordinate of the control point following the segment.
+/// @param p3y Y coordinate of the control point following the segment.
+/// @param p3z Z coordinate of the control point following the segment.
+/// @param t Local segment parameter, normally in the inclusive range zero to one.
+/// @param ox Receives the interpolated X coordinate.
+/// @param oy Receives the interpolated Y coordinate.
+/// @param oz Receives the interpolated Z coordinate.
 static void catmull_rom_3d(double p0x,
                            double p0y,
                            double p0z,
@@ -260,6 +310,9 @@ static void catmull_rom_3d(double p0x,
 }
 
 /// @brief Get index clamped or wrapped for Catmull-Rom neighbor lookup.
+/// @param p Non-empty path defining point count and looping policy.
+/// @param i Potentially out-of-range control-point index.
+/// @return Wrapped index for a loop, or an endpoint-clamped index for an open path.
 static int32_t path_idx(const rt_path3d *p, int32_t i) {
     if (p->looping)
         return ((i % p->point_count) + p->point_count) % p->point_count;
@@ -270,6 +323,14 @@ static int32_t path_idx(const rt_path3d *p, int32_t i) {
     return i;
 }
 
+/// @brief Evaluate the legacy uniformly parameterized spline into scalar coordinate outputs.
+/// @details Open-path parameters are clamped, looping parameters are wrapped, single-point paths
+/// return their sole point, and empty or invalid paths return the origin.
+/// @param p Path storage to evaluate; may be NULL.
+/// @param t Normalized whole-path parameter.
+/// @param ox Receives the finite X coordinate.
+/// @param oy Receives the finite Y coordinate.
+/// @param oz Receives the finite Z coordinate.
 static void path3d_eval_position(rt_path3d *p, double t, double *ox, double *oy, double *oz) {
     if (!ox || !oy || !oz)
         return;
@@ -362,6 +423,10 @@ void *rt_path3d_get_position_at(void *obj, double t) {
 /// @brief Get the normalized tangent direction at parameter t.
 /// @details Computes the tangent via finite differences (forward - backward at
 ///          a small epsilon). Returns (0,0,0) if the path has < 2 points.
+/// @param obj Path3D handle to evaluate.
+/// @param t Normalized whole-path parameter, wrapped for loops and clamped for open paths.
+/// @return Newly allocated Vec3 containing a unit tangent, or the zero vector for a degenerate
+/// path or invalid handle.
 void *rt_path3d_get_direction_at(void *obj, double t) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     double eps = 0.001;
@@ -400,6 +465,12 @@ void *rt_path3d_get_direction_at(void *obj, double t) {
 ///   phantom neighbors p0/p3. Centripetal knots eliminate the loops/cusps and
 ///   along-line overshoot uniform parameterization produces on uneven spacing.
 ///   Degenerate (coincident) knots collapse to linear interpolation.
+/// @param p0 Control point preceding the segment.
+/// @param p1 Segment start control point.
+/// @param p2 Segment end control point.
+/// @param p3 Control point following the segment.
+/// @param u Local segment parameter, clamped to the inclusive range zero to one.
+/// @param out Receives the interpolated XYZ coordinates.
 static void path3d_eval_centripetal_segment(const double p0[3],
                                             const double p1[3],
                                             const double p2[3],
@@ -429,6 +500,9 @@ static void path3d_eval_centripetal_segment(const double p0[3],
 
 /// @brief Evaluate the centripetal spline at uniform-segment parameter t
 ///   (same segment mapping GetPositionAt uses; shape differs by design).
+/// @param p Path storage to evaluate; may be NULL.
+/// @param t Normalized whole-path parameter.
+/// @param out Receives a finite XYZ position, initialized to the origin.
 static void path3d_eval_spline_position(rt_path3d *p, double t, double out[3]) {
     out[0] = out[1] = out[2] = 0.0;
     if (!p)
@@ -484,6 +558,7 @@ static void path3d_eval_spline_position(rt_path3d *p, double t, double out[3]) {
 
 /// @brief Rebuild the arclength table: cumulative curve length sampled at
 ///   PATH3D_SPLINE_SUBSTEPS points per segment of the Catmull-Rom curve.
+/// @param p Path whose centripetal cumulative-length cache is refreshed when dirty.
 static void path3d_spline_refresh(rt_path3d *p) {
     if (!p || !p->spline_dirty)
         return;
@@ -535,6 +610,10 @@ static void path3d_spline_refresh(rt_path3d *p) {
 ///   position and (when @p tan_out is non-NULL) the unit tangent. Falls back
 ///   to the raw parameterization for degenerate paths (< 2 points or zero
 ///   length). Consumers: RailCamera3D, Timeline3D camera-move tracks.
+/// @param obj Path3D handle to evaluate.
+/// @param t Normalized arc-length parameter, wrapped for loops and clamped for open paths.
+/// @param pos_out Required three-component output receiving the evaluated position.
+/// @param tan_out Optional three-component output receiving the unit tangent.
 void rt_path3d_eval_spline_raw(void *obj, double t, double *pos_out, double *tan_out) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (pos_out)
@@ -600,6 +679,9 @@ void rt_path3d_eval_spline_raw(void *obj, double t, double *pos_out, double *tan
 /// @details Numerically integrates distance along the spline using up to 20 samples
 ///          per control point, capped to avoid integer overflow and runaway work.
 ///          The result is cached until points are added/removed.
+/// @param obj Path3D handle to measure.
+/// @return Cached or recomputed finite length in world units, or zero for an invalid or
+/// degenerate path.
 double rt_path3d_get_length(void *obj) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (!p)
@@ -645,6 +727,8 @@ double rt_path3d_get_length(void *obj) {
 }
 
 /// @brief Get the number of control points in the path.
+/// @param obj Path3D handle to inspect.
+/// @return Repaired non-negative control-point count, or zero for an invalid handle.
 int64_t rt_path3d_get_point_count(void *obj) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (!p)
@@ -654,6 +738,8 @@ int64_t rt_path3d_get_point_count(void *obj) {
 }
 
 /// @brief Enable or disable looping (t wraps around instead of clamping).
+/// @param obj Path3D handle to modify.
+/// @param loop Nonzero to include a closing segment and wrap normalized parameters.
 void rt_path3d_set_looping(void *obj, int8_t loop) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (!p)
@@ -665,6 +751,7 @@ void rt_path3d_set_looping(void *obj, int8_t loop) {
 }
 
 /// @brief Remove all control points, resetting the path to empty.
+/// @param obj Path3D handle to clear while retaining allocated coordinate capacity.
 void rt_path3d_clear(void *obj) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (!p)
