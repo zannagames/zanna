@@ -24,6 +24,12 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements the code-editor minimap, bounded line-summary caching,
+///        viewport observation, rendering, and drag navigation.
+/// @details The minimap borrows its editor, observes editor revision and
+///          viewport fields, and stores only a fixed-size direct-mapped cache.
+///          Stale or destroyed editor handles are detached before use.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_event.h"
 #include "../../include/vg_ide_widgets.h"
@@ -106,7 +112,8 @@ vg_minimap_t *vg_minimap_create(vg_codeeditor_t *editor) {
     return minimap;
 }
 
-/// @brief VTable destroy: frees the pixel render buffer and the markers array.
+/// @brief Release all render, line-cache, and marker storage.
+/// @param widget Minimap widget base being destroyed.
 static void minimap_destroy(vg_widget_t *widget) {
     vg_minimap_t *minimap = (vg_minimap_t *)widget;
     free(minimap->render_buffer);
@@ -128,6 +135,9 @@ void vg_minimap_destroy(vg_minimap_t *minimap) {
 
 /// @brief VTable measure: uses preferred_width constraint (default 96 px) for width and claims all
 /// available height.
+/// @param widget Minimap widget base to measure.
+/// @param available_width Offered width; the preferred-width policy takes precedence.
+/// @param available_height Height claimed when positive, otherwise a 160-pixel fallback.
 static void minimap_measure(vg_widget_t *widget, float available_width, float available_height) {
     (void)available_width;
 
@@ -147,12 +157,18 @@ static void minimap_measure(vg_widget_t *widget, float available_width, float av
 }
 
 /// @brief Clears the buffer_dirty flag; placeholder for future per-pixel RGBA buffer rasterisation.
+/// @param minimap Minimap whose deferred buffer work is acknowledged.
 static void render_minimap_buffer(vg_minimap_t *minimap) {
     if (!minimap)
         return;
     minimap->buffer_dirty = false;
 }
 
+/// @brief Validate and return the minimap's borrowed code-editor handle.
+/// @details A stale handle or wrong widget type is detached so later callers do
+///          not repeatedly dereference invalid editor state.
+/// @param minimap Minimap whose editor link is inspected.
+/// @return Borrowed live code editor, or `NULL`.
 static vg_codeeditor_t *minimap_live_editor(vg_minimap_t *minimap) {
     if (!minimap || !minimap->editor)
         return NULL;
@@ -185,6 +201,12 @@ static void minimap_clear_line_cache(vg_minimap_t *minimap) {
 }
 
 /// @brief Synchronize source-content, layout, and viewport observations from the editor.
+/// @details Content or layout changes clear cached line summaries and dirty the
+///          render buffer. Viewport-only changes retain summaries. Either kind
+///          advances the combined source revision and invalidates paint.
+/// @param minimap Minimap to synchronize with its borrowed editor.
+/// @return `true` when any observed state changed; `false` for no change or no
+///         live editor.
 bool vg_minimap_sync_source(vg_minimap_t *minimap) {
     if (!minimap)
         return false;
@@ -221,6 +243,8 @@ bool vg_minimap_sync_source(vg_minimap_t *minimap) {
 }
 
 /// @brief Synchronize and return the minimap's combined observed-source revision.
+/// @param minimap Minimap to query.
+/// @return Saturating revision after synchronization, or zero for `NULL`.
 uint64_t vg_minimap_get_source_revision(vg_minimap_t *minimap) {
     if (!minimap)
         return 0u;
@@ -229,6 +253,13 @@ uint64_t vg_minimap_get_source_revision(vg_minimap_t *minimap) {
 }
 
 /// @brief Atomically replace the bounded direct-mapped line cache.
+/// @details A zero limit disables caching and releases storage. For nonzero
+///          limits, replacement allocation completes before the old cache is
+///          discarded.
+/// @param minimap Minimap whose cache capacity is changed.
+/// @param maximum_lines Maximum number of line summaries retained.
+/// @return `true` after applying the limit; `false` with the old cache intact
+///         on invalid input, overflow, or allocation failure.
 bool vg_minimap_set_maximum_cached_lines(vg_minimap_t *minimap, uint32_t maximum_lines) {
     if (!minimap)
         return false;
@@ -259,12 +290,16 @@ bool vg_minimap_set_maximum_cached_lines(vg_minimap_t *minimap, uint32_t maximum
 }
 
 /// @brief Return the count of currently valid direct-mapped cache slots.
+/// @param minimap Minimap cache to inspect.
+/// @return Number of valid slots, or zero for `NULL`.
 uint32_t vg_minimap_get_cached_line_count(const vg_minimap_t *minimap) {
     return minimap ? minimap->cached_line_count : 0u;
 }
 
 /// @brief Returns the line count of the linked editor, or 1 if no editor is attached or the editor
 /// is empty.
+/// @param minimap Minimap whose live editor is queried.
+/// @return Positive logical line count.
 static int minimap_document_line_count(vg_minimap_t *minimap) {
     vg_codeeditor_t *editor = minimap_live_editor(minimap);
     if (!editor || editor->line_count <= 0)
@@ -274,6 +309,9 @@ static int minimap_document_line_count(vg_minimap_t *minimap) {
 
 /// @brief Converts widget-local @p local_y to a document line index proportional to the inner
 /// drawing area height.
+/// @param minimap Minimap providing widget geometry and document length.
+/// @param local_y Pointer coordinate relative to the widget.
+/// @return Clamped zero-based document line.
 static int minimap_line_from_local_y(vg_minimap_t *minimap, float local_y) {
     if (!minimap_live_editor(minimap))
         return 0;
@@ -299,6 +337,8 @@ static int minimap_line_from_local_y(vg_minimap_t *minimap, float local_y) {
 }
 
 /// @brief Scrolls the linked editor so that @p line is centred in the visible area.
+/// @param minimap Minimap linked to the target editor.
+/// @param line Desired zero-based document line.
 static void minimap_scroll_editor_to_line(vg_minimap_t *minimap, int line) {
     vg_codeeditor_t *editor = minimap_live_editor(minimap);
     if (!editor)
@@ -322,6 +362,11 @@ static void minimap_scroll_editor_to_line(vg_minimap_t *minimap, int line) {
 
 /// @brief Scans @p text for the first and last non-whitespace byte positions, writing them into @p
 /// out_first and @p out_last; returns 0 for blank lines.
+/// @param text Null-terminated line bytes, or `NULL`.
+/// @param max_columns Maximum prefix bytes to inspect.
+/// @param out_first Optional destination for the first non-space/tab index.
+/// @param out_last Optional destination for the last non-space/tab index.
+/// @return Nonzero when the inspected prefix contains visible bytes.
 static int minimap_trimmed_line_bounds(const char *text,
                                        int max_columns,
                                        int *out_first,
@@ -392,6 +437,11 @@ static int minimap_cached_line_bounds(vg_minimap_t *minimap,
 
 /// @brief VTable paint: draws background, then proportional text bars for each document line,
 /// marker overlays, and the viewport highlight rectangle.
+/// @details Sampling is capped independently of document length. Each sampled
+///          line becomes a proportional horizontal bar based on its trimmed
+///          byte span; markers and observed editor viewport are layered above.
+/// @param widget Arranged minimap widget base to paint.
+/// @param canvas Backend canvas used for rectangle primitives.
 static void minimap_paint(vg_widget_t *widget, void *canvas) {
     vg_minimap_t *minimap = (vg_minimap_t *)widget;
     (void)vg_minimap_sync_source(minimap);
@@ -512,6 +562,9 @@ static void minimap_paint(vg_widget_t *widget, void *canvas) {
 
 /// @brief VTable handle_event: handles mouse-down to start a drag-scroll and mouse-move while
 /// dragging, translating Y to a document line.
+/// @param widget Minimap widget receiving input.
+/// @param event Pointer event to interpret.
+/// @return `true` when a drag-navigation event was consumed.
 static bool minimap_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_minimap_t *minimap = (vg_minimap_t *)widget;
     if (!minimap_live_editor(minimap))

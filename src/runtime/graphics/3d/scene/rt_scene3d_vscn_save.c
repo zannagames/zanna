@@ -2048,24 +2048,15 @@ int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string p
     return result;
 }
 
-/// @brief Serialize the scene to a .vscn file. @return 1 on success, 0 on failure.
-int64_t rt_scene3d_save(void *scene_obj, rt_string path) {
-    if (!scene_obj || !path)
-        return 0;
-    rt_scene3d *scene = (rt_scene3d *)rt_g3d_checked_or_null(scene_obj, RT_G3D_SCENE3D_CLASS_ID);
-    if (!scene)
-        return 0;
-    if (!scene->root)
-        return 0;
-
-    const char *filepath = rt_string_cstr(path);
-    if (!filepath)
-        return 0;
-
+/// @brief Build the complete canonical VSCN text for @p scene in one buffer.
+/// @details Shared by the file and text save endpoints (ADR 0190) so version
+///          selection and byte output are identical on both paths. On success
+///          the caller owns the malloc'd @p *out_buf and must free it.
+/// @return 1 on success, 0 on collection or append failure.
+static int scene3d_build_vscn_text(rt_scene3d *scene, char **out_buf, size_t *out_len) {
     vscn_save_context_t ctx = {0};
     char *buf = NULL;
     size_t len = 0, cap = 0;
-    int64_t result = 0;
 
     for (int32_t i = 0, child_count = scene3d_node_child_count(scene->root); i < child_count; i++) {
         if (!scene->root->children[i])
@@ -2119,10 +2110,58 @@ int64_t rt_scene3d_save(void *scene_obj, rt_string path) {
         return 0;
     }
 
-    result = vscn_write_atomic(filepath, buf, len);
     vscn_save_free_ctx(&ctx);
+    *out_buf = buf;
+    *out_len = len;
+    return 1;
+}
+
+/// @brief Serialize the scene to a .vscn file. @return 1 on success, 0 on failure.
+int64_t rt_scene3d_save(void *scene_obj, rt_string path) {
+    if (!scene_obj || !path)
+        return 0;
+    rt_scene3d *scene = (rt_scene3d *)rt_g3d_checked_or_null(scene_obj, RT_G3D_SCENE3D_CLASS_ID);
+    if (!scene)
+        return 0;
+    if (!scene->root)
+        return 0;
+
+    const char *filepath = rt_string_cstr(path);
+    if (!filepath)
+        return 0;
+
+    char *buf = NULL;
+    size_t len = 0;
+    if (!scene3d_build_vscn_text(scene, &buf, &len))
+        return 0;
+    int64_t result = vscn_write_atomic(filepath, buf, len);
     free(buf);
     return result;
+}
+
+/// @brief Serialize the scene to canonical VSCN text entirely in memory (ADR 0190).
+/// @details Byte-identical to what rt_scene3d_save would write, including the
+///          version-selection rules and the 64 MB VSCN budget. Returns the
+///          shared empty string on any failure, matching the 2D
+///          SceneDocument.ToJson convention; no filesystem access occurs.
+rt_string rt_scene3d_save_text(void *scene_obj) {
+    if (!scene_obj)
+        return rt_str_empty();
+    rt_scene3d *scene = (rt_scene3d *)rt_g3d_checked_or_null(scene_obj, RT_G3D_SCENE3D_CLASS_ID);
+    if (!scene || !scene->root)
+        return rt_str_empty();
+
+    char *buf = NULL;
+    size_t len = 0;
+    if (!scene3d_build_vscn_text(scene, &buf, &len))
+        return rt_str_empty();
+    if (len > VSCN_MAX_FILE_BYTES) {
+        free(buf);
+        return rt_str_empty();
+    }
+    rt_string text = rt_string_from_bytes(buf, len);
+    free(buf);
+    return text ? text : rt_str_empty();
 }
 
 #endif // ZANNA_ENABLE_GRAPHICS

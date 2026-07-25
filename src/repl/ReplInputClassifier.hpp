@@ -1,4 +1,10 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares stateless completeness classifiers for Zia and BASIC REPL input.
+/// @details Classification is deliberately shallower than parsing: it decides
+///          whether to request continuation, dispatch a meta command, ignore
+///          empty input, or submit accumulated source to a language adapter.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -32,12 +38,14 @@ enum class InputKind {
     Empty,       ///< Input is blank or whitespace-only.
 };
 
-/// @brief Classifies REPL input for the Zia language.
-/// @details Tracks bracket depth ({, (, [) and detects unclosed blocks.
-///          Handles string literals (braces inside strings are ignored).
+/// @brief Classifies accumulated REPL input for Zia and BASIC.
+/// @details The Zia path tracks delimiter balance outside strings/comments,
+///          while the BASIC path tracks string termination and block keywords.
+///          The utility owns no state between calls.
 class ReplInputClassifier {
   public:
     /// @brief Classify Zia input (bracket depth tracking).
+    /// @details Delimiters inside quoted strings or line comments are ignored.
     /// @param input The accumulated REPL input (may span multiple lines).
     /// @return The classification of the input.
     static InputKind classify(const std::string &input);

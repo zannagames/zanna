@@ -17,6 +17,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements bounded Vorbis I header and audio-packet decoding.
+/// @details Decoder instances own parsed codebooks, floor/residue/mapping/mode
+///          tables, windows, overlap state, and a reusable interleaved signed
+///          16-bit PCM output buffer. Callers submit identification, comment,
+///          and setup packets in order, then decode audio packets while the
+///          decoder preserves overlap-add state between calls.
+
 #include "rt_vorbis.h"
 
 #include <math.h>
@@ -56,6 +64,9 @@ typedef struct {
 // ---------------------------------------------------------------------------
 
 /// @brief Reset a bitstream onto a fresh byte buffer (`byte_pos = 0`, `bit_pos = 0`).
+/// @param b Reader state to initialize.
+/// @param data Borrowed packet bytes.
+/// @param len Number of readable bytes.
 static void bits_init(vorbis_bits_t *b, const uint8_t *data, size_t len) {
     b->data = data;
     b->len = len;
@@ -64,7 +75,10 @@ static void bits_init(vorbis_bits_t *b, const uint8_t *data, size_t len) {
 }
 
 /// @brief Pull `count` bits (LSB-first into `val`) from the bitstream. Returns 0 if EOF.
-/// `count` is clamped to [1, 32]; assembles the bits into a uint32 with bit 0 being the first read.
+/// Valid counts are `[1, 32]`; assembles bits into a uint32 with bit 0 read first.
+/// @param b Initialized packet bit reader.
+/// @param count Number of bits to consume.
+/// @return Decoded field or the available prefix at EOF; zero for invalid count.
 static uint32_t bits_read(vorbis_bits_t *b, int count) {
     if (count <= 0 || count > 32)
         return 0;
@@ -84,11 +98,15 @@ static uint32_t bits_read(vorbis_bits_t *b, int count) {
 }
 
 /// @brief Convenience: read a single bit and return 0 or 1.
+/// @param b Initialized packet bit reader.
+/// @return Next bit value, or zero at EOF.
 static int bits_read1(vorbis_bits_t *b) {
     return (int)bits_read(b, 1);
 }
 
 /// @brief True if the cursor has consumed every byte in the bitstream.
+/// @param b Bit reader to query.
+/// @return Non-zero when no unread byte remains.
 static int bits_eof(const vorbis_bits_t *b) {
     return b->byte_pos >= b->len;
 }
@@ -99,6 +117,8 @@ static int bits_eof(const vorbis_bits_t *b) {
 
 /// @brief Position of the highest set bit + 1 (Vorbis spec's `ilog`). 0 for `v=0`.
 /// Equivalent to `floor(log2(v)) + 1` for v > 0.
+/// @param v Unsigned value.
+/// @return Bit width required to represent @p v.
 static int ilog(uint32_t v) {
     int r = 0;
     while (v > 0) {
@@ -144,9 +164,6 @@ static float float32_unpack(uint32_t val) {
     return (float)ldexp((double)mantissa, exponent - 788);
 }
 
-/// @brief Construct the sorted (code, index) table used by Huffman decoding.
-///
-/// Walks the codebook's per-entry length array, assigning canonical
 /// @brief Build a canonical-Huffman code table from the codebook's per-entry bit
 ///        lengths, using the Vorbis-spec marker-array algorithm.
 /// @details The codebook header gives us only a list of code *lengths* per entry;
@@ -167,6 +184,7 @@ static float float32_unpack(uint32_t val) {
 ///
 ///          Codewords and lengths are stored separately so valid 25-32 bit
 ///          codewords are not truncated by metadata packing.
+/// @param cb Parsed codebook whose decode arrays are allocated/populated.
 /// @return 0 on success, -1 on allocation failure.
 static int codebook_build_tree(vorbis_codebook_t *cb) {
     // Count valid entries
@@ -230,6 +248,9 @@ static int codebook_build_tree(vorbis_codebook_t *cb) {
 /// Linear-scan over the sorted table — fine because Vorbis
 /// codebooks are typically small. Reads bits until a length+value
 /// pair matches; returns the entry index, or -1 on EOF / no-match.
+/// @param cb Codebook containing canonical decode arrays.
+/// @param b Packet bit reader.
+/// @return Decoded codebook entry index, or `-1` on EOF/no match.
 static int codebook_decode_scalar(vorbis_codebook_t *cb, vorbis_bits_t *b) {
     if (cb->sorted_count == 0 || !cb->sorted_codes || !cb->sorted_code_lengths ||
         !cb->sorted_indices)
@@ -259,6 +280,9 @@ static int codebook_decode_scalar(vorbis_codebook_t *cb, vorbis_bits_t *b) {
 
 /// @brief Look up the `entry`-th vector in the codebook's VQ table.
 /// Out-of-range entries write zeros (defensive — should not happen with valid streams).
+/// @param cb Parsed codebook.
+/// @param entry Decoded entry index.
+/// @param out Receives `cb->dimensions` floating-point values.
 static void codebook_decode_vq(vorbis_codebook_t *cb, int entry, float *out) {
     if (cb->vq_table && entry >= 0 && entry < cb->entries) {
         memcpy(out, cb->vq_table + entry * cb->dimensions, (size_t)cb->dimensions * sizeof(float));
@@ -554,6 +578,7 @@ slow_path:
 //===----------------------------------------------------------------------===//
 
 /// @brief Allocate a new Vorbis decoder state (must receive headers before decoding audio).
+/// @return Caller-owned decoder, or NULL on allocation failure.
 vorbis_decoder_t *vorbis_decoder_new(void) {
     vorbis_decoder_t *dec = (vorbis_decoder_t *)calloc(1, sizeof(vorbis_decoder_t));
     if (!dec)
@@ -563,6 +588,9 @@ vorbis_decoder_t *vorbis_decoder_new(void) {
 }
 
 /// @brief Free a Vorbis decoder and all its codebook/floor/residue tables.
+/// @details Also releases windows, channel overlap state, and the reusable PCM
+///          output buffer. Any pointer returned by packet decoding becomes invalid.
+/// @param dec Decoder returned by @ref vorbis_decoder_new; NULL is accepted.
 void vorbis_decoder_free(vorbis_decoder_t *dec) {
     if (!dec)
         return;
@@ -592,7 +620,10 @@ void vorbis_decoder_free(vorbis_decoder_t *dec) {
 ///
 /// First of three required setup packets per §4.2.2. Validates the
 /// version byte and the two block size hints.
-/// @return 0 on success, -1 on malformed header.
+/// @param dec Decoder to initialize.
+/// @param data Borrowed identification packet bytes.
+/// @param len Packet length in bytes.
+/// @return `0` on success or `-1` on malformed/unsupported input/allocation failure.
 static int decode_identification(vorbis_decoder_t *dec, const uint8_t *data, size_t len) {
     if (len < 30)
         return -1;
@@ -638,6 +669,10 @@ static int decode_identification(vorbis_decoder_t *dec, const uint8_t *data, siz
 }
 
 /// @brief Skip the comment header packet — we don't surface metadata to the runtime.
+/// @param dec Decoder context; currently unused.
+/// @param data Borrowed comment packet bytes.
+/// @param len Packet length in bytes.
+/// @return `0` for a valid comment signature, otherwise `-1`.
 static int decode_comment(vorbis_decoder_t *dec, const uint8_t *data, size_t len) {
     (void)dec;
     // Verify "\x03vorbis"
@@ -655,7 +690,10 @@ static int decode_comment(vorbis_decoder_t *dec, const uint8_t *data, size_t len
 /// codebook's VQ table from packed multiplicands, builds the
 /// Huffman lookup, then parses floor / residue / mapping / mode
 /// configurations needed to interpret data packets.
-/// @return 0 on success, -1 on any parse failure.
+/// @param dec Decoder that owns parsed setup allocations.
+/// @param data Borrowed setup packet bytes.
+/// @param len Packet length in bytes.
+/// @return `0` on success or `-1` on any parse, validation, or allocation failure.
 static int decode_setup(vorbis_decoder_t *dec, const uint8_t *data, size_t len) {
     if (len < 7 || data[0] != 5 || memcmp(data + 1, "vorbis", 6) != 0)
         return -1;
@@ -951,6 +989,11 @@ static int decode_setup(vorbis_decoder_t *dec, const uint8_t *data, size_t len) 
 /// @details Must be called in order for packets 0, 1, 2 before any audio decoding.
 ///          Packet 0 sets sample rate and channels. Packet 2 builds all codebook,
 ///          floor, residue, and mapping tables needed for audio frame decoding.
+/// @param dec Decoder instance.
+/// @param data Borrowed header packet bytes.
+/// @param len Packet length in bytes.
+/// @param packet_num `0` for identification, `1` for comments, or `2` for setup.
+/// @return `0` on success or `-1` on invalid arguments/packet content.
 int vorbis_decode_header(vorbis_decoder_t *dec, const uint8_t *data, size_t len, int packet_num) {
     if (!dec || !data)
         return -1;
@@ -1020,9 +1063,15 @@ int vorbis_decode_header(vorbis_decoder_t *dec, const uint8_t *data, size_t len,
 ///             `overlap_buf` for the next packet.
 ///
 ///          Clips final int16 PCM to `[-32768, 32767]` so downstream mixers
-///          don't have to. Allocates `*out_pcm` on first call and grows it as
-///          needed; caller retains the buffer across calls to amortize allocation.
-/// @return Number of PCM samples per channel emitted, or -1 on malformed packet.
+///          don't have to. Allocates the decoder-owned `*out_pcm` buffer on
+///          first use and grows/reuses it across calls.
+/// @param dec Decoder with all three headers successfully parsed.
+/// @param data Borrowed audio packet bytes.
+/// @param len Packet length in bytes.
+/// @param out_pcm Receives borrowed decoder-owned interleaved PCM, or NULL when
+///        the packet emits no samples. Valid until the next decode or decoder free.
+/// @param out_samples Receives emitted sample-frame count per channel.
+/// @return `0` on success or `-1` on invalid/malformed input or allocation failure.
 int vorbis_decode_packet(
     vorbis_decoder_t *dec, const uint8_t *data, size_t len, int16_t **out_pcm, int *out_samples) {
     if (!dec || !data || dec->headers_done != 7)
@@ -1445,16 +1494,22 @@ residue_done:
 }
 
 /// @brief Get the audio sample rate from the Vorbis identification header.
+/// @param dec Decoder instance, or NULL.
+/// @return Parsed sample rate in hertz, or zero for NULL/uninitialized state.
 int vorbis_get_sample_rate(const vorbis_decoder_t *dec) {
     return dec ? dec->sample_rate : 0;
 }
 
 /// @brief Get the number of audio channels from the Vorbis identification header.
+/// @param dec Decoder instance, or NULL.
+/// @return Parsed channel count, or zero for NULL/uninitialized state.
 int vorbis_get_channels(const vorbis_decoder_t *dec) {
     return dec ? dec->channels : 0;
 }
 
 /// @brief Return the most recent decoder diagnostic message.
+/// @param dec Decoder instance, or NULL.
+/// @return Decoder-owned NUL-terminated message, or an empty string when none.
 const char *vorbis_last_error(const vorbis_decoder_t *dec) {
     return dec && dec->last_error[0] ? dec->last_error : "";
 }

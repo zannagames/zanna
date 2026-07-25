@@ -579,6 +579,12 @@ func main() {
     var scene3DEditor = new scene_editor_3d.SceneEditor3D();
     scene3DEditor.Setup(shell.workbench.scene3DHost, shell.app);
     scene3DEditor.SetWorkspaceContext(projMgr);
+    // ADR 0191: the interactive viewport requests the platform GPU backend
+    // (falling back to software truthfully). Probes never enable this, so
+    // they keep byte-deterministic software rendering.
+    if envFlagEnabled("ZANNA_STUDIO_SOFTWARE_VIEWPORT") == false {
+        scene3DEditor.SetViewportAcceleration(true);
+    }
 
     var completer = new completion.CompletionController();
     completer.Setup(engine.editor, shell.app);

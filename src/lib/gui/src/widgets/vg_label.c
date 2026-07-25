@@ -19,6 +19,13 @@
 //        lib/gui/include/vg_font.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements text labels with wrapping, ellipsis, alignment, optional
+///        vector icons, and read-only UTF-8 selection.
+/// @details The widget owns its source text and derived display caches. Wrapping
+///          records source-byte spans for selection mapping, and all cache
+///          invalidation is tied to changes in text, typography, or fitting
+///          policy.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_event.h"
 #include "../../include/vg_icon_vector.h"
@@ -321,7 +328,10 @@ vg_label_t *vg_label_create(vg_widget_t *parent, const char *text) {
     return label;
 }
 
-/// @brief Free the word-wrap line cache.
+/// @brief Release all wrapped-line and ellipsis display caches.
+/// @details Source text and typography are retained. Cache metadata is reset so
+///          the next measure or paint rebuilds display strings for its width.
+/// @param label Label whose derived text storage is invalidated.
 static void label_free_wrap_cache(vg_label_t *label) {
     if (label->wrap_line_bufs) {
         for (int i = 0; i < label->wrap_line_count; i++)
@@ -358,7 +368,8 @@ static float label_quantized_wrap_width(float wrap_width) {
     return (float)quarter_pixels / 4.0f;
 }
 
-/// @brief VTable destroy: frees the label text string and the word-wrap line cache.
+/// @brief Release text, display caches, and any active input capture.
+/// @param widget Label widget base being destroyed.
 static void label_destroy(vg_widget_t *widget) {
     vg_label_t *label = (vg_label_t *)widget;
     if (vg_widget_get_input_capture() == widget)
@@ -370,13 +381,18 @@ static void label_destroy(vg_widget_t *widget) {
     label_free_wrap_cache(label);
 }
 
-/// @brief Build the word-wrap line cache and measure total height.
-///
-/// Runs the greedy algorithm once, storing each line as a heap-allocated
-/// string in label->wrap_line_bufs.  Subsequent calls with the same
-/// wrap_width return immediately using the cached results.
-///
-/// @return Number of lines produced.
+/// @brief Build or reuse the greedy word-wrap cache and measure its height.
+/// @details Each cached line owns a null-terminated display string plus the
+///          corresponding half-open source-byte range. Long words are split only
+///          at UTF-8 unit boundaries. The maximum-line and ellipsis policies are
+///          applied during construction, and a matching quantized width reuses
+///          the existing cache.
+/// @param label Label supplying source text, typography, and wrap policy.
+/// @param wrap_width Available physical width, quantized for stable caching.
+/// @param line_height Height assigned to each produced line.
+/// @param out_total_height Optional destination for line count times line height.
+/// @return Number of lines produced. Allocation failure reports one fallback
+///         line without installing a partial cache.
 static int label_measure_wrapped(vg_label_t *label,
                                  float wrap_width,
                                  float line_height,
@@ -587,8 +603,14 @@ wrap_oom:
     return 1;
 }
 
-/// @brief VTable measure: measures text using the word-wrap cache (when enabled) or a single-line
-/// font measurement, then applies constraints.
+/// @brief Measure wrapped or single-line label content and apply constraints.
+/// @details Wrapped labels occupy the offered width and derive height from the
+///          line cache. Single-line labels use font metrics, include optional
+///          icon space, and clamp ellipsized content to the offered width.
+/// @param widget Label widget base to measure.
+/// @param available_width Width offered by the parent layout.
+/// @param available_height Height offered by the parent; currently unused
+///                         before widget constraints are applied.
 static void label_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_label_t *label = (vg_label_t *)widget;
     (void)available_height;
@@ -767,7 +789,13 @@ static char *label_copy_selection(const vg_label_t *label) {
     return copy;
 }
 
-/// @brief VTable paint: render cached/fitted text, alignment, and selectable highlights.
+/// @brief Render fitted text, an optional icon, and selection highlights.
+/// @details Wrapped text is painted line by line from cached display strings and
+///          source mappings. Single-line text optionally uses a width-keyed
+///          ellipsis cache. Disabled colors, horizontal and vertical alignment,
+///          and read-only selection backgrounds are applied in both paths.
+/// @param widget Arranged label widget base to paint.
+/// @param canvas Backend canvas passed to font, vector-icon, and fill routines.
 static void label_paint(vg_widget_t *widget, void *canvas) {
     vg_label_t *label = (vg_label_t *)widget;
     if (!label->font)
@@ -883,7 +911,13 @@ static void label_paint(vg_widget_t *widget, void *canvas) {
                       color);
 }
 
-/// @brief VTable input handler for read-only label selection and copy shortcuts.
+/// @brief Handle pointer selection and keyboard commands for a selectable label.
+/// @details Primary-button dragging updates UTF-8 source-byte endpoints under
+///          input capture. Ctrl/Super+A selects all, Ctrl/Super+C copies the
+///          ordered selection, and Escape clears it.
+/// @param widget Label widget receiving the event.
+/// @param event Mutable event whose handled flag is set when consumed.
+/// @return `true` when the selectable-label interaction consumed the event.
 static bool label_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_label_t *label = (vg_label_t *)widget;
     if (!label->selectable || !widget->enabled || !event)
@@ -993,8 +1027,11 @@ void vg_label_set_text(vg_label_t *label, const char *text) {
     vg_widget_note_revision(&label->base);
 }
 
-/// @brief Enable or disable word wrapping. When enabled, the label wraps its
-///        text to the width it is laid out at and reports a multi-line height.
+/// @brief Enable or disable width-constrained word wrapping.
+/// @details A mode change discards fitted-text caches and schedules both layout
+///          and paint. Wrapped labels report a multi-line measured height.
+/// @param label Label to configure; `NULL` is ignored.
+/// @param enabled `true` to wrap source text to the arranged width.
 void vg_label_set_word_wrap(vg_label_t *label, bool enabled) {
     if (!label || label->word_wrap == enabled)
         return;
@@ -1033,10 +1070,11 @@ void vg_label_set_font(vg_label_t *label, vg_font_t *font, float size) {
     vg_widget_note_revision(&label->base);
 }
 
-/// @brief Set the label's text colour.
-///
-/// @param label The label to configure.
-/// @param color Text colour in 0xRRGGBB format.
+/// @brief Set or clear the vector icon drawn before single-line label text.
+/// @details Negative identifiers normalize to -1, which disables the icon.
+///          A changed icon affects intrinsic width and schedules layout and paint.
+/// @param label Label to configure; `NULL` is ignored.
+/// @param vector_id Registered vector icon identifier, or a negative value for none.
 void vg_label_set_vector_icon(vg_label_t *label, int32_t vector_id) {
     if (!label)
         return;
@@ -1050,6 +1088,9 @@ void vg_label_set_vector_icon(vg_label_t *label, int32_t vector_id) {
     vg_widget_note_revision(&label->base);
 }
 
+/// @brief Set the label's text and vector-icon color.
+/// @param label Label to configure; `NULL` is ignored.
+/// @param color Packed color value in the GUI renderer's RGBA representation.
 void vg_label_set_color(vg_label_t *label, uint32_t color) {
     if (!label)
         return;

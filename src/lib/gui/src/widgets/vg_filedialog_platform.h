@@ -4,25 +4,22 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_filedialog_platform.h
-// Purpose: Platform filesystem adapter for the GUI file-dialog widget.
-//          Keeps host-specific path, home-directory, metadata, and directory
-//          enumeration logic out of vg_filedialog.c.
-//
-// Key invariants:
-//   - All returned strings are heap-allocated with malloc-compatible storage.
-//   - Directory enumeration omits "." and ".." before returning entries.
-//   - Entry arrays returned by vg_filedialog_platform_list_directory must be
-//     released with vg_filedialog_platform_free_entries.
-//
-// Ownership/Lifetime:
-//   - Callers own every char* returned directly by this API.
-//   - Callers own directory entry arrays until passed to the free helper.
-//
-// Links: lib/gui/src/widgets/vg_filedialog.c,
-//        lib/gui/src/widgets/vg_filedialog_platform_win32.c,
-//        lib/gui/src/widgets/vg_filedialog_platform_posix.c
+///
+/// @file vg_filedialog_platform.h
+/// @brief Declares the platform filesystem adapter for the GUI file dialog.
+///
+/// @details This interface isolates native path rules, home-directory lookup,
+/// metadata probing, and directory enumeration from the platform-neutral
+/// widget. Every directly returned mutable string uses malloc-compatible
+/// storage and transfers ownership to the caller.
+///
+/// Successful enumeration omits `.` and `..` and returns an owned array whose
+/// strings and outer storage must be released together with
+/// `vg_filedialog_platform_free_entries()`.
+///
+/// @see vg_filedialog.c
+/// @see vg_filedialog_platform_win32.c
+/// @see vg_filedialog_platform_posix.c
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -41,11 +38,17 @@ extern "C" {
 ///          @c name and @c full_path are malloc-owned and freed by
 ///          vg_filedialog_platform_free_entries().
 typedef struct vg_filedialog_platform_entry {
+    /// @brief Owned UTF-8 leaf name.
     char *name;
+    /// @brief Owned UTF-8 full path.
     char *full_path;
+    /// @brief Whether the entry represents a directory.
     bool is_directory;
+    /// @brief Whether native metadata marks the entry hidden.
     bool is_hidden;
+    /// @brief File size in bytes, or zero when unavailable.
     uint64_t size;
+    /// @brief Platform-normalized modification timestamp.
     int64_t modified_time;
 } vg_filedialog_platform_entry_t;
 

@@ -16,8 +16,7 @@
 //   - The data array is allocated inline immediately after the rt_bytes_impl
 //     header for cache locality; a single allocation covers header + data.
 //   - Length is fixed at construction time and cannot change (no resize).
-//   - Byte values are in [0, 255]; get returns 0 for out-of-bounds indices.
-//   - Set traps on out-of-bounds indices.
+//   - Byte values are in [0, 255]; get and set trap on out-of-bounds indices.
 //   - Base64 and hex conversions produce rt_string results allocated via the
 //     Zanna string allocator; the Bytes object is not modified.
 //   - Not thread-safe; external synchronization required for concurrent writes.
@@ -30,6 +29,19 @@
 //        src/runtime/rt_codec.h (base64/hex codec utilities)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements fixed-length mutable runtime byte arrays.
+///
+/// A Bytes allocation stores its object header and byte payload in one
+/// contiguous runtime-managed block. Its length never changes, but callers can
+/// mutate elements, fill ranges, perform overlap-safe copies, and read or write
+/// fixed-width integers in explicit byte order.
+///
+/// Conversion helpers copy between Bytes, runtime strings, hexadecimal, and
+/// RFC 4648 Base64 representations. Internal raw-buffer helpers make ownership
+/// explicit: extracted raw memory is caller-freed, while imported raw memory is
+/// copied. Mutation is unsynchronized.
 
 #include "rt_bytes.h"
 
@@ -74,26 +86,31 @@ typedef struct rt_bytes_impl {
 // ---------------------------------------------------------------------------
 
 /// @brief Raise a generic runtime trap (e.g. allocation failure).
+/// @param msg Human-readable trap message.
 static void rt_bytes_trap_runtime(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR, Err_RuntimeError, -1, msg);
 }
 
 /// @brief Raise a domain-error trap (e.g. invalid argument).
+/// @param msg Human-readable trap message.
 static void rt_bytes_trap_domain(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_DOMAIN_ERROR, Err_DomainError, -1, msg);
 }
 
 /// @brief Raise an invalid-operation trap (e.g. operation on NULL Bytes).
+/// @param msg Human-readable trap message.
 static void rt_bytes_trap_invalid_operation(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_INVALID_OPERATION, Err_InvalidOperation, -1, msg);
 }
 
 /// @brief Raise an out-of-bounds trap (offset/index outside the byte array).
+/// @param msg Human-readable trap message.
 static void rt_bytes_trap_bounds(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_BOUNDS, Err_Bounds, -1, msg);
 }
 
 /// @brief Raise an overflow trap (e.g. requested size exceeds INT64_MAX).
+/// @param msg Human-readable trap message.
 static void rt_bytes_trap_overflow(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_OVERFLOW, Err_Overflow, -1, msg);
 }
@@ -151,6 +168,10 @@ static rt_bytes_impl *rt_bytes_alloc(int64_t len) {
 /// @brief Checked cast of an opaque handle to the Bytes implementation.
 /// @details Returns NULL for a NULL @p obj; traps via
 ///          rt_bytes_trap_invalid_operation(@p what) if @p obj is not a Bytes.
+/// @param obj Opaque runtime object handle to inspect.
+/// @param what Trap message used for a non-null handle of the wrong class.
+/// @return The Bytes implementation pointer, or NULL for a null or invalid
+///         handle.
 static rt_bytes_impl *rt_bytes_require(void *obj, const char *what) {
     if (!obj)
         return NULL;
@@ -354,15 +375,28 @@ int64_t rt_bytes_len(void *obj) {
     return bytes ? bytes->len : 0; // guard a returning-hook NULL (VDOC-177)
 }
 
+/// @brief Tests whether an opaque handle identifies a Bytes object.
+/// @param obj Candidate runtime object handle, including NULL.
+/// @return 1 for a valid Bytes instance; otherwise 0.
 int8_t rt_bytes_is_bytes(void *obj) {
     return rt_obj_is_instance(obj, RT_BYTES_CLASS_ID, sizeof(rt_bytes_impl)) ? 1 : 0;
 }
 
+/// @brief Returns direct mutable access to a Bytes payload.
+/// @param obj Bytes handle, or NULL.
+/// @return Borrowed mutable payload pointer, or NULL for a null, invalid, or
+///         zero-length Bytes object.
+/// @warning The pointer is valid only while the owning Bytes object remains
+///          alive and must not be freed by the caller.
 uint8_t *rt_bytes_data(void *obj) {
     rt_bytes_impl *bytes = rt_bytes_require(obj, "Bytes.Data: invalid Bytes object");
     return bytes ? bytes->data : NULL;
 }
 
+/// @brief Returns direct read-only access to a Bytes payload.
+/// @param obj Bytes handle, or NULL.
+/// @return Borrowed payload pointer, or NULL for a null, invalid, or
+///         zero-length Bytes object.
 const uint8_t *rt_bytes_data_const(void *obj) {
     return rt_bytes_data(obj);
 }
@@ -1074,6 +1108,11 @@ uint8_t *rt_bytes_extract_raw(void *bytes, size_t *out_len) {
 //=============================================================================
 
 /// @brief Validate offset and size for binary read/write.
+/// @param b Bytes implementation whose range is checked.
+/// @param offset Starting byte offset.
+/// @param size Number of bytes required.
+/// @return 1 if `[offset, offset + size)` is within the payload; otherwise 0
+///         after reporting an invalid-object or bounds trap.
 static inline int bytes_check_bounds(rt_bytes_impl *b, int64_t offset, int64_t size) {
     if (!b) {
         rt_bytes_trap_invalid_operation("Bytes: null object");
@@ -1094,6 +1133,9 @@ static inline int bytes_check_bounds(rt_bytes_impl *b, int64_t offset, int64_t s
 // ===========================================================================
 
 /// @brief Read a little-endian int16 at `offset` (sign-extended to int64).
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the two-byte field.
+/// @return Sign-extended value, or 0 after a failed validation trap.
 int64_t rt_bytes_read_i16le(void *obj, int64_t offset) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.ReadI16LE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 2))
@@ -1104,6 +1146,9 @@ int64_t rt_bytes_read_i16le(void *obj, int64_t offset) {
 }
 
 /// @brief Read a big-endian int16 at `offset` (sign-extended).
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the two-byte field.
+/// @return Sign-extended value, or 0 after a failed validation trap.
 int64_t rt_bytes_read_i16be(void *obj, int64_t offset) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.ReadI16BE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 2))
@@ -1114,6 +1159,9 @@ int64_t rt_bytes_read_i16be(void *obj, int64_t offset) {
 }
 
 /// @brief Read a little-endian int32 at `offset` (sign-extended).
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the four-byte field.
+/// @return Sign-extended value, or 0 after a failed validation trap.
 int64_t rt_bytes_read_i32le(void *obj, int64_t offset) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.ReadI32LE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 4))
@@ -1125,6 +1173,9 @@ int64_t rt_bytes_read_i32le(void *obj, int64_t offset) {
 }
 
 /// @brief Read a big-endian int32 at `offset` (sign-extended).
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the four-byte field.
+/// @return Sign-extended value, or 0 after a failed validation trap.
 int64_t rt_bytes_read_i32be(void *obj, int64_t offset) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.ReadI32BE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 4))
@@ -1136,6 +1187,9 @@ int64_t rt_bytes_read_i32be(void *obj, int64_t offset) {
 }
 
 /// @brief Read a little-endian int64 at `offset`.
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the eight-byte field.
+/// @return Decoded signed value, or 0 after a failed validation trap.
 int64_t rt_bytes_read_i64le(void *obj, int64_t offset) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.ReadI64LE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 8))
@@ -1147,6 +1201,9 @@ int64_t rt_bytes_read_i64le(void *obj, int64_t offset) {
 }
 
 /// @brief Read a big-endian int64 at `offset`.
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the eight-byte field.
+/// @return Decoded signed value, or 0 after a failed validation trap.
 int64_t rt_bytes_read_i64be(void *obj, int64_t offset) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.ReadI64BE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 8))
@@ -1158,6 +1215,9 @@ int64_t rt_bytes_read_i64be(void *obj, int64_t offset) {
 }
 
 /// @brief Write `value` (truncated to int16) at `offset` in little-endian byte order.
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the two-byte field.
+/// @param value Value whose low 16 bits are stored.
 void rt_bytes_write_i16le(void *obj, int64_t offset, int64_t value) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.WriteI16LE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 2))
@@ -1169,6 +1229,9 @@ void rt_bytes_write_i16le(void *obj, int64_t offset, int64_t value) {
 }
 
 /// @brief Write `value` (truncated to int16) at `offset` in big-endian byte order.
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the two-byte field.
+/// @param value Value whose low 16 bits are stored.
 void rt_bytes_write_i16be(void *obj, int64_t offset, int64_t value) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.WriteI16BE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 2))
@@ -1180,6 +1243,9 @@ void rt_bytes_write_i16be(void *obj, int64_t offset, int64_t value) {
 }
 
 /// @brief Write `value` (truncated to int32) at `offset` in little-endian byte order.
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the four-byte field.
+/// @param value Value whose low 32 bits are stored.
 void rt_bytes_write_i32le(void *obj, int64_t offset, int64_t value) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.WriteI32LE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 4))
@@ -1193,6 +1259,9 @@ void rt_bytes_write_i32le(void *obj, int64_t offset, int64_t value) {
 }
 
 /// @brief Write `value` (truncated to int32) at `offset` in big-endian byte order.
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the four-byte field.
+/// @param value Value whose low 32 bits are stored.
 void rt_bytes_write_i32be(void *obj, int64_t offset, int64_t value) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.WriteI32BE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 4))
@@ -1206,6 +1275,9 @@ void rt_bytes_write_i32be(void *obj, int64_t offset, int64_t value) {
 }
 
 /// @brief Write a full 64-bit `value` at `offset` in little-endian byte order.
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the eight-byte field.
+/// @param value Signed value stored using its complete 64-bit bit pattern.
 void rt_bytes_write_i64le(void *obj, int64_t offset, int64_t value) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.WriteI64LE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 8))
@@ -1223,6 +1295,9 @@ void rt_bytes_write_i64le(void *obj, int64_t offset, int64_t value) {
 }
 
 /// @brief Write a full 64-bit `value` at `offset` in big-endian byte order.
+/// @param obj Non-null Bytes handle.
+/// @param offset Starting byte offset of the eight-byte field.
+/// @param value Signed value stored using its complete 64-bit bit pattern.
 void rt_bytes_write_i64be(void *obj, int64_t offset, int64_t value) {
     rt_bytes_impl *b = rt_bytes_require(obj, "Bytes.WriteI64BE: invalid Bytes object");
     if (!bytes_check_bounds(b, offset, 8))
@@ -1252,7 +1327,8 @@ void rt_bytes_write_i64be(void *obj, int64_t offset, int64_t value) {
 /// @param data Pointer to raw data buffer. May be NULL if len is 0.
 /// @param len Length of the data in bytes.
 ///
-/// @return New Bytes object containing a copy of the data.
+/// @return New Bytes object containing a copy of the data, or NULL after
+///         reporting an invalid pointer, overflow, or allocation trap.
 void *rt_bytes_from_raw(const uint8_t *data, size_t len) {
     if (len > (size_t)INT64_MAX)
         rt_bytes_trap_overflow("Bytes.FromRaw: length exceeds maximum Bytes size");

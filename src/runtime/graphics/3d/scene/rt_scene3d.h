@@ -86,6 +86,9 @@ void rt_scene3d_clear(void *scene);
 int64_t rt_scene3d_get_node_count(void *scene);
 /// @brief Serialize the scene to a .vscn file. Returns 1 on success, 0 on failure.
 int64_t rt_scene3d_save(void *scene, rt_string path);
+/// @brief Serialize the scene to canonical VSCN text in memory (ADR 0190).
+///   Byte-identical to rt_scene3d_save output; empty string on failure.
+rt_string rt_scene3d_save_text(void *scene);
 /// @brief Deserialize a scene from a `.vscn` (JSON) file. NULL on failure.
 ///   (glTF/FBX scenes load through Zanna.Graphics3D.GLTF.Load / FBX.Load.)
 void *rt_scene3d_load(rt_string path);

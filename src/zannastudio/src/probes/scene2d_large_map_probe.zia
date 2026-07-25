@@ -1,0 +1,214 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene2d_large_map_probe.zia
+// Purpose: Verify the windowed 2D canvas keeps every cell of a large scene
+//          reachable and editable while rasterizing only the viewport window.
+// Key invariants:
+//   - A 512x512 scene renders a viewport-bounded window, never a full-scene
+//     buffer, at every zoom.
+//   - Scrolling to the far corner makes the last cell visible, and a real
+//     pointer paint stroke there mutates exactly that cell.
+//   - Zoom keeps its anchor content cell fixed within one cell.
+//   - 100% zoom renders cells at the authored tile size.
+// Ownership/Lifetime:
+//   - The probe owns one hidden AppShell, document, editor, and input harness.
+// Links: zannastudio/src/ui/scene_editor_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene2d_large_map_probe;
+
+// ============================================================================
+// MODULE: scene2d_large_map_probe
+// PURPOSE: Pin the windowed-rendering contract that replaced the capped
+//          full-scene canvas buffer (editor-quality program, phase 0.2).
+//
+// WHERE-THIS-FITS: scene_editor_2d_probe owns transactions on small scenes;
+//          this probe owns reachability and window bounds on large ones.
+//
+// TEACHING-NOTE: The far-corner paint uses real pointer input, so a passing
+//          run proves window coordinates, hit math, and scroll re-rendering
+//          agree end to end.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Terminal = Zanna.Terminal;
+
+final MAP_CELLS: Integer = 512;
+final MAP_TILE: Integer = 32;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale + 0.999999);
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func PumpTwice(shell: app_shell.AppShell,
+               editor: scene_editor_2d.SceneEditor2D,
+               doc: document.Document) {
+    editor.Pump(doc);
+    shell.Render();
+    editor.Pump(doc);
+    shell.Render();
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Large Map Probe", 1120, 760);
+
+    var editor = new scene_editor_2d.SceneEditor2D();
+    editor.Setup(shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+
+    var fixture = SceneDocument.New(MAP_CELLS, MAP_CELLS, MAP_TILE, MAP_TILE);
+    if fixture == null {
+        Fail(shell, null, "large scene fixture");
+        return;
+    }
+    fixture.SetTile(0, 0, 0, 1);
+    sceneDoc.content = fixture.ToJson();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    PumpTwice(shell, editor, sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    if editor.scene == null
+       or editor.scene.Width != MAP_CELLS
+       or editor.scene.Height != MAP_CELLS {
+        Fail(shell, null, "large scene did not load");
+        return;
+    }
+
+    // The rendered window must stay viewport-bounded instead of scaling with
+    // the scene: a full-scene buffer would need 512 columns.
+    var viewportWidth = Convert.NumToInt(
+        editor.canvasScroll.GetLogicalWidth());
+    var viewportHeight = Convert.NumToInt(
+        editor.canvasScroll.GetLogicalHeight());
+    if viewportWidth <= 0 or viewportHeight <= 0 {
+        Fail(shell, null, "canvas viewport did not lay out");
+        return;
+    }
+    if editor.renderedColumns >= MAP_CELLS
+       or editor.renderedColumns * editor.displayCellSize
+          > viewportWidth + editor.displayCellSize * 2
+       or editor.renderedRows * editor.displayCellSize
+          > viewportHeight + editor.displayCellSize * 2 {
+        Fail(shell, null, "window exceeded the viewport bound: rendered="
+             + editor.renderedColumns + "x" + editor.renderedRows
+             + " cell=" + editor.displayCellSize
+             + " viewport=" + viewportWidth + "x" + viewportHeight);
+        return;
+    }
+
+    // 100% zoom must render at the authored tile size (native resolution).
+    editor.SetZoomPercent(100);
+    PumpTwice(shell, editor, sceneDoc);
+    if editor.zoomPercent != 100 or editor.displayCellSize != MAP_TILE {
+        Fail(shell, null, "native-resolution zoom drifted: zoom="
+             + editor.zoomPercent + " cell=" + editor.displayCellSize);
+        return;
+    }
+
+    // Zoom anchoring: the window-center content cell stays fixed within one
+    // cell across a 2x zoom change.
+    var centerBefore = (editor.viewOriginX
+        + editor.renderedColumns * editor.displayCellSize / 2)
+        / editor.displayCellSize;
+    editor.SetZoomPercent(200);
+    PumpTwice(shell, editor, sceneDoc);
+    var centerAfter = (editor.viewOriginX
+        + editor.renderedColumns * editor.displayCellSize / 2)
+        / editor.displayCellSize;
+    var centerDrift = centerAfter - centerBefore;
+    if centerDrift < -1 or centerDrift > 1 {
+        Fail(shell, null, "zoom did not keep its anchor cell: before="
+             + centerBefore + " after=" + centerAfter);
+        return;
+    }
+    editor.SetZoomPercent(100);
+    PumpTwice(shell, editor, sceneDoc);
+
+    // Reachability: scroll to the far corner and paint the very last cell
+    // with real pointer input.
+    editor.canvasScroll.SetScroll(100000000.0, 100000000.0);
+    PumpTwice(shell, editor, sceneDoc);
+    var lastCellContentX = (MAP_CELLS - 1) * editor.displayCellSize;
+    var lastCellContentY = (MAP_CELLS - 1) * editor.displayCellSize;
+    if lastCellContentX < editor.viewOriginX
+       or lastCellContentY < editor.viewOriginY {
+        Fail(shell, null, "far corner was not reachable: origin="
+             + editor.viewOriginX + "," + editor.viewOriginY
+             + " lastCell=" + lastCellContentX + "," + lastCellContentY);
+        return;
+    }
+
+    editor.mode = scene_editor_2d.MODE_PAINT;
+    editor.tileSpinner.SetValue(7.0);
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        Fail(shell, harness, "automation app binding");
+        return;
+    }
+    var pointerX = HarnessCoordinate(
+        shell,
+        editor.canvasImage.GetScreenX()
+            + lastCellContentX - editor.viewOriginX
+            + editor.displayCellSize / 2.0);
+    var pointerY = HarnessCoordinate(
+        shell,
+        editor.canvasImage.GetScreenY()
+            + lastCellContentY - editor.viewOriginY
+            + editor.displayCellSize / 2.0);
+    var revisionBefore = editor.GetRevision();
+    harness.SendMouse("move", pointerX, pointerY, 0);
+    harness.SendMouse("down", pointerX, pointerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    harness.SendMouse("up", pointerX, pointerY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.scene.GetTile(0, MAP_CELLS - 1, MAP_CELLS - 1) != 7
+       or editor.GetRevision() != revisionBefore + 1 {
+        Fail(shell, harness, "far-corner paint missed: tile="
+             + editor.scene.GetTile(0, MAP_CELLS - 1, MAP_CELLS - 1)
+             + " revision=" + editor.GetRevision() + "/"
+             + (revisionBefore + 1)
+             + " origin=" + editor.viewOriginX + "," + editor.viewOriginY
+             + " pointer=" + pointerX + "," + pointerY);
+        return;
+    }
+
+    harness.UnbindApp();
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

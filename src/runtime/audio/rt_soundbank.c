@@ -22,6 +22,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the fixed-capacity named Sound registry.
+/// @details A SoundBank retains runtime string keys and playable Sound wrappers
+///          in 64 linear-scan slots. Registering an existing key atomically
+///          replaces its retained pair, lookups may return a new caller-owned
+///          reference, and removal/finalization releases both key and sound.
+
 #include "rt_soundbank.h"
 #include "rt_audio.h"
 #include "rt_object.h"
@@ -55,6 +62,9 @@ typedef struct {
 //===----------------------------------------------------------------------===//
 
 /// @brief Find an entry by name. Returns index or -1.
+/// @param bank Valid sound-bank storage.
+/// @param name Runtime string key to compare by value.
+/// @return Matching slot index, or `-1` when absent.
 static int find_entry(const rt_soundbank_impl *bank, rt_string name) {
     for (int i = 0; i < BANK_MAX_ENTRIES; i++) {
         if (bank->entries[i].in_use && rt_str_eq(bank->entries[i].name, name))
@@ -64,6 +74,8 @@ static int find_entry(const rt_soundbank_impl *bank, rt_string name) {
 }
 
 /// @brief Find a free slot. Returns index or -1.
+/// @param bank Valid sound-bank storage.
+/// @return First unused slot index, or `-1` when full.
 static int find_free(const rt_soundbank_impl *bank) {
     for (int i = 0; i < BANK_MAX_ENTRIES; i++) {
         if (!bank->entries[i].in_use)
@@ -73,6 +85,7 @@ static int find_free(const rt_soundbank_impl *bank) {
 }
 
 /// @brief Safe-cast an opaque handle to rt_soundbank_impl.
+/// @param bank_ptr Opaque runtime object to validate.
 /// @return The soundbank, or NULL if @p bank_ptr is not a SoundBank object.
 static rt_soundbank_impl *as_soundbank(void *bank_ptr) {
     if (!rt_obj_is_instance(bank_ptr, RT_SOUNDBANK_CLASS_ID, sizeof(rt_soundbank_impl)))
@@ -81,6 +94,9 @@ static rt_soundbank_impl *as_soundbank(void *bank_ptr) {
 }
 
 /// @brief Release a sound reference in an entry.
+/// @details Drops the retained key and sound references and marks the slot free;
+///          the bank's aggregate count is adjusted by the caller.
+/// @param entry Occupied slot to clear.
 static void release_entry(bank_entry_t *entry) {
     rt_str_release_maybe(entry->name);
     entry->name = NULL;
@@ -100,6 +116,7 @@ static void release_entry(bank_entry_t *entry) {
 /// @details Installed by @ref rt_soundbank_new so when the SoundBank's
 ///          refcount hits zero, every named sound it owns is properly
 ///          released and not leaked.
+/// @param obj Runtime-managed SoundBank object.
 static void rt_soundbank_finalize(void *obj) {
     if (!obj)
         return;
@@ -121,6 +138,7 @@ static void rt_soundbank_finalize(void *obj) {
 /// @details A sound bank maps string names to loaded Sound handles, enabling
 ///          sounds to be played by name (e.g., bank.Play("jump")). Supports
 ///          up to BANK_MAX_ENTRIES sounds.
+/// @return Caller-owned SoundBank object, or NULL on allocation failure.
 void *rt_soundbank_new(void) {
     rt_soundbank_impl *bank = (rt_soundbank_impl *)rt_obj_new_i64(
         RT_SOUNDBANK_CLASS_ID, (int64_t)sizeof(rt_soundbank_impl));
@@ -136,6 +154,14 @@ void *rt_soundbank_new(void) {
 }
 
 /// @brief Load a sound from a file path and register it under the given name.
+/// @details Loading failure leaves the bank unchanged. A duplicate key replaces
+///          and releases the previous retained key/sound; a new key consumes one
+///          of the fixed slots.
+/// @param bank_ptr SoundBank object.
+/// @param name Runtime string key retained on success.
+/// @param path Runtime audio-file path.
+/// @return `1` on success or `0` for invalid input, unavailable audio, load
+///         failure, or full capacity.
 int64_t rt_soundbank_register(void *bank_ptr, rt_string name, rt_string path) {
     rt_soundbank_impl *bank = as_soundbank(bank_ptr);
     if (!bank || !name || !path)
@@ -179,6 +205,12 @@ int64_t rt_soundbank_register(void *bank_ptr, rt_string name, rt_string path) {
 }
 
 /// @brief Register a pre-loaded Sound handle under the given name (retains the sound).
+/// @details Rejects wrappers detached by audio shutdown. Retains the replacement
+///          before releasing an existing entry so self-replacement is safe.
+/// @param bank_ptr SoundBank object.
+/// @param name Runtime string key retained on success.
+/// @param sound Playable Sound wrapper retained on success.
+/// @return `1` on success or `0` for invalid/unplayable input or full capacity.
 int64_t rt_soundbank_register_sound(void *bank_ptr, rt_string name, void *sound) {
     rt_soundbank_impl *bank = as_soundbank(bank_ptr);
     if (!bank || !name || !sound)
@@ -216,6 +248,9 @@ int64_t rt_soundbank_register_sound(void *bank_ptr, rt_string name, void *sound)
 }
 
 /// @brief Play a sound by name at default volume. Returns a voice ID or -1 if not found.
+/// @param bank_ptr SoundBank object.
+/// @param name Registered runtime string key.
+/// @return Voice identifier, or `-1` when the key/bank is invalid or playback fails.
 int64_t rt_soundbank_play(void *bank_ptr, rt_string name) {
     rt_soundbank_impl *bank = as_soundbank(bank_ptr);
     if (!bank || !name)
@@ -229,6 +264,11 @@ int64_t rt_soundbank_play(void *bank_ptr, rt_string name) {
 }
 
 /// @brief Play a sound by name with explicit volume and pan. Returns a voice ID.
+/// @param bank_ptr SoundBank object.
+/// @param name Registered runtime string key.
+/// @param volume Logical volume clamped by the sound API.
+/// @param pan Stereo pan clamped by the sound API.
+/// @return Voice identifier, or `-1` when the key/bank is invalid or playback fails.
 int64_t rt_soundbank_play_ex(void *bank_ptr, rt_string name, int64_t volume, int64_t pan) {
     rt_soundbank_impl *bank = as_soundbank(bank_ptr);
     if (!bank || !name)
@@ -242,6 +282,9 @@ int64_t rt_soundbank_play_ex(void *bank_ptr, rt_string name, int64_t volume, int
 }
 
 /// @brief Check whether a sound with the given name exists in the bank.
+/// @param bank_ptr SoundBank object.
+/// @param name Runtime string key to query.
+/// @return `1` when registered, otherwise `0`.
 int64_t rt_soundbank_has(void *bank_ptr, rt_string name) {
     rt_soundbank_impl *bank = as_soundbank(bank_ptr);
     if (!bank || !name)
@@ -251,6 +294,9 @@ int64_t rt_soundbank_has(void *bank_ptr, rt_string name) {
 }
 
 /// @brief Get the Sound handle for a name (retained — caller must release). NULL if not found.
+/// @param bank_ptr SoundBank object.
+/// @param name Runtime string key to query.
+/// @return New retained reference to the stored Sound, or NULL when absent/invalid.
 void *rt_soundbank_get(void *bank_ptr, rt_string name) {
     rt_soundbank_impl *bank = as_soundbank(bank_ptr);
     if (!bank || !name)
@@ -266,6 +312,8 @@ void *rt_soundbank_get(void *bank_ptr, rt_string name) {
 }
 
 /// @brief Remove a sound from the bank by name and release its reference.
+/// @param bank_ptr SoundBank object.
+/// @param name Runtime string key; missing/invalid keys are ignored.
 void rt_soundbank_remove(void *bank_ptr, rt_string name) {
     rt_soundbank_impl *bank = as_soundbank(bank_ptr);
     if (!bank || !name)
@@ -280,6 +328,7 @@ void rt_soundbank_remove(void *bank_ptr, rt_string name) {
 }
 
 /// @brief Remove and release all sounds from the bank.
+/// @param bank_ptr SoundBank object; invalid handles are ignored.
 void rt_soundbank_clear(void *bank_ptr) {
     rt_soundbank_impl *bank = as_soundbank(bank_ptr);
     if (!bank)
@@ -293,6 +342,8 @@ void rt_soundbank_clear(void *bank_ptr) {
 }
 
 /// @brief Get the number of sounds currently registered in the bank.
+/// @param bank_ptr SoundBank object.
+/// @return Occupied slot count in `[0, 64]`, or zero for an invalid object.
 int64_t rt_soundbank_count(void *bank_ptr) {
     rt_soundbank_impl *bank = as_soundbank(bank_ptr);
     if (!bank)

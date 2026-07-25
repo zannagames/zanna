@@ -25,6 +25,14 @@
 //        lib/gui/include/vg_widget.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements the retained RGBA image widget, image decoding, resizing,
+///        filtering, and framebuffer compositing.
+/// @details Image content is copied into widget-owned straight-alpha RGBA
+///          storage. Resized rasters are cached by content revision and filter,
+///          while invalid input or allocation failure leaves existing content
+///          intact. The paint path clips all writes to both the widget and
+///          canvas clip rectangles.
 #include "../../include/vg_widget.h"
 #include "../../include/vg_widgets.h"
 #include "vgfx.h"
@@ -52,7 +60,12 @@ static vg_widget_vtable_t g_image_vtable = {
     .handle_event = NULL,
 };
 
-/// @brief Integer clamp helper — returns value restricted to [min_value, max_value].
+/// @brief Restrict an integer to an inclusive range.
+/// @param value Value to restrict.
+/// @param min_value Inclusive lower bound.
+/// @param max_value Inclusive upper bound.
+/// @return `min_value` or `max_value` when @p value is outside the range;
+///         otherwise @p value unchanged.
 static int clampi(int value, int min_value, int max_value) {
     if (value < min_value)
         return min_value;
@@ -242,17 +255,28 @@ static const uint8_t *image_scaled_cache(vg_image_t *image, int width, int heigh
     return image->scaled_pixels;
 }
 
-/// @brief Read a little-endian uint16 from an unaligned byte pointer.
+/// @brief Decode an unaligned two-byte little-endian integer.
+/// @param p Pointer to at least two readable bytes.
+/// @return Decoded unsigned 16-bit value.
 static uint16_t image_read_le16(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
 
-/// @brief Read a little-endian uint32 from an unaligned byte pointer.
+/// @brief Decode an unaligned four-byte little-endian integer.
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded unsigned 32-bit value.
 static uint32_t image_read_le32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-/// @brief Convert premultiplied RGBA in-place back to straight alpha.
+/// @brief Convert premultiplied RGBA pixels in place to straight alpha.
+/// @details Fully transparent pixels are normalized to transparent black.
+///          Partially transparent color channels are divided by alpha and
+///          saturated to the byte range.
+/// @param pixels Mutable buffer containing @p width times @p height RGBA pixels;
+///               `NULL` is ignored.
+/// @param width Image width in pixels.
+/// @param height Image height in pixels.
 static void image_unpremultiply_rgba(uint8_t *pixels, size_t width, size_t height) {
     if (!pixels || width == 0 || height == 0 || width > SIZE_MAX / height)
         return;
@@ -276,7 +300,14 @@ static void image_unpremultiply_rgba(uint8_t *pixels, size_t width, size_t heigh
     }
 }
 
-/// @brief Load a 24 or 32 bpp uncompressed BMP file into image->pixels.
+/// @brief Decode an uncompressed 24- or 32-bit BMP into an image widget.
+/// @details Accepts bottom-up and top-down Windows bitmap layouts, converts BGR
+///          or BGRA rows to straight RGBA, and commits the complete result
+///          atomically through vg_image_try_set_pixels().
+/// @param image Image widget that receives a copy of the decoded pixels.
+/// @param path Null-terminated path to the BMP file.
+/// @return `true` when the file was valid and its complete pixel array was
+///         installed; `false` on I/O, validation, or allocation failure.
 static bool image_load_bmp(vg_image_t *image, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f)
@@ -354,7 +385,14 @@ cleanup:
 }
 
 #if defined(__APPLE__)
-/// @brief Load any image format supported by ImageIO (PNG, JPEG, TIFF, etc.) on macOS.
+/// @brief Decode the first frame of an ImageIO-supported file on macOS.
+/// @details ImageIO renders into a premultiplied RGBA bitmap. The function
+///          converts it to the widget's straight-alpha representation before
+///          committing the result.
+/// @param image Image widget that receives a copy of the decoded pixels.
+/// @param path Null-terminated POSIX path encoded as UTF-8.
+/// @return `true` when ImageIO decoded and installed the image; `false` when
+///         validation, decoding, allocation, or conversion failed.
 static bool image_load_platform(vg_image_t *image, const char *path) {
     if (!image || !path)
         return false;
@@ -417,7 +455,13 @@ static bool image_load_platform(vg_image_t *image, const char *path) {
 }
 #endif
 
-/// @brief Alpha-blend one RGBA source pixel onto an RGBA destination pixel.
+/// @brief Source-over composite one straight-RGBA pixel onto another.
+/// @details @p alpha is the already combined source and widget opacity. A fully
+///          opaque source replaces the destination; partial alpha blends color
+///          channels and updates destination coverage with integer rounding.
+/// @param dst Mutable four-byte straight-RGBA destination pixel.
+/// @param src Readable four-byte straight-RGBA source pixel.
+/// @param alpha Effective source alpha in the range 0 through 255.
 static void image_blend_pixel(uint8_t *dst, const uint8_t *src, uint8_t alpha) {
     if (alpha == 0)
         return;
@@ -437,7 +481,11 @@ static void image_blend_pixel(uint8_t *dst, const uint8_t *src, uint8_t alpha) {
     dst[3] = (uint8_t)(alpha + (((uint32_t)dst[3] * inv + 127u) / 255u));
 }
 
-/// @brief Widget-vtable destroy hook: free the decoded pixel buffer.
+/// @brief Release all pixel storage owned by an image widget.
+/// @details Serves as the widget-vtable destruction hook. Source and scaled
+///          buffers are released and their associated dimensions and capacities
+///          are reset.
+/// @param widget Image widget base being destroyed.
 static void image_destroy(vg_widget_t *widget) {
     vg_image_t *image = (vg_image_t *)widget;
     free(image->pixels);
@@ -450,8 +498,13 @@ static void image_destroy(vg_widget_t *widget) {
     image->img_height = 0;
 }
 
-/// @brief Widget-vtable measure hook: size to the preferred constraint, else
-///        the intrinsic image dimensions, else the available space.
+/// @brief Measure an image using preferred, intrinsic, then available dimensions.
+/// @details Each axis independently selects its positive preferred constraint,
+///          the source image's natural extent, or the corresponding available
+///          extent, then applies the widget's minimum and maximum constraints.
+/// @param widget Image widget base to measure.
+/// @param available_width Width offered by the parent layout.
+/// @param available_height Height offered by the parent layout.
 static void image_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_image_t *image = (vg_image_t *)widget;
 
@@ -470,8 +523,13 @@ static void image_measure(vg_widget_t *widget, float available_width, float avai
     vg_widget_apply_constraints(widget);
 }
 
-/// @brief Widget-vtable paint hook: blit the image's pixels into the canvas
-///        framebuffer at the widget's resolved rect.
+/// @brief Paint the background and source image into the canvas framebuffer.
+/// @details Resolves the selected scale mode, intersects the raster with widget,
+///          framebuffer, and active clip bounds, then chooses an opaque row-copy,
+///          cached resize, or sampled alpha-blend path. Non-integral target
+///          geometry falls back to deterministic per-pixel sampling.
+/// @param widget Arranged image widget base to render.
+/// @param canvas Backend window handle accepted by the ZannaGFX framebuffer API.
 static void image_paint(vg_widget_t *widget, void *canvas) {
     vg_image_t *image = (vg_image_t *)widget;
     vgfx_framebuffer_t fb;
@@ -748,6 +806,18 @@ static bool image_ranges_overlap(const void *first,
 /// @details A temporary buffer is used only when caller storage overlaps the owned destination.
 ///          Invalid rectangles and overlap-buffer allocation failure leave destination bytes and
 ///          revisions unchanged.
+/// @param image Image widget whose existing pixel buffer is updated.
+/// @param pixels Complete straight-alpha RGBA source image.
+/// @param source_width Width of the source image in pixels.
+/// @param source_height Height of the source image in pixels.
+/// @param source_x Left edge of the source rectangle.
+/// @param source_y Top edge of the source rectangle.
+/// @param width Width of the copied rectangle.
+/// @param height Height of the copied rectangle.
+/// @param dest_x Left edge of the destination rectangle.
+/// @param dest_y Top edge of the destination rectangle.
+/// @return `true` after a valid complete update, including an identical no-op;
+///         `false` when validation or temporary allocation failed.
 bool vg_image_update_region(vg_image_t *image,
                             const uint8_t *pixels,
                             int source_width,
@@ -876,7 +946,11 @@ void vg_image_set_scale_mode(vg_image_t *image, vg_image_scale_t mode) {
     vg_widget_invalidate(&image->base);
 }
 
-/// @brief Set nearest or bilinear resize filtering and invalidate scaled output.
+/// @brief Select nearest-neighbor or bilinear resize filtering.
+/// @details Unsupported values normalize to nearest-neighbor. A changed filter
+///          invalidates cached resized pixels and schedules repainting.
+/// @param image Image widget to configure; `NULL` is ignored.
+/// @param filter Requested filter enumerator.
 void vg_image_set_filter(vg_image_t *image, vg_image_filter_t filter) {
     if (!image)
         return;
@@ -890,7 +964,9 @@ void vg_image_set_filter(vg_image_t *image, vg_image_filter_t filter) {
     vg_widget_invalidate(&image->base);
 }
 
-/// @brief Return the active image resize filter.
+/// @brief Query the active image resize filter.
+/// @param image Image widget to inspect, or `NULL`.
+/// @return The widget's filter, or VG_IMAGE_FILTER_NEAREST for `NULL`.
 vg_image_filter_t vg_image_get_filter(const vg_image_t *image) {
     return image ? image->filter : VG_IMAGE_FILTER_NEAREST;
 }

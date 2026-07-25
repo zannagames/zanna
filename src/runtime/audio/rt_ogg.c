@@ -16,6 +16,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements sequential Ogg page parsing and logical-packet assembly.
+/// @details Readers abstract file-backed and borrowed memory-backed input,
+///          resynchronize on capture patterns, verify page CRCs, and maintain
+///          independent partial-packet state for each multiplexed serial number.
+///          Completed packets are queued in container order and returned through
+///          reader-owned storage valid until the next packet call or rewind.
+
 #include "rt_ogg.h"
 
 #include <stdlib.h>
@@ -88,17 +96,24 @@ static size_t ogg_read(ogg_reader_t *r, void *buf, size_t count) {
     return count;
 }
 
-/// @brief Read a single byte from the reader. Returns 1 on success, 0 at EOF.
+/// @brief Read a single byte from the reader.
+/// @param r Reader instance.
+/// @param out Receives the byte on success.
+/// @return `1` on success or `0` at end-of-input.
 static int ogg_read_byte(ogg_reader_t *r, uint8_t *out) {
     return ogg_read(r, out, 1) == 1;
 }
 
 /// @brief Decode a 32-bit little-endian unsigned integer from @p p.
+/// @param p Pointer to at least four encoded bytes.
+/// @return Host-order unsigned value.
 static uint32_t read_u32_le(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 /// @brief Decode a 64-bit little-endian signed integer from @p p (used for granule positions).
+/// @param p Pointer to at least eight encoded bytes.
+/// @return Host-order signed value preserving the encoded bit pattern.
 static int64_t read_i64_le(const uint8_t *p) {
     uint64_t v = 0;
     for (int i = 0; i < 8; i++)
@@ -111,9 +126,13 @@ static int64_t read_i64_le(const uint8_t *p) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Read the next OGG page, filling r->page and returning the page body.
+/// @details Scans forward to an `OggS` capture pattern, validates version zero,
+///          reads the lacing table/body, and rejects a checksum mismatch.
+/// @param r Reader whose current-page header is replaced.
 /// @param body_out Receives a malloc'd buffer with the page body. Caller frees.
 /// @param body_len_out Receives the body length.
-/// @return 1 on success, 0 on EOF/error.
+/// @return `1` on success or `0` on EOF, malformed/truncated input, checksum
+///         failure, or allocation failure.
 static int ogg_read_page(ogg_reader_t *r, uint8_t **body_out, size_t *body_len_out) {
     ogg_crc_init();
 
@@ -239,6 +258,7 @@ static int packet_append(ogg_packet_t *pkt, const uint8_t *data, size_t len) {
 /// @brief Reset packet length and completion flag without releasing the buffer.
 /// @details Called once a packet has been queued so the same `cap`-sized
 ///          buffer can collect the next packet's data without re-allocation.
+/// @param pkt Partial packet state; NULL is ignored.
 static void packet_reset(ogg_packet_t *pkt) {
     if (!pkt)
         return;
@@ -250,6 +270,9 @@ static void packet_reset(ogg_packet_t *pkt) {
 /// @details Logical OGG bitstreams are multiplexed by serial number;
 ///          each one keeps its own partial-packet buffer so concurrent
 ///          streams don't corrupt each other.
+/// @param r Reader containing the stream-state list.
+/// @param serial_number Logical bitstream serial number.
+/// @return Matching reader-owned state, or NULL when absent.
 static ogg_stream_state_t *find_stream_state(ogg_reader_t *r, uint32_t serial_number) {
     ogg_stream_state_t *cur = r->streams;
     while (cur) {
@@ -264,6 +287,9 @@ static ogg_stream_state_t *find_stream_state(ogg_reader_t *r, uint32_t serial_nu
 /// @details Inserts a freshly-zeroed entry at the head of the reader's
 ///          singly-linked stream list when no match exists, so subsequent
 ///          pages for that serial number can accumulate packets.
+/// @param r Reader that will own any new state.
+/// @param serial_number Logical bitstream serial number.
+/// @return Existing/new state, or NULL on allocation failure.
 static ogg_stream_state_t *get_stream_state(ogg_reader_t *r, uint32_t serial_number) {
     ogg_stream_state_t *state = find_stream_state(r, serial_number);
     if (state)
@@ -278,6 +304,7 @@ static ogg_stream_state_t *get_stream_state(ogg_reader_t *r, uint32_t serial_num
 }
 
 /// @brief Walk the stream-state list, free every partial-packet buffer, and NULL the head.
+/// @param r Reader whose logical-stream assembly state is cleared.
 static void free_stream_states(ogg_reader_t *r) {
     ogg_stream_state_t *cur = r->streams;
     while (cur) {
@@ -292,6 +319,7 @@ static void free_stream_states(ogg_reader_t *r) {
 /// @brief Drain and free every queued (already-completed) packet node.
 /// @details Called by @ref ogg_reader_rewind and @ref ogg_reader_free
 ///          since the queued packets are owned by the reader.
+/// @param r Reader whose completed-packet FIFO is cleared.
 static void clear_ready_packets(ogg_reader_t *r) {
     ogg_packet_node_t *node = r->ready_head;
     while (node) {
@@ -416,6 +444,8 @@ static int process_page_packets(ogg_reader_t *r, const uint8_t *body, size_t bod
 //===----------------------------------------------------------------------===//
 
 /// @brief Open an OGG container from a file path for sequential packet reading.
+/// @param path NUL-terminated Ogg file path.
+/// @return Caller-owned reader, or NULL on invalid input, open, or allocation failure.
 ogg_reader_t *ogg_reader_open_file(const char *path) {
     if (!path)
         return NULL;
@@ -432,6 +462,10 @@ ogg_reader_t *ogg_reader_open_file(const char *path) {
 }
 
 /// @brief Open an OGG container from an in-memory buffer for sequential packet reading.
+/// @details The bytes are borrowed and must remain readable until the reader is freed.
+/// @param data Ogg container bytes.
+/// @param len Positive byte length.
+/// @return Caller-owned reader, or NULL for invalid input/allocation failure.
 ogg_reader_t *ogg_reader_open_mem(const uint8_t *data, size_t len) {
     if (!data || len == 0)
         return NULL;
@@ -443,7 +477,11 @@ ogg_reader_t *ogg_reader_open_mem(const uint8_t *data, size_t len) {
     return r;
 }
 
-/// @brief Close the OGG reader and free all resources (file handle, packet buffer).
+/// @brief Close an Ogg reader and release all resources it owns.
+/// @details Closes a file backend, releases the last returned packet, partial
+///          per-stream buffers, queued packets, and the reader object. Borrowed
+///          memory input is not freed.
+/// @param r Reader returned by an open function; NULL is accepted.
 void ogg_reader_free(ogg_reader_t *r) {
     if (!r)
         return;
@@ -456,6 +494,10 @@ void ogg_reader_free(ogg_reader_t *r) {
 }
 
 /// @brief Rewind the reader to the beginning of the OGG stream for re-reading.
+/// @details Resets the file/memory cursor, page header, per-stream partial
+///          assembly, queued packets, and the last returned packet. Any
+///          previously returned packet pointer becomes invalid.
+/// @param r Reader to rewind; NULL is ignored.
 void ogg_reader_rewind(ogg_reader_t *r) {
     if (!r)
         return;
@@ -470,14 +512,26 @@ void ogg_reader_rewind(ogg_reader_t *r) {
     clear_ready_packets(r);
 }
 
-/// @brief Read the next complete OGG packet (may span multiple pages). Returns 1 on success.
+/// @brief Read the next complete Ogg packet, reassembling page continuations.
+/// @param r Open reader.
+/// @param out_data Receives reader-owned packet bytes valid until the next
+///        packet call, rewind, or free.
+/// @param out_len Receives packet length in bytes.
+/// @return `1` on success or `0` on EOF, invalid arguments, or parse/allocation failure.
 int ogg_reader_next_packet(ogg_reader_t *r, const uint8_t **out_data, size_t *out_len) {
     return ogg_reader_next_packet_ex(r, out_data, out_len, NULL);
 }
 
-/// @brief Like `_next_packet` but also fills an `ogg_packet_info_t` with stream serial number,
-/// granule position, page sequence, and segment metadata. Useful for muxed streams that need
-/// to filter by stream ID, or for accurate seek-by-time within Vorbis/Theora bitstreams.
+/// @brief Read the next complete packet plus logical-stream metadata.
+/// @details Supplies the packet's stream serial number, terminal-page granule
+///          position when known, and BOS/EOS flags. This lets consumers filter
+///          multiplexed logical streams without exposing page/lacing internals.
+/// @param r Open reader.
+/// @param out_data Receives reader-owned packet bytes valid until the next
+///        packet call, rewind, or free.
+/// @param out_len Receives packet length in bytes.
+/// @param out_info Optional destination for packet metadata.
+/// @return `1` on success or `0` on EOF, invalid arguments, or parse/allocation failure.
 int ogg_reader_next_packet_ex(ogg_reader_t *r,
                               const uint8_t **out_data,
                               size_t *out_len,

@@ -31,6 +31,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements a configurable probabilistic string-membership filter.
+///
+/// Construction derives a packed bit-array size and number of seeded hash
+/// probes from an expected insertion count and target false-positive rate.
+/// Adding a non-null string sets every derived position; querying succeeds
+/// only when all positions are set. Consequently a populated filter can
+/// report false positives but not false negatives until it is cleared.
+///
+/// The stored item count records successful add calls, including duplicates,
+/// while the false-positive estimate derives from actual bit occupancy.
+/// Compatible filters can be unioned in place with a bytewise OR. Objects are
+/// runtime-managed and mutation is unsynchronized.
+
 #include "rt_bloomfilter.h"
 #include "rt_collection_ids.h"
 #include "rt_internal.h"
@@ -45,6 +59,9 @@
 // Internal structure
 // ---------------------------------------------------------------------------
 
+/// @brief Internal BloomFilter state.
+/// @details The byte array owns the packed bits; `bit_count` may leave unused
+///          high bits in its last byte.
 typedef struct {
     void *vptr;
     uint8_t *bits;
@@ -55,6 +72,10 @@ typedef struct {
 
 /// @brief Checked cast of an opaque handle to the BloomFilter implementation.
 /// @details Traps with @p what if @p obj is NULL or not a BloomFilter.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used when validation fails.
+/// @return The validated implementation pointer, or NULL if a returning trap
+///         handler resumes after failed validation.
 static rt_bloomfilter_impl *as_bloomfilter(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_BLOOMFILTER_CLASS_ID, sizeof(rt_bloomfilter_impl))) {
         rt_trap(what);
@@ -64,6 +85,8 @@ static rt_bloomfilter_impl *as_bloomfilter(void *obj, const char *what) {
 }
 
 /// @brief Count set bits in a byte (SWAR popcount; used for cardinality est.).
+/// @param x Byte whose set bits are counted.
+/// @return Population count in the range `[0, 8]`.
 static int popcount8(uint8_t x) {
     x = (uint8_t)(x - ((x >> 1) & 0x55u));
     x = (uint8_t)((x & 0x33u) + ((x >> 2) & 0x33u));
@@ -77,6 +100,10 @@ static int popcount8(uint8_t x) {
 /// @brief Seeded 64-bit hash (MurmurHash3-style mix + fmix finalizer).
 /// @details Varying @p seed yields the k independent hash positions a Bloom
 ///          filter needs from a single pass over @p data.
+/// @param data Byte sequence to hash.
+/// @param len Number of bytes in @p data.
+/// @param seed Per-probe seed value.
+/// @return Mixed 64-bit hash value.
 static uint64_t bloom_hash(const char *data, size_t len, uint64_t seed) {
     uint64_t h = seed ^ (len * 0x9E3779B97F4A7C15ULL);
     for (size_t i = 0; i < len; i++) {
@@ -96,6 +123,7 @@ static uint64_t bloom_hash(const char *data, size_t len, uint64_t seed) {
 // ---------------------------------------------------------------------------
 
 /// @brief GC finalizer: free the BloomFilter's bit array.
+/// @param obj BloomFilter object being finalized, or NULL for a no-op.
 static void bloomfilter_finalizer(void *obj) {
     rt_bloomfilter_impl *bf =
         obj ? as_bloomfilter(obj, "BloomFilter: invalid BloomFilter object") : NULL;
@@ -111,6 +139,13 @@ static void bloomfilter_finalizer(void *obj) {
 // Constructor
 // ---------------------------------------------------------------------------
 
+/// @brief Creates an empty BloomFilter with parameters derived from a target workload.
+/// @param expected_items Expected number of add operations. Zero is normalized
+///        to one; negative values trap.
+/// @param false_positive_rate Requested probability. Non-finite or non-positive
+///        values use 0.01, while values at least 1.0 use 0.5.
+/// @return A new runtime-managed BloomFilter, or NULL after a size or allocation
+///         trap.
 void *rt_bloomfilter_new(int64_t expected_items, double false_positive_rate) {
     if (expected_items < 0) {
         rt_trap("BloomFilter: negative expected item count");
@@ -181,6 +216,10 @@ void *rt_bloomfilter_new(int64_t expected_items, double false_positive_rate) {
 /// @details Sets the bits at positions determined by multiple hash functions.
 ///          After adding, the element will always test positive with
 ///          might_contain (no false negatives).
+/// @param filter BloomFilter handle, or NULL for a no-op.
+/// @param item Runtime string to hash; NULL is ignored.
+/// @note The operation count increases even if @p item was previously added.
+/// @note Invalid non-null handles and count overflow raise a runtime trap.
 void rt_bloomfilter_add(void *filter, rt_string item) {
     if (!filter || !item)
         return;
@@ -208,6 +247,10 @@ void rt_bloomfilter_add(void *filter, rt_string item) {
 /// @brief Test whether an element might be in the Bloom filter.
 /// @details Returns true if all bits for the element's hashes are set.
 ///          May return false positives but never false negatives.
+/// @param filter BloomFilter handle, or NULL to query an empty filter.
+/// @param item Runtime string to test; NULL returns 0.
+/// @return 1 if the item may have been added, or 0 if it is definitely absent
+///         or either argument is NULL.
 int8_t rt_bloomfilter_might_contain(void *filter, rt_string item) {
     if (!filter || !item)
         return 0;
@@ -237,6 +280,9 @@ int8_t rt_bloomfilter_might_contain(void *filter, rt_string item) {
 /// @brief Return the number of elements that have been added to the filter.
 /// @details This is an exact count of add operations, not a cardinality
 ///          estimate from the bit array.
+/// @param filter BloomFilter handle, or NULL to query an empty filter.
+/// @return Number of successful non-null add calls, including duplicates, or
+///         zero when @p filter is NULL.
 int64_t rt_bloomfilter_count(void *filter) {
     if (!filter)
         return 0;
@@ -248,6 +294,8 @@ int64_t rt_bloomfilter_count(void *filter) {
 /// @brief Estimate the current false positive rate of the Bloom filter.
 /// @details Computed from the number of set bits, total bits, and number
 ///          of hash functions using the standard Bloom filter FPR formula.
+/// @param filter BloomFilter handle, or NULL to query an empty filter.
+/// @return Estimated probability in `[0.0, 1.0]`, or 0.0 for NULL.
 double rt_bloomfilter_fpr(void *filter) {
     if (!filter)
         return 0.0;
@@ -270,6 +318,8 @@ double rt_bloomfilter_fpr(void *filter) {
 
 /// @brief Reset the Bloom filter by clearing all bits and the element count.
 /// @details After clearing, might_contain returns false for all inputs.
+/// @param filter BloomFilter handle, or NULL for a no-op.
+/// @note The derived bit and hash counts remain unchanged for reuse.
 void rt_bloomfilter_clear(void *filter) {
     if (!filter)
         return;
@@ -285,6 +335,12 @@ void rt_bloomfilter_clear(void *filter) {
 /// @brief Merge another Bloom filter into this one (bitwise OR).
 /// @details Both filters must have the same size and hash count.
 ///          After merging, this filter contains the union of both sets.
+/// @param filter Destination BloomFilter modified in place.
+/// @param other Source BloomFilter whose bits and operation count are added.
+/// @return 1 on success, including a self-merge; 0 for NULL or incompatible
+///         filters, or after reporting a count-overflow trap.
+/// @note @p other is not modified. The combined count is the sum of add-call
+///       counts and may double-count values present in both filters.
 int64_t rt_bloomfilter_merge(void *filter, void *other) {
     if (!filter || !other)
         return 0;

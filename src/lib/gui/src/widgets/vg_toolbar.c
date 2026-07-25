@@ -1,4 +1,18 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements horizontal and vertical toolbars with overflow menus.
+/// @details The toolbar owns its lightweight item records, cloned popup menus,
+///          and icon resources while treating embedded custom widgets as
+///          borrowed children. Layout is expressed along a primary axis,
+///          flexible spacers divide unused extent, and trailing items are
+///          represented by a lazily rebuilt overflow popup when space is
+///          constrained. Removed items become inert retired records so managed
+///          wrappers can safely detect and later reclaim stale handles.
+///
+///          Popup coordinates and visual bounds are converted to screen space
+///          because the transient context menus are owned by, but are not
+///          ordinary widget-tree children of, the toolbar.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -140,7 +154,15 @@ static vg_widget_vtable_t g_toolbar_vtable = {.destroy = toolbar_destroy,
 // Helper Functions
 //=============================================================================
 
-/// @brief Grow tb->items[] to hold at least needed entries, doubling from INITIAL_ITEM_CAPACITY.
+/// @brief Ensure the toolbar item array can hold a requested number of entries.
+/// @details Capacity grows geometrically from `INITIAL_ITEM_CAPACITY`; overflow
+///          checks are performed before either doubling or multiplying by the
+///          pointer size. Existing entries and capacity remain unchanged when
+///          allocation fails.
+/// @param tb Toolbar whose owned item-pointer array is resized.
+/// @param needed Minimum number of pointer slots required.
+/// @return `true` when at least @p needed slots are available, otherwise
+///         `false`.
 static bool ensure_item_capacity(vg_toolbar_t *tb, size_t needed) {
     if (needed <= tb->item_capacity)
         return true;
@@ -163,7 +185,11 @@ static bool ensure_item_capacity(vg_toolbar_t *tb, size_t needed) {
     return true;
 }
 
-/// @brief Clamp an integer to [min_value, max_value].
+/// @brief Clamp an integer to an inclusive range.
+/// @param value Value to constrain.
+/// @param min_value Inclusive lower bound.
+/// @param max_value Inclusive upper bound.
+/// @return @p value constrained to [`min_value`, `max_value`].
 static int toolbar_clampi(int value, int min_value, int max_value) {
     if (value < min_value)
         return min_value;
@@ -172,7 +198,13 @@ static int toolbar_clampi(int value, int min_value, int max_value) {
     return value;
 }
 
-/// @brief Alpha-composite one RGBA source pixel over an RGBA destination pixel.
+/// @brief Alpha-composite one RGBA source pixel over a destination pixel.
+/// @details The supplied coverage alpha controls source contribution and is
+///          also folded into the destination alpha. Both buffers use four
+///          consecutive eight-bit RGBA channels.
+/// @param dst Mutable destination pixel.
+/// @param src Source pixel; only read by this function.
+/// @param alpha Effective source alpha in the inclusive range 0–255.
 static void toolbar_blend_pixel(uint8_t *dst, const uint8_t *src, uint8_t alpha) {
     if (alpha == 0)
         return;
@@ -192,8 +224,18 @@ static void toolbar_blend_pixel(uint8_t *dst, const uint8_t *src, uint8_t alpha)
     dst[3] = (uint8_t)(alpha + (((uint32_t)dst[3] * inv + 127u) / 255u));
 }
 
-/// @brief Blit a VG_ICON_IMAGE into the framebuffer, scaled to fit (w×h), centred, with optional
-/// disabled dimming.
+/// @brief Draw a raster toolbar icon centered within a destination rectangle.
+/// @details The image is aspect-fit with nearest-neighbor sampling, clipped to
+///          both the framebuffer and active graphics clip, and blended as
+///          straight-alpha RGBA. Disabled icons retain their colors but use
+///          reduced opacity.
+/// @param win Destination graphics window.
+/// @param icon Borrowed image icon descriptor.
+/// @param x Destination rectangle's left edge in framebuffer coordinates.
+/// @param y Destination rectangle's top edge in framebuffer coordinates.
+/// @param w Available destination width.
+/// @param h Available destination height.
+/// @param enabled Whether to render at full opacity.
 static void toolbar_draw_image_icon(
     vgfx_window_t win, const vg_icon_t *icon, float x, float y, float w, float h, bool enabled) {
     if (!icon || icon->type != VG_ICON_IMAGE || !icon->data.image.pixels || w <= 0.0f || h <= 0.0f)
@@ -258,8 +300,10 @@ static void toolbar_draw_image_icon(
     }
 }
 
-/// @brief Return true if item is an enabled button, toggle, or dropdown that can receive keyboard
-/// focus.
+/// @brief Determine whether an item participates in keyboard focus traversal.
+/// @param item Item to inspect; may be `NULL`.
+/// @return `true` for an enabled button, toggle, or dropdown; `false` for
+///         separators, spacers, custom widgets, disabled items, and `NULL`.
 static bool toolbar_item_can_focus(const vg_toolbar_item_t *item) {
     if (!item || !item->enabled)
         return false;
@@ -267,7 +311,10 @@ static bool toolbar_item_can_focus(const vg_toolbar_item_t *item) {
            item->type == VG_TOOLBAR_ITEM_DROPDOWN;
 }
 
-/// @brief Return the items[] index of item, or -1 if not found.
+/// @brief Find an exact item pointer in a toolbar's live item array.
+/// @param tb Toolbar to search; may be `NULL`.
+/// @param item Pointer identity to match; may be `NULL`.
+/// @return Zero-based live item index, or `-1` when the pointer is absent.
 static int toolbar_index_of_item(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     if (!tb || !item)
         return -1;
@@ -278,7 +325,11 @@ static int toolbar_index_of_item(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     return -1;
 }
 
-/// @brief Free all heap allocations inside item and the item struct itself.
+/// @brief Destroy an item record and all resources owned directly by it.
+/// @details Strings and icon storage are released before the record itself.
+///          A custom widget and dropdown menu referenced by the item are
+///          borrowed and are therefore not destroyed here.
+/// @param item Item to destroy; `NULL` is ignored.
 static void free_item(vg_toolbar_item_t *item) {
     if (!item)
         return;
@@ -292,6 +343,13 @@ static void free_item(vg_toolbar_item_t *item) {
     free(item);
 }
 
+/// @brief Test whether a toolbar item handle still denotes a live item.
+/// @details A live item carries the active magic value and retains a non-null
+///          owner. Retired tombstones deliberately fail this check, allowing
+///          foreign or managed wrappers to reject stale handles without
+///          invoking item operations.
+/// @param item Item handle to inspect; may be `NULL`.
+/// @return `true` only while @p item belongs to a live toolbar item array.
 bool vg_toolbar_item_is_live(const vg_toolbar_item_t *item) {
     return item && item->magic == VG_TOOLBAR_ITEM_MAGIC && item->owner != NULL;
 }
@@ -299,6 +357,11 @@ bool vg_toolbar_item_is_live(const vg_toolbar_item_t *item) {
 /// @brief Tear down @p item's owned strings/icon and park it on @p tb's
 ///        retired list for deferred freeing (use-after-free defense when an
 ///        item is removed during event dispatch).
+/// @details Callback, menu, widget, and owner references are cleared before the
+///          record receives its retired magic value. The resulting tombstone
+///          remains allocated until toolbar destruction or explicit reclamation.
+/// @param tb Toolbar that owns the retired-item list.
+/// @param item Live item being converted into a tombstone.
 static void retire_item(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     if (!tb || !item)
         return;
@@ -321,7 +384,8 @@ static void retire_item(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     tb->retired_items = item;
 }
 
-/// @brief Drain and free every toolbar item on @p tb's retired list.
+/// @brief Drain and free every item on a toolbar's retired list.
+/// @param tb Toolbar whose tombstones are reclaimed; `NULL` is ignored.
 static void free_retired_items(vg_toolbar_t *tb) {
     if (!tb)
         return;
@@ -374,7 +438,14 @@ static void toolbar_sync_hover_tooltip(vg_toolbar_t *tb) {
     }
 }
 
-/// @brief Allocate and zero-initialise a toolbar item of the given type, duplicating id.
+/// @brief Allocate a detached toolbar item of the requested type.
+/// @details The identifier is duplicated, default interaction fields are
+///          initialized, and the item receives the live magic value. Ownership
+///          is not established until the caller assigns an owner and appends
+///          the record to a toolbar.
+/// @param type Kind of toolbar item to create.
+/// @param id Optional identifier to duplicate.
+/// @return Newly allocated item, or `NULL` on allocation failure.
 static vg_toolbar_item_t *create_item(vg_toolbar_item_type_t type, const char *id) {
     vg_toolbar_item_t *item = calloc(1, sizeof(vg_toolbar_item_t));
     if (!item)
@@ -403,7 +474,9 @@ static vg_toolbar_item_t *create_item(vg_toolbar_item_type_t type, const char *i
     return item;
 }
 
-/// @brief Map a VG_TOOLBAR_ICONS_* enum to its pixel dimension before HiDPI scaling.
+/// @brief Map a toolbar icon-size setting to its unscaled pixel dimension.
+/// @param size Configured toolbar icon size.
+/// @return Base dimension in pixels; unknown values use the medium size.
 static uint32_t get_icon_pixels(vg_toolbar_icon_size_t size) {
     switch (size) {
         case VG_TOOLBAR_ICONS_SMALL:
@@ -417,43 +490,64 @@ static uint32_t get_icon_pixels(vg_toolbar_icon_size_t size) {
     }
 }
 
-/// @brief Return the current theme ui_scale, defaulting to 1.0 when no theme is available.
+/// @brief Obtain a positive UI scale for toolbar geometry.
+/// @return Current theme scale when positive, otherwise `1.0`.
 static float toolbar_ui_scale(void) {
     vg_theme_t *theme = vg_theme_get_current();
     float scale = theme ? theme->ui_scale : 1.0f;
     return scale > 0.0f ? scale : 1.0f;
 }
 
-/// @brief Return the icon pixel size for tb's current icon_size setting, scaled by ui_scale.
+/// @brief Resolve a toolbar's configured icon size in device-scaled pixels.
+/// @param tb Toolbar supplying the icon-size setting.
+/// @return Scaled square icon dimension.
 static float get_scaled_icon_pixels(vg_toolbar_t *tb) {
     return (float)get_icon_pixels(tb->icon_size) * toolbar_ui_scale();
 }
 
-/// @brief Return the width (horizontal) or height (vertical) of the overflow "…" button, minimum
-/// 18px.
+/// @brief Compute the overflow button's primary-axis extent.
+/// @details The extent accommodates the current icon size and item padding and
+///          is never smaller than 18 scaled-layout units.
+/// @param tb Toolbar supplying icon and padding configuration.
+/// @return Overflow button width for a horizontal toolbar or height for a
+///         vertical toolbar.
 static float get_overflow_button_extent(vg_toolbar_t *tb) {
     float icon_px = get_scaled_icon_pixels(tb);
     float extent = icon_px + (float)tb->item_padding * 2.0f;
     return extent > 18.0f ? extent : 18.0f;
 }
 
-/// @brief Return the primary-axis extent (width for horizontal, height for vertical) of item.
+/// @brief Compute an item's intrinsic primary-axis extent.
+/// @param tb Toolbar establishing orientation and presentation settings.
+/// @param item Item whose extent is requested.
+/// @return Intrinsic width for a horizontal toolbar or height for a vertical
+///         toolbar.
 static float get_item_extent(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     return tb->orientation == VG_TOOLBAR_HORIZONTAL ? get_item_width(tb, item)
                                                     : get_item_height(tb, item);
 }
 
-/// @brief Return the exclusive upper index for items visible before the overflow button.
+/// @brief Obtain the exclusive upper index of directly visible items.
+/// @param tb Toolbar whose overflow split is queried.
+/// @return `item_count` when no overflow exists, otherwise the first overflowed
+///         item index.
 static int toolbar_visible_limit(vg_toolbar_t *tb) {
     return tb->overflow_start_index >= 0 ? tb->overflow_start_index : (int)tb->item_count;
 }
 
-/// @brief Return true if index refers to the overflow button rather than a regular item.
+/// @brief Test whether a focus index represents the synthetic overflow button.
+/// @param tb Toolbar supplying overflow state; may be `NULL`.
+/// @param index Focus index to classify.
+/// @return `true` when @p index equals the active overflow split.
 static bool toolbar_focus_is_overflow(const vg_toolbar_t *tb, int index) {
     return tb && tb->overflow_start_index >= 0 && index == tb->overflow_start_index;
 }
 
-/// @brief Return true if index is either the overflow button or a focusable visible item.
+/// @brief Validate a toolbar focus index against current layout and item state.
+/// @param tb Toolbar whose focus domain is inspected; may be `NULL`.
+/// @param index Candidate index.
+/// @return `true` for the overflow button or an enabled, focusable, directly
+///         visible item.
 static bool toolbar_focus_index_valid(vg_toolbar_t *tb, int index) {
     if (!tb || index < 0)
         return false;
@@ -463,8 +557,10 @@ static bool toolbar_focus_index_valid(vg_toolbar_t *tb, int index) {
     return index < limit && toolbar_item_can_focus(tb->items[index]);
 }
 
-/// @brief Return the index of the first focusable item, or the overflow button index, or -1 if
-/// none.
+/// @brief Locate the first keyboard focus target.
+/// @param tb Toolbar to search; may be `NULL`.
+/// @return First focusable visible item index, the overflow button index when
+///         it is the only target, or `-1` when no target exists.
 static int toolbar_first_focus_index(vg_toolbar_t *tb) {
     if (!tb)
         return -1;
@@ -476,7 +572,10 @@ static int toolbar_first_focus_index(vg_toolbar_t *tb) {
     return tb->overflow_start_index >= 0 ? tb->overflow_start_index : -1;
 }
 
-/// @brief Return the index of the last focusable item (overflow button if present), or -1 if none.
+/// @brief Locate the last keyboard focus target.
+/// @param tb Toolbar to search; may be `NULL`.
+/// @return Overflow button index when present, otherwise the last focusable
+///         visible item index, or `-1`.
 static int toolbar_last_focus_index(vg_toolbar_t *tb) {
     if (!tb)
         return -1;
@@ -490,8 +589,15 @@ static int toolbar_last_focus_index(vg_toolbar_t *tb) {
     return -1;
 }
 
-/// @brief Return the next focusable index in the given direction (+1 forward, -1 backward, 0
-/// validate).
+/// @brief Advance keyboard focus through the directly visible toolbar targets.
+/// @details Traversal does not wrap. A zero direction validates the current
+///          index and falls back to the first target when it is stale.
+/// @param tb Toolbar whose targets are traversed; may be `NULL`.
+/// @param current Current focus index, or a negative value for no focus.
+/// @param direction Positive to move forward, negative to move backward, or
+///        zero to normalize only.
+/// @return Selected focus index, `current` at the respective boundary, or
+///         `-1` when the toolbar has no targets.
 static int toolbar_next_focus_index(vg_toolbar_t *tb, int current, int direction) {
     if (!tb)
         return -1;
@@ -529,7 +635,8 @@ static int toolbar_next_focus_index(vg_toolbar_t *tb, int current, int direction
     return current;
 }
 
-/// @brief Reset focused_index to the first valid focusable item if the current index is stale.
+/// @brief Normalize a toolbar's stored focus index after state or layout changes.
+/// @param tb Toolbar whose `focused_index` is updated; `NULL` is ignored.
 static void toolbar_normalize_focus_index(vg_toolbar_t *tb) {
     if (!tb)
         return;
@@ -537,13 +644,21 @@ static void toolbar_normalize_focus_index(vg_toolbar_t *tb) {
         tb->focused_index = toolbar_first_focus_index(tb);
 }
 
-/// @brief Return the toolbar's primary-axis dimension (width for horizontal, height for vertical).
+/// @brief Read the toolbar's arranged primary-axis dimension.
+/// @param tb Arranged toolbar.
+/// @return Width for a horizontal toolbar or height for a vertical toolbar.
 static float toolbar_primary_available(vg_toolbar_t *tb) {
     return tb->orientation == VG_TOOLBAR_HORIZONTAL ? tb->base.width : tb->base.height;
 }
 
-/// @brief Compute the per-spacer extent by distributing remaining space equally among all spacers
-/// up to max_index.
+/// @brief Divide unused primary-axis space among visible flexible spacers.
+/// @details Intrinsic item extents, inter-item spacing, and any overflow button
+///          are deducted from the arranged primary dimension. Negative
+///          remainder is clamped to zero.
+/// @param tb Toolbar supplying items and geometry.
+/// @param max_index Exclusive visible-item limit.
+/// @return Primary-axis extent assigned to each spacer, or zero when none are
+///         visible.
 static float toolbar_spacer_extent(vg_toolbar_t *tb, int max_index) {
     int spacer_count = 0;
     int visible_items = 0;
@@ -579,7 +694,14 @@ static float toolbar_spacer_extent(vg_toolbar_t *tb, int max_index) {
     return extra / (float)spacer_count;
 }
 
-/// @brief Return the layout extent for item — spacer_extent for spacers, get_item_extent otherwise.
+/// @brief Resolve an item's primary-axis extent for an arranged layout pass.
+/// @param tb Toolbar supplying orientation and item metrics.
+/// @param item Item being laid out; may be `NULL`.
+/// @param max_index Exclusive visible-item limit retained for layout-call
+///        compatibility.
+/// @param spacer_extent Precomputed extent shared by flexible spacers.
+/// @return Zero for `NULL`, @p spacer_extent for a spacer, or the item's
+///         intrinsic primary-axis extent.
 static float toolbar_layout_extent(vg_toolbar_t *tb,
                                    vg_toolbar_item_t *item,
                                    int max_index,
@@ -592,8 +714,17 @@ static float toolbar_layout_extent(vg_toolbar_t *tb,
     return get_item_extent(tb, item);
 }
 
-/// @brief Fill out_x/y/w/h with the local bounding rect of target within the toolbar; returns false
-/// if not found.
+/// @brief Locate a visible item's toolbar-local bounding rectangle.
+/// @details The calculation mirrors arranged spacer distribution and stops at
+///          the overflow split, so hidden overflow items are not reported.
+/// @param tb Toolbar whose current layout is queried.
+/// @param target Exact item pointer to locate.
+/// @param out_x Optional destination for the local left edge.
+/// @param out_y Optional destination for the local top edge.
+/// @param out_w Optional destination for the item width.
+/// @param out_h Optional destination for the item height.
+/// @return `true` when @p target is directly visible and its rectangle was
+///         found; otherwise `false`.
 static bool toolbar_get_item_rect(vg_toolbar_t *tb,
                                   vg_toolbar_item_t *target,
                                   float *out_x,
@@ -646,7 +777,10 @@ static bool toolbar_get_item_rect(vg_toolbar_t *tb,
     return false;
 }
 
-/// @brief Recursively destroy a context menu and all of its submenu children.
+/// @brief Destroy a cloned context-menu hierarchy.
+/// @details Submenus are recursively released before their parent because the
+///          cloned toolbar popup owns the entire tree.
+/// @param menu Root menu to destroy; `NULL` is ignored.
 static void toolbar_destroy_contextmenu_tree(vg_contextmenu_t *menu) {
     if (!menu)
         return;
@@ -659,8 +793,13 @@ static void toolbar_destroy_contextmenu_tree(vg_contextmenu_t *menu) {
     vg_contextmenu_destroy(menu);
 }
 
-/// @brief Callback fired when the user selects an item in a cloned dropdown popup; forwards action
-/// to the original menu_item.
+/// @brief Forward selection from a cloned dropdown entry to its source menu item.
+/// @details The clone stores the original `vg_menu_item_t` in `action_data`.
+///          Selection sets the source click latch, invokes its action when
+///          present, and requests a toolbar repaint.
+/// @param menu Cloned context menu reporting the selection; unused.
+/// @param menu_item Selected cloned entry; may be `NULL`.
+/// @param user_data Owning toolbar supplied when callbacks were attached.
 static void toolbar_dropdown_menu_on_select(vg_contextmenu_t *menu,
                                             vg_menu_item_t *menu_item,
                                             void *user_data) {
@@ -676,8 +815,9 @@ static void toolbar_dropdown_menu_on_select(vg_contextmenu_t *menu,
         tb->base.needs_paint = true;
 }
 
-/// @brief Recursively set toolbar_dropdown_menu_on_select as the on_select callback on menu and all
-/// submenus.
+/// @brief Attach toolbar selection forwarding throughout a cloned menu tree.
+/// @param menu Menu or submenu whose callback is configured; `NULL` is ignored.
+/// @param tb Toolbar passed back as callback user data.
 static void toolbar_attach_dropdown_callbacks(vg_contextmenu_t *menu, vg_toolbar_t *tb) {
     if (!menu)
         return;
@@ -689,8 +829,14 @@ static void toolbar_attach_dropdown_callbacks(vg_contextmenu_t *menu, vg_toolbar
     }
 }
 
-/// @brief Shallow-clone a vg_menu_t hierarchy into a vg_contextmenu_t tree, wiring toolbar action
-/// callbacks.
+/// @brief Clone a menu model into a toolbar-owned context-menu hierarchy.
+/// @details Labels, shortcuts, enabled/checked state, and icons are mirrored.
+///          Leaf clones retain a borrowed pointer to the original menu item so
+///          selection can invoke the source action. Failed individual entries
+///          are skipped while a failure to create the root returns `NULL`.
+/// @param menu Source menu hierarchy; may be `NULL`.
+/// @param tb Toolbar providing font configuration and callback context.
+/// @return Newly allocated context-menu tree owned by the caller, or `NULL`.
 static vg_contextmenu_t *toolbar_clone_menu_tree(vg_menu_t *menu, vg_toolbar_t *tb) {
     if (!menu)
         return NULL;
@@ -737,7 +883,12 @@ static vg_contextmenu_t *toolbar_clone_menu_tree(vg_menu_t *menu, vg_toolbar_t *
     return popup;
 }
 
-/// @brief Forward a measure pass to the custom_widget of a VG_TOOLBAR_ITEM_WIDGET item.
+/// @brief Measure an embedded custom-widget item.
+/// @param tb Owning toolbar; currently retained for symmetry with other item
+///        measurement helpers.
+/// @param item Candidate toolbar item.
+/// @param available_width Width constraint passed to the embedded widget.
+/// @param available_height Height constraint passed to the embedded widget.
 static void measure_toolbar_item_widget(vg_toolbar_t *tb,
                                         vg_toolbar_item_t *item,
                                         float available_width,
@@ -748,8 +899,14 @@ static void measure_toolbar_item_widget(vg_toolbar_t *tb,
     (void)tb;
 }
 
-/// @brief Determine overflow_start_index — the first item that doesn't fit in available_primary —
-/// or -1 if all fit.
+/// @brief Recompute the split between directly visible and overflowed items.
+/// @details Overflow is disabled when the toolbar has no overflow menu. When
+///          total intrinsic extent exceeds the available primary dimension, an
+///          overflow-button reservation is deducted and the first item that no
+///          longer fits becomes `overflow_start_index`.
+/// @param tb Toolbar whose overflow state is updated.
+/// @param available_primary Available width for a horizontal toolbar or height
+///        for a vertical toolbar.
 static void toolbar_compute_overflow(vg_toolbar_t *tb, float available_primary) {
     tb->overflow_start_index = -1;
     if (!tb->overflow_menu)
@@ -785,7 +942,12 @@ static void toolbar_compute_overflow(vg_toolbar_t *tb, float available_primary) 
     }
 }
 
-/// @brief Fill out_x/y/w/h with the local bounding rect of the overflow "…" button.
+/// @brief Compute the synthetic overflow button's toolbar-local rectangle.
+/// @param tb Arranged toolbar.
+/// @param out_x Optional destination for the local left edge.
+/// @param out_y Optional destination for the local top edge.
+/// @param out_w Optional destination for the button width.
+/// @param out_h Optional destination for the button height.
 static void toolbar_get_overflow_button_rect(
     vg_toolbar_t *tb, float *out_x, float *out_y, float *out_w, float *out_h) {
     float extent = get_overflow_button_extent(tb);
@@ -820,12 +982,24 @@ static void toolbar_get_overflow_button_rect(
         *out_h = h;
 }
 
-/// @brief Return true if point (px, py) lies within rectangle (x, y, w, h).
+/// @brief Test a point against a half-open rectangle.
+/// @param px Point X coordinate.
+/// @param py Point Y coordinate.
+/// @param x Rectangle left edge.
+/// @param y Rectangle top edge.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @return `true` when the point lies in `[x,x+w)` and `[y,y+h)`.
 static bool point_in_rect(float px, float py, float x, float y, float w, float h) {
     return px >= x && px < x + w && py >= y && py < y + h;
 }
 
-/// @brief Return true if toolbar-local point (px, py) falls inside the overflow button's rect.
+/// @brief Hit-test a toolbar-local point against the overflow button.
+/// @param tb Toolbar to test; may be `NULL`.
+/// @param px Local X coordinate.
+/// @param py Local Y coordinate.
+/// @return `true` only when overflow is active and the point is inside its
+///         synthetic button.
 static bool toolbar_overflow_button_hit(vg_toolbar_t *tb, float px, float py) {
     if (!tb || tb->overflow_start_index < 0)
         return false;
@@ -838,8 +1012,12 @@ static bool toolbar_overflow_button_hit(vg_toolbar_t *tb, float px, float py) {
     return point_in_rect(px, py, x, y, w, h);
 }
 
-/// @brief Return the best available display string for item in the overflow menu (label → tooltip →
-/// id → type name).
+/// @brief Choose a display label for an overflow-menu item.
+/// @details Selection falls back from non-empty label, to tooltip, to
+///          identifier, and finally to a generic type name.
+/// @param item Item to describe; may be `NULL`.
+/// @return Borrowed, null-terminated label valid for at least the item's
+///         lifetime, or a static fallback string.
 static const char *toolbar_item_menu_label(vg_toolbar_item_t *item) {
     if (!item)
         return "Item";
@@ -861,7 +1039,11 @@ static const char *toolbar_item_menu_label(vg_toolbar_item_t *item) {
     }
 }
 
-/// @brief Dismiss and destroy the active dropdown popup, clearing dropdown_item.
+/// @brief Dismiss and destroy the active per-item dropdown popup.
+/// @details Both the cloned popup tree and its association with the source
+///          toolbar item are cleared.
+/// @param tb Toolbar owning the popup; `NULL` or a toolbar without a popup is
+///        ignored.
 static void toolbar_dismiss_dropdown_popup(vg_toolbar_t *tb) {
     if (!tb || !tb->dropdown_popup)
         return;
@@ -872,7 +1054,11 @@ static void toolbar_dismiss_dropdown_popup(vg_toolbar_t *tb) {
     tb->dropdown_item = NULL;
 }
 
-/// @brief Release input capture if both overflow and dropdown popups have been dismissed.
+/// @brief Synchronize toolbar input capture with transient popup visibility.
+/// @details A hidden dropdown clone is destroyed. Capture is released only
+///          when neither popup remains visible and the toolbar currently owns
+///          capture.
+/// @param tb Toolbar whose popup/capture state is reconciled; `NULL` is ignored.
 static void toolbar_sync_popup_capture(vg_toolbar_t *tb) {
     if (!tb)
         return;
@@ -885,8 +1071,13 @@ static void toolbar_sync_popup_capture(vg_toolbar_t *tb) {
     vg_widget_release_input_capture();
 }
 
-/// @brief Clone item's menu into a context popup and show it below (horizontal) or to the right
-/// (vertical) of the item.
+/// @brief Toggle an item's dropdown menu as a transient context popup.
+/// @details The source menu is cloned for each showing, measured by the context
+///          menu, anchored in screen space below a horizontal item or beside a
+///          vertical item, clamped to the root viewport, and given toolbar
+///          input capture. Activating the already-open item dismisses it.
+/// @param tb Toolbar that owns the transient popup.
+/// @param item Live dropdown item whose borrowed menu model is cloned.
 static void toolbar_show_dropdown_popup(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     if (!tb || !item || item->type != VG_TOOLBAR_ITEM_DROPDOWN || !item->dropdown_menu)
         return;
@@ -930,8 +1121,14 @@ static void toolbar_show_dropdown_popup(vg_toolbar_t *tb, vg_toolbar_item_t *ite
     tb->base.needs_paint = true;
 }
 
-/// @brief Execute item's primary action: click button callback, toggle state, or open dropdown
-/// menu.
+/// @brief Execute an enabled item's primary toolbar action.
+/// @details Buttons invoke their click callback, toggles invert state before
+///          notifying their callback, and dropdowns open their menu or fall
+///          back to a click callback. The activation latch and repaint flag are
+///          set for all accepted item types.
+/// @param tb Toolbar expected to own @p item.
+/// @param item Item to activate; stale, foreign, disabled, or `NULL` items are
+///        ignored.
 static void toolbar_activate_item(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     if (!tb || !vg_toolbar_item_is_live(item) || item->owner != tb || !item->enabled)
         return;
@@ -961,8 +1158,10 @@ static void toolbar_activate_item(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     tb->base.needs_paint = true;
 }
 
-/// @brief Callback fired when the user picks an item from the overflow popup; activates the
-/// corresponding toolbar item.
+/// @brief Activate the source toolbar item selected through the overflow popup.
+/// @param menu Overflow context menu reporting selection; unused.
+/// @param menu_item Selected overflow entry containing the source item pointer.
+/// @param user_data Owning toolbar supplied as callback context.
 static void toolbar_overflow_on_select(vg_contextmenu_t *menu,
                                        vg_menu_item_t *menu_item,
                                        void *user_data) {
@@ -972,7 +1171,8 @@ static void toolbar_overflow_on_select(vg_contextmenu_t *menu,
     toolbar_activate_item(tb, item);
 }
 
-/// @brief Create the overflow_popup context menu if it does not yet exist.
+/// @brief Lazily create the toolbar's reusable overflow context menu.
+/// @param tb Toolbar that will own the popup; `NULL` is ignored.
 static void toolbar_ensure_overflow_popup(vg_toolbar_t *tb) {
     if (!tb || tb->overflow_popup)
         return;
@@ -985,8 +1185,12 @@ static void toolbar_ensure_overflow_popup(vg_toolbar_t *tb) {
     tb->overflow_popup_dirty = true;
 }
 
-/// @brief Rebuild the overflow popup's item list from items[overflow_start_index..item_count),
-/// clearing overflow_popup_dirty.
+/// @brief Rebuild overflow-popup entries from the hidden toolbar suffix.
+/// @details Separators are coalesced so no leading separator is emitted, while
+///          spacers and embedded widgets are omitted. Actionable items mirror
+///          enabled, checked, label, and icon state and retain a pointer to the
+///          source toolbar record.
+/// @param tb Toolbar whose overflow popup is created or repopulated.
 static void toolbar_rebuild_overflow_popup(vg_toolbar_t *tb) {
     toolbar_ensure_overflow_popup(tb);
     if (!tb || !tb->overflow_popup)
@@ -1035,7 +1239,8 @@ static void toolbar_rebuild_overflow_popup(vg_toolbar_t *tb) {
     tb->overflow_popup_dirty = false;
 }
 
-/// @brief Dismiss the overflow popup if it is currently visible.
+/// @brief Dismiss a visible overflow popup and reconcile capture state.
+/// @param tb Toolbar owning the popup; `NULL` and hidden popups are ignored.
 static void toolbar_dismiss_overflow_popup(vg_toolbar_t *tb) {
     if (!tb || !tb->overflow_popup || !tb->overflow_popup->is_visible)
         return;
@@ -1044,8 +1249,12 @@ static void toolbar_dismiss_overflow_popup(vg_toolbar_t *tb) {
     tb->base.needs_paint = true;
 }
 
-/// @brief Build (if dirty) and show the overflow popup anchored below or beside the overflow
-/// button.
+/// @brief Show the overflow popup at its orientation-dependent screen anchor.
+/// @details Any item dropdown is dismissed first. A missing or dirty overflow
+///          model is rebuilt, then the popup is shown below a horizontal
+///          overflow button or beside a vertical one, root-clamped, and given
+///          toolbar capture.
+/// @param tb Toolbar whose hidden suffix is displayed.
 static void toolbar_show_overflow_popup(vg_toolbar_t *tb) {
     if (!tb || tb->overflow_start_index < 0)
         return;
@@ -1077,7 +1286,13 @@ static void toolbar_show_overflow_popup(vg_toolbar_t *tb) {
     tb->base.needs_paint = true;
 }
 
-/// @brief Forward a mouse or key event to the active popup (dropdown takes priority over overflow).
+/// @brief Forward supported input to the currently visible toolbar popup.
+/// @details Item dropdowns take precedence over the overflow popup. The event
+///          is copied and retargeted, leaving the caller's event unchanged.
+/// @param tb Toolbar owning possible transient popups.
+/// @param event Mouse or keyboard event to forward.
+/// @return Result of popup dispatch, or `false` when no eligible popup/event
+///         combination exists.
 static bool toolbar_forward_popup_event(vg_toolbar_t *tb, vg_event_t *event) {
     vg_contextmenu_t *popup = NULL;
     if (!tb || !event)
@@ -1098,8 +1313,14 @@ static bool toolbar_forward_popup_event(vg_toolbar_t *tb, vg_event_t *event) {
     return vg_event_send(&popup->base, &translated);
 }
 
-/// @brief Compute the intrinsic width of item, accounting for icon, optional label, and dropdown
-/// arrow.
+/// @brief Compute an item's intrinsic toolbar width.
+/// @details Action items include horizontal padding, icon space, optional
+///          measured label text, and a dropdown indicator when applicable.
+///          Embedded widgets use their measured width, separators use a narrow
+///          rule extent, and flexible spacers report zero intrinsic width.
+/// @param tb Toolbar supplying font and presentation settings.
+/// @param item Item to measure.
+/// @return Intrinsic width in layout units.
 static float get_item_width(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     float icon_px = get_scaled_icon_pixels(tb);
     float padding = (float)tb->item_padding;
@@ -1144,7 +1365,13 @@ static float get_item_width(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     }
 }
 
-/// @brief Compute the intrinsic height of item, accounting for icon and optional label text.
+/// @brief Compute an item's intrinsic toolbar height.
+/// @details Action items use the larger of icon and measured font height plus
+///          vertical padding. Embedded widgets use their measured height and
+///          spacers deliberately contribute no intrinsic height.
+/// @param tb Toolbar supplying font and presentation settings.
+/// @param item Item to measure.
+/// @return Intrinsic height in layout units.
 static float get_item_height(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     float icon_px = get_scaled_icon_pixels(tb);
     float padding = (float)tb->item_padding;
@@ -1247,7 +1474,11 @@ vg_toolbar_t *vg_toolbar_create(vg_widget_t *parent, vg_toolbar_orientation_t or
     return tb;
 }
 
-/// @brief vtable destroy — release input capture, dismiss popups, and free all items.
+/// @brief Release toolbar-owned state during widget destruction.
+/// @details Input capture, transient popups, live item records, saved tooltip
+///          storage, and retired tombstones are released. Borrowed embedded
+///          widgets and dropdown source menus are not destroyed.
+/// @param widget Toolbar base widget being destroyed.
 static void toolbar_destroy(vg_widget_t *widget) {
     vg_toolbar_t *tb = (vg_toolbar_t *)widget;
 
@@ -1268,8 +1499,14 @@ static void toolbar_destroy(vg_widget_t *widget) {
     free_retired_items(tb);
 }
 
-/// @brief vtable measure — compute the toolbar's desired size based on item extents and bar
-/// thickness.
+/// @brief Measure the toolbar and any embedded custom widgets.
+/// @details Along the primary axis, nonzero intrinsic item extents and spacing
+///          are accumulated. The cross-axis thickness is derived from scaled
+///          icon size and padding. An empty primary axis consumes the available
+///          constraint.
+/// @param widget Toolbar base widget receiving measured dimensions.
+/// @param available_width Width constraint for this measure pass.
+/// @param available_height Height constraint for this measure pass.
 static void toolbar_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_toolbar_t *tb = (vg_toolbar_t *)widget;
     for (size_t i = 0; i < tb->item_count; i++)
@@ -1305,8 +1542,16 @@ static void toolbar_measure(vg_widget_t *widget, float available_width, float av
     }
 }
 
-/// @brief vtable arrange — pin position/size, recompute overflow, normalise focus, and arrange
-/// embedded custom widgets.
+/// @brief Arrange toolbar geometry, overflow state, and embedded widgets.
+/// @details The supplied rectangle becomes the toolbar bounds. Custom widgets
+///          are remeasured, the overflow split and focus index are normalized,
+///          flexible spacer space is distributed, and visible embedded widgets
+///          are centered in their item rectangles.
+/// @param widget Toolbar base widget being arranged.
+/// @param x Arranged left edge in parent coordinates.
+/// @param y Arranged top edge in parent coordinates.
+/// @param width Arranged width.
+/// @param height Arranged height.
 static void toolbar_arrange(vg_widget_t *widget, float x, float y, float width, float height) {
     vg_toolbar_t *tb = (vg_toolbar_t *)widget;
 
@@ -1366,7 +1611,18 @@ static void toolbar_arrange(vg_widget_t *widget, float x, float y, float width, 
 // to crisp, uniform vector icons drawn through the shared anti-aliased core.
 //=============================================================================
 
-/// @brief Scanline-fill a triangle (used for play/continue glyphs).
+/// @brief Rasterize a solid triangle into a graphics window.
+/// @details Integer pixel centers are tested against all three directed edges;
+///          either winding is accepted. The alpha byte is discarded because
+///          `vgfx_pset` consumes RGB.
+/// @param win Destination graphics window.
+/// @param ax First vertex X coordinate.
+/// @param ay First vertex Y coordinate.
+/// @param bx Second vertex X coordinate.
+/// @param by Second vertex Y coordinate.
+/// @param cx Third vertex X coordinate.
+/// @param cy Third vertex Y coordinate.
+/// @param color Packed color whose low 24 bits supply RGB.
 static void toolbar_fill_tri(
     vgfx_window_t win, float ax, float ay, float bx, float by, float cx, float cy, uint32_t color) {
     uint32_t rgb = color & 0x00FFFFFFu;
@@ -1500,7 +1756,12 @@ static bool toolbar_draw_vector_icon(
 /// @brief If @p s is exactly one UTF-8 codepoint, return it; otherwise return 0.
 /// @details Zanna Studio passes single Unicode glyphs (e.g. "▶") in a button's text
 ///          slot; we use this to detect them and substitute a vector icon. Real
-///          multi-character labels return 0 and render as text.
+///          multi-character labels and malformed leading/continuation sequences
+///          return zero and render as text. This helper validates byte shape,
+///          but does not reject every non-scalar or overlong encoding.
+/// @param s Null-terminated UTF-8 label; may be `NULL` or empty.
+/// @return Decoded codepoint when the entire string contains exactly one
+///         structurally valid sequence, otherwise zero.
 static uint32_t toolbar_label_single_codepoint(const char *s) {
     if (!s || !s[0])
         return 0;
@@ -1530,8 +1791,13 @@ static uint32_t toolbar_label_single_codepoint(const char *s) {
     return p[len] == '\0' ? cp : 0; // 0 if more than one codepoint
 }
 
-/// @brief vtable paint — draw background, all visible items (icons, labels, separators, overflow
-/// button), and focus rings.
+/// @brief Paint the toolbar, its directly visible items, and overflow affordance.
+/// @details Rendering includes themed item states, raster/glyph/vector icons,
+///          optional labels, separators, dropdown arrows, embedded widgets,
+///          and keyboard focus rings. Popup menus are deferred to the overlay
+///          pass.
+/// @param widget Toolbar base widget to paint.
+/// @param canvas Graphics canvas represented by a `vgfx_window_t`.
 static void toolbar_paint(vg_widget_t *widget, void *canvas) {
     vg_toolbar_t *tb = (vg_toolbar_t *)widget;
     vgfx_window_t win = (vgfx_window_t)canvas;
@@ -1819,8 +2085,11 @@ static void toolbar_paint(vg_widget_t *widget, void *canvas) {
     }
 }
 
-/// @brief vtable paint_overlay — paint the overflow and dropdown context-menu popups on top of all
-/// other widgets.
+/// @brief Paint visible toolbar-owned context menus in the overlay phase.
+/// @details Overflow is painted before an item dropdown, matching the latter's
+///          input priority if both transient records are momentarily visible.
+/// @param widget Toolbar base widget owning the popups.
+/// @param canvas Graphics canvas forwarded to each popup paint callback.
 static void toolbar_paint_overlay(vg_widget_t *widget, void *canvas) {
     vg_toolbar_t *tb = (vg_toolbar_t *)widget;
     if (tb->overflow_popup && tb->overflow_popup->is_visible && tb->overflow_popup->base.vtable &&
@@ -1911,8 +2180,15 @@ static void toolbar_get_visual_bounds(
         *height = y1 - y0;
 }
 
-/// @brief Return the interactable item at toolbar-local point (px, py), or NULL if none
-/// (separators/spacers excluded).
+/// @brief Find the directly visible item under a toolbar-local point.
+/// @details Hit rectangles use the same primary-axis extents and flexible
+///          spacer allocation as painting. Separators and spacers are excluded
+///          even when the point lies within their layout rectangle.
+/// @param tb Toolbar to hit-test.
+/// @param px Local X coordinate.
+/// @param py Local Y coordinate.
+/// @return Borrowed item pointer for an actionable or embedded-widget item, or
+///         `NULL` when no interactable item is hit.
 static vg_toolbar_item_t *find_item_at(vg_toolbar_t *tb, float px, float py) {
     float pos = 0.0f;
     int max_index = toolbar_visible_limit(tb);
@@ -1953,8 +2229,14 @@ static vg_toolbar_item_t *find_item_at(vg_toolbar_t *tb, float px, float py) {
     return NULL;
 }
 
-/// @brief vtable handle_event — route mouse and keyboard events, forwarding to active popups first,
-/// then handling hover/click/focus.
+/// @brief Route pointer and keyboard input for the toolbar.
+/// @details Visible popups receive eligible events first. Local handling then
+///          maintains hover/press state, tooltip mirroring, item activation,
+///          overflow toggling, orientation-aware arrow traversal, Home/End,
+///          Escape dismissal, and Enter/Space activation.
+/// @param widget Toolbar base widget receiving the event.
+/// @param event Event expressed in toolbar-local coordinates where applicable.
+/// @return `true` when the toolbar or an active popup consumed the event.
 static bool toolbar_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_toolbar_t *tb = (vg_toolbar_t *)widget;
     bool popup_was_visible = (tb->overflow_popup && tb->overflow_popup->is_visible) ||
@@ -2151,14 +2433,18 @@ static bool toolbar_handle_event(vg_widget_t *widget, vg_event_t *event) {
     }
 }
 
-/// @brief vtable can_focus — return true when the toolbar is enabled, visible, and has at least one
-/// focusable item.
+/// @brief Determine whether the toolbar can accept keyboard focus.
+/// @param widget Toolbar base widget to inspect.
+/// @return `true` when the widget is enabled and visible and current layout
+///         exposes at least one focus target.
 static bool toolbar_can_focus(vg_widget_t *widget) {
     vg_toolbar_t *tb = (vg_toolbar_t *)widget;
     return widget->enabled && widget->visible && toolbar_first_focus_index(tb) >= 0;
 }
 
-/// @brief vtable on_focus — normalise focused_index when focus is gained and request repaint.
+/// @brief Update toolbar state after a widget focus transition.
+/// @param widget Toolbar base widget whose focus changed.
+/// @param gained `true` when focus was acquired; `false` when it was lost.
 static void toolbar_on_focus(vg_widget_t *widget, bool gained) {
     vg_toolbar_t *tb = (vg_toolbar_t *)widget;
     if (gained)
@@ -2172,6 +2458,9 @@ static void toolbar_on_focus(vg_widget_t *widget, bool gained) {
 
 /// @brief Append a push-button item to the toolbar.
 ///
+/// @details The label and identifier are copied, while ownership of @p icon is
+///          transferred even when creation fails. Successful insertion marks
+///          layout and the lazy overflow representation dirty.
 /// @param tb        Toolbar to add to; may be NULL (returns NULL).
 /// @param id        Unique string identifier; may be NULL.
 /// @param label     Display text (visible when show_labels is true); may be NULL.
@@ -2217,6 +2506,9 @@ vg_toolbar_item_t *vg_toolbar_add_button(vg_toolbar_t *tb,
 
 /// @brief Append a two-state toggle button to the toolbar.
 ///
+/// @details The label and identifier are copied, while ownership of @p icon is
+///          transferred. Activation flips `checked` before invoking
+///          @p on_toggle with the new state.
 /// @param tb              Toolbar to add to; may be NULL (returns NULL).
 /// @param id              Unique string identifier; may be NULL.
 /// @param label           Display text; may be NULL.
@@ -2265,6 +2557,9 @@ vg_toolbar_item_t *vg_toolbar_add_toggle(vg_toolbar_t *tb,
 
 /// @brief Append a dropdown button that opens menu as a context popup when activated.
 ///
+/// @details The toolbar borrows @p menu and clones its hierarchy each time the
+///          dropdown is shown. Identifier and label are copied and ownership of
+///          @p icon transfers to the item.
 /// @param tb    Toolbar to add to; may be NULL (returns NULL).
 /// @param id    Unique string identifier; may be NULL.
 /// @param label Display text; may be NULL.
@@ -2304,6 +2599,8 @@ vg_toolbar_item_t *vg_toolbar_add_dropdown(
 
 /// @brief Append a visual separator line to the toolbar.
 ///
+/// @details The noninteractive separator participates in primary-axis layout
+///          and may be mirrored between actionable overflow entries.
 /// @param tb Toolbar to add to; may be NULL (returns NULL).
 /// @return   The new separator item, or NULL on allocation failure.
 vg_toolbar_item_t *vg_toolbar_add_separator(vg_toolbar_t *tb) {
@@ -2325,6 +2622,9 @@ vg_toolbar_item_t *vg_toolbar_add_separator(vg_toolbar_t *tb) {
 
 /// @brief Append a flexible spacer that absorbs surplus space evenly with other spacers.
 ///
+/// @details Spacers have no intrinsic extent and divide the remaining
+///          primary-axis space during layout. They are omitted from overflow
+///          menus.
 /// @param tb Toolbar to add to; may be NULL (returns NULL).
 /// @return   The new spacer item, or NULL on allocation failure.
 vg_toolbar_item_t *vg_toolbar_add_spacer(vg_toolbar_t *tb) {
@@ -2346,6 +2646,9 @@ vg_toolbar_item_t *vg_toolbar_add_spacer(vg_toolbar_t *tb) {
 
 /// @brief Embed an arbitrary widget as a toolbar item; the toolbar arranges it but does NOT own it.
 ///
+/// @details The widget is measured and centered in its allocated item
+///          rectangle while directly visible. It is not represented in the
+///          overflow popup and remains owned by its original lifecycle.
 /// @param tb     Toolbar to add to; may be NULL (returns NULL).
 /// @param id     Unique string identifier; may be NULL.
 /// @param widget Custom widget to embed; may be NULL.
@@ -2372,6 +2675,10 @@ vg_toolbar_item_t *vg_toolbar_add_widget(vg_toolbar_t *tb, const char *id, vg_wi
 /// @brief Remove the item at @p index: clear any hover/press/focus/dropdown
 ///        state referencing it, compact the items array, and retire the item
 ///        for deferred freeing.
+/// @details Removal invalidates layout and the overflow model, dismisses any
+///          active overflow popup, and synchronizes the toolbar-level tooltip.
+/// @param tb Toolbar whose live array is modified.
+/// @param index Zero-based live item index.
 static void toolbar_remove_item_at(vg_toolbar_t *tb, size_t index) {
     if (!tb || index >= tb->item_count)
         return;
@@ -2398,9 +2705,10 @@ static void toolbar_remove_item_at(vg_toolbar_t *tb, size_t index) {
     toolbar_dismiss_overflow_popup(tb);
 }
 
-/// @brief Remove and free the item with the given id, shifting the items[] array and invalidating
-/// layout.
+/// @brief Remove the first live toolbar item matching an identifier.
 ///
+/// @details The record is retired rather than immediately freed so external
+///          stable handles can detect a tombstone safely.
 /// @param tb Toolbar to modify; may be NULL (no-op).
 /// @param id String identifier of the item to remove; may be NULL (no-op).
 void vg_toolbar_remove_item(vg_toolbar_t *tb, const char *id) {
@@ -2415,7 +2723,11 @@ void vg_toolbar_remove_item(vg_toolbar_t *tb, const char *id) {
     }
 }
 
-/// @brief Remove and free an exact item pointer, including runtime-created items without IDs.
+/// @brief Remove an exact live item pointer from its owning toolbar.
+/// @details Foreign and retired pointers are rejected. The matching record is
+///          converted to a deferred-reclamation tombstone.
+/// @param tb Toolbar expected to own @p item.
+/// @param item Exact live item handle to remove.
 void vg_toolbar_remove_item_ptr(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     if (!tb || !vg_toolbar_item_is_live(item) || item->owner != tb)
         return;
@@ -2430,6 +2742,9 @@ void vg_toolbar_remove_item_ptr(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
 /// @brief Unlink and free one exact retained Toolbar item record.
 /// @details The managed runtime invokes this only after the last stable wrapper is absent. Foreign
 ///          pointers are compared but never dereferenced.
+/// @param tb Toolbar whose retired list is searched.
+/// @param item Tombstone pointer identity to reclaim.
+/// @return `true` when the exact retired record was found and freed.
 bool vg_toolbar_reclaim_retired_item(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
     if (!tb || !item)
         return false;
@@ -2449,6 +2764,8 @@ bool vg_toolbar_reclaim_retired_item(vg_toolbar_t *tb, vg_toolbar_item_t *item) 
 
 /// @brief Look up a toolbar item by its string id.
 ///
+/// @details Identifiers are compared exactly and the first matching live-array
+///          entry is returned. The result is borrowed from the toolbar.
 /// @param tb Toolbar to search; may be NULL (returns NULL).
 /// @param id String identifier to match; may be NULL (returns NULL).
 /// @return   Matching item pointer, or NULL if not found.
@@ -2467,6 +2784,9 @@ vg_toolbar_item_t *vg_toolbar_get_item(vg_toolbar_t *tb, const char *id) {
 /// @brief Enable or disable a toolbar item, marking the overflow popup dirty and requesting
 /// repaint.
 ///
+/// @details A no-op assignment produces no invalidation. Disabling an item
+///          removes it from keyboard traversal and prevents activation without
+///          changing its checked state or callbacks.
 /// @param item    Item to modify; may be NULL (no-op).
 /// @param enabled true to enable, false to disable (item paints with disabled colour and ignores
 /// input).
@@ -2487,6 +2807,8 @@ void vg_toolbar_item_set_enabled(vg_toolbar_item_t *item, bool enabled) {
 /// @brief Set the checked state of a toggle item, updating the overflow popup and requesting
 /// repaint.
 ///
+/// @details The state field is updated for any live item record, though visual
+///          checked treatment and toggle callbacks apply to toggle items.
 /// @param item    Toggle item to modify; may be NULL (no-op).
 /// @param checked New checked state.
 void vg_toolbar_item_set_checked(vg_toolbar_item_t *item, bool checked) {
@@ -2506,6 +2828,10 @@ void vg_toolbar_item_set_checked(vg_toolbar_item_t *item, bool checked) {
 /// @brief Set the tooltip string of a toolbar item, also used as its label in the overflow menu
 /// when no label is set.
 ///
+/// @details The new string is copied before existing storage is released, so
+///          allocation failure leaves the previous value intact. If the item
+///          is currently hovered, the toolbar's mirrored widget tooltip is
+///          synchronized immediately.
 /// @param item    Item to modify; may be NULL (no-op).
 /// @param tooltip Tooltip string, duplicated internally; may be NULL to clear.
 void vg_toolbar_item_set_tooltip(vg_toolbar_item_t *item, const char *tooltip) {
@@ -2529,6 +2855,8 @@ void vg_toolbar_item_set_tooltip(vg_toolbar_item_t *item, const char *tooltip) {
 
 /// @brief Replace the label text of a toolbar item, invalidating layout.
 ///
+/// @details The input is duplicated before the old label is released.
+///          Allocation failure therefore preserves the previous label.
 /// @param item Item to modify; may be NULL (no-op).
 /// @param text New label string, duplicated internally; may be NULL to clear.
 void vg_toolbar_item_set_text(vg_toolbar_item_t *item, const char *text) {
@@ -2551,6 +2879,8 @@ void vg_toolbar_item_set_text(vg_toolbar_item_t *item, const char *text) {
 
 /// @brief Replace the icon of a toolbar item, destroying the previous icon and invalidating layout.
 ///
+/// @details Ownership of @p icon always transfers to this function. If @p item
+///          is stale, the incoming icon is destroyed instead of being stored.
 /// @param item Item to modify; may be NULL (no-op).
 /// @param icon New icon descriptor (ownership transfers; use VG_ICON_NONE to clear).
 void vg_toolbar_item_set_icon(vg_toolbar_item_t *item, vg_icon_t icon) {
@@ -2569,6 +2899,8 @@ void vg_toolbar_item_set_icon(vg_toolbar_item_t *item, vg_icon_t icon) {
 
 /// @brief Set the icon size for all items in the toolbar, invalidating layout.
 ///
+/// @details The stored enum is interpreted during measurement and painting;
+///          actual dimensions are additionally multiplied by theme UI scale.
 /// @param tb   Toolbar to modify; may be NULL (no-op).
 /// @param size VG_TOOLBAR_ICONS_SMALL (16px), _MEDIUM (24px), or _LARGE (32px) before HiDPI
 /// scaling.
@@ -2582,6 +2914,9 @@ void vg_toolbar_set_icon_size(vg_toolbar_t *tb, vg_toolbar_icon_size_t size) {
 
 /// @brief Toggle label visibility on all current and future items, invalidating layout.
 ///
+/// @details The toolbar default and every existing item's `show_label` flag are
+///          updated together so subsequently added and current items remain
+///          consistent.
 /// @param tb   Toolbar to modify; may be NULL (no-op).
 /// @param show true to display item labels beside their icons.
 void vg_toolbar_set_show_labels(vg_toolbar_t *tb, bool show) {
@@ -2597,6 +2932,9 @@ void vg_toolbar_set_show_labels(vg_toolbar_t *tb, bool show) {
 
 /// @brief Set the font and size used for item labels and the overflow/dropdown popups.
 ///
+/// @details The font is borrowed. A nonpositive size selects the theme's small
+///          typography size, and an already-created overflow popup receives the
+///          new font immediately.
 /// @param tb   Toolbar to modify; may be NULL (no-op).
 /// @param font Font to use; NULL falls back to no text rendering.
 /// @param size Point size; ≤0 defaults to theme->typography.size_small.
@@ -2617,6 +2955,9 @@ void vg_toolbar_set_font(vg_toolbar_t *tb, vg_font_t *font, float size) {
 
 /// @brief Create a VG_ICON_GLYPH icon from a Unicode codepoint, drawn with the toolbar's font.
 ///
+/// @details The descriptor stores the scalar value directly and owns no heap
+///          memory. Known toolbar action glyphs may be substituted by the
+///          vector-icon mapping during painting.
 /// @param codepoint Unicode scalar value.
 /// @return          Initialised icon descriptor (stack value; no allocation).
 vg_icon_t vg_icon_from_glyph(uint32_t codepoint) {
@@ -2628,6 +2969,9 @@ vg_icon_t vg_icon_from_glyph(uint32_t codepoint) {
 
 /// @brief Create a VG_ICON_IMAGE icon by copying w×h RGBA pixels from rgba.
 ///
+/// @details Dimensions are checked for multiplication overflow before a
+///          four-byte-per-pixel allocation is made. The result is independent
+///          of the caller's input buffer.
 /// @param rgba Pointer to w×h×4 bytes of RGBA data to copy; may be NULL (returns VG_ICON_NONE).
 /// @param w    Image width in pixels; must be > 0.
 /// @param h    Image height in pixels; must be > 0.
@@ -2658,6 +3002,8 @@ vg_icon_t vg_icon_from_pixels(uint8_t *rgba, uint32_t w, uint32_t h) {
 
 /// @brief Create a VG_ICON_PATH icon referencing an image file by path (path is duplicated).
 ///
+/// @details This constructor stores only the path; it does not read or decode
+///          the referenced image file.
 /// @param path File-system path to the image; may be NULL (returns VG_ICON_NONE).
 /// @return     Icon with a heap-duplicated path string, or VG_ICON_NONE on allocation failure.
 vg_icon_t vg_icon_from_file(const char *path) {
@@ -2675,6 +3021,8 @@ vg_icon_t vg_icon_from_file(const char *path) {
 
 /// @brief Create a VG_ICON_VECTOR icon referencing a named scalable icon.
 ///
+/// @details The integer registry identifier is stored by value and no resource
+///          ownership is acquired.
 /// @param vector_id Icon id from vg_icon_vector_find; negative returns VG_ICON_NONE.
 /// @return          Vector icon reference (no heap allocation).
 vg_icon_t vg_icon_from_vector(int32_t vector_id) {
@@ -2688,6 +3036,8 @@ vg_icon_t vg_icon_from_vector(int32_t vector_id) {
 
 /// @brief Deep-copy an icon descriptor, duplicating heap allocations for IMAGE and PATH types.
 ///
+/// @details Glyph and vector descriptors are copied by value. Unknown or empty
+///          icon types produce `VG_ICON_NONE`.
 /// @param icon Source icon; may be NULL (returns VG_ICON_NONE).
 /// @return     Independent copy; caller owns any allocations.
 vg_icon_t vg_icon_clone(const vg_icon_t *icon) {
@@ -2712,6 +3062,8 @@ vg_icon_t vg_icon_clone(const vg_icon_t *icon) {
 
 /// @brief Free heap allocations inside icon and reset its type to VG_ICON_NONE.
 ///
+/// @details Image pixel buffers and path strings are owned by their descriptor;
+///          glyph and vector variants contain no allocation.
 /// @param icon Icon to clear; may be NULL (no-op).
 void vg_icon_destroy(vg_icon_t *icon) {
     if (!icon)

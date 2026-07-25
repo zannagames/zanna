@@ -4,28 +4,29 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_findreplacebar.c
-// Purpose: Find/Replace bar widget — a toolbar that drives text search and
-//          optional replacement across a linked vg_codeeditor_t target.
-// Key invariants:
-//   - matches[] is a heap-allocated array of vg_search_match_t; grown on demand
-//     and freed in findreplacebar_destroy.
-//   - current_match is always a valid index into matches[] when match_count > 0.
-//   - perform_search rebuilds matches[] from scratch on every query or option
-//     change; highlight_current_match applies the current match as an editor
-//     selection and scrolls it into view.
-//   - Replace-all iterates matches in reverse document order to preserve column
-//     positions after each replacement.
-//   - Regex search uses POSIX regcomp/regexec where available and a built-in
-//     literal/dot/class/anchor/quantifier fallback on Windows.
-// Ownership/Lifetime:
-//   - Child widgets are owned by the widget hierarchy and freed automatically.
-//   - bar->matches is owned by the bar; freed in findreplacebar_destroy.
-// Links: lib/gui/include/vg_ide_widgets.h,
-//        lib/gui/include/vg_widgets.h,
-//        lib/gui/include/vg_theme.h,
-//        lib/gui/include/vg_event.h
+///
+/// @file vg_findreplacebar.c
+/// @brief Implements the code editor's interactive find-and-replace toolbar.
+///
+/// @details The bar owns text inputs, navigation and replacement buttons,
+/// search-option checkboxes, and a dynamically grown match array. Every query or
+/// option change rebuilds matches across the linked live code editor. The
+/// current match is selected in the editor and scrolled into view.
+///
+/// Literal search is UTF-8 column-aware and supports ASCII-insensitive and
+/// whole-word modes. POSIX builds use `regcomp()` and `regexec()` for regular
+/// expressions; Windows uses the local deterministic fallback supporting
+/// literals, dot, classes, anchors, and `*`, `+`, or `?` quantifiers.
+/// Replace-all processes matches in reverse document order so earlier columns
+/// remain valid.
+///
+/// Child widgets are owned by the widget hierarchy. The match array is owned
+/// directly by the bar.
+///
+/// @see vg_ide_widgets.h
+/// @see vg_widgets.h
+/// @see vg_theme.h
+/// @see vg_event.h
 //
 //===----------------------------------------------------------------------===//
 #include "../../../graphics/include/vgfx.h"
@@ -116,7 +117,11 @@ static vg_widget_vtable_t g_findreplacebar_vtable = {.destroy = findreplacebar_d
 // Helper Functions - Case Insensitive String Search
 //=============================================================================
 
-/// @brief Portable case-insensitive substring search; returns first match or NULL.
+/// @brief Performs a portable ASCII case-insensitive substring search.
+///
+/// @param haystack Null-terminated text to search.
+/// @param needle Null-terminated query; an empty query matches @p haystack.
+/// @return Pointer to the first match in @p haystack, or null.
 static const char *strcasestr_custom(const char *haystack, const char *needle) {
     if (!*needle)
         return haystack;
@@ -136,21 +141,29 @@ static const char *strcasestr_custom(const char *haystack, const char *needle) {
     return NULL;
 }
 
-/// @brief VTable set_font trampoline — propagates a font change to all text inputs and buttons in
-/// the bar.
+/// @brief Adapts the widget font vtable call to the typed bar API.
+///
+/// @param widget Find/replace bar base widget.
+/// @param font Borrowed font; null calls are ignored.
+/// @param size Font size to propagate.
 static void findreplacebar_set_font_widget(vg_widget_t *widget, void *font, float size) {
     if (!widget || !font)
         return;
     vg_findreplacebar_set_font((vg_findreplacebar_t *)widget, (vg_font_t *)font, size);
 }
 
-/// @brief Return true if c is a word-boundary character (non-alphanumeric and not '_').
+/// @brief Tests whether a byte is a UTF-8 continuation byte.
+///
+/// @param c Byte to classify.
+/// @return `true` when the two high bits are `10`.
 static bool fr_utf8_is_continuation(unsigned char c) {
     return (c & 0xC0u) == 0x80u;
 }
 
 /// @brief Advance @p p past one UTF-8 codepoint (stops at NUL); NULL/empty
 ///        input returns @p p unchanged.
+/// @param p Current UTF-8 sequence start.
+/// @return Pointer to the next sequence start or terminator.
 static const char *fr_utf8_next(const char *p) {
     if (!p || !*p)
         return p;
@@ -160,7 +173,11 @@ static const char *fr_utf8_next(const char *p) {
     return p;
 }
 
-/// @brief Count UTF-8 codepoint columns before @p byte_offset in @p text.
+/// @brief Counts complete UTF-8 sequences before a byte offset.
+///
+/// @param text Null-terminated UTF-8 text.
+/// @param byte_offset Exclusive byte limit.
+/// @return Number of complete code-point columns before the limit.
 static uint32_t fr_utf8_col_from_byte_offset(const char *text, size_t byte_offset) {
     if (!text)
         return 0;
@@ -181,6 +198,9 @@ static uint32_t fr_utf8_col_from_byte_offset(const char *text, size_t byte_offse
 
 /// @brief Walk back from @p p to the start of the previous UTF-8 codepoint
 ///        within @p text; returns NULL if @p p is already at the start.
+/// @param text Beginning of the UTF-8 buffer.
+/// @param p Current position in the same buffer.
+/// @return Previous sequence start, or null when none exists.
 static const char *fr_utf8_prev_start(const char *text, const char *p) {
     if (!text || !p || p <= text)
         return NULL;
@@ -192,6 +212,9 @@ static const char *fr_utf8_prev_start(const char *text, const char *p) {
 
 /// @brief Decode the UTF-8 codepoint at @p p, reading at most @p max_len bytes.
 ///        Returns 0 on empty input, U+FFFD on a malformed/truncated sequence.
+/// @param p Current UTF-8 byte position.
+/// @param max_len Maximum readable byte count.
+/// @return Decoded code point, zero for empty input, or U+FFFD when malformed.
 static uint32_t fr_utf8_decode_at(const char *p, size_t max_len) {
     const unsigned char *s = (const unsigned char *)p;
     if (!s || max_len == 0)
@@ -213,6 +236,8 @@ static uint32_t fr_utf8_decode_at(const char *p, size_t max_len) {
 /// @brief True if @p cp is a word boundary (NUL, or an ASCII non-alphanumeric
 ///        that is not '_'); non-ASCII is treated as a word character so
 ///        whole-word search keeps accented words intact.
+/// @param cp Unicode code point to classify.
+/// @return `true` when the code point forms a supported word boundary.
 static bool is_word_boundary_codepoint(uint32_t cp) {
     if (cp == 0)
         return true;
@@ -221,7 +246,12 @@ static bool is_word_boundary_codepoint(uint32_t cp) {
     return false;
 }
 
-/// @brief Return true if the match at `match` is surrounded by word-boundary characters.
+/// @brief Tests whether a match is surrounded by supported word boundaries.
+///
+/// @param text Beginning of the full line.
+/// @param match Pointer into @p text at the match.
+/// @param match_len Match length in bytes.
+/// @return `true` when both adjacent code points are boundaries or buffer edges.
 static bool check_whole_word(const char *text, const char *match, size_t match_len) {
     // Check character before match
     const char *prev = fr_utf8_prev_start(text, match);
@@ -245,7 +275,10 @@ static bool check_whole_word(const char *text, const char *match, size_t match_l
 
 /// @brief Find the first occurrence of @p query in @p text, honoring the
 ///        case-sensitive and whole-word flags in @p options.
-/// @param match_len Receives the matched byte length on success.
+/// @param text Line or line suffix to search.
+/// @param query Non-empty literal query.
+/// @param options Search options controlling case and whole-word matching.
+/// @param[out] match_len Receives the matched byte length on success.
 /// @return Pointer into @p text at the match, or NULL if not found.
 static const char *find_in_line(const char *text,
                                 const char *query,
@@ -286,7 +319,11 @@ static const char *find_in_line(const char *text,
 #ifndef _WIN32
 /// @brief Find the next POSIX-regex match of @p regex in @p text at or after
 ///        @p start, honoring the whole-word flag in @p options.
-/// @param match_len Receives the matched byte length on success.
+/// @param text Full line used for whole-word boundary checks.
+/// @param start First position eligible for matching.
+/// @param regex Compiled POSIX regular expression.
+/// @param options Search options controlling whole-word validation.
+/// @param[out] match_len Receives the matched byte length on success.
 /// @return Pointer into @p text at the match, or NULL if none. (POSIX-only;
 ///         Windows builds use a non-regex fallback.)
 static const char *find_regex_in_line(const char *text,
@@ -324,10 +361,20 @@ static const char *find_regex_in_line(const char *text,
     return NULL;
 }
 #else
+/// @brief Applies optional ASCII case folding for the Windows regex fallback.
+///
+/// @param c Byte to fold.
+/// @param case_sensitive Whether comparison must preserve ASCII case.
+/// @return Original byte or its lowercase representation.
 static int fr_regex_fold(unsigned char c, bool case_sensitive) {
     return case_sensitive ? (int)c : tolower(c);
 }
 
+/// @brief Finds the byte after one fallback-regex atom.
+///
+/// @param pattern Pattern beginning at a literal, escape, dot, or character
+///                class.
+/// @return Pointer after the atom, or null for an incomplete class or escape.
 static const char *fr_regex_atom_end(const char *pattern) {
     if (!pattern || !*pattern)
         return NULL;
@@ -350,6 +397,11 @@ static const char *fr_regex_atom_end(const char *pattern) {
     return *p == ']' ? p + 1 : NULL;
 }
 
+/// @brief Reads one possibly escaped byte from a fallback character class.
+///
+/// @param[in,out] cursor Current class-pattern cursor, advanced on success.
+/// @param[out] out Receives the decoded literal byte.
+/// @return `true` when a byte was read; otherwise `false`.
 static bool fr_regex_read_class_char(const char **cursor, unsigned char *out) {
     const char *p = *cursor;
     if (!p || !*p)
@@ -364,6 +416,15 @@ static bool fr_regex_read_class_char(const char **cursor, unsigned char *out) {
     return true;
 }
 
+/// @brief Tests one byte against a fallback-regex character class.
+///
+/// @details The class may be negated and may contain inclusive byte ranges.
+///
+/// @param pattern Pattern beginning with `[`.
+/// @param ch Candidate text byte.
+/// @param case_sensitive Whether ASCII comparisons preserve case.
+/// @param[out] after Receives the byte after the closing bracket.
+/// @return `true` when a valid class accepts @p ch; otherwise `false`.
 static bool fr_regex_match_class(const char *pattern,
                                  unsigned char ch,
                                  bool case_sensitive,
@@ -409,6 +470,14 @@ static bool fr_regex_match_class(const char *pattern,
     return negate ? !matched : matched;
 }
 
+/// @brief Matches one fallback-regex atom at the current text position.
+///
+/// @param pattern Atom pattern to evaluate.
+/// @param text Current non-empty text position.
+/// @param case_sensitive Whether ASCII literals preserve case.
+/// @param[out] after Receives the pattern position after the atom.
+/// @param[out] match_len Receives consumed text bytes.
+/// @return `true` when the atom matches; otherwise `false`.
 static bool fr_regex_match_atom(const char *pattern,
                                 const char *text,
                                 bool case_sensitive,
@@ -446,11 +515,27 @@ static bool fr_regex_match_atom(const char *pattern,
            fr_regex_fold((unsigned char)*pattern, case_sensitive);
 }
 
+/// @brief Matches a fallback-regex suffix at the current text position.
+///
+/// @param pattern Pattern suffix to evaluate.
+/// @param text Current text position.
+/// @param case_sensitive Whether ASCII literals preserve case.
+/// @param[out] matched_len Receives total matched byte length.
+/// @return `true` when the complete suffix matches.
 static bool fr_regex_match_here(const char *pattern,
                                 const char *text,
                                 bool case_sensitive,
                                 size_t *matched_len);
 
+/// @brief Matches a quantified atom with greedy recursive backtracking.
+///
+/// @param atom Atom to repeat.
+/// @param rest Pattern following its quantifier.
+/// @param text Current text position.
+/// @param case_sensitive Whether ASCII literals preserve case.
+/// @param min_count Minimum remaining repetitions.
+/// @param[out] matched_len Receives total bytes matched by repetition and tail.
+/// @return `true` when a permitted repetition count lets @p rest match.
 static bool fr_regex_match_repeat(const char *atom,
                                   const char *rest,
                                   const char *text,
@@ -480,6 +565,16 @@ static bool fr_regex_match_repeat(const char *atom,
     return false;
 }
 
+/// @brief Matches a complete fallback-regex suffix at one text position.
+///
+/// @details End anchors and the `*`, `+`, and `?` quantifiers are resolved
+/// recursively; unquantified atoms consume exactly one atom match.
+///
+/// @param pattern Pattern suffix to evaluate.
+/// @param text Current text position.
+/// @param case_sensitive Whether ASCII literals preserve case.
+/// @param[out] matched_len Receives the consumed text length.
+/// @return `true` when the suffix matches; otherwise `false`.
 static bool fr_regex_match_here(const char *pattern,
                                 const char *text,
                                 bool case_sensitive,
@@ -533,6 +628,14 @@ static bool fr_regex_match_here(const char *pattern,
     return true;
 }
 
+/// @brief Finds the next Windows fallback-regex match in a line.
+///
+/// @param text Complete line used for boundary checks.
+/// @param start First text position eligible for matching.
+/// @param pattern Fallback-regex pattern.
+/// @param options Search options controlling case and whole-word checks.
+/// @param[out] match_len Receives matched byte length.
+/// @return Pointer into @p text at the next non-empty match, or null.
 static const char *find_regex_in_line(const char *text,
                                       const char *start,
                                       const char *pattern,
@@ -567,7 +670,12 @@ static const char *find_regex_in_line(const char *text,
 }
 #endif
 
-/// @brief Append a match record to bar->matches[], growing the array if needed.
+/// @brief Appends one match record, growing the owned array as needed.
+///
+/// @param bar Bar that owns the match array.
+/// @param line Zero-based editor line.
+/// @param start Starting UTF-8 code-point column.
+/// @param end Exclusive ending UTF-8 code-point column.
 static void add_match(vg_findreplacebar_t *bar, uint32_t line, uint32_t start, uint32_t end) {
     // Grow array if needed
     if (bar->match_count >= bar->match_capacity) {
@@ -596,6 +704,12 @@ static void add_match(vg_findreplacebar_t *bar, uint32_t line, uint32_t start, u
     bar->match_count++;
 }
 
+/// @brief Validates and returns the bar's linked code editor.
+///
+/// @details A stale or wrongly typed target is detached before returning null.
+///
+/// @param bar Bar whose target is validated.
+/// @return Borrowed live code-editor pointer, or null.
 static vg_codeeditor_t *findreplacebar_live_target(vg_findreplacebar_t *bar) {
     if (!bar || !bar->target_editor)
         return NULL;
@@ -607,14 +721,23 @@ static vg_codeeditor_t *findreplacebar_live_target(vg_findreplacebar_t *bar) {
     return bar->target_editor;
 }
 
-/// @brief Reset match_count and current_match to 0 and clear the result text.
+/// @brief Clears logical matches and the displayed result summary.
+///
+/// @param bar Bar whose reusable match allocation is retained.
 static void clear_matches(vg_findreplacebar_t *bar) {
     bar->match_count = 0;
     bar->current_match = 0;
     snprintf(bar->result_text, sizeof(bar->result_text), "");
 }
 
-/// @brief Re-scan the target editor for all matches of the current query and options.
+/// @brief Rescans the linked editor for the current query and options.
+///
+/// @details Matches are rebuilt across all lines, converted from byte offsets
+/// to editor code-point columns, and the first result is highlighted. POSIX
+/// regular expressions are compiled once per scan. The optional find callback
+/// runs after search state and result text are updated.
+///
+/// @param bar Bar whose search state is rebuilt.
 static void perform_search(vg_findreplacebar_t *bar) {
     clear_matches(bar);
 
@@ -695,7 +818,9 @@ static void perform_search(vg_findreplacebar_t *bar) {
     }
 }
 
-/// @brief Update bar->result_text to show "N of M" or "No results" based on match state.
+/// @brief Updates the human-readable match summary.
+///
+/// @param bar Bar whose result buffer is rewritten.
 static void update_result_text(vg_findreplacebar_t *bar) {
     if (bar->match_count == 0) {
         vg_textinput_t *find_input = (vg_textinput_t *)bar->find_input;
@@ -714,7 +839,9 @@ static void update_result_text(vg_findreplacebar_t *bar) {
     }
 }
 
-/// @brief Show or hide the replace-row widgets based on bar->show_replace.
+/// @brief Applies replace-row visibility to its child controls.
+///
+/// @param bar Bar whose child visibility is synchronized.
 static void findreplacebar_apply_replace_visibility(vg_findreplacebar_t *bar) {
     if (!bar)
         return;
@@ -726,7 +853,9 @@ static void findreplacebar_apply_replace_visibility(vg_findreplacebar_t *bar) {
         vg_widget_set_visible((vg_widget_t *)bar->replace_all_btn, bar->show_replace);
 }
 
-/// @brief Select the current match in the target editor and scroll it into view.
+/// @brief Selects the current match in the linked editor and reveals its line.
+///
+/// @param bar Bar containing the current match and target editor.
 static void highlight_current_match(vg_findreplacebar_t *bar) {
     vg_codeeditor_t *ed = findreplacebar_live_target(bar);
     if (bar->match_count == 0 || !ed)
@@ -746,36 +875,50 @@ static void highlight_current_match(vg_findreplacebar_t *bar) {
 // Button Callbacks
 //=============================================================================
 
-/// @brief Button callback: invokes find-previous on the linked editor.
+/// @brief Handles activation of the previous-match button.
+///
+/// @param btn Button that emitted the callback; otherwise unused.
+/// @param user_data Owning find/replace bar.
 static void on_find_prev_click(vg_widget_t *btn, void *user_data) {
     (void)btn;
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)user_data;
     vg_findreplacebar_find_prev(bar);
 }
 
-/// @brief Button callback: invokes find-next on the linked editor.
+/// @brief Handles activation of the next-match button.
+///
+/// @param btn Button that emitted the callback; otherwise unused.
+/// @param user_data Owning find/replace bar.
 static void on_find_next_click(vg_widget_t *btn, void *user_data) {
     (void)btn;
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)user_data;
     vg_findreplacebar_find_next(bar);
 }
 
-/// @brief Button callback: replaces the current match with the replacement text in the linked
-/// editor.
+/// @brief Handles activation of the replace-current button.
+///
+/// @param btn Button that emitted the callback; otherwise unused.
+/// @param user_data Owning find/replace bar.
 static void on_replace_click(vg_widget_t *btn, void *user_data) {
     (void)btn;
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)user_data;
     (void)vg_findreplacebar_replace_current(bar);
 }
 
-/// @brief Button callback: replaces all matches in the linked editor.
+/// @brief Handles activation of the replace-all button.
+///
+/// @param btn Button that emitted the callback; otherwise unused.
+/// @param user_data Owning find/replace bar.
 static void on_replace_all_click(vg_widget_t *btn, void *user_data) {
     (void)btn;
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)user_data;
     (void)vg_findreplacebar_replace_all(bar);
 }
 
-/// @brief Button callback: hides the find/replace bar when the close button is clicked.
+/// @brief Handles activation of the close button.
+///
+/// @param btn Button that emitted the callback; otherwise unused.
+/// @param user_data Owning find/replace bar.
 static void on_close_click(vg_widget_t *btn, void *user_data) {
     (void)btn;
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)user_data;
@@ -786,8 +929,12 @@ static void on_close_click(vg_widget_t *btn, void *user_data) {
     }
 }
 
-/// @brief Checkbox callback: re-runs the current search when a match option (case, whole-word,
-/// regex) changes.
+/// @brief Synchronizes a changed option checkbox and reruns search.
+///
+/// @param cb Checkbox that changed.
+/// @param checked New checkbox state; the authoritative value is read from the
+///                typed checkbox widget.
+/// @param user_data Owning find/replace bar.
 static void on_option_change(vg_widget_t *cb, bool checked, void *user_data) {
     (void)checked;
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)user_data;
@@ -811,8 +958,11 @@ static void on_option_change(vg_widget_t *cb, bool checked, void *user_data) {
     perform_search(bar);
 }
 
-/// @brief Text-input callback: triggers a live search in the linked editor as the find query text
-/// changes.
+/// @brief Reruns search when the find input changes.
+///
+/// @param input Text input that changed; otherwise unused.
+/// @param text New text; the search reads the input's authoritative value.
+/// @param user_data Owning find/replace bar.
 static void on_find_text_change(vg_widget_t *input, const char *text, void *user_data) {
     (void)input;
     (void)text;
@@ -917,8 +1067,11 @@ vg_findreplacebar_t *vg_findreplacebar_create(void) {
     return bar;
 }
 
-/// @brief VTable destroy: releases input capture if held; child widgets freed by base widget
-/// hierarchy.
+/// @brief Releases bar-owned search matches during widget destruction.
+///
+/// @details Child widgets are released by the base widget hierarchy.
+///
+/// @param widget Find/replace bar base widget being destroyed.
 static void findreplacebar_destroy(vg_widget_t *widget) {
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)widget;
 
@@ -928,8 +1081,11 @@ static void findreplacebar_destroy(vg_widget_t *widget) {
     // Child widgets are destroyed by parent destruction
 }
 
-/// @brief VTable measure: determines bar height from single vs. double row (show_replace), then
-/// claims available width.
+/// @brief Measures the bar as one or two fixed-height rows.
+///
+/// @param widget Find/replace bar base widget whose size is updated.
+/// @param available_width Width claimed by the toolbar.
+/// @param available_height Available height; currently unused.
 static void findreplacebar_measure(vg_widget_t *widget,
                                    float available_width,
                                    float available_height) {
@@ -941,8 +1097,13 @@ static void findreplacebar_measure(vg_widget_t *widget,
         bar->show_replace ? FINDREPLACEBAR_HEIGHT_REPLACE : FINDREPLACEBAR_HEIGHT;
 }
 
-/// @brief VTable arrange: lays out find/replace rows, option checkboxes, and navigation buttons
-/// within the bar bounds.
+/// @brief Arranges inputs, buttons, and option checkboxes within the bar.
+///
+/// @param widget Find/replace bar base widget to arrange.
+/// @param x Allocated left coordinate.
+/// @param y Allocated top coordinate.
+/// @param width Allocated width.
+/// @param height Allocated height.
 static void findreplacebar_arrange(
     vg_widget_t *widget, float x, float y, float width, float height) {
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)widget;
@@ -1035,8 +1196,12 @@ static void findreplacebar_arrange(
     findreplacebar_apply_replace_visibility(bar);
 }
 
-/// @brief VTable paint: draws the bar background, separator line, and match-count label; child
-/// widgets paint themselves.
+/// @brief Paints the toolbar surface, separator, and result summary.
+///
+/// @details Child controls paint themselves through the widget hierarchy.
+///
+/// @param widget Find/replace bar base widget to render.
+/// @param canvas Destination drawing context.
 static void findreplacebar_paint(vg_widget_t *widget, void *canvas) {
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -1091,8 +1256,11 @@ static void findreplacebar_paint(vg_widget_t *widget, void *canvas) {
     }
 }
 
-/// @brief VTable handle_event: handles Escape to close the bar and Tab/Shift-Tab to cycle focus
-/// between find/replace inputs.
+/// @brief Handles toolbar keyboard shortcuts and dispatches pointer input to children.
+///
+/// @param widget Find/replace bar base widget receiving the event.
+/// @param event Event to inspect.
+/// @return `true` when the bar or a child consumes the event; otherwise `false`.
 static bool findreplacebar_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)widget;
 
@@ -1278,6 +1446,7 @@ void vg_findreplacebar_find_prev(vg_findreplacebar_t *bar) {
 /// @details After replacement the search is re-run to update the match list.
 ///
 /// @param bar The find/replace bar to use.
+/// @return `true` when a live target and current match were replaced.
 bool vg_findreplacebar_replace_current(vg_findreplacebar_t *bar) {
     vg_codeeditor_t *ed = findreplacebar_live_target(bar);
     if (!bar || bar->match_count == 0 || !ed)
@@ -1313,6 +1482,7 @@ bool vg_findreplacebar_replace_current(vg_findreplacebar_t *bar) {
 ///          column positions.  The search is re-run after all replacements.
 ///
 /// @param bar The find/replace bar to use.
+/// @return Number of replacements applied.
 size_t vg_findreplacebar_replace_all(vg_findreplacebar_t *bar) {
     vg_codeeditor_t *ed = findreplacebar_live_target(bar);
     if (!bar || bar->match_count == 0 || !ed)

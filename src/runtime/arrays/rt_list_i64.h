@@ -1,4 +1,11 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares the unboxed i64 runtime list ABI and inline array adapters.
+/// @details Lists reuse the i64 array payload/header representation while
+///          exposing append, pop, and peek operations. Growth may replace and
+///          release the old payload, so mutating append accepts the address of
+///          the caller's handle.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -10,7 +17,7 @@
 // Key invariants:
 //   - len <= cap at all times; push is amortized O(1).
 //   - No boxing overhead: elements are stored as raw int64_t values.
-//   - Resize doubles capacity and transfers ownership of the old allocation.
+//   - Push growth doubles capacity and transfers ownership of the old allocation.
 //
 // Ownership/Lifetime:
 //   - Reference-counted via rt_list_i64_retain/release.
@@ -59,6 +66,7 @@ static inline size_t rt_list_i64_len(int64_t *list) {
 
 /// @brief Return the current capacity in elements.
 /// @param list List payload pointer (may be NULL).
+/// @return Reserved element slots; zero when @p list is NULL.
 static inline size_t rt_list_i64_cap(int64_t *list) {
     return rt_arr_i64_cap(list);
 }
@@ -72,6 +80,10 @@ static inline int64_t rt_list_i64_get(int64_t *list, size_t idx) {
 }
 
 /// @brief Write @p val at @p idx with bounds checking.
+/// @param list Non-null list payload.
+/// @param idx Zero-based index within logical length.
+/// @param val Value to store.
+/// @note Traps on invalid handles or indices.
 static inline void rt_list_i64_set(int64_t *list, size_t idx, int64_t val) {
     rt_arr_i64_set(list, idx, val);
 }

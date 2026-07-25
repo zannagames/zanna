@@ -65,6 +65,10 @@ void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h);
 void *rt_canvas3d_new_fullscreen(rt_string title);
 /// @brief Create a windowless software Canvas3D bound to an explicit RenderTarget3D.
 void *rt_canvas3d_new_offscreen(void *target);
+/// @brief Windowless constructor that requests the platform GPU backend with software
+///        fallback (ADR 0191). Not byte-deterministic across backends; probes and bakes
+///        must keep using rt_canvas3d_new_offscreen.
+void *rt_canvas3d_new_offscreen_accelerated(void *target);
 /// @brief Report whether the canvas was created without a platform window.
 int8_t rt_canvas3d_get_is_offscreen(void *obj);
 /// @brief Resize the canvas and active backend output targets.

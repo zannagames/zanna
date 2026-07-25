@@ -28,6 +28,13 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements retained menu bars, hierarchical menu ownership,
+///        drop-down interaction, and keyboard accelerators.
+/// @details Menus and items use explicit live and retired states so removals
+///          during callbacks do not invalidate active stack references. Custom
+///          drop-down geometry is shared by painting, hit testing, and visual
+///          bounds reporting.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
@@ -87,6 +94,7 @@ static bool menubar_contains_menu(const vg_menubar_t *menubar, const vg_menu_t *
 static void retire_menu(vg_menubar_t *menubar, vg_menu_t *menu);
 
 /// @brief Recursively free an item's text, shortcut, icon, submenu tree, and the item itself.
+/// @param item Owned live or retired item record to destroy; `NULL` is ignored.
 static void free_menu_item(vg_menu_item_t *item) {
     if (!item)
         return;
@@ -114,11 +122,19 @@ static void free_menu_item(vg_menu_item_t *item) {
     free(item);
 }
 
+/// @brief Validate that a menu-item handle still names an attached live item.
+/// @param item Item record to inspect.
+/// @return `true` when the live magic and either menu or context-menu ownership
+///         link are present.
 bool vg_menu_item_is_live(const vg_menu_item_t *item) {
     return item && item->magic == VG_MENU_ITEM_MAGIC &&
            (item->parent_menu != NULL || item->owner_contextmenu != NULL);
 }
 
+/// @brief Validate that a menu remains reachable from a live owning menu bar.
+/// @param menu Menu handle to inspect.
+/// @return `true` when the magic, owner widget, and recursive tree membership
+///         checks all succeed.
 bool vg_menu_is_live(const vg_menu_t *menu) {
     if (!menu || menu->magic != VG_MENU_MAGIC || !menu->owner_menubar)
         return false;
@@ -130,6 +146,7 @@ bool vg_menu_is_live(const vg_menu_t *menu) {
 /// @brief Free every menu item parked on @p menu's deferred-deletion list.
 /// @details Items are "retired" (not freed immediately) while a menu may
 ///          still be referenced mid-event; this drains that list safely.
+/// @param menu Menu whose retirement chain is drained.
 static void free_retired_menu_items(vg_menu_t *menu) {
     if (!menu)
         return;
@@ -144,6 +161,9 @@ static void free_retired_menu_items(vg_menu_t *menu) {
 }
 
 /// @brief Return true if @p target is reachable from @p menu, including nested submenus.
+/// @param menu Root of the menu tree to search.
+/// @param target Menu record sought by identity.
+/// @return `true` when @p target is @p menu or a recursively owned submenu.
 static bool menu_tree_contains(const vg_menu_t *menu, const vg_menu_t *target) {
     if (!menu || !target)
         return false;
@@ -157,6 +177,9 @@ static bool menu_tree_contains(const vg_menu_t *menu, const vg_menu_t *target) {
 }
 
 /// @brief Return true if @p target is part of @p menubar's live menu tree.
+/// @param menubar Menu bar whose top-level roots are searched.
+/// @param target Menu record sought by identity.
+/// @return `true` when any top-level menu contains @p target.
 static bool menubar_contains_menu(const vg_menubar_t *menubar, const vg_menu_t *target) {
     if (!menubar || !target)
         return false;
@@ -170,6 +193,8 @@ static bool menubar_contains_menu(const vg_menubar_t *menubar, const vg_menu_t *
 /// @brief Close @p menu (or the currently open menu if @p menu is NULL):
 ///        clears the open/highlight state, releases input capture, and
 ///        requests a repaint.
+/// @param menubar Menu bar whose transient interaction state is updated.
+/// @param menu Specific menu to close, or `NULL` for the current open menu.
 static void close_menubar_menu(vg_menubar_t *menubar, vg_menu_t *menu) {
     if (!menubar)
         return;
@@ -193,6 +218,8 @@ static void close_menubar_menu(vg_menubar_t *menubar, vg_menu_t *menu) {
 /// @brief Move @p item (and its submenu items) onto @p menu's retired list
 ///        for deferred freeing, so a removal during event handling does not
 ///        free memory still referenced up the call stack.
+/// @param menu Menu receiving the retired record.
+/// @param item Detached item whose owned payload and submenu are retired.
 static void retire_menu_item(vg_menu_t *menu, vg_menu_item_t *item) {
     if (!menu || !item)
         return;
@@ -230,6 +257,7 @@ static void retire_menu_item(vg_menu_t *menu, vg_menu_item_t *item) {
 }
 
 /// @brief Free all items in a menu list and the menu struct itself.
+/// @param menu Owned menu tree to destroy; `NULL` is ignored.
 static void free_menu(vg_menu_t *menu) {
     if (!menu)
         return;
@@ -249,6 +277,8 @@ static void free_menu(vg_menu_t *menu) {
 
 /// @brief Move a removed menu onto the menubar retired list so stale runtime
 ///        menu handles become inert until the menubar itself is destroyed.
+/// @param menubar Menu bar receiving the retired menu record.
+/// @param menu Detached menu whose item tree is retired.
 static void retire_menu(vg_menubar_t *menubar, vg_menu_t *menu) {
     if (!menubar || !menu)
         return;
@@ -276,6 +306,15 @@ static void retire_menu(vg_menubar_t *menubar, vg_menu_t *menu) {
 }
 
 /// @brief Compute the screen bounds and per-item height for the currently open drop-down.
+/// @details Width accounts for labels, checks, shortcuts, submenu arrows, and
+///          theme scaling. Every output is initialized to zero when no menu is
+///          open.
+/// @param menubar Menu bar whose open custom drop-down is measured.
+/// @param out_x Optional destination for screen-space left coordinate.
+/// @param out_y Optional destination for screen-space top coordinate.
+/// @param out_width Optional destination for panel width.
+/// @param out_height Optional destination for panel height.
+/// @param out_item_height Optional destination for uniform row height.
 static void menubar_get_open_dropdown_bounds(vg_menubar_t *menubar,
                                              float *out_x,
                                              float *out_y,
@@ -439,6 +478,7 @@ vg_menubar_t *vg_menubar_create(vg_widget_t *parent) {
 }
 
 /// @brief vtable destroy — releases input capture, frees all menus and the accelerator table.
+/// @param widget Menu-bar widget base being destroyed.
 static void menubar_destroy(vg_widget_t *widget) {
     vg_menubar_t *menubar = (vg_menubar_t *)widget;
 
@@ -471,6 +511,11 @@ static void menubar_destroy(vg_widget_t *widget) {
 }
 
 /// @brief vtable measure — width fills available_width; height is the theme bar height.
+/// @details A native main menu occupies no retained-layout height.
+/// @param widget Menu-bar widget base to measure.
+/// @param available_width Width offered by the parent layout.
+/// @param available_height Offered height; unused because the bar has a fixed
+///                         theme-derived height.
 static void menubar_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_menubar_t *menubar = (vg_menubar_t *)widget;
     (void)available_height;
@@ -483,6 +528,8 @@ static void menubar_measure(vg_widget_t *widget, float available_width, float av
 }
 
 /// @brief vtable paint — draws the bar background and menu title buttons.
+/// @param widget Arranged menu-bar widget base to paint.
+/// @param canvas Backend canvas used for primitives and text.
 static void menubar_paint(vg_widget_t *widget, void *canvas) {
     vg_menubar_t *menubar = (vg_menubar_t *)widget;
     if (menubar->native_main_menu)
@@ -548,6 +595,10 @@ static void menubar_paint(vg_widget_t *widget, void *canvas) {
 // Paint overlay - called after all widgets are painted to draw popups on top
 /// @brief vtable paint_overlay — draws the open drop-down panel and its items on top of other
 /// widgets.
+/// @details Renders separators, highlight state, shortcuts, check marks, and
+///          submenu indicators using the same geometry as event hit testing.
+/// @param widget Menu-bar widget owning the overlay.
+/// @param canvas Backend canvas used for overlay primitives and text.
 static void menubar_paint_overlay(vg_widget_t *widget, void *canvas) {
     vg_menubar_t *menubar = (vg_menubar_t *)widget;
     if (menubar->native_main_menu)
@@ -697,6 +748,9 @@ static void menubar_paint_overlay(vg_widget_t *widget, void *canvas) {
 }
 
 /// @brief Return the top-level menu whose title button contains screen X, or NULL.
+/// @param menubar Menu bar supplying titles, padding, and font metrics.
+/// @param x Horizontal coordinate relative to the bar.
+/// @return Borrowed containing menu, or `NULL` when no enabled geometry matches.
 static vg_menu_t *find_menu_at_x(vg_menubar_t *menubar, float x) {
     if (!menubar->font)
         return NULL;
@@ -720,6 +774,8 @@ static vg_menu_t *find_menu_at_x(vg_menubar_t *menubar, float x) {
 }
 
 /// @brief Return the next enabled sibling menu after menu, or NULL if none.
+/// @param menu Current top-level menu.
+/// @return Borrowed next enabled sibling, or `NULL`.
 static vg_menu_t *find_next_enabled_menu(vg_menu_t *menu) {
     for (vg_menu_t *it = menu ? menu->next : NULL; it; it = it->next) {
         if (it->enabled)
@@ -729,6 +785,8 @@ static vg_menu_t *find_next_enabled_menu(vg_menu_t *menu) {
 }
 
 /// @brief Return the previous enabled sibling menu before menu, or NULL if none.
+/// @param menu Current top-level menu.
+/// @return Borrowed previous enabled sibling, or `NULL`.
 static vg_menu_t *find_prev_enabled_menu(vg_menu_t *menu) {
     for (vg_menu_t *it = menu ? menu->prev : NULL; it; it = it->prev) {
         if (it->enabled)
@@ -738,6 +796,8 @@ static vg_menu_t *find_prev_enabled_menu(vg_menu_t *menu) {
 }
 
 /// @brief Return the first non-separator enabled item in menu, or NULL.
+/// @param menu Menu whose item chain is scanned.
+/// @return Borrowed first keyboard-selectable item, or `NULL`.
 static vg_menu_item_t *find_first_enabled_item(vg_menu_t *menu) {
     for (vg_menu_item_t *item = menu ? menu->first_item : NULL; item; item = item->next) {
         if (!item->separator && item->enabled)
@@ -747,6 +807,8 @@ static vg_menu_item_t *find_first_enabled_item(vg_menu_t *menu) {
 }
 
 /// @brief Return the next non-separator enabled item after item, or NULL.
+/// @param item Current menu item.
+/// @return Borrowed next keyboard-selectable sibling, or `NULL`.
 static vg_menu_item_t *find_next_enabled_item(vg_menu_item_t *item) {
     for (vg_menu_item_t *it = item ? item->next : NULL; it; it = it->next) {
         if (!it->separator && it->enabled)
@@ -756,6 +818,8 @@ static vg_menu_item_t *find_next_enabled_item(vg_menu_item_t *item) {
 }
 
 /// @brief Return the previous non-separator enabled item before item, or NULL.
+/// @param item Current menu item.
+/// @return Borrowed previous keyboard-selectable sibling, or `NULL`.
 static vg_menu_item_t *find_prev_enabled_item(vg_menu_item_t *item) {
     for (vg_menu_item_t *it = item ? item->prev : NULL; it; it = it->prev) {
         if (!it->separator && it->enabled)
@@ -765,6 +829,12 @@ static vg_menu_item_t *find_prev_enabled_item(vg_menu_item_t *item) {
 }
 
 /// @brief vtable handle_event — routes mouse, keyboard, and Escape for the bar and its drop-down.
+/// @details Handles title switching under capture, screen-space drop-down hit
+///          testing, item activation, accelerator dispatch, directional menu
+///          navigation, and dismissal.
+/// @param widget Menu-bar widget receiving input.
+/// @param event Mutable event to interpret.
+/// @return `true` when an action or menu-state transition consumes the event.
 static bool menubar_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_menubar_t *menubar = (vg_menubar_t *)widget;
     if (menubar->native_main_menu)
@@ -1298,6 +1368,9 @@ void vg_menubar_remove_menu(vg_menubar_t *menubar, vg_menu_t *menu) {
 
 /// @brief Unlink and free one exact retired item from a menu record.
 /// @details Works for both live menus and menu records retained on a MenuBar retirement chain.
+/// @param menu Menu record whose retirement chain is searched.
+/// @param item Exact retired-item address to reclaim.
+/// @return `true` when the record was found and destroyed.
 bool vg_menu_reclaim_retired_item(vg_menu_t *menu, vg_menu_item_t *item) {
     if (!menu || !item)
         return false;
@@ -1318,6 +1391,9 @@ bool vg_menu_reclaim_retired_item(vg_menu_t *menu, vg_menu_item_t *item) {
 /// @brief Unlink and free one exact retired menu from a MenuBar.
 /// @details The embedding runtime has already established that the menu and its retained items have
 ///          no managed wrappers, so the ordinary deep menu destructor is safe.
+/// @param menubar Menu bar whose retired-menu chain is searched.
+/// @param menu Exact retired-menu address to reclaim.
+/// @return `true` when the record was found and recursively destroyed.
 bool vg_menubar_reclaim_retired_menu(vg_menubar_t *menubar, vg_menu_t *menu) {
     if (!menubar || !menu)
         return false;
@@ -1448,6 +1524,8 @@ static const key_mapping_t g_key_mappings[] = {
     {NULL, 0}};
 
 /// @brief Look up a key name string in g_key_mappings and return its VG_KEY_* code.
+/// @param name Case-insensitive key-token name.
+/// @return Matching VG_KEY_* code, or VG_KEY_UNKNOWN.
 static int lookup_key(const char *name) {
     for (const key_mapping_t *m = g_key_mappings; m->name; m++) {
         if (strcasecmp(name, m->name) == 0) {
@@ -1552,6 +1630,8 @@ void vg_menubar_register_accelerator(vg_menubar_t *menubar,
 }
 
 /// @brief Recursively register accelerators for all items in menu and its submenus.
+/// @param menubar Menu bar receiving accelerator table entries.
+/// @param menu Menu tree to traverse.
 static void rebuild_accels_for_menu(vg_menubar_t *menubar, vg_menu_t *menu) {
     for (vg_menu_item_t *item = menu->first_item; item; item = item->next) {
         if (item->shortcut) {

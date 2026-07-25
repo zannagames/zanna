@@ -70,6 +70,7 @@ class Scene2DWorkspaceState {
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
     expose Boolean previewActive;
+    expose Boolean showGrid;
     expose List[String] undoStack;
     expose List[String] redoStack;
     expose String cleanSerialized;
@@ -94,6 +95,7 @@ class Scene2DWorkspaceState {
         inspectorRequestedVisible = true;
         compactInspectorShown = false;
         previewActive = false;
+        showGrid = true;
         undoStack = [];
         redoStack = [];
         cleanSerialized = "";

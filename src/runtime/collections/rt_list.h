@@ -27,6 +27,19 @@
 // Links: src/runtime/collections/rt_list.c (implementation), src/runtime/core/rt_heap.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares a mutable, retained-element runtime List.
+///
+/// List provides indexed access, positional insertion and removal, slicing,
+/// search, stable sorting, shuffling, and cloning over opaque runtime values.
+/// Stored values are retained. Get, first, last, and pop return retained
+/// references that callers must release.
+///
+/// Search and removal use runtime boxed-value equality. List objects and their
+/// backing object arrays are runtime-managed and are not safe for
+/// unsynchronized concurrent mutation.
+
 #pragma once
 
 #include <stdint.h>
@@ -62,10 +75,10 @@ void rt_list_push(void *list, void *elem);
 
 /// @brief Remove all elements from the list.
 /// @details Releases all retained elements and resets the length to zero.
-///          Provides a fast way to reuse list storage without reallocation;
-///          capacity may be retained.
+///          The managed backing array is released; a later push allocates
+///          fresh storage.
 /// @param list Opaque List object pointer.
-/// @post Count becomes zero; capacity is implementation-defined.
+/// @post Count becomes zero and no backing array remains.
 void rt_list_clear(void *list);
 
 /// @brief Remove the element at a specific index.
@@ -94,16 +107,14 @@ void *rt_list_get(void *list, int64_t index);
 void rt_list_set(void *list, int64_t index, void *elem);
 
 /// @brief Check whether the list contains a specific element.
-/// @details Scans the list and compares elements using reference equality
-///          (same semantics as Seq.Has/Seq.Find). Provides a common membership
-///          query for Zanna.Collections.List.
+/// @details Scans the list using runtime boxed-value equality.
 /// @param list Opaque List object pointer.
 /// @param elem Element to look for (may be NULL).
 /// @return 1 if present, 0 otherwise.
 int8_t rt_list_has(void *list, void *elem);
 
 /// @brief Find the first index of an element in the list.
-/// @details Scans the list left-to-right and compares by reference equality.
+/// @details Scans the list left-to-right using runtime boxed-value equality.
 ///          Enables search and removal patterns without manual iteration.
 /// @param list Opaque List object pointer.
 /// @param elem Element to look for (may be NULL).
@@ -154,16 +165,16 @@ void rt_list_reverse(void *list);
 
 /// @brief Get the first element in the list.
 /// @details Convenience method for the common head/first access pattern.
-///          Returns the element at index 0.
+///          Returns a retained reference to the element at index 0.
 /// @param list Opaque List object pointer.
-/// @return The first element, or NULL if the list is empty.
+/// @return Retained first element, or NULL if the list is empty.
 void *rt_list_first(void *list);
 
 /// @brief Get the last element in the list.
 /// @details Convenience method for the common tail/last access pattern.
-///          Returns the element at index Count-1.
+///          Returns a retained reference to the element at index Count-1.
 /// @param list Opaque List object pointer.
-/// @return The last element, or NULL if the list is empty.
+/// @return Retained last element, or NULL if the list is empty.
 void *rt_list_last(void *list);
 
 /// @brief Check whether the list is empty.
@@ -173,24 +184,28 @@ int8_t rt_list_is_empty(void *list);
 
 /// @brief Remove and return the last element from the list.
 /// @param list Opaque List object pointer. Must not be NULL.
-/// @return The removed element, or traps if the list is empty.
+/// @return Removed element as a retained caller-owned reference; traps if empty.
 void *rt_list_pop(void *list);
 
 /// @brief Sort the list in ascending order (default comparison).
 /// @param list Opaque List object pointer.
+/// @note Uses a stable merge sort and the shared total runtime order.
 void rt_list_sort(void *list);
 
 /// @brief Sort the list in descending order.
 /// @param list Opaque List object pointer.
+/// @note Uses a stable merge sort.
 void rt_list_sort_desc(void *list);
 
 /// @brief Randomly shuffle the list in place (Fisher-Yates).
 /// @param list Opaque List object pointer.
+/// @note Uses the active runtime random-number generator.
 void rt_list_shuffle(void *list);
 
 /// @brief Create a shallow copy of the list.
-/// @param list Opaque List object pointer.
-/// @return New List containing the same element references.
+/// @param list Source List, or NULL.
+/// @return New independently mutable List retaining the same element pointers;
+///         NULL source produces an empty List.
 void *rt_list_clone(void *list);
 
 #ifdef __cplusplus

@@ -33,6 +33,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements a retained-value least-recently-used cache.
+///
+/// Each entry participates in both a separately chained string hash table and
+/// a doubly linked recency list. The list head is most recently used and the
+/// tail is the next eviction candidate. Updating or getting an entry promotes
+/// it; peek, has, and enumeration preserve order.
+///
+/// Keys are copied using complete runtime byte lengths, with a null string
+/// denoting the empty key. Values are retained and traced by the runtime
+/// collector. Getter results are borrowed, while snapshot Seqs retain their
+/// values independently. Mutation is not safe without external synchronization.
+
 #include "rt_lrucache.h"
 
 #include "rt_collection_ids.h"
@@ -78,6 +91,10 @@ typedef struct rt_lrucache_impl {
 
 /// @brief Checked cast of an opaque handle to the LruCache implementation.
 /// @details Traps with @p what if @p obj is NULL or not an LruCache.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used on validation failure.
+/// @return The validated cache pointer, or NULL if a returning trap handler
+///         resumes after failed validation.
 static rt_lrucache_impl *as_lrucache(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_LRUCACHE_CLASS_ID, sizeof(rt_lrucache_impl))) {
         rt_trap(what);
@@ -87,6 +104,10 @@ static rt_lrucache_impl *as_lrucache(void *obj, const char *what) {
 }
 
 /// @brief Borrow the byte buffer + length of a key string (empty "" if null).
+/// @param key Runtime string to inspect; NULL denotes the empty key.
+/// @param out_len Receives the usable byte length.
+/// @return Borrowed key bytes, or a stable empty string for a null, empty, or
+///         inaccessible runtime string.
 static const char *get_key_data(rt_string key, size_t *out_len) {
     if (!key) {
         *out_len = 0;
@@ -110,7 +131,9 @@ static const char *get_key_data(rt_string key, size_t *out_len) {
 // Doubly-linked list helpers
 // ---------------------------------------------------------------------------
 
-/// Remove a node from the doubly-linked list (does NOT free it).
+/// @brief Remove a node from the recency list without freeing it.
+/// @param cache Cache whose head and tail may be updated.
+/// @param node Linked node to detach.
 static void list_remove(rt_lrucache_impl *cache, rt_lru_node *node) {
     if (node->prev)
         node->prev->next = node->next;
@@ -126,7 +149,9 @@ static void list_remove(rt_lrucache_impl *cache, rt_lru_node *node) {
     node->next = NULL;
 }
 
-/// Push a node to the front (MRU position) of the doubly-linked list.
+/// @brief Push a detached node into the most-recently-used position.
+/// @param cache Cache receiving the node.
+/// @param node Detached node to link at the head.
 static void list_push_front(rt_lrucache_impl *cache, rt_lru_node *node) {
     node->prev = NULL;
     node->next = cache->head;
@@ -139,7 +164,9 @@ static void list_push_front(rt_lrucache_impl *cache, rt_lru_node *node) {
     cache->head = node;
 }
 
-/// Move an existing node to the front (MRU position).
+/// @brief Promote an existing node to the most-recently-used position.
+/// @param cache Cache containing @p node.
+/// @param node Linked node to promote.
 static void list_move_to_front(rt_lrucache_impl *cache, rt_lru_node *node) {
     if (cache->head == node)
         return; // Already at front
@@ -151,7 +178,11 @@ static void list_move_to_front(rt_lrucache_impl *cache, rt_lru_node *node) {
 // Hash table helpers
 // ---------------------------------------------------------------------------
 
-/// Find a node in a bucket chain by key.
+/// @brief Find a byte-exact key in a bucket collision chain.
+/// @param head First node in the chain.
+/// @param key Key bytes to compare.
+/// @param key_len Number of bytes in @p key.
+/// @return Matching node, or NULL when absent.
 static rt_lru_node *bucket_find(rt_lru_node *head, const char *key, size_t key_len) {
     for (rt_lru_node *n = head; n; n = n->bucket_next) {
         if (n->key_len == key_len && memcmp(n->key, key, key_len) == 0)
@@ -160,7 +191,9 @@ static rt_lru_node *bucket_find(rt_lru_node *head, const char *key, size_t key_l
     return NULL;
 }
 
-/// Remove a node from its bucket chain.
+/// @brief Remove a node from its hash bucket without freeing it.
+/// @param cache Cache whose bucket chain is updated.
+/// @param node Node to unlink.
 static void bucket_remove(rt_lrucache_impl *cache, rt_lru_node *node) {
     uint64_t hash = rt_fnv1a(node->key, node->key_len);
     size_t idx = hash % cache->bucket_count;
@@ -179,7 +212,9 @@ static void bucket_remove(rt_lrucache_impl *cache, rt_lru_node *node) {
     }
 }
 
-/// Insert a node into its bucket chain.
+/// @brief Insert a detached node at the head of its hash bucket.
+/// @param cache Cache receiving the node.
+/// @param node Initialized node with owned key bytes.
 static void bucket_insert(rt_lrucache_impl *cache, rt_lru_node *node) {
     uint64_t hash = rt_fnv1a(node->key, node->key_len);
     size_t idx = hash % cache->bucket_count;
@@ -188,6 +223,7 @@ static void bucket_insert(rt_lrucache_impl *cache, rt_lru_node *node) {
 }
 
 /// @brief Resize the hash table when load factor is too high.
+/// @param cache Cache whose bucket array is to grow.
 /// @return 1 if the table grew or cannot grow further; 0 after trapping on an
 ///         allocation-size error or allocation failure.
 static int resize_buckets(rt_lrucache_impl *cache) {
@@ -224,6 +260,8 @@ static int resize_buckets(rt_lrucache_impl *cache) {
 }
 
 /// @brief Grow the bucket table if @p next_count would exceed the load limit.
+/// @param cache Cache whose projected occupancy is checked.
+/// @param next_count Entry count after the pending insertion and any eviction.
 /// @return 1 when insertion may proceed; 0 when growth trapped.
 static int maybe_resize_for_count(rt_lrucache_impl *cache, size_t next_count) {
     if ((long double)next_count * (long double)LRU_LOAD_FACTOR_DEN <=
@@ -236,7 +274,8 @@ static int maybe_resize_for_count(rt_lrucache_impl *cache, size_t next_count) {
 // Node lifecycle
 // ---------------------------------------------------------------------------
 
-/// Free a node: release its key, value, and the node itself.
+/// @brief Free a node and release its owned key and retained value.
+/// @param node Detached node to destroy, or NULL for a no-op.
 static void free_node(rt_lru_node *node) {
     if (!node)
         return;
@@ -246,7 +285,8 @@ static void free_node(rt_lru_node *node) {
     free(node);
 }
 
-/// Evict the least-recently-used node (tail of the list).
+/// @brief Evict and destroy the least-recently-used node.
+/// @param cache Cache to evict from.
 static void evict_lru(rt_lrucache_impl *cache) {
     rt_lru_node *victim = cache->tail;
     if (!victim)
@@ -264,6 +304,7 @@ static void evict_lru(rt_lrucache_impl *cache) {
 
 /// @brief GC finalizer: free every node by walking the LRU list, then free
 ///        the bucket array.
+/// @param obj LRUCache object being finalized, or NULL for a no-op.
 static void rt_lrucache_finalize(void *obj) {
     if (!obj)
         return;
@@ -287,6 +328,9 @@ static void rt_lrucache_finalize(void *obj) {
 }
 
 /// @brief GC traversal: visit every cached value across the node list.
+/// @param obj LRUCache object to traverse.
+/// @param visitor Runtime callback invoked for every retained value.
+/// @param ctx Opaque visitor context forwarded unchanged.
 static void rt_lrucache_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -299,6 +343,11 @@ static void rt_lrucache_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) 
 // Public API
 // ---------------------------------------------------------------------------
 
+/// @brief Creates an empty LRU cache with a fixed eviction limit.
+/// @param capacity Maximum resident entries. Zero disables automatic eviction;
+///        negative values trap.
+/// @return A new runtime-managed LRUCache, or NULL after a size or allocation
+///         trap.
 void *rt_lrucache_new(int64_t capacity) {
     if (capacity < 0) {
         rt_trap("LRUCache: negative capacity");
@@ -348,6 +397,8 @@ void *rt_lrucache_new(int64_t capacity) {
 }
 
 /// @brief Number of entries currently held by the cache (0..cap).
+/// @param obj LRUCache handle, or NULL.
+/// @return Current entry count, or zero for NULL.
 int64_t rt_lrucache_len(void *obj) {
     if (!obj)
         return 0;
@@ -355,6 +406,9 @@ int64_t rt_lrucache_len(void *obj) {
 }
 
 /// @brief Maximum capacity (set on construction). When `len() == cap()`, a `_put` evicts.
+/// @param obj LRUCache handle, or NULL.
+/// @return Fixed eviction limit, or zero for NULL. Zero also denotes an
+///         unbounded cache.
 int64_t rt_lrucache_cap(void *obj) {
     if (!obj)
         return 0;
@@ -362,6 +416,8 @@ int64_t rt_lrucache_cap(void *obj) {
 }
 
 /// @brief Returns 1 if the cache holds zero entries.
+/// @param obj LRUCache handle, or NULL.
+/// @return 1 if empty or NULL; otherwise 0.
 int8_t rt_lrucache_is_empty(void *obj) {
     return rt_lrucache_len(obj) == 0;
 }
@@ -369,6 +425,11 @@ int8_t rt_lrucache_is_empty(void *obj) {
 /// @brief Insert or update `key → value`. Existing keys have their value replaced and are
 /// promoted to MRU. New insertions evict the LRU entry when at capacity. Both old and new
 /// values are reference-counted (old released, new retained). Doubles bucket count when needed.
+/// @param obj LRUCache handle, or NULL for a no-op.
+/// @param key Key to copy; NULL denotes the empty key.
+/// @param value Value to retain; may be NULL.
+/// @note A new node is fully allocated before any eviction, preserving the
+///       existing cache when preparation fails.
 void rt_lrucache_put(void *obj, rt_string key, void *value) {
     if (!obj)
         return;
@@ -471,6 +532,9 @@ void rt_lrucache_put(void *obj, rt_string key, void *value) {
 
 /// @brief Look up `key` and promote it to MRU. Returns the borrowed value pointer or NULL if
 /// absent. Caller must NOT keep the pointer past the next cache mutation (it may be evicted).
+/// @param obj LRUCache handle, or NULL.
+/// @param key Key to find; NULL denotes the empty key.
+/// @return Borrowed mapped value, or NULL if absent.
 void *rt_lrucache_get(void *obj, rt_string key) {
     if (!obj)
         return NULL;
@@ -503,6 +567,9 @@ void *rt_lrucache_get(void *obj, rt_string key) {
 
 /// @brief Look up `key` *without* changing LRU order. Use for "is this cached?" probes that
 /// shouldn't fight the eviction policy.
+/// @param obj LRUCache handle, or NULL.
+/// @param key Key to find; NULL denotes the empty key.
+/// @return Borrowed mapped value, or NULL if absent.
 void *rt_lrucache_peek(void *obj, rt_string key) {
     if (!obj)
         return NULL;
@@ -521,6 +588,9 @@ void *rt_lrucache_peek(void *obj, rt_string key) {
 }
 
 /// @brief Returns 1 if `key` is currently cached. Does not change LRU order.
+/// @param obj LRUCache handle, or NULL.
+/// @param key Key to test; NULL denotes the empty key.
+/// @return 1 if an entry exists, including one storing NULL; otherwise 0.
 int8_t rt_lrucache_has(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -539,6 +609,9 @@ int8_t rt_lrucache_has(void *obj, rt_string key) {
 
 /// @brief Remove an entry by `key`. Releases the value's reference. Returns 1 on success,
 /// 0 if the key wasn't present.
+/// @param obj LRUCache handle, or NULL.
+/// @param key Key to remove; NULL denotes the empty key.
+/// @return 1 if removed; otherwise 0.
 int8_t rt_lrucache_remove(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -571,6 +644,8 @@ int8_t rt_lrucache_remove(void *obj, rt_string key) {
 
 /// @brief Force-evict the least-recently-used entry. Returns 1 if something was removed,
 /// 0 if the cache was already empty.
+/// @param obj LRUCache handle, or NULL.
+/// @return 1 if the tail entry was removed; otherwise 0.
 int8_t rt_lrucache_remove_oldest(void *obj) {
     if (!obj)
         return 0;
@@ -589,6 +664,7 @@ int8_t rt_lrucache_remove_oldest(void *obj) {
 
 /// @brief Remove every entry, releasing all values. Capacity and bucket count are preserved
 /// — the cache is reusable immediately without reallocation.
+/// @param obj LRUCache handle, or NULL for a no-op.
 void rt_lrucache_clear(void *obj) {
     if (!obj)
         return;
@@ -617,6 +693,8 @@ void rt_lrucache_clear(void *obj) {
 
 /// @brief Return a Seq of all keys in MRU→LRU order. Owned-elements Seq (will release strings
 /// on its own destruction). Snapshot — subsequent cache mutations don't affect the result.
+/// @param obj LRUCache handle, or NULL.
+/// @return New owning Seq of newly created key strings.
 void *rt_lrucache_keys(void *obj) {
     void *result = rt_seq_new();
     rt_seq_set_owns_elements(result, 1);
@@ -637,6 +715,8 @@ void *rt_lrucache_keys(void *obj) {
 
 /// @brief Return an owning Seq of the values in MRU→LRU order (the snapshot
 /// retains each entry and does not follow later cache mutations or evictions).
+/// @param obj LRUCache handle, or NULL.
+/// @return New owning Seq retaining cached values.
 void *rt_lrucache_values(void *obj) {
     void *result = rt_seq_new();
     rt_seq_set_owns_elements(result, 1);

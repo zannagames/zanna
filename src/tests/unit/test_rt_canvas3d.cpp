@@ -521,6 +521,7 @@ extern "C" void *rt_postfx3d_new(void);
 extern "C" void rt_canvas3d_set_post_fx(void *canvas, void *postfx);
 extern "C" void *rt_canvas3d_screenshot(void *canvas);
 extern "C" void *rt_canvas3d_new_offscreen(void *target);
+extern "C" void *rt_canvas3d_new_offscreen_accelerated(void *target);
 extern "C" int8_t rt_canvas3d_get_is_offscreen(void *canvas);
 extern "C" void rt_postfx3d_set_enabled(void *obj, int8_t enabled);
 extern "C" void rt_postfx3d_add_vignette(void *obj, double radius, double softness);
@@ -7200,6 +7201,43 @@ static void test_canvas_offscreen_rejects_invalid_targets() {
     PASS();
 }
 
+static void test_canvas_offscreen_accelerated_constructor_contract() {
+    TEST("Canvas3D.NewOffscreenAccelerated renders windowless on any backend (ADR 0191)");
+    void *target = rt_rendertarget3d_new(96, 64);
+    void *canvas = rt_canvas3d_new_offscreen_accelerated(target);
+
+    EXPECT_TRUE(canvas != nullptr, "NewOffscreenAccelerated returns a Canvas3D");
+    EXPECT_TRUE(rt_canvas3d_get_is_offscreen(canvas) == 1,
+                "accelerated offscreen canvas reports IsOffscreen");
+    EXPECT_EQ(rt_canvas3d_get_width(canvas), 96);
+    EXPECT_EQ(rt_canvas3d_get_height(canvas), 64);
+
+    auto *raw = (rt_canvas3d *)canvas;
+    EXPECT_TRUE(raw->gfx_win == nullptr,
+                "NewOffscreenAccelerated does not create a platform window");
+    EXPECT_TRUE(raw->render_target_owner == target && raw->render_target != nullptr,
+                "NewOffscreenAccelerated retains and binds the explicit RenderTarget3D");
+
+    /* Backends without headless-context support must fall back to software;
+     * an accelerated backend must not report fallback. Either outcome is a
+     * valid environment, but the truth channel must be consistent. */
+    const bool is_software = raw->backend == &vgfx3d_software_backend;
+    if (!is_software) {
+        EXPECT_TRUE(rt_canvas3d_get_backend_fallback(canvas) == 0,
+                    "an accelerated offscreen backend must not report fallback");
+    }
+
+    rt_canvas3d_clear(canvas, 0.25, 0.5, 0.75);
+    auto *shot = (pixels_view_t *)rt_canvas3d_screenshot(canvas);
+    EXPECT_TRUE(shot != nullptr && shot->data != nullptr && shot->w == 96 && shot->h == 64,
+                "accelerated offscreen readback returns target-sized pixels");
+    if (is_software && shot && shot->data) {
+        EXPECT_TRUE(shot->data[0] == 0x3F7FBFFFu,
+                    "software-fallback clear stays byte-deterministic");
+    }
+    PASS();
+}
+
 static void test_canvas_begin2d_uses_render_target_dimensions() {
     TEST("Canvas3D.Begin2D uses render-target size and advances frame serial");
     vgfx3d_backend_t backend = {};
@@ -10857,6 +10895,7 @@ int main() {
     test_canvas_offscreen_constructor_contract();
     test_canvas_offscreen_renders_and_finalizes_without_window();
     test_canvas_offscreen_rejects_invalid_targets();
+    test_canvas_offscreen_accelerated_constructor_contract();
     test_canvas_screenshot_syncs_render_target_on_demand();
     test_canvas_screenshot_returns_null_when_sync_fails();
     test_canvas_dimensions_follow_active_render_target();

@@ -4,31 +4,25 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_contextmenu.c
-// Purpose: Right-click context menu widget with submenu nesting, icon/check
-//          column support, keyboard navigation, and a global widget→menu
-//          registration registry.
-// Key invariants:
-//   - s_registry is a dynamically-grown flat array mapping widget pointers to
-//     menus; stale entries are purged inline on every
-//     traversal using swap-with-last.
-//   - items[] is a heap-allocated pointer array; capacity doubles from 8 when
-//     exhausted.
-//   - hovered_index and active_submenu are reset on dismiss; parent_item tracks
-//     submenu ownership and is cleared when either side is destroyed.
-//   - Input capture is transferred to the parent menu (not released) when a
-//     child submenu is dismissed while the parent is still visible.
-//   - Window-edge clamping is intentionally deferred to contextmenu_paint where
-//     the canvas/window handle is available, so the menu self-corrects on resize.
-// Ownership/Lifetime:
-//   - items[] and each vg_menu_item_t (text, shortcut strings) are owned by the
-//     menu and freed in contextmenu_destroy / vg_contextmenu_clear.
-//   - Submenu pointers in vg_menu_item_t.submenu are owned by the parent context
-//     menu item. Destroying either side detaches the other to avoid stale pointers.
-// Links: lib/gui/include/vg_ide_widgets.h,
-//        lib/gui/include/vg_theme.h,
-//        lib/gui/include/vg_event.h
+///
+/// @file vg_contextmenu.c
+/// @brief Implements nested context menus and widget right-click registration.
+///
+/// @details Context menus support text, shortcuts, checkmarks, raster, vector,
+/// and glyph icons, separators, owned submenus, pointer interaction, and
+/// keyboard navigation. A process-local registry maps live widgets to menus and
+/// purges stale entries during traversal using swap-with-last removal.
+///
+/// Each menu owns its item pointer array and every active or retired item.
+/// Menu items own their copied strings, icons, and attached submenus. Parent and
+/// child links are detached during destruction to avoid stale references.
+/// Dismissing a submenu transfers input capture back to a visible parent.
+/// Window-edge clamping occurs during paint because that is where the window
+/// dimensions are available and can reflect live resize.
+///
+/// @see vg_ide_widgets.h
+/// @see vg_theme.h
+/// @see vg_event.h
 //
 //===----------------------------------------------------------------------===//
 #include "../../../graphics/include/vgfx.h"
@@ -75,6 +69,11 @@ static contextmenu_registry_entry_t *s_registry = NULL;
 static size_t s_registry_count = 0;
 static size_t s_registry_cap = 0;
 
+/// @brief Ensures the global widget-to-menu registry can store an entry count.
+///
+/// @param needed Required number of registry slots.
+/// @return `true` when capacity is sufficient; `false` on overflow or
+///         allocation failure.
 static bool contextmenu_ensure_registry_capacity(size_t needed) {
     if (needed <= s_registry_cap)
         return true;
@@ -94,12 +93,17 @@ static bool contextmenu_ensure_registry_capacity(size_t needed) {
     return true;
 }
 
-/// @brief Return true if menu is non-NULL and its base widget is still alive.
+/// @brief Reports whether a context-menu pointer identifies a live menu widget.
+///
+/// @param menu Menu to validate.
+/// @return `true` when @p menu is non-null, live, and has menu widget type.
 bool vg_contextmenu_is_live(const vg_contextmenu_t *menu) {
     return menu && vg_widget_is_live(&menu->base) && menu->base.type == VG_WIDGET_MENU;
 }
 
-/// @brief Remove all registry entries that reference menu, evicting stale entries inline.
+/// @brief Removes registry entries for a menu and any stale widget entries.
+///
+/// @param menu Menu whose registrations are removed; may be null.
 static void contextmenu_unregister_menu(vg_contextmenu_t *menu) {
     if (!menu)
         return;
@@ -133,7 +137,16 @@ static void contextmenu_unregister_menu(vg_contextmenu_t *menu) {
 // Helper Functions
 //=============================================================================
 
-/// @brief Allocate and initialise a menu item with the given label, shortcut, and action.
+/// @brief Allocates and initializes a regular context-menu item.
+///
+/// @details Label and shortcut strings are copied before the item is allocated.
+/// Partial allocation failure releases all temporary ownership.
+///
+/// @param label Display label to copy; may be null.
+/// @param shortcut Shortcut hint to copy; may be null.
+/// @param action Callback invoked when the item is activated; may be null.
+/// @param user_data Opaque pointer forwarded to @p action.
+/// @return Newly allocated item, or null on allocation failure.
 static vg_menu_item_t *create_menu_item(const char *label,
                                         const char *shortcut,
                                         void (*action)(void *),
@@ -168,7 +181,12 @@ static vg_menu_item_t *create_menu_item(const char *label,
     return item;
 }
 
-/// @brief Free a menu item's text, shortcut, icon, and the item struct itself.
+/// @brief Releases a menu item and everything it owns.
+///
+/// @details An attached submenu is detached and destroyed before the item's
+/// copied strings, icon resource, and structure are released.
+///
+/// @param item Item to destroy; may be null.
 static void free_menu_item(vg_menu_item_t *item) {
     if (item) {
         if (item->submenu) {
@@ -187,6 +205,14 @@ static void free_menu_item(vg_menu_item_t *item) {
     }
 }
 
+/// @brief Ensures a menu's item-pointer array can hold a requested count.
+///
+/// @details Capacity grows geometrically from eight entries. Overflow and
+/// allocation failure leave the existing array unchanged.
+///
+/// @param menu Menu whose owned pointer array may grow.
+/// @param needed Required number of item slots.
+/// @return `true` when capacity is sufficient; otherwise `false`.
 static bool contextmenu_ensure_item_capacity(vg_contextmenu_t *menu, size_t needed) {
     if (!menu)
         return false;
@@ -208,7 +234,14 @@ static bool contextmenu_ensure_item_capacity(vg_contextmenu_t *menu, size_t need
     return true;
 }
 
-/// @brief Retire a context-menu item without freeing its struct so stale handles become inert.
+/// @brief Retires an item while preserving an inert handle record.
+///
+/// @details Owned resources and any submenu are released, behavior and owner
+/// links are cleared, and the structure is moved to the menu's retired list.
+/// The retired magic value allows stale external handles to fail safely.
+///
+/// @param menu Menu that retains the retired record.
+/// @param item Active item to retire.
 static void retire_menu_item(vg_contextmenu_t *menu, vg_menu_item_t *item) {
     if (!menu || !item)
         return;
@@ -237,13 +270,19 @@ static void retire_menu_item(vg_contextmenu_t *menu, vg_menu_item_t *item) {
     menu->retired_items = item;
 }
 
-/// @brief Return true if the item occupies the leading icon/check column.
+/// @brief Reports whether an item requires the leading icon/check column.
+///
+/// @param item Item to inspect.
+/// @return `true` for a non-separator that is checkable, checked, or has an icon.
 static bool item_uses_leading_column(const vg_menu_item_t *item) {
     return item && !item->separator &&
            (item->checkable || item->checked || item->icon.type != VG_ICON_NONE);
 }
 
-/// @brief Return true if any item in the menu uses the leading icon/check column.
+/// @brief Reports whether any item requires a shared leading column.
+///
+/// @param menu Menu to inspect.
+/// @return `true` when at least one active item uses the column.
 static bool menu_uses_leading_column(const vg_contextmenu_t *menu) {
     if (!menu)
         return false;
@@ -254,7 +293,12 @@ static bool menu_uses_leading_column(const vg_contextmenu_t *menu) {
     return false;
 }
 
-/// @brief Clamp value to [min_value, max_value].
+/// @brief Clamps an integer to an inclusive range.
+///
+/// @param value Value to clamp.
+/// @param min_value Inclusive lower bound.
+/// @param max_value Inclusive upper bound.
+/// @return Clamped value.
 static int contextmenu_clampi(int value, int min_value, int max_value) {
     if (value < min_value)
         return min_value;
@@ -263,7 +307,11 @@ static int contextmenu_clampi(int value, int min_value, int max_value) {
     return value;
 }
 
-/// @brief Alpha-blend one RGBA pixel src into dst at the given per-pixel alpha.
+/// @brief Alpha-blends one RGBA source pixel over a destination pixel.
+///
+/// @param[in,out] dst Destination RGBA pixel updated in place.
+/// @param src Source RGBA pixel whose color channels are blended.
+/// @param alpha Effective source opacity in the range `[0, 255]`.
 static void contextmenu_blend_pixel(uint8_t *dst, const uint8_t *src, uint8_t alpha) {
     if (alpha == 0)
         return;
@@ -283,7 +331,19 @@ static void contextmenu_blend_pixel(uint8_t *dst, const uint8_t *src, uint8_t al
     dst[3] = (uint8_t)(alpha + (((uint32_t)dst[3] * inv + 127u) / 255u));
 }
 
-/// @brief Blit a VG_ICON_IMAGE pixel array into the framebuffer with nearest-neighbour scaling.
+/// @brief Draws a raster icon into a menu slot with nearest-neighbor scaling.
+///
+/// @details The image is aspect-fitted and centered in the requested box,
+/// clipped to both framebuffer and canvas bounds, and alpha-blended directly
+/// into the framebuffer. Disabled items reduce source opacity.
+///
+/// @param win Destination window framebuffer.
+/// @param icon Raster icon to render.
+/// @param x Left edge of the available icon box.
+/// @param y Top edge of the available icon box.
+/// @param w Available width.
+/// @param h Available height.
+/// @param enabled Whether to use full opacity rather than disabled attenuation.
 static void contextmenu_draw_image_icon(
     vgfx_window_t win, const vg_icon_t *icon, float x, float y, float w, float h, bool enabled) {
     if (!icon || icon->type != VG_ICON_IMAGE || !icon->data.image.pixels || w <= 0.0f || h <= 0.0f)
@@ -349,8 +409,12 @@ static void contextmenu_draw_image_icon(
     }
 }
 
-/// @brief Encode a Unicode codepoint into a NUL-terminated UTF-8 byte sequence (out must be 5
-/// bytes).
+/// @brief Encodes a Unicode scalar as a null-terminated UTF-8 sequence.
+///
+/// @param cp Unicode scalar to encode.
+/// @param[out] out Five-byte output buffer, including room for the terminator.
+/// @return `true` on success; `false` for a null output, surrogate, or
+///         out-of-range code point.
 static bool contextmenu_encode_utf8(uint32_t cp, char out[5]) {
     if (!out)
         return false;
@@ -377,7 +441,17 @@ static bool contextmenu_encode_utf8(uint32_t cp, char out[5]) {
     return true;
 }
 
-/// @brief Draw a single Unicode glyph centred in the given bounding rectangle.
+/// @brief Draws one Unicode glyph centered in a bounding rectangle.
+///
+/// @param canvas Destination drawing context.
+/// @param font Font used for measurement and rendering; null suppresses drawing.
+/// @param font_size Font size used for measurement and rendering.
+/// @param codepoint Unicode scalar to encode and draw.
+/// @param x Left edge of the bounding rectangle.
+/// @param y Top edge of the bounding rectangle.
+/// @param w Width of the bounding rectangle.
+/// @param h Height of the bounding rectangle.
+/// @param color Packed glyph color.
 static void contextmenu_draw_glyph(void *canvas,
                                    vg_font_t *font,
                                    float font_size,
@@ -404,7 +478,13 @@ static void contextmenu_draw_glyph(void *canvas,
     vg_font_draw_text(canvas, font, font_size, glyph_x, glyph_y, buf, color);
 }
 
-/// @brief Trigger layout and/or paint updates on the owning menu after an item mutates.
+/// @brief Invalidates an item's owning menu after item mutation.
+///
+/// @details Visible menus are synchronously remeasured when geometry may have
+/// changed. Layout and paint flags are then set as appropriate.
+///
+/// @param item Item whose owning menu is invalidated.
+/// @param layout_changed Whether the mutation can change menu dimensions.
 static void contextmenu_mark_item_changed(vg_menu_item_t *item, bool layout_changed) {
     if (!item || !item->owner_contextmenu)
         return;
@@ -420,12 +500,18 @@ static void contextmenu_mark_item_changed(vg_menu_item_t *item, bool layout_chan
     menu->base.needs_paint = true;
 }
 
-/// @brief Return the row height for item — SEPARATOR_HEIGHT for separators, ITEM_HEIGHT otherwise.
+/// @brief Returns the fixed row height for an item.
+///
+/// @param item Item whose separator state is inspected.
+/// @return Separator height for separators; regular item height otherwise.
 static float get_item_height(vg_menu_item_t *item) {
     return item->separator ? SEPARATOR_HEIGHT : ITEM_HEIGHT;
 }
 
-/// @brief Sum all item heights plus top/bottom ITEM_PADDING_Y to get the total menu height.
+/// @brief Calculates the menu height from item rows and vertical padding.
+///
+/// @param menu Menu to measure.
+/// @return Unclamped content height.
 static float calculate_menu_height(vg_contextmenu_t *menu) {
     float height = ITEM_PADDING_Y * 2; // Top and bottom padding
     for (size_t i = 0; i < menu->item_count; i++) {
@@ -434,7 +520,13 @@ static float calculate_menu_height(vg_contextmenu_t *menu) {
     return height;
 }
 
-/// @brief Measure the widest item (icon + text + shortcut + arrow) clamped to min_width.
+/// @brief Calculates the width required by the widest menu item.
+///
+/// @details Measurement accounts for shared leading-column space, label and
+/// shortcut metrics, submenu arrows, horizontal padding, and the minimum width.
+///
+/// @param menu Menu to measure.
+/// @return Required menu width.
 static float calculate_menu_width(vg_contextmenu_t *menu) {
     float max_width = (float)menu->min_width;
     vg_font_t *font = menu->font;
@@ -473,7 +565,11 @@ static float calculate_menu_width(vg_contextmenu_t *menu) {
     return max_width;
 }
 
-/// @brief Return the item index at local Y coordinate, or -1 if Y is outside all rows.
+/// @brief Finds the menu item at a local vertical coordinate.
+///
+/// @param menu Menu whose rows are hit-tested.
+/// @param y Vertical coordinate relative to the menu.
+/// @return Zero-based item index, or `-1` outside all rows.
 static int get_item_at_y(vg_contextmenu_t *menu, float y) {
     float current_y = ITEM_PADDING_Y;
     for (size_t i = 0; i < menu->item_count; i++) {
@@ -490,14 +586,13 @@ static int get_item_at_y(vg_contextmenu_t *menu, float y) {
 // ContextMenu Implementation
 //=============================================================================
 
-/// @brief Create a context menu widget with default theme colours.
+/// @brief Creates an initially hidden context menu with theme-derived colors.
 ///
-/// @details Allocates and zero-initialises a vg_contextmenu_t, wires the vtable,
-///          and seeds all colour fields from the current theme. Items[], filters,
-///          and bookmarks are empty; hovered_index and clicked_index are -1.
-///          min_width defaults to 150, max_height to 400.
+/// @details The item arrays and parent links begin empty, hover and click
+/// indices begin at `-1`, and the default minimum width and maximum height are
+/// 150 and 400 logical pixels respectively.
 ///
-/// @return Heap-allocated context menu, or NULL on allocation failure.
+/// @return Heap-allocated context menu, or null on allocation failure.
 vg_contextmenu_t *vg_contextmenu_create(void) {
     vg_contextmenu_t *menu = calloc(1, sizeof(vg_contextmenu_t));
     if (!menu)
@@ -545,8 +640,13 @@ vg_contextmenu_t *vg_contextmenu_create(void) {
     return menu;
 }
 
-/// @brief vtable destroy — unregisters from the right-click registry, releases input capture, frees
-/// all items.
+/// @brief Releases all resources and relationships owned by a context menu.
+///
+/// @details Destruction unregisters the menu, releases input capture when held,
+/// detaches parent and submenu links, destroys active items, and finally frees
+/// every inert retired-item record.
+///
+/// @param widget Menu base widget being destroyed.
 static void contextmenu_destroy(vg_widget_t *widget) {
     vg_contextmenu_t *menu = (vg_contextmenu_t *)widget;
     contextmenu_unregister_menu(menu);
@@ -577,9 +677,9 @@ static void contextmenu_destroy(vg_widget_t *widget) {
     menu->retired_items = NULL;
 }
 
-/// @brief Destroy the context menu and free all items and their strings.
+/// @brief Destroys a context menu and its owned item hierarchy.
 ///
-/// @param menu The menu to destroy; may be NULL.
+/// @param menu Menu to destroy; may be null.
 void vg_contextmenu_destroy(vg_contextmenu_t *menu) {
     if (!menu)
         return;
@@ -587,7 +687,11 @@ void vg_contextmenu_destroy(vg_contextmenu_t *menu) {
     vg_widget_destroy(&menu->base);
 }
 
-/// @brief vtable measure — computes measured_width/height from item layout, capped at max_height.
+/// @brief Measures menu content and applies the configured height cap.
+///
+/// @param widget Menu base widget whose measured dimensions are updated.
+/// @param available_width Width offered by the parent; currently unused.
+/// @param available_height Height offered by the parent; currently unused.
 static void contextmenu_measure(vg_widget_t *widget,
                                 float available_width,
                                 float available_height) {
@@ -604,8 +708,15 @@ static void contextmenu_measure(vg_widget_t *widget,
     }
 }
 
-/// @brief vtable paint — draws shadow, background, border, and all items; clamps position to
-/// window.
+/// @brief Paints the menu panel and all of its active items.
+///
+/// @details Each paint clamps the panel to current window bounds, draws an
+/// elevated rounded surface, and renders separators, hover backgrounds,
+/// checkmarks or icons, labels, shortcuts, and submenu arrows. Disabled items
+/// use the menu's secondary text color.
+///
+/// @param widget Menu base widget to render.
+/// @param canvas Destination drawing context and window handle.
 static void contextmenu_paint(vg_widget_t *widget, void *canvas) {
     vg_contextmenu_t *menu = (vg_contextmenu_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -763,7 +874,16 @@ static void contextmenu_paint(vg_widget_t *widget, void *canvas) {
     }
 }
 
-/// @brief vtable handle_event — routes mouse hover/click and keyboard nav (arrows, Enter, Escape).
+/// @brief Handles pointer and keyboard interaction for a visible menu.
+///
+/// @details Pointer movement updates hover and opens enabled submenus. Pointer
+/// activation executes regular items or dismisses the root menu when outside.
+/// Arrow keys navigate and enter submenus, Enter activates, and Escape dismisses
+/// the full menu chain.
+///
+/// @param widget Menu base widget receiving the event.
+/// @param event Event to inspect.
+/// @return `true` when the visible menu consumes the event; otherwise `false`.
 static bool contextmenu_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_contextmenu_t *menu = (vg_contextmenu_t *)widget;
 
@@ -965,20 +1085,18 @@ static bool contextmenu_handle_event(vg_widget_t *widget, vg_event_t *event) {
 // ContextMenu API
 //=============================================================================
 
-/// @brief Append a labelled item to the menu and return its handle.
+/// @brief Appends a labeled action item and returns its retained handle.
 ///
-/// @details Items are stored in a pointer array that doubles from capacity 8 on
-///          overflow. Both label and shortcut are copied internally. action is
-///          invoked with user_data when the item is clicked; NULL action is allowed.
-///          The returned handle remains valid until the item is removed or the menu
-///          is destroyed.
+/// @details Both strings are copied. The action receives @p user_data when the
+/// item is activated. The menu owns the returned handle and eventually destroys
+/// it or retains it as an inert retired record after clearing.
 ///
-/// @param menu      The context menu to append to; may be NULL (returns NULL).
-/// @param label     Display label; copied internally, may be NULL.
-/// @param shortcut  Keyboard shortcut hint shown on the right (e.g., "Ctrl+C"); may be NULL.
-/// @param action    Callback invoked on click, or NULL for no action.
+/// @param menu Context menu to append to; may be null.
+/// @param label Display label to copy; may be null.
+/// @param shortcut Shortcut hint to copy; may be null.
+/// @param action Callback invoked on activation; may be null.
 /// @param user_data Opaque pointer forwarded to action.
-/// @return          New menu item handle, or NULL on allocation failure.
+/// @return New menu-item handle, or null on allocation failure.
 vg_menu_item_t *vg_contextmenu_add_item(vg_contextmenu_t *menu,
                                         const char *label,
                                         const char *shortcut,
@@ -1002,18 +1120,18 @@ vg_menu_item_t *vg_contextmenu_add_item(vg_contextmenu_t *menu,
     return item;
 }
 
-/// @brief Append a labelled item that opens submenu when hovered or navigated to.
+/// @brief Appends a labeled item that owns and opens a submenu.
 ///
-/// @details The submenu pointer is stored in item->submenu and owned by the
-///          parent menu item. Destroying the parent destroys attached submenus;
-///          destroying a child directly detaches the parent item first.
-///          Hovering the item triggers vg_contextmenu_show_at on the submenu
-///          positioned flush to the right edge of the parent menu row.
+/// @details The parent item assumes ownership of @p submenu. Destroying the
+/// parent destroys the attached submenu; destroying the child directly first
+/// detaches the parent. Hover or right-arrow navigation opens it beside the
+/// corresponding row.
 ///
-/// @param menu    The parent context menu to append to; may be NULL.
-/// @param label   Display label; copied internally.
-/// @param submenu The nested menu to open; must outlive the parent menu.
-/// @return        New menu item handle, or NULL on allocation failure.
+/// @param menu Parent context menu to append to; may be null.
+/// @param label Display label to copy; may be null.
+/// @param submenu Live nested menu whose ownership transfers to the new item.
+/// @return New submenu-item handle, or null for invalid arguments or allocation
+///         failure.
 vg_menu_item_t *vg_contextmenu_add_submenu(vg_contextmenu_t *menu,
                                            const char *label,
                                            vg_contextmenu_t *submenu) {
@@ -1038,10 +1156,10 @@ vg_menu_item_t *vg_contextmenu_add_submenu(vg_contextmenu_t *menu,
     return item;
 }
 
-/// @brief Append a horizontal separator line to the menu.
+/// @brief Appends a non-interactive horizontal separator.
 ///
-/// @param menu The context menu to append to; may be NULL (returns NULL).
-/// @return     New separator item handle, or NULL on allocation failure.
+/// @param menu Context menu to append to; may be null.
+/// @return New separator handle, or null on allocation failure.
 vg_menu_item_t *vg_contextmenu_add_separator(vg_contextmenu_t *menu) {
     if (!menu)
         return NULL;
@@ -1064,9 +1182,13 @@ vg_menu_item_t *vg_contextmenu_add_separator(vg_contextmenu_t *menu) {
     return item;
 }
 
-/// @brief Remove and free all items from the menu without destroying the menu itself.
+/// @brief Clears all active items without destroying the menu.
 ///
-/// @param menu The context menu to clear; may be NULL.
+/// @details Any open submenu is dismissed. Items are retired rather than
+/// immediately freeing their structures so stale external handles remain inert.
+/// The item pointer-array allocation is retained for reuse.
+///
+/// @param menu Context menu to clear; may be null.
 void vg_contextmenu_clear(vg_contextmenu_t *menu) {
     if (!menu)
         return;
@@ -1086,9 +1208,14 @@ void vg_contextmenu_clear(vg_contextmenu_t *menu) {
     menu->base.needs_paint = true;
 }
 
-/// @brief Unlink and free one exact retained context-menu item record.
-/// @details Address comparison is performed against the owner's valid chain before the candidate
-///          is dereferenced, so foreign pointers fail safely.
+/// @brief Unlinks and frees one exact retired menu-item record.
+///
+/// @details Address comparison is performed against the owner's retired chain
+/// before the candidate is dereferenced, so foreign pointers fail safely.
+///
+/// @param menu Menu that may own the retired record.
+/// @param item Exact retired item address to reclaim.
+/// @return `true` when a matching record was reclaimed; otherwise `false`.
 bool vg_contextmenu_reclaim_retired_item(vg_contextmenu_t *menu, vg_menu_item_t *item) {
     if (!menu || !item)
         return false;
@@ -1106,10 +1233,10 @@ bool vg_contextmenu_reclaim_retired_item(vg_contextmenu_t *menu, vg_menu_item_t 
     return false;
 }
 
-/// @brief Enable or disable a menu item, triggering a repaint without layout changes.
+/// @brief Enables or disables an active menu item.
 ///
-/// @param item    The item to modify; may be NULL.
-/// @param enabled false to grey out and make non-interactive.
+/// @param item Active item handle to modify; may be null or stale.
+/// @param enabled `false` to grey out and make the item non-interactive.
 void vg_contextmenu_item_set_enabled(vg_menu_item_t *item, bool enabled) {
     if (item && item->magic == VG_MENU_ITEM_MAGIC && item->owner_contextmenu) {
         item->enabled = enabled;
@@ -1119,11 +1246,11 @@ void vg_contextmenu_item_set_enabled(vg_menu_item_t *item, bool enabled) {
 
 /// @brief Set the checked state of an item, showing or hiding the checkmark glyph.
 ///
-/// @details Triggers a layout-and-paint update because the leading column may appear
-///          or disappear depending on whether any item in the menu is checked.
+/// @details The item becomes checkable even when @p checked is false. Layout is
+/// invalidated because a shared leading column may appear.
 ///
-/// @param item    The item to modify; may be NULL.
-/// @param checked true to display a checkmark (✓) in the leading column.
+/// @param item Active item handle to modify; may be null or stale.
+/// @param checked `true` to display a checkmark in the leading column.
 void vg_contextmenu_item_set_checked(vg_menu_item_t *item, bool checked) {
     if (item && item->magic == VG_MENU_ITEM_MAGIC && item->owner_contextmenu) {
         item->checkable = true;
@@ -1134,11 +1261,12 @@ void vg_contextmenu_item_set_checked(vg_menu_item_t *item, bool checked) {
 
 /// @brief Replace the icon displayed in the leading column for an item.
 ///
-/// @details Destroys the existing icon before assigning the new one, then triggers
-///          layout and paint. Accepts VG_ICON_GLYPH (Unicode codepoint) or
-///          VG_ICON_IMAGE (pixel data); VG_ICON_NONE removes the icon slot.
+/// @details Ownership of @p icon transfers on every call. A valid item destroys
+/// its previous icon and adopts the new value; an invalid or stale item destroys
+/// the incoming value. Layout is invalidated because leading-column use may
+/// change.
 ///
-/// @param item The item to modify; may be NULL.
+/// @param item Active item handle to modify; may be null or stale.
 /// @param icon The new icon value; ownership of pixel data transfers to the item.
 void vg_contextmenu_item_set_icon(vg_menu_item_t *item, vg_icon_t icon) {
     if (!item || item->magic != VG_MENU_ITEM_MAGIC || !item->owner_contextmenu) {
@@ -1151,15 +1279,14 @@ void vg_contextmenu_item_set_icon(vg_menu_item_t *item, vg_icon_t icon) {
     contextmenu_mark_item_changed(item, true);
 }
 
-/// @brief Show the menu anchored at screen-space coordinates (x, y).
+/// @brief Shows the menu at screen-space coordinates.
 ///
-/// @details Records anchor_x/anchor_y, runs measure to compute size, positions the
-///          widget, and acquires input capture. Window-edge clamping is deferred to
-///          contextmenu_paint where the window handle is available.
+/// @details The menu is measured, positioned, reset for interaction, and given
+/// input capture. Window-edge clamping is deferred to painting.
 ///
-/// @param menu The menu to display; may be NULL.
-/// @param x    Screen X of the top-left corner (pre-clamp).
-/// @param y    Screen Y of the top-left corner (pre-clamp).
+/// @param menu Menu to display; may be null.
+/// @param x Requested screen X coordinate before clamping.
+/// @param y Requested screen Y coordinate before clamping.
 void vg_contextmenu_show_at(vg_contextmenu_t *menu, int x, int y) {
     if (!menu)
         return;
@@ -1185,13 +1312,13 @@ void vg_contextmenu_show_at(vg_contextmenu_t *menu, int x, int y) {
     vg_widget_set_input_capture(&menu->base);
 }
 
-/// @brief Show the menu below widget's bottom-left corner with an optional pixel offset.
+/// @brief Shows the menu below a widget with an optional offset.
 ///
-/// @details Resolves widget's screen bounds then calls vg_contextmenu_show_at with
-///          (screen_x + offset_x, screen_y + screen_h + offset_y).
+/// @details The widget's screen bounds determine the anchor passed to
+/// `vg_contextmenu_show_at()`.
 ///
-/// @param menu     The menu to display; may be NULL.
-/// @param widget   The widget to anchor below; may be NULL.
+/// @param menu Menu to display; may be null.
+/// @param widget Widget whose lower-left corner provides the anchor.
 /// @param offset_x Additional X offset in pixels.
 /// @param offset_y Additional Y offset in pixels.
 void vg_contextmenu_show_for_widget(vg_contextmenu_t *menu,
@@ -1211,13 +1338,13 @@ void vg_contextmenu_show_for_widget(vg_contextmenu_t *menu,
     vg_contextmenu_show_at(menu, x, y);
 }
 
-/// @brief Hide the menu and its entire submenu chain, firing the on_dismiss callback.
+/// @brief Hides a menu and its active submenu chain.
 ///
-/// @details Recursively dismisses active_submenu first, then hides this menu and
-///          either transfers input capture back to the parent (if still visible) or
-///          releases it entirely. parent_menu is cleared to prevent dangling references.
+/// @details Active descendants are dismissed first. Input capture returns to a
+/// live visible parent or is released, and the dismissal callback runs after
+/// this menu's visibility and parent link are cleared.
 ///
-/// @param menu The menu to dismiss; may be NULL.
+/// @param menu Menu to dismiss; may be null.
 void vg_contextmenu_dismiss(vg_contextmenu_t *menu) {
     if (!menu)
         return;
@@ -1248,14 +1375,14 @@ void vg_contextmenu_dismiss(vg_contextmenu_t *menu) {
     }
 }
 
-/// @brief Register the callback invoked when the user clicks a menu item.
+/// @brief Registers the callback invoked when an item is selected.
 ///
-/// @details Fired after the item's own action callback and before the menu chain
-///          is dismissed. The callback receives the menu, the selected item, and
-///          user_data. Passing NULL removes the callback.
+/// @details The callback runs after the item's own action and before the menu
+/// chain is dismissed.
 ///
-/// @param menu      The context menu to configure; may be NULL.
-/// @param callback  Function called on item selection, or NULL to clear.
+/// @param menu Context menu to configure; may be null.
+/// @param callback Function called with the menu, item, and @p user_data; may be
+///                 null to clear.
 /// @param user_data Opaque pointer forwarded to the callback.
 void vg_contextmenu_set_on_select(vg_contextmenu_t *menu,
                                   void (*callback)(vg_contextmenu_t *, vg_menu_item_t *, void *),
@@ -1267,10 +1394,11 @@ void vg_contextmenu_set_on_select(vg_contextmenu_t *menu,
     menu->user_data = user_data;
 }
 
-/// @brief Register the callback invoked when the menu is dismissed (cancel or selection).
+/// @brief Registers the callback invoked whenever the menu is dismissed.
 ///
-/// @param menu      The context menu to configure; may be NULL.
-/// @param callback  Function called on dismissal, or NULL to clear.
+/// @param menu Context menu to configure; may be null.
+/// @param callback Function called with the menu and @p user_data after
+///                 visibility is cleared; may be null.
 /// @param user_data Opaque pointer forwarded to the callback.
 void vg_contextmenu_set_on_dismiss(vg_contextmenu_t *menu,
                                    void (*callback)(vg_contextmenu_t *, void *),
@@ -1281,14 +1409,13 @@ void vg_contextmenu_set_on_dismiss(vg_contextmenu_t *menu,
     menu->on_dismiss_data = user_data;
 }
 
-/// @brief Associate a context menu with a widget so right-clicking the widget opens it.
+/// @brief Associates a live context menu with a live widget.
 ///
-/// @details Stores a (widget, menu) pair in the global registry. If widget is
-///          already registered its menu is replaced. Stale entries (dead widgets/menus) are evicted
-///          inline using swap-with-last during traversal.
+/// @details An existing registration for the widget is replaced. Stale widget
+/// or menu entries are evicted inline before new capacity is allocated.
 ///
-/// @param widget The widget to attach the menu to; must be live (non-NULL).
-/// @param menu   The context menu to open on right-click; must be live (non-NULL).
+/// @param widget Live widget that should respond to right-click.
+/// @param menu Live context menu to show for that widget.
 void vg_contextmenu_register_for_widget(vg_widget_t *widget, vg_contextmenu_t *menu) {
     if (!vg_widget_is_live(widget) || !vg_contextmenu_is_live(menu))
         return;
@@ -1314,9 +1441,11 @@ void vg_contextmenu_register_for_widget(vg_widget_t *widget, vg_contextmenu_t *m
     s_registry_count++;
 }
 
-/// @brief Remove a widget's right-click menu registration from the global registry.
+/// @brief Removes a widget's right-click registration.
 ///
-/// @param widget The widget to detach; may be NULL (no-op).
+/// @details The traversal also purges any other stale registry entries.
+///
+/// @param widget Widget to detach; may be null.
 void vg_contextmenu_unregister_for_widget(vg_widget_t *widget) {
     if (!widget)
         return;
@@ -1332,15 +1461,15 @@ void vg_contextmenu_unregister_for_widget(vg_widget_t *widget) {
     }
 }
 
-/// @brief Check if a right-click event on widget should open its registered context menu.
+/// @brief Processes a right-click against the global context-menu registry.
 ///
-/// @details Ignores all events except VG_EVENT_MOUSE_DOWN with VG_MOUSE_RIGHT.
-///          Searches the registry for widget, shows the menu at the screen cursor
-///          position, evicts stale entries inline, and returns true if a menu was shown.
+/// @details Only right-button mouse-down events are eligible. A matching menu
+/// opens at the event's screen coordinates, while stale registry entries are
+/// purged during the search.
 ///
 /// @param widget The widget that received the event; must be live.
-/// @param event  The event to process; may be NULL (returns false).
-/// @return       true if a registered menu was shown, false otherwise.
+/// @param event Event to process; may be null.
+/// @return `true` when a registered live menu was shown; otherwise `false`.
 bool vg_contextmenu_process_event(vg_widget_t *widget, vg_event_t *event) {
     if (!vg_widget_is_live(widget) || !event)
         return false;
@@ -1364,11 +1493,16 @@ bool vg_contextmenu_process_event(vg_widget_t *widget, vg_event_t *event) {
     return false;
 }
 
-/// @brief Set the font and size used to render menu item labels and shortcuts.
+/// @brief Sets the font and size throughout a context-menu subtree.
 ///
-/// @param menu The context menu to configure; may be NULL.
-/// @param font Font to use; NULL retains the current font.
-/// @param size Font size in points; ignored (current size kept) if size <= 0.
+/// @details Null font and non-positive size arguments retain the corresponding
+/// current value. Changes invalidate layout and paint and recurse through every
+/// attached submenu. Fonts are borrowed rather than owned.
+///
+/// @param menu Context menu root to configure; may be null.
+/// @param font Borrowed font to use, or null to retain the current font.
+/// @param size Positive font size, or a non-positive value to retain the current
+///             size.
 void vg_contextmenu_set_font(vg_contextmenu_t *menu, vg_font_t *font, float size) {
     if (!menu)
         return;
@@ -1388,12 +1522,15 @@ void vg_contextmenu_set_font(vg_contextmenu_t *menu, vg_font_t *font, float size
 }
 
 /// @brief Apply theme colors to a context-menu subtree.
-/// @details Context menus are often standalone overlays created once and shown
-///          many times. Reapplying colors at show/render time keeps long-lived
-///          menus synchronized with light/dark theme changes without requiring
-///          scripts to rebuild their menu models.
-/// @param menu Context menu root to update; may be NULL.
-/// @param theme Theme whose colors should be copied; NULL uses current theme.
+///
+/// @details Context menus are often long-lived standalone overlays. Copying
+/// current colors lets them follow theme changes without rebuilding their menu
+/// models. The update recursively covers attached submenus and schedules paint
+/// only when visible style state changes.
+///
+/// @param menu Context-menu root to update; may be null.
+/// @param theme Theme whose colors should be copied; null selects the current
+///              theme.
 void vg_contextmenu_apply_theme(vg_contextmenu_t *menu, const vg_theme_t *theme) {
     if (!menu)
         return;

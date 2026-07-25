@@ -30,6 +30,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the runtime's unique-string Bag collection.
+///
+/// A Bag is a set of byte strings backed by a separately chained hash table.
+/// Keys are hashed with FNV-1a and copied into inline entry storage, so the
+/// collection does not retain or depend on the source `rt_string` objects.
+/// The table grows before an insertion would exceed the shared collection
+/// load-factor threshold, while removals and clears retain the current bucket
+/// capacity for later reuse.
+///
+/// The public API accepts opaque runtime object handles and validates non-null
+/// handles against `RT_BAG_CLASS_ID`. Null handles have operation-specific
+/// identity behavior for queries and set operations; invalid non-null handles
+/// trap. Mutating operations are not synchronized, and callers must provide
+/// external synchronization when a Bag can be accessed concurrently.
+
 #include "rt_bag.h"
 
 #include "rt_collection_ids.h"
@@ -91,6 +107,10 @@ typedef struct rt_bag_impl {
 
 /// @brief Checked cast of an opaque handle to the Bag implementation.
 /// @details Traps with the @p what message if @p obj is NULL or not a Bag.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message to report when validation fails.
+/// @return The validated Bag implementation pointer, or NULL if the runtime
+///         trap handler returns after a failed validation.
 static rt_bag_impl *as_bag(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_BAG_CLASS_ID, sizeof(rt_bag_impl))) {
         rt_trap(what);
@@ -267,6 +287,11 @@ static int bag_resize(rt_bag_impl *bag, size_t new_capacity) {
 /// mean longer collision chains and slower lookups.
 ///
 /// @param bag The Bag to potentially resize.
+/// @param next_count Entry count the Bag would have after the pending insert.
+///
+/// @return Non-zero when the current table can accommodate @p next_count or
+///         resizing succeeds; zero after reporting an overflow or allocation
+///         trap and leaving the existing table installed.
 ///
 /// @note The capacity doubles on each resize.
 static int maybe_resize_for_count(rt_bag_impl *bag, size_t next_count) {

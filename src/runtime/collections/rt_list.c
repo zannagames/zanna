@@ -34,6 +34,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements a mutable, retained-element runtime List.
+///
+/// List delegates contiguous element storage and reference management to a
+/// tracked `rt_arr_obj`. Indexed reads return retained references, mutations
+/// retain replacements before releasing displaced values, and removal
+/// operations preserve the previous state if backing-array resizing fails.
+///
+/// Search uses runtime boxed-value equality. Sorting uses a stable merge sort
+/// with the shared total ordering across null, numeric, string, and other
+/// values. List objects and their backing arrays participate in runtime GC;
+/// mutation is otherwise unsynchronized.
+
 #include "rt_list.h"
 
 #include "rt_array_obj.h"
@@ -115,6 +128,9 @@ static void rt_list_finalize(void *obj) {
 /// @details The object array is independently tracked and visits its own live
 ///          elements. Reporting the array here models the actual two-hop
 ///          ownership graph and avoids trial-decrementing each element twice.
+/// @param obj List object to traverse.
+/// @param visitor Runtime callback invoked for the managed backing array.
+/// @param ctx Opaque visitor context forwarded unchanged.
 static void rt_list_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -176,6 +192,7 @@ static inline rt_list_impl *as_list(void *p) {
 }
 
 /// @brief Drop one GC reference to a transient @p obj and free it at zero.
+/// @param obj Temporary retained runtime object, or NULL for a no-op.
 static void release_temp_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -320,6 +337,7 @@ void rt_list_push(void *list, void *elem) {
 /// @return The element at the specified index.
 ///
 /// @note O(1) time complexity.
+/// @note The returned element is retained and must be released by the caller.
 /// @note Traps with "rt_list_get: null list" if list is NULL.
 /// @note Traps with "rt_list_get: negative index" if index < 0.
 /// @note Traps with "rt_list_get: index out of bounds" if index >= count.
@@ -491,12 +509,12 @@ void rt_list_remove_at(void *list, int64_t index) {
 
 /// @brief Finds the first occurrence of an element in the List.
 ///
-/// Searches for an element by pointer equality (identity comparison, not
-/// value equality). Returns the index of the first match, or -1 if not found.
+/// Searches for an element using runtime boxed-value equality. Returns the
+/// index of the first match, or -1 if not found.
 ///
 /// **Comparison semantics:**
-/// This function compares pointers, not values. Two objects with the same
-/// content but different memory addresses will NOT match.
+/// Boxed numeric and string values compare by content; other objects compare
+/// according to `rt_box_equal()`.
 ///
 /// **Example:**
 /// ```
@@ -810,6 +828,7 @@ void rt_list_reverse(void *list) {
 /// @return The first element, or NULL if the List is empty or NULL.
 ///
 /// @note O(1) time complexity.
+/// @note A non-null result is retained and must be released by the caller.
 /// @note Thread safety: Not thread-safe.
 void *rt_list_first(void *list) {
     if (!list)
@@ -838,6 +857,7 @@ void *rt_list_first(void *list) {
 /// @return The last element, or NULL if the List is empty or NULL.
 ///
 /// @note O(1) time complexity.
+/// @note A non-null result is retained and must be released by the caller.
 /// @note Thread safety: Not thread-safe.
 void *rt_list_last(void *list) {
     if (!list)
@@ -851,12 +871,20 @@ void *rt_list_last(void *list) {
     return rt_arr_obj_get(L->arr, len - 1);
 }
 
+/// @brief Tests whether a List contains no elements.
+/// @param list List handle, or NULL.
+/// @return 1 if empty or NULL; otherwise 0.
 int8_t rt_list_is_empty(void *list) {
     if (!list)
         return 1;
     return rt_list_len(list) == 0 ? 1 : 0;
 }
 
+/// @brief Removes and returns the final List element.
+/// @param list Non-null List handle.
+/// @return Removed element as a retained caller-owned reference.
+/// @note A null or empty List traps. If shrinking storage fails, the element is
+///       restored and the operation traps without changing the List.
 void *rt_list_pop(void *list) {
     if (!list) {
         rt_trap("List.Pop: null list");
@@ -899,11 +927,20 @@ void *rt_list_pop(void *list) {
 /// @details Delegates to the shared collection order (VDOC-089): type-class
 ///          rank first (NULL < numeric < string < other), then value order
 ///          within class, so the relation is total and transitive.
+/// @param a First element.
+/// @param b Second element.
+/// @return Negative, zero, or positive according to the shared ascending order.
 static int64_t list_default_compare(void *a, void *b) {
     return rt_box_default_sort_compare(a, b);
 }
 
 /// @brief Merge two sorted halves of a temp array.
+/// @param items Array being sorted.
+/// @param temp Scratch array with at least the same extent.
+/// @param left Inclusive first index of the left half.
+/// @param mid Inclusive final index of the left half.
+/// @param right Inclusive final index of the right half.
+/// @param cmp Comparator defining ascending order.
 static void list_merge(void **items,
                        void **temp,
                        size_t left,
@@ -928,6 +965,11 @@ static void list_merge(void **items,
 }
 
 /// @brief Recursive merge sort.
+/// @param items Array being sorted.
+/// @param temp Scratch array with at least the same extent.
+/// @param left Inclusive first index.
+/// @param right Inclusive final index.
+/// @param cmp Comparator defining ascending order.
 static void list_merge_sort(
     void **items, void **temp, size_t left, size_t right, int64_t (*cmp)(void *, void *)) {
     if (left >= right)
@@ -941,6 +983,10 @@ static void list_merge_sort(
 /// @brief Sort a list in-place using a comparison function.
 /// @details Sorts the backing array directly (like Seq.Sort) to avoid ref
 ///          counting side effects from rt_arr_obj_get/put during rearrangement.
+/// @param list List handle, or NULL for a no-op.
+/// @param cmp Comparator defining the desired order.
+/// @note Comparator traps are recovered long enough to free scratch storage,
+///       then raised again with the original message.
 static void list_sort_impl(void *list, int64_t (*cmp)(void *, void *)) {
     if (!list)
         return;
@@ -992,19 +1038,29 @@ static void list_sort_impl(void *list, int64_t (*cmp)(void *, void *)) {
     rt_gc_mutator_exit();
 }
 
+/// @brief Stably sorts a List using the shared ascending runtime order.
+/// @param list List handle, or NULL for a no-op.
 void rt_list_sort(void *list) {
     list_sort_impl(list, list_default_compare);
 }
 
 /// @brief Descending comparison wrapper.
+/// @param a First element.
+/// @param b Second element.
+/// @return The inverse of the shared ascending comparison.
 static int64_t list_compare_desc(void *a, void *b) {
     return -list_default_compare(a, b);
 }
 
+/// @brief Stably sorts a List using the shared descending runtime order.
+/// @param list List handle, or NULL for a no-op.
 void rt_list_sort_desc(void *list) {
     list_sort_impl(list, list_compare_desc);
 }
 
+/// @brief Randomly permutes List elements in place with Fisher-Yates.
+/// @param list List handle, or NULL for a no-op.
+/// @note Uses the active runtime random-number generator.
 void rt_list_shuffle(void *list) {
     if (!list)
         return;
@@ -1032,6 +1088,10 @@ void rt_list_shuffle(void *list) {
     rt_gc_mutator_exit();
 }
 
+/// @brief Creates a shallow, independently mutable copy of a List.
+/// @param list Source List, or NULL.
+/// @return New List retaining the same element pointers in order; NULL source
+///         produces an empty List.
 void *rt_list_clone(void *list) {
     void *result = rt_list_new();
     if (!result || !list)

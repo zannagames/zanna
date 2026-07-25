@@ -1,4 +1,18 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements the BASIC language adapter for interactive REPL sessions.
+/// @details Each evaluation rebuilds a complete BASIC source unit from stored
+///          procedure definitions and chronological state-replay statements,
+///          compiles and verifies it, then executes a fresh bytecode module.
+///          Persistent session metadata is updated only after successful
+///          compilation and execution, giving declarations and assignments
+///          transactional behavior from the user's perspective.
+///
+///          Classification and name matching follow BASIC's
+///          case-insensitive rules. Likely expressions are first retried as
+///          `PRINT` statements, while procedure definitions are compile-checked
+///          before replacing the stored version.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -45,7 +59,11 @@ namespace zanna::repl {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// @brief Skip leading whitespace and return the offset of the first non-space.
+/// @brief Advance an index past contiguous leading whitespace.
+/// @param s String to scan.
+/// @param pos Initial byte offset.
+/// @return First offset at or after @p pos that is not classified as whitespace,
+///         or `s.size()`.
 static size_t skipWS(const std::string &s, size_t pos = 0) {
     while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos])))
         ++pos;
@@ -54,6 +72,10 @@ static size_t skipWS(const std::string &s, size_t pos = 0) {
 
 /// @brief Case-insensitive check whether @p s starts with keyword @p kw at @p offset.
 ///        Keyword must be followed by space, '(', or end of string.
+/// @param s BASIC source to inspect.
+/// @param offset Byte offset at which the keyword must begin.
+/// @param kw Null-terminated ASCII keyword.
+/// @return `true` when spelling and the accepted following boundary match.
 static bool startsWithKW(const std::string &s, size_t offset, const char *kw) {
     size_t kwLen = std::strlen(kw);
     if (s.size() - offset < kwLen)
@@ -197,18 +219,27 @@ static bool looksLikeBasicAssignmentStatement(const std::string &input) {
 // Construction / Reset
 // ---------------------------------------------------------------------------
 
+/// @brief Construct an empty BASIC REPL session adapter.
 BasicReplAdapter::BasicReplAdapter() = default;
 
+/// @brief Return the language identifier exposed by this adapter.
+/// @return Static string view containing `"basic"`.
 std::string_view BasicReplAdapter::languageName() const {
     return "basic";
 }
 
+/// @brief Clear all definitions and replay state from the session.
+/// @details Stored procedure source, persistent-variable metadata, and
+///          chronological replay statements are discarded together.
 void BasicReplAdapter::reset() {
     definedProcs_.clear();
     persistentVars_.clear();
     replayStatements_.clear();
 }
 
+/// @brief Classify one BASIC REPL input fragment.
+/// @param input Source fragment to classify.
+/// @return Input category produced by the shared BASIC classifier.
 InputKind BasicReplAdapter::classifyInput(const std::string &input) {
     return ReplInputClassifier::classifyBasic(input);
 }
@@ -217,6 +248,10 @@ InputKind BasicReplAdapter::classifyInput(const std::string &input) {
 // Persistent variable management
 // ---------------------------------------------------------------------------
 
+/// @brief Find mutable persistent-variable metadata by BASIC name.
+/// @param name Case-insensitive variable name to match.
+/// @return Pointer into `persistentVars_`, or `nullptr` when absent. The pointer
+///         is invalidated by vector reallocation or session reset.
 BasicPersistentVar *BasicReplAdapter::findPersistentVar(const std::string &name) {
     for (auto &pv : persistentVars_) {
         // Case-insensitive compare for BASIC
@@ -236,6 +271,9 @@ BasicPersistentVar *BasicReplAdapter::findPersistentVar(const std::string &name)
     return nullptr;
 }
 
+/// @brief Find persistent-variable metadata by BASIC name.
+/// @param name Case-insensitive variable name to match.
+/// @return Read-only pointer into `persistentVars_`, or `nullptr` when absent.
 const BasicPersistentVar *BasicReplAdapter::findPersistentVar(const std::string &name) const {
     for (const auto &pv : persistentVars_) {
         if (pv.name.size() == name.size()) {
@@ -258,16 +296,28 @@ const BasicPersistentVar *BasicReplAdapter::findPersistentVar(const std::string 
 // Input classification
 // ---------------------------------------------------------------------------
 
+/// @brief Detect a top-level SUB or FUNCTION definition.
+/// @param input BASIC source fragment.
+/// @return `true` when the first keyword is `SUB` or `FUNCTION`.
 bool BasicReplAdapter::isSubOrFunc(const std::string &input) const {
     size_t start = skipWS(input);
     return startsWithKW(input, start, "SUB") || startsWithKW(input, start, "FUNCTION");
 }
 
+/// @brief Detect a top-level DIM declaration.
+/// @param input BASIC source fragment.
+/// @return `true` when the first keyword is `DIM`.
 bool BasicReplAdapter::isDimDecl(const std::string &input) const {
     size_t start = skipWS(input);
     return startsWithKW(input, start, "DIM");
 }
 
+/// @brief Detect assignment to a variable already tracked by the session.
+/// @details The shallow parser accepts a leading identifier followed by a
+///          single equals sign and then verifies that identifier using
+///          case-insensitive persistent-variable lookup.
+/// @param input BASIC source fragment.
+/// @return `true` when the fragment is an assignment to a known variable.
 bool BasicReplAdapter::isAssignment(const std::string &input) const {
     size_t pos = skipWS(input);
     if (pos >= input.size() ||
@@ -294,6 +344,12 @@ bool BasicReplAdapter::isAssignment(const std::string &input) const {
     return findPersistentVar(ident) != nullptr;
 }
 
+/// @brief Heuristically determine whether input should be auto-printed.
+/// @details Empty input, comments, recognized statement keywords, and known
+///          variable assignments are excluded. The result is only a hint:
+///          `eval()` confirms it by compiling a `PRINT`-wrapped form.
+/// @param input BASIC source fragment.
+/// @return `true` when expression compilation should be attempted first.
 bool BasicReplAdapter::isLikelyExpression(const std::string &input) const {
     size_t start = skipWS(input);
     if (start >= input.size())
@@ -324,6 +380,10 @@ bool BasicReplAdapter::isLikelyExpression(const std::string &input) const {
 // Name / type extraction
 // ---------------------------------------------------------------------------
 
+/// @brief Extract a procedure name from a SUB or FUNCTION definition.
+/// @param input BASIC definition source.
+/// @return Identifier following the recognized keyword, or an empty string when
+///         the input is not a supported definition.
 std::string BasicReplAdapter::extractProcName(const std::string &input) const {
     size_t pos = skipWS(input);
     // Skip SUB or FUNCTION keyword
@@ -342,6 +402,12 @@ std::string BasicReplAdapter::extractProcName(const std::string &input) const {
     return input.substr(nameStart, pos - nameStart);
 }
 
+/// @brief Extract persistent-variable name and type from a DIM declaration.
+/// @details The type defaults to `Variant` when no `AS` clause is present.
+///          Initializers are not parsed by this metadata helper.
+/// @param input BASIC declaration source.
+/// @return Pair of variable name and type spelling; both are empty when @p input
+///         is not a DIM declaration.
 std::pair<std::string, std::string> BasicReplAdapter::extractDimInfo(
     const std::string &input) const {
     // DIM name AS Type [= value]
@@ -374,6 +440,9 @@ std::pair<std::string, std::string> BasicReplAdapter::extractDimInfo(
     return {name, type};
 }
 
+/// @brief Extract the leading identifier from a known assignment.
+/// @param input BASIC assignment source.
+/// @return Leading alphanumeric/underscore identifier, possibly empty.
 std::string BasicReplAdapter::extractAssignTarget(const std::string &input) const {
     size_t pos = skipWS(input);
     size_t idStart = pos;
@@ -387,6 +456,13 @@ std::string BasicReplAdapter::extractAssignTarget(const std::string &input) cons
 // Source building
 // ---------------------------------------------------------------------------
 
+/// @brief Assemble a complete BASIC source unit for one evaluation.
+/// @details Stored SUB/FUNCTION definitions precede replay statements in their
+///          chronological order, after which the current input is appended.
+///          Stored strings are copied into the returned source.
+/// @param input Current statement or wrapped expression; may be empty for a
+///        definitions-only compile check.
+/// @return Self-contained BASIC source for compilation.
 std::string BasicReplAdapter::buildSource(const std::string &input) const {
     std::string src;
     src.reserve(2048);
@@ -416,6 +492,10 @@ std::string BasicReplAdapter::buildSource(const std::string &input) const {
 // Compilation helpers
 // ---------------------------------------------------------------------------
 
+/// @brief Check whether BASIC source compiles and verifies.
+/// @param source Complete BASIC source unit.
+/// @return `true` only when compilation succeeds and the resulting IL module
+///         passes verification.
 bool BasicReplAdapter::tryCompileOnly(const std::string &source) const {
     using namespace il::frontends::basic;
     il::support::SourceManager sm;
@@ -427,6 +507,10 @@ bool BasicReplAdapter::tryCompileOnly(const std::string &source) const {
     return verification.hasValue();
 }
 
+/// @brief Compile and verify BASIC source while collecting a diagnostic message.
+/// @param source Complete BASIC source unit.
+/// @return Empty string on success; formatted compiler diagnostics or verifier
+///         error text on failure.
 std::string BasicReplAdapter::compileOnlyDiagnostic(const std::string &source) const {
     using namespace il::frontends::basic;
 
@@ -446,6 +530,14 @@ std::string BasicReplAdapter::compileOnlyDiagnostic(const std::string &source) c
     return "";
 }
 
+/// @brief Compile, verify, lower, and execute one complete BASIC source unit.
+/// @details Every call owns fresh source-management, compiler, bytecode-module,
+///          and VM objects. Runtime output is captured for the result, threaded
+///          dispatch and the runtime bridge are enabled, and VM traps are
+///          translated into unsuccessful evaluation results.
+/// @param source Complete BASIC source unit containing a `main` entry point.
+/// @return Evaluation status, captured output, and any compile/verify/trap
+///         diagnostic.
 EvalResult BasicReplAdapter::compileAndRun(const std::string &source) {
     using namespace il::frontends::basic;
 
@@ -499,6 +591,15 @@ EvalResult BasicReplAdapter::compileAndRun(const std::string &source) {
 // eval() — main REPL evaluation entry point
 // ---------------------------------------------------------------------------
 
+/// @brief Evaluate one BASIC REPL submission.
+/// @details Procedure replacement is compile-checked and rolled back on
+///          failure. Likely expressions are tried as `PRINT` statements.
+///          Successful declarations and mutating statements are appended to
+///          replay state; failed compilation or execution never commits new
+///          session state.
+/// @param input Complete user submission.
+/// @return Evaluation result containing output, statement result type, or
+///         diagnostic/trap information.
 EvalResult BasicReplAdapter::eval(const std::string &input) {
     EvalResult result;
 
@@ -618,6 +719,14 @@ EvalResult BasicReplAdapter::eval(const std::string &input) {
 // Tab completion (BASIC keyword completion)
 // ---------------------------------------------------------------------------
 
+/// @brief Produce case-insensitive BASIC token completions.
+/// @details The token surrounding the cursor is replaced in each candidate
+///          while prefix and suffix text are preserved. Candidates include
+///          language keywords, persistent variables, and stored procedures.
+/// @param input Current editor buffer.
+/// @param cursor Byte offset of the insertion point; values beyond the buffer
+///        are clamped.
+/// @return Full-buffer completion alternatives in provider iteration order.
 std::vector<std::string> BasicReplAdapter::complete(const std::string &input, size_t cursor) {
     std::vector<std::string> matches;
     cursor = std::min(cursor, input.size());
@@ -692,6 +801,8 @@ std::vector<std::string> BasicReplAdapter::complete(const std::string &input, si
 // Session state queries
 // ---------------------------------------------------------------------------
 
+/// @brief Snapshot persistent BASIC variables known to the session.
+/// @return Value-owned name/type records in declaration order.
 std::vector<VarInfo> BasicReplAdapter::listVariables() const {
     std::vector<VarInfo> vars;
     for (const auto &pv : persistentVars_) {
@@ -700,6 +811,10 @@ std::vector<VarInfo> BasicReplAdapter::listVariables() const {
     return vars;
 }
 
+/// @brief Snapshot stored SUB and FUNCTION definitions.
+/// @details Each result contains the procedure name and the first source line
+///          as its display signature.
+/// @return Value-owned function metadata in map iteration order.
 std::vector<FuncInfo> BasicReplAdapter::listFunctions() const {
     std::vector<FuncInfo> funcs;
     for (const auto &[name, src] : definedProcs_) {
@@ -711,6 +826,8 @@ std::vector<FuncInfo> BasicReplAdapter::listFunctions() const {
     return funcs;
 }
 
+/// @brief Report language-specific bind names.
+/// @return Always an empty vector because BASIC sessions have no bind system.
 std::vector<std::string> BasicReplAdapter::listBinds() const {
     // BASIC has no bind system
     return {};

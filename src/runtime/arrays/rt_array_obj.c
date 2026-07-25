@@ -1,4 +1,13 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements garbage-collector-aware arrays of strong object references.
+/// @details Each populated slot owns one retained object reference. Mutation is
+///          permitted only for unique backing storage, copy-on-write resize
+///          retains elements into a fresh allocation for shared arrays, and
+///          final array release drops all outgoing references exactly once.
+///          Growth uses amortized capacity while shrink clears truncated slots
+///          under the runtime GC mutator protocol.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -280,7 +289,8 @@ void rt_arr_obj_put(void **arr, size_t idx, void *obj) {
 ///          is copied before mutation so aliases retain their original contents.
 /// @param arr Existing array payload pointer (may be NULL).
 /// @param len New logical length.
-/// @return Payload pointer for the resized array, or NULL on failure.
+/// @return Payload pointer for the resized array; `NULL` represents either a
+///         successful resize to zero or failure.
 void **rt_arr_obj_resize(void **arr, size_t len) {
     if (!arr) {
         size_t cap = 0;

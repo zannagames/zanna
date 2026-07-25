@@ -4,17 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_groupbox.c
-// Purpose: Titled "card" container widget. Lays its children out in a vertical
-//          stack below a title bar and paints an elevated, rounded card via the
-//          shared anti-aliased drawing core (Refined Depth).
-// Key invariants:
-//   - title is always a valid heap string (never NULL).
-//   - Children are owned by the base widget tree (added via vg_widget_add_child).
-// Ownership/Lifetime:
-//   - vg_groupbox_create copies the title; the caller may free the original.
-// Links: lib/gui/include/vg_ide_widgets_ui.h, lib/gui/src/core/vg_draw.c
+///
+/// @file vg_groupbox.c
+/// @brief Implements a titled, vertically stacked card container.
+///
+/// @details The group box reserves a title area, measures its visible children
+/// intrinsically, arranges them as a vertical stack, and paints an elevated
+/// rounded card with an accent divider. Its title is always an owned,
+/// null-terminated heap string. Children are owned through the ordinary widget
+/// hierarchy.
+///
+/// @see vg_ide_widgets_ui.h
+/// @see vg_draw.c
 //
 //===----------------------------------------------------------------------===//
 #include "../../../graphics/include/vgfx.h"
@@ -29,7 +30,10 @@
 // Helpers
 //=============================================================================
 
-/// @brief Height reserved for the title bar above the content area.
+/// @brief Returns the height reserved for the title and divider.
+///
+/// @param gb Group box supplying padding and typography.
+/// @return Title-area height in logical pixels.
 static float groupbox_title_height(const vg_groupbox_t *gb) {
     float fs = gb->font_size > 0.0f ? gb->font_size : 14.0f;
     return gb->padding + fs + 8.0f;
@@ -39,12 +43,24 @@ static float groupbox_title_height(const vg_groupbox_t *gb) {
 // VTable
 //=============================================================================
 
+/// @brief Releases the group box's owned title during widget destruction.
+///
+/// @param widget Group-box base widget being destroyed.
 static void groupbox_destroy(vg_widget_t *widget) {
     vg_groupbox_t *gb = (vg_groupbox_t *)widget;
     free(gb->title);
     gb->title = NULL;
 }
 
+/// @brief Measures the intrinsic card size from its visible children.
+///
+/// @details Child widths are constrained by the padded available width, but the
+/// result remains intrinsic so parent layout can stretch the card consistently.
+/// Heights include the title area, child spacing, and bottom padding.
+///
+/// @param widget Group-box base widget whose measured dimensions are updated.
+/// @param available_width Width offered by the parent.
+/// @param available_height Height offered to child measurement.
 static void groupbox_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_groupbox_t *gb = (vg_groupbox_t *)widget;
     float pad = gb->padding;
@@ -80,6 +96,13 @@ static void groupbox_measure(vg_widget_t *widget, float available_width, float a
     vg_widget_apply_constraints(widget);
 }
 
+/// @brief Arranges visible children vertically below the title area.
+///
+/// @param widget Group-box base widget to arrange.
+/// @param x Allocated left coordinate.
+/// @param y Allocated top coordinate.
+/// @param width Allocated card width.
+/// @param height Allocated card height.
 static void groupbox_arrange(vg_widget_t *widget, float x, float y, float width, float height) {
     vg_groupbox_t *gb = (vg_groupbox_t *)widget;
     widget->x = x;
@@ -101,6 +124,10 @@ static void groupbox_arrange(vg_widget_t *widget, float x, float y, float width,
     }
 }
 
+/// @brief Paints the elevated card, title, border, and accent divider.
+///
+/// @param widget Group-box base widget to render.
+/// @param canvas Destination drawing context.
 static void groupbox_paint(vg_widget_t *widget, void *canvas) {
     vg_groupbox_t *gb = (vg_groupbox_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -138,6 +165,12 @@ static void groupbox_paint(vg_widget_t *widget, void *canvas) {
                             theme->colors.accent_primary);
 }
 
+/// @brief Applies typography from the generic widget font hook.
+///
+/// @param widget Group-box base widget to configure.
+/// @param font Borrowed font pointer; may be null.
+/// @param size Positive font size, or a non-positive value to retain the current
+///             size.
 static void groupbox_set_font(vg_widget_t *widget, void *font, float size) {
     vg_groupbox_t *gb = (vg_groupbox_t *)widget;
     gb->font = (vg_font_t *)font;
@@ -158,6 +191,11 @@ static vg_widget_vtable_t g_groupbox_vtable = {.destroy = groupbox_destroy,
 // Public API
 //=============================================================================
 
+/// @brief Creates a group box with theme-derived card styling.
+///
+/// @param parent Widget to receive the group box as a child; may be null.
+/// @param title Title to copy; null selects an empty title.
+/// @return Newly allocated group box, or null on allocation failure.
 vg_groupbox_t *vg_groupbox_create(vg_widget_t *parent, const char *title) {
     vg_groupbox_t *gb = calloc(1, sizeof(vg_groupbox_t));
     if (!gb)
@@ -187,11 +225,21 @@ vg_groupbox_t *vg_groupbox_create(vg_widget_t *parent, const char *title) {
     return gb;
 }
 
+/// @brief Destroys a group box and its child-widget subtree.
+///
+/// @param gb Group box to destroy; may be null.
 void vg_groupbox_destroy(vg_groupbox_t *gb) {
     if (gb)
         vg_widget_destroy(&gb->base);
 }
 
+/// @brief Replaces the group-box title with an owned copy.
+///
+/// @details The new string is allocated before the previous title is released,
+/// preserving state on allocation failure.
+///
+/// @param gb Group box to update.
+/// @param title Title to copy; null selects an empty title.
 void vg_groupbox_set_title(vg_groupbox_t *gb, const char *title) {
     if (!gb)
         return;
@@ -202,6 +250,10 @@ void vg_groupbox_set_title(vg_groupbox_t *gb, const char *title) {
     gb->title = copy;
 }
 
+/// @brief Adds a child to the group box's owned vertical stack.
+///
+/// @param gb Group box that adopts the child.
+/// @param child Widget whose ownership transfers to the group box.
 void vg_groupbox_add_child(vg_groupbox_t *gb, vg_widget_t *child) {
     if (gb && child)
         vg_widget_add_child(&gb->base, child);

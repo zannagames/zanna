@@ -16,8 +16,8 @@
 //   - Backed by a hash table with initial capacity MAP_INITIAL_CAPACITY (16)
 //     buckets and separate chaining.
 //   - Resizes (doubles) when count/capacity exceeds 75% (MAP_LOAD_FACTOR 3/4).
-//   - Integer keys are hashed by multiplying with a Knuth multiplicative
-//     constant (or similar mix) rather than direct modulo to avoid clustering.
+//   - Integer keys are hashed over their in-memory bytes with FNV-1a, and the
+//     cached hash is reused during lookup and rehashing.
 //   - Values are retained on insert (rt_obj_retain_maybe), released on
 //     remove/overwrite/finalize, and exposed to the cycle collector through
 //     the map's GC traversal callback.
@@ -32,6 +32,19 @@
 //        src/runtime/collections/rt_map.h (string-keyed map counterpart)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements a retained-value hash map keyed by signed 64-bit integers.
+///
+/// IntMap stores keys directly without boxing and uses separately chained
+/// buckets with cached FNV-1a hashes. Insertions grow the bucket table before
+/// exceeding the shared three-quarter load threshold, while explicit trimming
+/// transactionally selects the smallest permitted capacity for current entries.
+///
+/// Values are retained on insertion, traced by the runtime collector, and
+/// released on overwrite or removal. Getter results are borrowed pointers;
+/// enumeration returns owning Seqs that retain boxed keys or mapped values.
+/// Mutation is unsynchronized apart from the runtime GC mutator protocol.
 
 #include "rt_intmap.h"
 
@@ -68,6 +81,10 @@ typedef struct rt_intmap_impl {
 
 /// @brief Checked cast of an opaque handle to the IntMap implementation.
 /// @details Traps with @p what if @p obj is NULL or not an IntMap.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used on validation failure.
+/// @return The validated implementation pointer, or NULL if a returning trap
+///         handler resumes after failed validation.
 static rt_intmap_impl *as_intmap(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_INTMAP_CLASS_ID, sizeof(rt_intmap_impl))) {
         rt_trap(what);
@@ -100,6 +117,9 @@ static void free_entry(rt_intmap_entry *entry) {
 }
 
 /// @brief GC traversal: visit every stored value across all bucket chains.
+/// @param obj IntMap object to traverse.
+/// @param visitor Runtime callback invoked for each retained value.
+/// @param ctx Opaque visitor context forwarded unchanged.
 static void rt_intmap_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -184,7 +204,7 @@ static int maybe_resize_for_count(rt_intmap_impl *map, size_t next_count) {
 }
 
 /// @brief Create a new empty IntMap.
-/// @return Pointer to the newly created IntMap object, or NULL on failure.
+/// @return New runtime-managed IntMap, or NULL after an allocation trap.
 void *rt_intmap_new(void) {
     rt_intmap_impl *map =
         (rt_intmap_impl *)rt_obj_new_i64(RT_INTMAP_CLASS_ID, (int64_t)sizeof(rt_intmap_impl));
@@ -228,7 +248,8 @@ int8_t rt_intmap_is_empty(void *obj) {
 /// @brief Set or update a key-value pair in the IntMap.
 /// @param obj IntMap pointer (NULL is a no-op).
 /// @param key Integer key.
-/// @param value Value to store (retained by the IntMap).
+/// @param value Value to store and retain; may be NULL.
+/// @note Replacing a mapping retains the new value before releasing the old.
 void rt_intmap_set(void *obj, int64_t key, void *value) {
     if (!obj)
         return;
@@ -298,7 +319,8 @@ void rt_intmap_set(void *obj, int64_t key, void *value) {
 /// @brief Retrieve the value associated with a key.
 /// @param obj IntMap pointer (NULL returns NULL).
 /// @param key Integer key.
-/// @return Value pointer or NULL if not found.
+/// @return Borrowed value pointer or NULL if not found. Use `rt_intmap_has()`
+///         to distinguish absence from an explicitly stored NULL.
 void *rt_intmap_get(void *obj, int64_t key) {
     if (!obj)
         return NULL;
@@ -318,7 +340,7 @@ void *rt_intmap_get(void *obj, int64_t key) {
 /// @param obj IntMap pointer (NULL returns default_value).
 /// @param key Integer key.
 /// @param default_value Fallback value when key is absent.
-/// @return Existing value or default_value.
+/// @return Borrowed existing value or the unmodified @p default_value pointer.
 void *rt_intmap_get_or(void *obj, int64_t key, void *default_value) {
     if (!obj)
         return default_value;
@@ -391,6 +413,7 @@ int8_t rt_intmap_remove(void *obj, int64_t key) {
 
 /// @brief Remove all entries from the IntMap.
 /// @param obj IntMap pointer (NULL is a no-op).
+/// @note Stored values are released and bucket capacity is retained.
 void rt_intmap_clear(void *obj) {
     if (!obj)
         return;
@@ -454,7 +477,8 @@ int8_t rt_intmap_trim(void *obj) {
 
 /// @brief Return all keys as a Seq of boxed integers.
 /// @param obj IntMap pointer (NULL returns empty Seq).
-/// @return New Seq containing all keys as boxed i64 values.
+/// @return New owning Seq containing newly boxed i64 keys in unspecified
+///         bucket order.
 void *rt_intmap_keys(void *obj) {
     void *result = rt_seq_new();
     rt_seq_set_owns_elements(result, 1);
@@ -480,7 +504,8 @@ void *rt_intmap_keys(void *obj) {
 
 /// @brief Return all values as a Seq.
 /// @param obj IntMap pointer (NULL returns empty Seq).
-/// @return New Seq containing all values.
+/// @return New owning Seq retaining all mapped values in unspecified bucket
+///         order.
 void *rt_intmap_values(void *obj) {
     void *result = rt_seq_new();
     rt_seq_set_owns_elements(result, 1);

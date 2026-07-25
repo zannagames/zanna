@@ -4,20 +4,23 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_dropdown.c
-// Purpose: Dropdown widget implementation — pop-up list selector with scrolling,
-//          placeholder text, and an on_change callback.
-// Key invariants:
-//   - items[] is a heap-allocated array of strdup'd strings; grown on add.
-//   - selected_index == -1 means no selection; always clamped to [-1, item_count-1].
-//   - The dropdown is closed before remove or clear modifies items[].
-// Ownership/Lifetime:
-//   - Each item string is owned by the dropdown and freed on remove/clear/destroy.
-//   - placeholder is heap-allocated and freed in dropdown_destroy.
-// Links: lib/gui/include/vg_widgets.h,
-//        lib/gui/include/vg_theme.h,
-//        lib/gui/include/vg_event.h
+///
+/// @file vg_dropdown.c
+/// @brief Implements a scrolling pop-up list selector.
+///
+/// @details The widget paints a compact trigger and a floating overlay panel
+/// that can flip above the trigger to remain inside the root viewport. It
+/// supports pointer hit testing, wheel scrolling, keyboard navigation,
+/// single-character typeahead, placeholder text, and change callbacks.
+///
+/// The dropdown owns its dynamically grown item array, every copied item
+/// string, and the copied placeholder. A selected index of `-1` means no
+/// selection. The panel is closed before operations that invalidate item
+/// addresses or indices.
+///
+/// @see vg_widgets.h
+/// @see vg_theme.h
+/// @see vg_event.h
 //
 //===----------------------------------------------------------------------===//
 #include "../../../graphics/include/vgfx.h"
@@ -76,8 +79,9 @@ static vg_widget_vtable_t g_dropdown_vtable = {.destroy = dropdown_destroy,
                                                .on_focus = NULL,
                                                .get_visual_bounds = dropdown_get_visual_bounds};
 
-/// @brief VTable destroy: releases input capture if held, frees all item strings, placeholder, and
-/// item array.
+/// @brief Releases input capture and all dropdown-owned strings and storage.
+///
+/// @param widget Dropdown base widget being destroyed.
 static void dropdown_destroy(vg_widget_t *widget) {
     vg_dropdown_t *dd = (vg_dropdown_t *)widget;
     if (vg_widget_get_input_capture() == widget)
@@ -91,8 +95,11 @@ static void dropdown_destroy(vg_widget_t *widget) {
     dd->item_capacity = 0;
 }
 
-/// @brief VTable measure: sizes the trigger button to the preferred content width and one item
-/// height.
+/// @brief Measures the trigger from its widest label and one item-row height.
+///
+/// @param widget Dropdown base widget whose measured dimensions are updated.
+/// @param avail_w Available width used to cap the preferred width.
+/// @param avail_h Available height; currently unused.
 static void dropdown_measure(vg_widget_t *widget, float avail_w, float avail_h) {
     (void)avail_h;
 
@@ -106,8 +113,10 @@ static void dropdown_measure(vg_widget_t *widget, float avail_w, float avail_h) 
     vg_widget_apply_constraints(widget);
 }
 
-/// @brief Returns the height of one item row: the larger of theme input height and font
-/// line_height+8.
+/// @brief Returns the height of one trigger or list row.
+///
+/// @param dd Dropdown supplying optional font metrics.
+/// @return Larger of the theme input height and padded font line height.
 static float dropdown_item_height(vg_dropdown_t *dd) {
     vg_theme_t *theme = vg_theme_get_current();
     float scale = theme && theme->ui_scale > 0.0f ? theme->ui_scale : 1.0f;
@@ -124,7 +133,12 @@ static float dropdown_item_height(vg_dropdown_t *dd) {
     return height;
 }
 
-/// @brief Returns the Y coordinate of the text baseline vertically centred within a dropdown row.
+/// @brief Returns the baseline that vertically centers text within a row.
+///
+/// @param dd Dropdown supplying font metrics.
+/// @param row_y Top coordinate of the row.
+/// @param row_h Row height.
+/// @return Baseline coordinate, or @p row_y when no font is configured.
 static float dropdown_text_baseline(vg_dropdown_t *dd, float row_y, float row_h) {
     if (!dd || !dd->font)
         return row_y;
@@ -134,7 +148,12 @@ static float dropdown_text_baseline(vg_dropdown_t *dd, float row_y, float row_h)
     return row_y + (row_h + (float)metrics.ascent + (float)metrics.descent) / 2.0f;
 }
 
-/// @brief Measures the rendered pixel width of @p text using the dropdown's current font and size.
+/// @brief Measures text with the dropdown's current typography.
+///
+/// @param dd Dropdown supplying font and size.
+/// @param text Text to measure.
+/// @return Rendered width, a character-count estimate when no font is present,
+///         or zero for empty input.
 static float dropdown_measure_text_width(vg_dropdown_t *dd, const char *text) {
     if (!dd || !text || !text[0])
         return 0.0f;
@@ -146,7 +165,10 @@ static float dropdown_measure_text_width(vg_dropdown_t *dd, const char *text) {
     return metrics.width;
 }
 
-/// @brief Computes the natural width needed to display all items and placeholder without clipping.
+/// @brief Computes the natural trigger width for all labels and the arrow gutter.
+///
+/// @param dd Dropdown whose items and placeholder are measured.
+/// @return Preferred width in logical pixels.
 static float dropdown_preferred_width(vg_dropdown_t *dd) {
     vg_theme_t *theme = vg_theme_get_current();
     float text_width = dropdown_measure_text_width(dd, dd ? dd->placeholder : NULL);
@@ -162,8 +184,11 @@ static float dropdown_preferred_width(vg_dropdown_t *dd) {
     return text_width + padding * 2.0f + gutter;
 }
 
-/// @brief Returns the open panel's width: the larger of preferred content width and @p
-/// trigger_width.
+/// @brief Resolves the overlay width from content and trigger geometry.
+///
+/// @param dd Dropdown whose content is measured.
+/// @param trigger_width Current arranged trigger width.
+/// @return Larger of preferred content width and @p trigger_width.
 static float dropdown_panel_width(vg_dropdown_t *dd, float trigger_width) {
     float panel_width = dropdown_preferred_width(dd);
     if (panel_width < trigger_width)
@@ -171,8 +196,15 @@ static float dropdown_panel_width(vg_dropdown_t *dd, float trigger_width) {
     return panel_width;
 }
 
-/// @brief Finds the next item whose first character matches @p codepoint (case-insensitive),
-/// wrapping around from @p start_index.
+/// @brief Finds the next item beginning with a typeahead code point.
+///
+/// @details ASCII letters are compared case-insensitively, the first item
+/// character is decoded as UTF-8, and the scan wraps through the full list.
+///
+/// @param dd Dropdown whose item labels are searched.
+/// @param codepoint Character typed by the user.
+/// @param start_index First index to inspect.
+/// @return Matching index, or `-1` when no item matches.
 static int dropdown_find_typeahead_index(vg_dropdown_t *dd, uint32_t codepoint, int start_index) {
     if (!dd || dd->item_count <= 0)
         return -1;
@@ -196,7 +228,10 @@ static int dropdown_find_typeahead_index(vg_dropdown_t *dd, uint32_t codepoint, 
     return -1;
 }
 
-/// @brief Fires the on_change callback if the selected index changed from @p old_index.
+/// @brief Publishes a selection transition when the index changed.
+///
+/// @param dd Dropdown whose selection was updated.
+/// @param old_index Selection index before the update.
 static void dropdown_emit_change(vg_dropdown_t *dd, int old_index) {
     if (!dd)
         return;
@@ -208,8 +243,13 @@ static void dropdown_emit_change(vg_dropdown_t *dd, int old_index) {
             &dd->base, dd->selected_index, vg_dropdown_get_selected_text(dd), dd->on_change_data);
 }
 
-/// @brief Retrieves the screen bounds of the root ancestor widget, used as the usable viewport for
-/// panel placement.
+/// @brief Retrieves root-ancestor screen bounds for overlay placement.
+///
+/// @param dd Dropdown whose widget ancestry is traversed.
+/// @param[out] out_x Optional root screen X receiver.
+/// @param[out] out_y Optional root screen Y receiver.
+/// @param[out] out_w Optional root width receiver.
+/// @param[out] out_h Optional root height receiver.
 static void dropdown_get_viewport_bounds(
     vg_dropdown_t *dd, float *out_x, float *out_y, float *out_w, float *out_h) {
     vg_widget_t *root = &dd->base;
@@ -218,8 +258,16 @@ static void dropdown_get_viewport_bounds(
     vg_widget_get_screen_bounds(root, out_x, out_y, out_w, out_h);
 }
 
-/// @brief Resolves the absolute panel top and height, flipping above the trigger when insufficient
-/// space exists below.
+/// @brief Resolves overlay height and vertical placement within the viewport.
+///
+/// @details The panel is capped by `dropdown_height` and flips above the trigger
+/// when the upper side offers more space than the lower side.
+///
+/// @param dd Dropdown whose overlay is positioned.
+/// @param abs_widget_x Absolute trigger X coordinate; currently unused.
+/// @param abs_widget_y Absolute trigger Y coordinate.
+/// @param[out] out_panel_top Optional absolute panel-top receiver.
+/// @param[out] out_panel_h Optional panel-height receiver.
 static void dropdown_resolve_panel_rect(vg_dropdown_t *dd,
                                         float abs_widget_x,
                                         float abs_widget_y,
@@ -293,8 +341,15 @@ static void dropdown_get_visual_bounds(
         *height = panel_h;
 }
 
-/// @brief Returns true if @p screen_x/screen_y falls within the open panel, writing the hit item
-/// index into @p index (-1 if no item).
+/// @brief Hit-tests absolute coordinates against the open overlay panel.
+///
+/// @param dd Dropdown whose panel and scroll offset are queried.
+/// @param screen_x Absolute pointer X coordinate.
+/// @param screen_y Absolute pointer Y coordinate.
+/// @param[out] index Optional receiver for the hit item, or `-1` when the point
+///                   is in no item row.
+/// @return `true` when the point lies inside the panel rectangle, even if no
+///         item occupies that position; otherwise `false`.
 static bool dropdown_panel_hit(vg_dropdown_t *dd, float screen_x, float screen_y, int *index) {
     float sx = 0.0f;
     float sy = 0.0f;
@@ -324,7 +379,10 @@ static bool dropdown_panel_hit(vg_dropdown_t *dd, float screen_x, float screen_y
     return true;
 }
 
-/// @brief Clamps scroll_y to the valid range [0, total_content_height - @p panel_h].
+/// @brief Clamps the vertical scroll offset to the panel's content range.
+///
+/// @param dd Dropdown whose `scroll_y` is normalized.
+/// @param panel_h Visible panel height.
 static void dropdown_clamp_scroll(vg_dropdown_t *dd, float panel_h) {
     if (!dd)
         return;
@@ -339,8 +397,13 @@ static void dropdown_clamp_scroll(vg_dropdown_t *dd, float panel_h) {
         dd->scroll_y = max_scroll;
 }
 
-/// @brief Computes the scrollbar thumb length proportional to visible/total content, clamped to a
-/// minimum of 18 px.
+/// @brief Computes a proportional scrollbar-thumb length.
+///
+/// @param track_size Scrollbar track length.
+/// @param content_size Total scrollable content length.
+/// @param viewport_size Visible content length.
+/// @return Thumb length clamped between 18 pixels and the track length; invalid
+///         geometry returns @p track_size.
 static float dropdown_scrollbar_thumb_size(float track_size,
                                            float content_size,
                                            float viewport_size) {
@@ -355,8 +418,13 @@ static float dropdown_scrollbar_thumb_size(float track_size,
     return thumb_size;
 }
 
-/// @brief Computes the thumb's position within the track from the current scroll position and
-/// scroll range.
+/// @brief Computes scrollbar-thumb offset from the current scroll position.
+///
+/// @param scroll_pos Current content scroll position.
+/// @param scroll_range Maximum content scroll position.
+/// @param track_size Scrollbar track length.
+/// @param thumb_size Scrollbar thumb length.
+/// @return Offset within the track, or zero when no travel is available.
 static float dropdown_scrollbar_thumb_offset(float scroll_pos,
                                              float scroll_range,
                                              float track_size,
@@ -367,7 +435,10 @@ static float dropdown_scrollbar_thumb_offset(float scroll_pos,
     return (scroll_pos / scroll_range) * thumb_travel;
 }
 
-/// @brief Adjusts scroll_y so that @p index is fully visible within the open panel.
+/// @brief Adjusts scrolling so an item is fully visible.
+///
+/// @param dd Dropdown whose overlay is scrolled.
+/// @param index Zero-based item index to reveal.
 static void dropdown_scroll_to_index(vg_dropdown_t *dd, int index) {
     if (!dd || index < 0 || index >= dd->item_count)
         return;
@@ -390,8 +461,12 @@ static void dropdown_scroll_to_index(vg_dropdown_t *dd, int index) {
     dropdown_clamp_scroll(dd, panel_h);
 }
 
-/// @brief Opens the dropdown panel, initialises hover to @p preferred_hover (or selection), and
-/// acquires input capture.
+/// @brief Opens the panel, initializes hover, and acquires input capture.
+///
+/// @param widget Dropdown base widget that receives input capture.
+/// @param dd Dropdown state to open.
+/// @param preferred_hover Preferred valid item index, or an invalid value to use
+///                        the current selection or first item.
 static void dropdown_open(vg_widget_t *widget, vg_dropdown_t *dd, int preferred_hover) {
     if (!dd || dd->open)
         return;
@@ -411,7 +486,10 @@ static void dropdown_open(vg_widget_t *widget, vg_dropdown_t *dd, int preferred_
     widget->needs_paint = true;
 }
 
-/// @brief Closes the dropdown panel, clears hover state, and releases input capture.
+/// @brief Closes the panel and releases dropdown input capture.
+///
+/// @param widget Dropdown base widget that may own capture.
+/// @param dd Dropdown state to close.
 static void dropdown_close(vg_widget_t *widget, vg_dropdown_t *dd) {
     if (!dd || !dd->open)
         return;
@@ -422,8 +500,14 @@ static void dropdown_close(vg_widget_t *widget, vg_dropdown_t *dd) {
     widget->needs_paint = true;
 }
 
-/// @brief VTable paint: renders the trigger button with background, selected-text/placeholder,
-/// border accents, and chevron arrow.
+/// @brief Paints the dropdown trigger and its current label.
+///
+/// @details State-dependent colors cover disabled, hovered, focused, and open
+/// states. Selected text or placeholder is clipped before the arrow gutter,
+/// which receives a separate background and open-direction chevron.
+///
+/// @param widget Dropdown base widget to render.
+/// @param canvas Destination drawing context.
 static void dropdown_paint(vg_widget_t *widget, void *canvas) {
     vg_dropdown_t *dd = (vg_dropdown_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -513,8 +597,14 @@ static void dropdown_paint(vg_widget_t *widget, void *canvas) {
               text);
 }
 
-/// @brief VTable paint overlay: draws the floating item-list panel with row highlights, text,
-/// accent bar, and scrollbar above all other widgets.
+/// @brief Paints the floating item-list overlay above ordinary widgets.
+///
+/// @details The panel uses resolved screen placement, clips visible rows,
+/// distinguishes hovered and selected items, and adds a proportional scrollbar
+/// when content exceeds the configured panel height.
+///
+/// @param widget Dropdown base widget whose overlay is rendered.
+/// @param canvas Destination drawing context.
 static void dropdown_paint_overlay(vg_widget_t *widget, void *canvas) {
     vg_dropdown_t *dd = (vg_dropdown_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -628,8 +718,12 @@ static void dropdown_paint_overlay(vg_widget_t *widget, void *canvas) {
     }
 }
 
-/// @brief VTable handle_event: routes click, mouse-move, wheel, key-down, and key-char events to
-/// open/close/select/scroll/typeahead logic.
+/// @brief Handles panel toggling, selection, navigation, scrolling, and typeahead.
+///
+/// @param widget Dropdown base widget receiving the event.
+/// @param event Event to inspect and mark handled where appropriate.
+/// @return `true` when an enabled dropdown consumes the event; otherwise
+///         `false`.
 static bool dropdown_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_dropdown_t *dd = (vg_dropdown_t *)widget;
 
@@ -782,15 +876,21 @@ static bool dropdown_handle_event(vg_widget_t *widget, vg_event_t *event) {
     }
 }
 
-/// @brief VTable can_focus: returns true when the widget is both enabled and visible.
+/// @brief Reports whether the dropdown may receive keyboard focus.
+///
+/// @param widget Dropdown base widget to inspect.
+/// @return `true` when enabled and visible; otherwise `false`.
 static bool dropdown_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }
 
-/// @brief Create a dropdown widget.
+/// @brief Creates an empty dropdown with theme-derived defaults.
 ///
-/// @param parent Widget to attach to as a child (may be NULL).
-/// @return Newly allocated vg_dropdown_t, or NULL on allocation failure.
+/// @details The initial item array holds eight entries, no item is selected,
+/// and the floating panel height and arrow size follow the current UI scale.
+///
+/// @param parent Widget to receive the dropdown as a child; may be null.
+/// @return Newly allocated dropdown, or null on allocation failure.
 vg_dropdown_t *vg_dropdown_create(vg_widget_t *parent) {
     vg_dropdown_t *dropdown = calloc(1, sizeof(vg_dropdown_t));
     if (!dropdown)
@@ -826,11 +926,14 @@ vg_dropdown_t *vg_dropdown_create(vg_widget_t *parent) {
     return dropdown;
 }
 
-/// @brief Append an item to the dropdown list.
+/// @brief Appends a copied item label to the dropdown.
+///
+/// @details The owned pointer array grows geometrically. Overflow or allocation
+/// failure leaves the dropdown unchanged.
 ///
 /// @param dropdown The dropdown to modify.
-/// @param text     Display text for the item (copied internally).
-/// @return Zero-based index of the new item, or -1 on failure.
+/// @param text Display text to copy.
+/// @return Zero-based index of the new item, or `-1` on failure.
 int vg_dropdown_add_item(vg_dropdown_t *dropdown, const char *text) {
     if (!dropdown || !text)
         return -1;
@@ -859,10 +962,14 @@ int vg_dropdown_add_item(vg_dropdown_t *dropdown, const char *text) {
     return index;
 }
 
-/// @brief Remove the item at the given index and adjust the selection.
+/// @brief Removes an item and adjusts selection and hover indices.
+///
+/// @details An open panel closes first. Removing the selected item clears
+/// selection; removing an earlier item shifts the selected index. A resulting
+/// selection change is published through the normal callback path.
 ///
 /// @param dropdown The dropdown to modify.
-/// @param index    Zero-based index of the item to remove.
+/// @param index Zero-based index of the item to remove.
 void vg_dropdown_remove_item(vg_dropdown_t *dropdown, int index) {
     if (!dropdown || index < 0 || index >= dropdown->item_count)
         return;
@@ -899,7 +1006,7 @@ void vg_dropdown_remove_item(vg_dropdown_t *dropdown, int index) {
     dropdown->base.needs_paint = true;
 }
 
-/// @brief Remove all items and reset the selection.
+/// @brief Removes all items and resets selection, hover, and scrolling.
 ///
 /// @param dropdown The dropdown to clear.
 void vg_dropdown_clear(vg_dropdown_t *dropdown) {
@@ -927,10 +1034,13 @@ void vg_dropdown_clear(vg_dropdown_t *dropdown) {
     dropdown->base.needs_paint = true;
 }
 
-/// @brief Set the selected item by index; fires on_change if the selection changed.
+/// @brief Sets or clears the selected item.
+///
+/// @details Valid indices range from `-1` through the final item. A changed
+/// selection publishes widget change state and invokes the registered callback.
 ///
 /// @param dropdown The dropdown to update.
-/// @param index    Zero-based item index, or -1 to clear the selection.
+/// @param index Zero-based item index, or `-1` to clear selection.
 void vg_dropdown_set_selected(vg_dropdown_t *dropdown, int index) {
     if (!dropdown)
         return;
@@ -950,18 +1060,19 @@ void vg_dropdown_set_selected(vg_dropdown_t *dropdown, int index) {
     dropdown->base.needs_paint = true;
 }
 
-/// @brief Return the index of the currently selected item.
+/// @brief Returns the current selection index.
 ///
 /// @param dropdown The dropdown to query.
-/// @return Zero-based index of the selected item, or -1 if nothing is selected.
+/// @return Zero-based selected index, or `-1` for no selection or a null widget.
 int vg_dropdown_get_selected(vg_dropdown_t *dropdown) {
     return dropdown ? dropdown->selected_index : -1;
 }
 
-/// @brief Return the display text of the currently selected item.
+/// @brief Returns the current selected item's display text.
 ///
 /// @param dropdown The dropdown to query.
-/// @return Internal string pointer for the selected item, or NULL if nothing selected.
+/// @return Borrowed string owned by @p dropdown, or null when nothing is
+///         selected.
 const char *vg_dropdown_get_selected_text(vg_dropdown_t *dropdown) {
     if (!dropdown || dropdown->selected_index < 0 ||
         dropdown->selected_index >= dropdown->item_count) {
@@ -970,10 +1081,13 @@ const char *vg_dropdown_get_selected_text(vg_dropdown_t *dropdown) {
     return dropdown->items[dropdown->selected_index];
 }
 
-/// @brief Set the placeholder text shown when no item is selected.
+/// @brief Sets the placeholder shown when no item is selected.
+///
+/// @details The input is copied before the previous placeholder is released,
+/// preserving state on allocation failure.
 ///
 /// @param dropdown The dropdown to configure.
-/// @param text     Placeholder string (copied); NULL removes the placeholder.
+/// @param text Placeholder string to copy; null removes it.
 void vg_dropdown_set_placeholder(vg_dropdown_t *dropdown, const char *text) {
     if (!dropdown)
         return;
@@ -989,11 +1103,15 @@ void vg_dropdown_set_placeholder(vg_dropdown_t *dropdown, const char *text) {
     dropdown->base.needs_paint = true;
 }
 
-/// @brief Override the dropdown's font and size.
+/// @brief Sets the borrowed font and size used by trigger and overlay text.
+///
+/// @details A non-positive size selects the theme's normal size. Typography
+/// changes invalidate both layout and paint.
 ///
 /// @param dropdown The dropdown to configure.
-/// @param font     Font to use; NULL keeps the existing font.
-/// @param size     Font size in pixels; <= 0 falls back to the theme normal size.
+/// @param font Borrowed font to use; may be null to disable text rendering.
+/// @param size Positive font size in pixels, or a non-positive value for the
+///             theme default.
 void vg_dropdown_set_font(vg_dropdown_t *dropdown, vg_font_t *font, float size) {
     if (!dropdown)
         return;
@@ -1006,10 +1124,11 @@ void vg_dropdown_set_font(vg_dropdown_t *dropdown, vg_font_t *font, float size) 
     dropdown->base.needs_paint = true;
 }
 
-/// @brief Set the change callback invoked when the selected item changes.
+/// @brief Registers the callback invoked after selection changes.
 ///
-/// @param dropdown  The dropdown to configure.
-/// @param callback  Function called with (widget, new_index, user_data).
+/// @param dropdown The dropdown to configure.
+/// @param callback Function called with the widget, new index, selected text,
+///                 and @p user_data; may be null to unregister.
 /// @param user_data Opaque pointer passed to @p callback.
 void vg_dropdown_set_on_change(vg_dropdown_t *dropdown,
                                vg_dropdown_callback_t callback,

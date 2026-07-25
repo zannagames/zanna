@@ -18,6 +18,12 @@
 //        lib/gui/include/vg_theme.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements determinate linear and circular progress indicators plus
+///        an explicitly ticked indeterminate animation.
+/// @details Progress values are finite and clamped, theme colors provide default
+///          tracks and fills, and optional percentage text participates in
+///          measurement for linear bars.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_theme.h"
@@ -59,6 +65,9 @@ static vg_widget_vtable_t g_progressbar_vtable = {
 
 /// @brief VTable measure: sizes the bar to 100 px wide and the taller of 8 px, the percentage label
 /// height, or 32% of theme input height.
+/// @param widget Progress widget base to measure.
+/// @param avail_w Offered width, unused before constraints.
+/// @param avail_h Offered height, unused before constraints.
 static void progressbar_measure(vg_widget_t *widget, float avail_w, float avail_h) {
     vg_progressbar_t *pb = (vg_progressbar_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -85,6 +94,11 @@ static void progressbar_measure(vg_widget_t *widget, float avail_w, float avail_
 }
 
 /// @brief VTable arrange: stores the assigned position and dimensions; no children to arrange.
+/// @param widget Progress widget base to arrange.
+/// @param x Assigned left coordinate.
+/// @param y Assigned top coordinate.
+/// @param w Assigned width.
+/// @param h Assigned height.
 static void progressbar_arrange(vg_widget_t *widget, float x, float y, float w, float h) {
     widget->x = x;
     widget->y = y;
@@ -94,6 +108,13 @@ static void progressbar_arrange(vg_widget_t *widget, float x, float y, float w, 
 
 /// @brief Fills a rounded rectangle with @p radius corner arcs; degrades to a plain rect when
 /// radius is zero or the rect is too small.
+/// @param win Target graphics window.
+/// @param x Left coordinate.
+/// @param y Top coordinate.
+/// @param w Width in pixels.
+/// @param h Height in pixels.
+/// @param radius Corner radius.
+/// @param color Packed fill color.
 static void progressbar_fill_round_rect(
     vgfx_window_t win, int32_t x, int32_t y, int32_t w, int32_t h, int32_t radius, uint32_t color) {
     vg_draw_round_rect_fill(win, (float)x, (float)y, (float)w, (float)h, (float)radius, color);
@@ -101,6 +122,8 @@ static void progressbar_fill_round_rect(
 
 /// @brief VTable paint: draws the track, then the fill (determinate bar or indeterminate sliding
 /// block), and optionally the percentage label.
+/// @param widget Arranged progress widget base to paint.
+/// @param canvas Backend canvas used for primitives and optional text.
 static void progressbar_paint(vg_widget_t *widget, void *canvas) {
     vg_progressbar_t *pb = (vg_progressbar_t *)widget;
     vgfx_window_t win = (vgfx_window_t)canvas;
@@ -171,6 +194,10 @@ static void progressbar_paint(vg_widget_t *widget, void *canvas) {
 }
 
 /// @brief Draw a determinate circular/ring progress indicator.
+/// @details The track uses concentric circle strokes while the value arc is
+///          approximated by filled dots over 96 angular segments.
+/// @param widget Arranged circular progress widget base.
+/// @param canvas Backend canvas used for ring and percentage rendering.
 static void progressbar_paint_circular(vg_widget_t *widget, void *canvas) {
     vg_progressbar_t *pb = (vg_progressbar_t *)widget;
     vgfx_window_t win = (vgfx_window_t)canvas;

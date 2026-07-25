@@ -1,4 +1,11 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares the owned registry for dot-prefixed REPL meta commands.
+/// @details Entries retain normalized command names, help text, and handlers by
+///          value. Dispatch occurs before language compilation and distinguishes
+///          ordinary source from any dot-prefixed command, including unknown
+///          names that receive a user-facing diagnostic.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -29,6 +36,8 @@ namespace zanna::repl {
 class ReplSession;
 
 /// @brief A single meta-command entry.
+/// @details Entry storage is owned by `ReplMetaCommands`; the handler may capture
+///          external state whose lifetime remains the registrant's responsibility.
 struct MetaCommandEntry {
     std::string name; ///< Command name (without dot).
     std::string help; ///< Short help description.
@@ -50,9 +59,11 @@ class ReplMetaCommands {
                          std::function<void(ReplSession &, const std::string &)> handler);
 
     /// @brief Try to handle input as a meta-command.
-    /// @param input The raw input string (should start with '.').
+    /// @details Unknown dot-prefixed commands are consumed after printing an
+    ///          explanatory message.
+    /// @param input Raw input, optionally preceded by whitespace.
     /// @param session The REPL session to pass to the handler.
-    /// @return True if the input was recognized and handled as a meta-command.
+    /// @return `false` only when the input is not dot-prefixed; otherwise `true`.
     bool tryHandle(const std::string &input, ReplSession &session);
 
     /// @brief Print help text listing all registered commands.

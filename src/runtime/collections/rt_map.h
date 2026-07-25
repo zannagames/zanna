@@ -27,6 +27,18 @@
 // Links: src/runtime/collections/rt_map.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares the runtime's retained-value string Map API.
+///
+/// Map copies complete key byte strings and retains opaque mapped values.
+/// Generic getters return borrowed pointers; key and value enumeration returns
+/// owning snapshots. Typed wrappers box primitive values on insertion and
+/// perform explicit numeric, boolean, or string conversion on retrieval.
+///
+/// Null strings denote the empty key. Map objects are runtime-managed opaque
+/// handles and are not safe for unsynchronized concurrent mutation.
+
 #pragma once
 
 #include <stdint.h>
@@ -40,7 +52,7 @@ extern "C" {
 #endif
 
 /// @brief Create a new empty map.
-/// @return Pointer to map object.
+/// @return New runtime-managed Map, or NULL on allocation failure.
 void *rt_map_new(void);
 
 /// @brief Get number of entries in map.
@@ -120,39 +132,78 @@ void *rt_map_values(void *obj);
 //=========================================================================
 
 /// @brief Set an integer value (boxes automatically).
+/// @param obj Map handle, or NULL for a no-op.
+/// @param key Key string; NULL denotes the empty key.
+/// @param value Integer to box and store.
 void rt_map_set_int(void *obj, rt_string key, int64_t value);
 
 /// @brief Get an integer value (unboxes, returns 0 if missing).
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Numeric value converted to integer, or zero if absent.
 int64_t rt_map_get_int(void *obj, rt_string key);
 
 /// @brief Get an integer value with default (unboxes, returns def if missing).
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @param def Fallback for absence or non-numeric values.
+/// @return Converted integer or @p def.
 int64_t rt_map_get_int_or(void *obj, rt_string key, int64_t def);
 
 /// @brief Set a float value (boxes automatically).
+/// @param obj Map handle, or NULL for a no-op.
+/// @param key Key string; NULL denotes the empty key.
+/// @param value Floating-point value to box and store.
 void rt_map_set_float(void *obj, rt_string key, double value);
 
 /// @brief Get a float value (unboxes, returns 0.0 if missing).
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Numeric value converted to double, or 0.0 if absent.
 double rt_map_get_float(void *obj, rt_string key);
 
 /// @brief Get a float value with default (unboxes, returns def if missing).
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @param def Fallback for absence or non-numeric values.
+/// @return Converted double or @p def.
 double rt_map_get_float_or(void *obj, rt_string key, double def);
 
 /// @brief Set a boolean value (boxes automatically).
+/// @param obj Map handle, or NULL for a no-op.
+/// @param key Key string; NULL denotes the empty key.
+/// @param value Boolean value to normalize, box, and store.
 void rt_map_set_bool(void *obj, rt_string key, int8_t value);
 
 /// @brief Get a boolean value (unboxes, returns false if missing).
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Boolean or numeric truth value, or zero if absent.
 int8_t rt_map_get_bool(void *obj, rt_string key);
 
 /// @brief Get a boolean value with default (unboxes, returns def if missing).
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @param def Fallback for absence or unsupported stored types.
+/// @return Converted truth value or @p def.
 int8_t rt_map_get_bool_or(void *obj, rt_string key, int8_t def);
 
 /// @brief Set a string value (wraps as object).
+/// @param obj Map handle, or NULL for a no-op.
+/// @param key Key string; NULL denotes the empty key.
+/// @param value Runtime string to retain; may be NULL.
 void rt_map_set_str(void *obj, rt_string key, rt_string value);
 
 /// @brief Get a string value (returns empty string if missing).
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Caller-owned runtime string; non-string stored values trap.
 rt_string rt_map_get_str(void *obj, rt_string key);
 
 /// @brief Get an optional string value (returns NULL if missing).
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Caller-owned runtime string, or NULL if absent.
 rt_string rt_map_get_opt_str(void *obj, rt_string key);
 
 /// @brief Create a shallow copy of the map.

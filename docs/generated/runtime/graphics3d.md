@@ -143,6 +143,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-isavailable"></a>`IsAvailable` | `i1()` | `Zanna.Graphics3D.Canvas3D.IsAvailable` |
 | <a id="zanna-graphics3d-canvas3d-newfullscreen"></a>`NewFullscreen` | `obj(str)` | `Zanna.Graphics3D.Canvas3D.NewFullscreen` |
 | <a id="zanna-graphics3d-canvas3d-newoffscreen"></a>`NewOffscreen` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `Zanna.Graphics3D.Canvas3D.NewOffscreen` |
+| <a id="zanna-graphics3d-canvas3d-newoffscreenaccelerated"></a>`NewOffscreenAccelerated` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `Zanna.Graphics3D.Canvas3D.NewOffscreenAccelerated` |
 | <a id="zanna-graphics3d-canvas3d-setforcecpuskinning"></a>`SetForceCpuSkinning` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetForceCpuSkinning` |
 | <a id="zanna-graphics3d-canvas3d-resetsubmissiondiagnostics"></a>`ResetSubmissionDiagnostics` | `void()` | `Zanna.Graphics3D.Canvas3D.ResetSubmissionDiagnostics` |
 | <a id="zanna-graphics3d-canvas3d-setshadowbudget"></a>`SetShadowBudget` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetShadowBudget` |
@@ -551,6 +552,7 @@ Constructor: `Zanna.Graphics3D.SceneGraph.New`
 | <a id="zanna-graphics3d-scenegraph-draw"></a>`Draw` | `void(obj,obj)` | `Zanna.Graphics3D.SceneGraph.Draw` |
 | <a id="zanna-graphics3d-scenegraph-clear"></a>`Clear` | `void()` | `Zanna.Graphics3D.SceneGraph.Clear` |
 | <a id="zanna-graphics3d-scenegraph-save"></a>`Save` | `i64(str)` | `Zanna.Graphics3D.SceneGraph.Save` |
+| <a id="zanna-graphics3d-scenegraph-savetotext"></a>`SaveToText` | `str()` | `Zanna.Graphics3D.SceneGraph.SaveToText` |
 | <a id="zanna-graphics3d-scenegraph-load"></a>`Load` | `obj<Zanna.Graphics3D.SceneGraph>(str)` | `Zanna.Graphics3D.SceneGraph.Load` |
 | <a id="zanna-graphics3d-scenegraph-syncbindings"></a>`SyncBindings` | `void(f64)` | `Zanna.Graphics3D.SceneGraph.SyncBindings` |
 | <a id="zanna-graphics3d-scenegraph-rebaseorigin"></a>`RebaseOrigin` | `void(f64,f64,f64)` | `Zanna.Graphics3D.SceneGraph.RebaseOrigin` |
@@ -918,6 +920,7 @@ typed node metadata on instances, and operations including `LoadResult`, `LoadWi
 | <a id="zanna-graphics3d-sceneasset-loadwithoptionsex"></a>`LoadWithOptionsEx` | `obj<Zanna.Graphics3D.SceneAsset>(str,str)` | `Zanna.Graphics3D.SceneAsset.LoadWithOptionsEx` |
 | <a id="zanna-graphics3d-sceneasset-loadresultwithoptions"></a>`LoadResultWithOptions` | `obj<Zanna.Result>(str,i1)` | `Zanna.Graphics3D.SceneAsset.LoadResultWithOptions` |
 | <a id="zanna-graphics3d-sceneasset-loadassetresult"></a>`LoadAssetResult` | `obj<Zanna.Result>(str)` | `Zanna.Graphics3D.SceneAsset.LoadAssetResult` |
+| <a id="zanna-graphics3d-sceneasset-loadtextresult"></a>`LoadTextResult` | `obj<Zanna.Result>(str,str)` | `Zanna.Graphics3D.SceneAsset.LoadTextResult` |
 | <a id="zanna-graphics3d-sceneasset-save"></a>`Save` | `i64(str)` | `Zanna.Graphics3D.SceneAsset.Save` |
 | <a id="zanna-graphics3d-sceneasset-getcameracount"></a>`GetCameraCount` | `i64(i64)` | `Zanna.Graphics3D.SceneAsset.GetCameraCount` |
 | <a id="zanna-graphics3d-sceneasset-getmesh"></a>`GetMesh` | `obj<Zanna.Graphics3D.Mesh3D>(i64)` | `Zanna.Graphics3D.SceneAsset.GetMesh` |
@@ -2423,6 +2426,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Canvas3D.New` | `obj(str,i64,i64)` | `rt_canvas3d_new` |
 | `Zanna.Graphics3D.Canvas3D.NewFullscreen` | `obj(str)` | `rt_canvas3d_new_fullscreen` |
 | `Zanna.Graphics3D.Canvas3D.NewOffscreen` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `rt_canvas3d_new_offscreen` |
+| `Zanna.Graphics3D.Canvas3D.NewOffscreenAccelerated` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `rt_canvas3d_new_offscreen_accelerated` |
 | <a id="zanna-graphics3d-canvas3d-get-isoffscreen"></a>`Zanna.Graphics3D.Canvas3D.get_IsOffscreen` | `i1(obj)` | `rt_canvas3d_get_is_offscreen` |
 | `Zanna.Graphics3D.Canvas3D.Resize` | `void(obj,i64,i64)` | `rt_canvas3d_resize` |
 | `Zanna.Graphics3D.Canvas3D.Clear` | `void(obj,f64,f64,f64)` | `rt_canvas3d_clear` |
@@ -2745,6 +2749,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.SceneGraph.Draw` | `void(obj,obj,obj)` | `rt_scene3d_draw` |
 | `Zanna.Graphics3D.SceneGraph.Clear` | `void(obj)` | `rt_scene3d_clear` |
 | `Zanna.Graphics3D.SceneGraph.Save` | `i64(obj,str)` | `rt_scene3d_save` |
+| `Zanna.Graphics3D.SceneGraph.SaveToText` | `str(obj)` | `rt_scene3d_save_text` |
 | `Zanna.Graphics3D.SceneGraph.Load` | `obj<Zanna.Graphics3D.SceneGraph>(str)` | `rt_scene3d_load` |
 | <a id="zanna-graphics3d-scenegraph-get-nodecount"></a>`Zanna.Graphics3D.SceneGraph.get_NodeCount` | `i64(obj)` | `rt_scene3d_get_node_count` |
 | <a id="zanna-graphics3d-scenegraph-get-culledcount"></a>`Zanna.Graphics3D.SceneGraph.get_CulledCount` | `i64(obj)` | `rt_scene3d_get_culled_count` |
@@ -2914,6 +2919,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.SceneAsset.LoadWithOptionsEx` | `obj(str,str)` | `rt_model3d_load_with_options_ex` |
 | `Zanna.Graphics3D.SceneAsset.LoadResultWithOptions` | `obj<Zanna.Result>(str,i1)` | `rt_model3d_load_result_with_options` |
 | `Zanna.Graphics3D.SceneAsset.LoadAssetResult` | `obj<Zanna.Result>(str)` | `rt_model3d_load_asset_result` |
+| `Zanna.Graphics3D.SceneAsset.LoadTextResult` | `obj<Zanna.Result>(str,str)` | `rt_model3d_load_text_result` |
 | `Zanna.Graphics3D.SceneAsset.Save` | `i64(obj,str)` | `rt_model3d_save` |
 | <a id="zanna-graphics3d-sceneasset-get-meshcount"></a>`Zanna.Graphics3D.SceneAsset.get_MeshCount` | `i64(obj)` | `rt_model3d_get_mesh_count` |
 | <a id="zanna-graphics3d-sceneasset-get-materialcount"></a>`Zanna.Graphics3D.SceneAsset.get_MaterialCount` | `i64(obj)` | `rt_model3d_get_material_count` |

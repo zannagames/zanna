@@ -32,6 +32,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements an immutable, open-addressed set of runtime strings.
+///
+/// FrozenSet construction retains non-null strings extracted from a Seq,
+/// collapses byte-equal duplicates, and sizes a power-of-two slot array for a
+/// load factor below one half. A null slot key marks unused storage, so null
+/// elements are skipped rather than representing the empty string.
+///
+/// Membership and set algebra are read-only with respect to their operands.
+/// Algebra operations allocate independent FrozenSets, and item enumeration
+/// returns an owning Seq that retains each string. Completed FrozenSets are
+/// safe for concurrent read-only access.
+
 #include "rt_frozenset.h"
 
 #include "rt_box.h"
@@ -50,8 +63,10 @@
 // --- Helper: extract string from seq element (may be boxed) ---
 
 /// @brief Coerce a seq element to an rt_string, unboxing if necessary.
+/// @param elem Raw runtime string handle or boxed string value.
 /// @param owned Set to 1 if the result is a fresh unboxed string the caller
 ///              must release; 0 if @p elem was already a borrowed handle.
+/// @return Extracted runtime string, or NULL when @p elem is NULL.
 static rt_string fs_extract_str(void *elem, int *owned) {
     if (owned)
         *owned = 0;
@@ -67,10 +82,12 @@ static rt_string fs_extract_str(void *elem, int *owned) {
 
 // --- Hash table entry (open addressing) ---
 
+/// @brief One open-addressing slot; NULL marks an unused slot.
 typedef struct {
     rt_string key; // NULL = empty slot
 } fs_slot;
 
+/// @brief Internal FrozenSet object and its immutable slot table.
 typedef struct {
     void *vptr;
     int64_t count;
@@ -80,6 +97,10 @@ typedef struct {
 
 /// @brief Checked cast of an opaque handle to the FrozenSet implementation.
 /// @details Traps with @p what if @p obj is NULL or not a FrozenSet.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used on validation failure.
+/// @return The validated implementation pointer, or NULL if a returning trap
+///         handler resumes after failed validation.
 static rt_frozenset_impl *as_frozenset(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_FROZENSET_CLASS_ID, sizeof(rt_frozenset_impl))) {
         rt_trap(what);
@@ -91,11 +112,16 @@ static rt_frozenset_impl *as_frozenset(void *obj, const char *what) {
 // --- Keyed hash ---
 
 /// @brief Per-process keyed hash of @p len bytes of @p data.
+/// @param data Key bytes; NULL is treated as an empty buffer.
+/// @param len Number of bytes to hash; non-positive values hash no bytes.
+/// @return Keyed 64-bit hash value.
 static uint64_t fs_hash(const char *data, int64_t len) {
     return rt_keyed_hash_bytes(data ? data : "", len > 0 ? (size_t)len : 0);
 }
 
 /// @brief Keyed hash of an rt_string's bytes (empty string for NULL).
+/// @param s Runtime string to hash.
+/// @return Keyed 64-bit hash of the accessible byte sequence.
 static uint64_t fs_str_hash(rt_string s) {
     if (!s)
         return fs_hash("", 0);
@@ -107,6 +133,10 @@ static uint64_t fs_str_hash(rt_string s) {
 // --- Internal helpers ---
 
 /// @brief Borrow the byte buffer + length of a key string (empty "" if null).
+/// @param key Runtime string to inspect.
+/// @param out_len Receives the usable byte length.
+/// @return Borrowed bytes, or a stable empty string for a null, empty, or
+///         inaccessible runtime string.
 static const char *fs_key_data(rt_string key, int64_t *out_len) {
     if (!key) {
         *out_len = 0;
@@ -127,6 +157,10 @@ static const char *fs_key_data(rt_string key, int64_t *out_len) {
 }
 
 /// @brief Byte-exact equality test between stored @p key and @p data/@p len.
+/// @param key Stored runtime string.
+/// @param data Candidate bytes.
+/// @param len Number of candidate bytes.
+/// @return 1 for equal lengths and contents; otherwise 0.
 static int8_t fs_key_equals(rt_string key, const char *data, int64_t len) {
     int64_t key_len = 0;
     const char *key_data = fs_key_data(key, &key_len);
@@ -134,6 +168,7 @@ static int8_t fs_key_equals(rt_string key, const char *data, int64_t len) {
 }
 
 /// @brief GC finalizer: unref every occupied slot's key and free the slots.
+/// @param obj FrozenSet object being finalized, or NULL for a no-op.
 static void fs_finalizer(void *obj) {
     if (!obj)
         return;
@@ -154,6 +189,8 @@ static void fs_finalizer(void *obj) {
 
 /// @brief Smallest power of two >= @p n, floor 16 (capacity is a power of
 ///        two so probing can mask instead of modulo). Traps on overflow.
+/// @param n Minimum requested capacity.
+/// @return Power-of-two capacity of at least 16, or zero after an overflow trap.
 static int64_t fs_next_pow2(int64_t n) {
     int64_t p = 16;
     while (p < n) {
@@ -169,6 +206,9 @@ static int64_t fs_next_pow2(int64_t n) {
 /// @brief Allocate a FrozenSet sized for @p count entries (~50% load factor,
 ///        power-of-two capacity). Installs the finalizer; traps on
 ///        overflow/OOM.
+/// @param count Maximum source-element count used to size the table.
+/// @return Newly allocated empty FrozenSet implementation, or NULL after a
+///         size or allocation trap.
 static rt_frozenset_impl *fs_alloc(int64_t count) {
     // Use ~50% load factor for good probe performance
     int64_t needed = 8;
@@ -207,6 +247,8 @@ static rt_frozenset_impl *fs_alloc(int64_t count) {
 }
 
 /// @brief Linear-probe insert during construction; ignores duplicates.
+/// @param fs FrozenSet under construction.
+/// @param key Non-null string reference to retain if newly inserted.
 /// @return 1 if @p key was newly added, 0 if it was already present.
 static int8_t fs_insert(rt_frozenset_impl *fs, rt_string key) {
     uint64_t h = fs_str_hash(key);
@@ -230,6 +272,9 @@ static int8_t fs_insert(rt_frozenset_impl *fs, rt_string key) {
 }
 
 /// @brief Linear-probe membership test for @p key (0 if set is empty/absent).
+/// @param fs FrozenSet implementation to search.
+/// @param key String whose byte sequence is matched.
+/// @return 1 if present; otherwise 0.
 static int8_t fs_contains(rt_frozenset_impl *fs, rt_string key) {
     if (!fs || fs->count == 0)
         return 0;
@@ -253,6 +298,9 @@ static int8_t fs_contains(rt_frozenset_impl *fs, rt_string key) {
 
 /// @brief Build an immutable set from a Seq of strings (duplicates collapse). Internal storage
 /// is an open-addressed hash table sized for the entry count. Use mutable Set elsewhere.
+/// @param items Seq of raw or boxed string values, or NULL.
+/// @return A new runtime-managed FrozenSet; NULL input produces an empty set.
+/// @note Null extracted elements are skipped.
 void *rt_frozenset_from_seq(void *items) {
     if (!items)
         return (void *)fs_alloc(0);
@@ -272,11 +320,14 @@ void *rt_frozenset_from_seq(void *items) {
 }
 
 /// @brief Construct an empty frozen set.
+/// @return A new runtime-managed empty FrozenSet.
 void *rt_frozenset_empty(void) {
     return (void *)fs_alloc(0);
 }
 
 /// @brief Return the number of elements in the frozen (immutable) set.
+/// @param obj FrozenSet handle, or NULL to query an empty set.
+/// @return Element count, or zero for NULL.
 int64_t rt_frozenset_len(void *obj) {
     if (!obj)
         return 0;
@@ -284,12 +335,17 @@ int64_t rt_frozenset_len(void *obj) {
 }
 
 /// @brief Check whether the frozen set has no elements.
+/// @param obj FrozenSet handle, or NULL to test an empty set.
+/// @return 1 if empty or NULL; otherwise 0.
 int8_t rt_frozenset_is_empty(void *obj) {
     return rt_frozenset_len(obj) == 0 ? 1 : 0;
 }
 
 /// @brief Check whether an element exists in the frozen set.
 /// @details Uses hash-based lookup on the immutable backing array.
+/// @param obj FrozenSet handle, or NULL.
+/// @param elem Non-null runtime string to find.
+/// @return 1 if present; otherwise 0.
 int8_t rt_frozenset_has(void *obj, rt_string elem) {
     if (!obj)
         return 0;
@@ -300,6 +356,8 @@ int8_t rt_frozenset_has(void *obj, rt_string elem) {
 }
 
 /// @brief Return a Seq of every element in the set (slot-iteration order, not insertion order).
+/// @param obj FrozenSet handle, or NULL to enumerate an empty set.
+/// @return A new owning Seq retaining all strings in unspecified slot order.
 void *rt_frozenset_items(void *obj) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -316,6 +374,9 @@ void *rt_frozenset_items(void *obj) {
 
 /// @brief Return a fresh frozen set containing every element from either operand. Duplicates
 /// (elements present in both) appear once. Implemented by zipping into a Seq then re-freezing.
+/// @param obj First FrozenSet, or NULL as an empty set.
+/// @param other Second FrozenSet, or NULL as an empty set.
+/// @return A new independent FrozenSet containing the union.
 void *rt_frozenset_union(void *obj, void *other) {
     // Collect all elements from both sets
     void *seq = rt_seq_new();
@@ -343,6 +404,9 @@ void *rt_frozenset_union(void *obj, void *other) {
 
 /// @brief Return a fresh frozen set containing only elements present in both operands.
 /// Returns an empty set if either operand is NULL.
+/// @param obj First FrozenSet, or NULL as an empty set.
+/// @param other Second FrozenSet, or NULL as an empty set.
+/// @return A new independent FrozenSet containing the intersection.
 void *rt_frozenset_intersect(void *obj, void *other) {
     void *seq = rt_seq_new();
     rt_frozenset_impl *a =
@@ -369,6 +433,9 @@ void *rt_frozenset_intersect(void *obj, void *other) {
 
 /// @brief Return a fresh frozen set containing elements present in `obj` but not in `other`.
 /// `obj - other` set semantics. NULL `other` returns a copy of `obj`.
+/// @param obj Source FrozenSet, or NULL as an empty set.
+/// @param other Exclusion FrozenSet, or NULL to exclude nothing.
+/// @return A new independent FrozenSet containing the difference.
 void *rt_frozenset_diff(void *obj, void *other) {
     void *seq = rt_seq_new();
     if (!obj) {
@@ -397,6 +464,9 @@ void *rt_frozenset_diff(void *obj, void *other) {
 
 /// @brief Check whether this frozen set is a subset of another.
 /// @details Every element in this set must also be present in the other.
+/// @param obj Candidate subset, or NULL as an empty set.
+/// @param other Candidate superset, or NULL as an empty set.
+/// @return 1 if every element of @p obj occurs in @p other; otherwise 0.
 int8_t rt_frozenset_is_subset(void *obj, void *other) {
     if (!obj)
         return 1; // empty set is subset of everything
@@ -414,6 +484,9 @@ int8_t rt_frozenset_is_subset(void *obj, void *other) {
 
 /// @brief Compare two frozen sets for structural equality.
 /// @details Two frozen sets are equal when they contain the same elements.
+/// @param obj First FrozenSet, or NULL as an empty set.
+/// @param other Second FrozenSet, or NULL as an empty set.
+/// @return 1 if both contain identical byte-string elements; otherwise 0.
 int8_t rt_frozenset_equals(void *obj, void *other) {
     int64_t la = rt_frozenset_len(obj);
     int64_t lb = rt_frozenset_len(other);

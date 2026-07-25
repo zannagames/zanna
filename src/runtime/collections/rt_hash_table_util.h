@@ -22,6 +22,16 @@
 //        docs/adr/0133-runtime-concurrency-and-collection-hardening.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Provides shared overflow-safe hash-table capacity arithmetic.
+///
+/// These header-only helpers centralize the three-quarter load policy used by
+/// separately chained runtime collections. They avoid overflow-prone
+/// multiplication, reject unrepresentable doubling, and write output
+/// capacities only after a complete calculation succeeds. No helper allocates
+/// storage or mutates a table directly.
+
 #pragma once
 
 #include <stddef.h>

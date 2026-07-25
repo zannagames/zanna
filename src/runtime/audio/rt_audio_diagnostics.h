@@ -19,6 +19,13 @@
 //        src/runtime/audio/rt_sound3d.c
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares allocation-free counters for audio degradation diagnostics.
+/// @details The runtime owns process-global saturating counter storage. Public
+///          consumers can sample and reset the spatial-voice eviction count,
+///          while internal capacity-management paths record eviction events.
+
 #pragma once
 
 #include <stdint.h>
@@ -28,12 +35,15 @@ extern "C" {
 #endif
 
 /// @brief Number of spatial voices evicted since process start or last reset.
+/// @return Non-negative saturating eviction count.
 int64_t rt_audio_diagnostics_get_spatial_voice_evictions(void);
 
 /// @brief Reset the spatial-voice eviction counter to zero.
+/// @details Does not otherwise alter active voices or spatial-audio state.
 void rt_audio_diagnostics_reset_spatial_voice_evictions(void);
 
 /// @brief Record one spatial-voice eviction (saturates at INT64_MAX).
+/// @details Intended for internal bounded-capacity paths; performs no allocation.
 void rt_audio_diag_record_spatial_voice_evicted(void);
 
 #ifdef __cplusplus

@@ -1,4 +1,11 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares the C ABI for GC-tracked arrays of object references.
+/// @details Each non-null slot is a strong runtime edge owned by the backing
+///          allocation. Reads return a retained reference, writes transfer one
+///          retained reference into a uniquely owned array, and resize may
+///          allocate copy-on-write storage when aliases share the container.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -66,16 +73,18 @@ void rt_arr_obj_put(void **arr, size_t idx, void *obj);
 ///          existing backing cannot hold the new logical length. New tail
 ///          elements are zero-initialized. Shrink operations release elements
 ///          beyond the new length while retaining capacity for efficient reuse.
-///          Resizing an existing array to length 0 releases it and returns NULL.
-/// @param arr Pointer to the first element slot.
+///          Shared storage is copied before mutation. Resizing an existing array
+///          to length 0 releases it and returns NULL.
+/// @param arr Pointer to the first element slot; `NULL` allocates a new array.
 /// @param len New logical length.
-/// @return Pointer to the (possibly reallocated) first element slot.
+/// @return Pointer to the (possibly reallocated) first element slot; `NULL`
+///         means either zero-length success or allocation/validation failure.
 void **rt_arr_obj_resize(void **arr, size_t len);
 
 /// @brief Release all elements and free the array.
-/// @details Iterates over all elements, releases each retained reference,
-///          and then frees the array's backing storage. Prevents leaks when
-///          an array is no longer needed.
+/// @details Decrements the container reference count. Only the final release
+///          iterates over elements, drops each retained edge, and frees backing
+///          storage.
 /// @param arr Pointer to the first element slot (may be NULL for a no-op).
 void rt_arr_obj_release(void **arr);
 

@@ -33,6 +33,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the runtime's primary retained-value string Map.
+///
+/// Map owns inline copies of complete key byte strings and stores retained
+/// opaque values in separately chained keyed-hash buckets. Insertions grow the
+/// table transactionally at the shared load threshold; explicit trimming can
+/// reclaim bucket capacity without changing associations.
+///
+/// Generic getters return borrowed pointers. Enumeration returns owning
+/// snapshots, and typed helpers box values on write or perform documented
+/// numeric/string conversions on read. Null strings denote the empty key.
+/// Map objects participate in GC traversal and mutation is unsynchronized
+/// apart from the runtime mutator protocol.
+
 #include "rt_map.h"
 #include "rt_numeric.h"
 
@@ -103,6 +117,10 @@ typedef struct rt_map_impl {
 
 /// @brief Checked cast of an opaque handle to the Map implementation.
 /// @details Traps with @p what if @p obj is NULL or not a Map.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used on validation failure.
+/// @return The validated implementation pointer, or NULL if a returning trap
+///         handler resumes after failed validation.
 static rt_map_impl *as_map(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_MAP_CLASS_ID, sizeof(rt_map_impl))) {
         rt_trap(what);
@@ -232,6 +250,9 @@ static void free_entry(rt_map_entry *entry) {
 }
 
 /// @brief GC traversal: visit every stored value across all bucket chains.
+/// @param obj Map object to traverse.
+/// @param visitor Runtime callback invoked for every retained value.
+/// @param ctx Opaque visitor context forwarded unchanged.
 static void rt_map_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -317,7 +338,10 @@ static int map_resize(rt_map_impl *map, size_t new_capacity) {
 /// Triggers a resize when the load factor exceeds 75% (3/4).
 ///
 /// @param map The Map to potentially resize.
+/// @param next_count Entry count after the pending new-key insertion.
 ///
+/// @return Non-zero when current capacity suffices or growth succeeds; zero
+///         after an overflow or allocation trap.
 /// @note The capacity doubles on each resize.
 static int maybe_resize_for_count(rt_map_impl *map, size_t next_count) {
     if (rt_hash_table_exceeds_load(next_count, map->capacity)) {
@@ -1042,6 +1066,10 @@ void *rt_map_values(void *obj) {
 
 #include "rt_box.h"
 
+/// @brief Boxes and stores a signed integer.
+/// @param obj Map handle, or NULL for a no-op.
+/// @param key Key string; NULL denotes the empty key.
+/// @param value Integer to box.
 void rt_map_set_int(void *obj, rt_string key, int64_t value) {
     void *boxed = rt_box_i64(value);
     rt_map_set(obj, key, boxed);
@@ -1050,6 +1078,11 @@ void rt_map_set_int(void *obj, rt_string key, int64_t value) {
         rt_obj_free(boxed);
 }
 
+/// @brief Reads a stored numeric value as a signed integer.
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Integer value, saturated conversion of float, boolean as zero/one,
+///         or zero if absent. Non-numeric values trap.
 int64_t rt_map_get_int(void *obj, rt_string key) {
     void *val = rt_map_get(obj, key);
     if (!val)
@@ -1067,6 +1100,11 @@ int64_t rt_map_get_int(void *obj, rt_string key) {
     return 0;
 }
 
+/// @brief Reads a stored numeric value as an integer with a fallback.
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @param def Value returned for absence or a non-numeric stored value.
+/// @return Converted numeric value or @p def.
 int64_t rt_map_get_int_or(void *obj, rt_string key, int64_t def) {
     void *val = rt_map_get(obj, key);
     if (!val)
@@ -1083,6 +1121,10 @@ int64_t rt_map_get_int_or(void *obj, rt_string key, int64_t def) {
     return def;
 }
 
+/// @brief Boxes and stores a floating-point value.
+/// @param obj Map handle, or NULL for a no-op.
+/// @param key Key string; NULL denotes the empty key.
+/// @param value Floating-point value to box.
 void rt_map_set_float(void *obj, rt_string key, double value) {
     void *boxed = rt_box_f64(value);
     rt_map_set(obj, key, boxed);
@@ -1091,6 +1133,10 @@ void rt_map_set_float(void *obj, rt_string key, double value) {
         rt_obj_free(boxed);
 }
 
+/// @brief Reads a stored numeric value as double precision.
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Converted numeric value, or 0.0 if absent. Non-numeric values trap.
 double rt_map_get_float(void *obj, rt_string key) {
     void *val = rt_map_get(obj, key);
     if (!val)
@@ -1106,6 +1152,11 @@ double rt_map_get_float(void *obj, rt_string key) {
     return 0.0;
 }
 
+/// @brief Reads a stored numeric value as double precision with a fallback.
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @param def Value returned for absence or a non-numeric stored value.
+/// @return Converted numeric value or @p def.
 double rt_map_get_float_or(void *obj, rt_string key, double def) {
     void *val = rt_map_get(obj, key);
     if (!val)
@@ -1120,6 +1171,10 @@ double rt_map_get_float_or(void *obj, rt_string key, double def) {
     return def;
 }
 
+/// @brief Boxes and stores a boolean value.
+/// @param obj Map handle, or NULL for a no-op.
+/// @param key Key string; NULL denotes the empty key.
+/// @param value Value normalized by the runtime boolean boxer.
 void rt_map_set_bool(void *obj, rt_string key, int8_t value) {
     void *boxed = rt_box_i1_bool(value);
     rt_map_set(obj, key, boxed);
@@ -1127,6 +1182,10 @@ void rt_map_set_bool(void *obj, rt_string key, int8_t value) {
         rt_obj_free(boxed);
 }
 
+/// @brief Reads a stored boolean or numeric value as a boolean.
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Normalized zero/one value, or zero if absent. Other types trap.
 int8_t rt_map_get_bool(void *obj, rt_string key) {
     void *val = rt_map_get(obj, key);
     if (!val)
@@ -1142,6 +1201,11 @@ int8_t rt_map_get_bool(void *obj, rt_string key) {
     return 0;
 }
 
+/// @brief Reads a stored boolean or numeric value with a fallback.
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @param def Value returned for absence or a non-numeric stored value.
+/// @return Converted zero/one value or @p def.
 int8_t rt_map_get_bool_or(void *obj, rt_string key, int8_t def) {
     void *val = rt_map_get(obj, key);
     if (!val)
@@ -1156,10 +1220,19 @@ int8_t rt_map_get_bool_or(void *obj, rt_string key, int8_t def) {
     return def;
 }
 
+/// @brief Stores a runtime string value under a string key.
+/// @param obj Map handle, or NULL for a no-op.
+/// @param key Key string; NULL denotes the empty key.
+/// @param value Runtime string to retain; may be NULL.
 void rt_map_set_str(void *obj, rt_string key, rt_string value) {
     rt_map_set(obj, key, (void *)value);
 }
 
+/// @brief Reads a stored raw or boxed string.
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Newly retained or unboxed string, or a newly created empty string
+///         when absent. A present non-string value traps.
 rt_string rt_map_get_str(void *obj, rt_string key) {
     void *val = rt_map_get(obj, key);
     if (!val)
@@ -1172,6 +1245,11 @@ rt_string rt_map_get_str(void *obj, rt_string key) {
     return NULL;
 }
 
+/// @brief Reads an optional stored raw or boxed string.
+/// @param obj Map handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Newly retained or unboxed string, or NULL when absent. A present
+///         non-string value traps.
 rt_string rt_map_get_opt_str(void *obj, rt_string key) {
     void *val = rt_map_get(obj, key);
     if (!val)

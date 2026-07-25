@@ -14,8 +14,9 @@
 //   - One complete gizmo drag creates one local-transform history snapshot.
 //   - Compact windows show viewport or inspector at full width, never two slivers.
 //   - Compact wrapped toolbars reserve every row so actions remain reachable.
-//   - VSCN parsing and serialization use unique bounded staging files because
-//     the runtime deliberately exposes file-oriented asset APIs.
+//   - VSCN parsing and serialization run entirely in memory (ADR 0190):
+//     SaveToText/LoadTextResult carry the canonical bytes, the document path
+//     names the prefab base directory, and no staging files are created.
 //   - Hierarchy traversal and preview work are capped for hostile assets.
 //   - Group inspector, reparent, and selection commands are transactional;
 //     hierarchy cycles are rejected before mutation and inspector inputs never
@@ -121,6 +122,7 @@ bind "scene_component_palette";
 bind "scene_component_schema";
 bind "scene_hierarchy_search";
 bind "scene_hierarchy_3d";
+bind "scene_history";
 bind "scene_selection";
 bind "scene_light_inspector_3d";
 bind "scene_light_3d";
@@ -152,7 +154,6 @@ bind Math = Zanna.Math;
 bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
 bind File = Zanna.IO.File;
-bind TempFile = Zanna.IO.TempFile;
 bind Path = Zanna.IO.Path;
 bind Str = Zanna.String;
 bind Parse = Zanna.Core.Parse;
@@ -161,9 +162,13 @@ final DEFAULT_VIEWPORT_WIDTH: Integer = 800;
 final DEFAULT_VIEWPORT_HEIGHT: Integer = 520;
 final MIN_VIEWPORT_WIDTH: Integer = 320;
 final MIN_VIEWPORT_HEIGHT: Integer = 240;
-final MAX_VIEWPORT_WIDTH: Integer = 1600;
-final MAX_VIEWPORT_HEIGHT: Integer = 1000;
+final MAX_VIEWPORT_WIDTH: Integer = 3840;
+final MAX_VIEWPORT_HEIGHT: Integer = 2160;
+// Interactive drags render at reduced resolution and re-render full on
+// release (ADR 0191 interim); the divisor keeps the upscale integral.
+final INTERACTIVE_RESOLUTION_DIVISOR: Integer = 2;
 final MAX_SCENE_BYTES: Integer = 64000000;
+final MAX_3D_HISTORY_BYTES: Integer = 256000000;
 final MAX_TEXTURE_SOURCE_BYTES: Integer = 16000000;
 final MAX_EDITOR_NODES: Integer = 1024;
 final MAX_HIERARCHY_DEPTH: Integer = 256;
@@ -681,6 +686,9 @@ class SceneEditor3D {
     expose Canvas3D viewportRenderCanvas;
     expose RenderTarget3D viewportRenderTarget;
     expose Camera3D viewportRenderCamera;
+    hide Boolean viewportAccelerationRequested;
+    hide Integer viewportTargetWidth;
+    hide Integer viewportTargetHeight;
     expose List[SceneNode] flatNodes;
     expose List[Integer] flatDepths;
     expose List[String] flatPaths;
@@ -938,6 +946,9 @@ class SceneEditor3D {
         viewportRenderCanvas = null;
         viewportRenderTarget = null;
         viewportRenderCamera = null;
+        viewportAccelerationRequested = false;
+        viewportTargetWidth = 0;
+        viewportTargetHeight = 0;
         flatNodes = [];
         flatDepths = [];
         flatPaths = [];
@@ -1966,6 +1977,14 @@ class SceneEditor3D {
         }
 
         changed = PumpViewportNavigation() or changed;
+        if viewportTargetWidth != 0
+           and InteractiveDegradeActive() == false
+           and (viewportTargetWidth != renderedViewportWidth
+                or viewportTargetHeight != renderedViewportHeight) {
+            // The last interactive frame rendered at reduced resolution;
+            // re-render once at full resolution now that the drag ended.
+            renderDirty = true;
+        }
         if renderDirty { RenderViewport(); }
         ApplyPendingWorkspaceScroll();
         // Document activation and undo can restore the persisted divider
@@ -5586,23 +5605,15 @@ class SceneEditor3D {
     }
 
     hide func LoadGraphFromContent(content: String) -> SceneGraph {
-        var tempPath = TempFile.PathWithExt("zannastudio_scene3d_load_", ".scene3d");
-        if currentDoc != null and currentDoc.filePath != ""
-           and tempPath != "" {
-            // Stage beside the document so relative prefab references
-            // resolve against the real scene directory (ADR 0187). The
-            // dot-prefixed name keeps the transient file out of pickers.
-            tempPath = Path.Join(
-                Path.Directory(currentDoc.filePath),
-                "." + Path.Name(tempPath));
+        // ADR 0190: load the canonical text directly. The document path names
+        // the base directory for relative prefab references (ADR 0187), so no
+        // staged sibling file is needed; untitled documents accept that
+        // relative references cannot resolve until their first save.
+        var virtualPath = "untitled.scene3d";
+        if currentDoc != null and currentDoc.filePath != "" {
+            virtualPath = currentDoc.filePath;
         }
-        if tempPath == "" or safe_io.WriteAllText(tempPath, content) == false {
-            loadError = "Studio could not stage the scene for validation.";
-            if tempPath != "" { safe_io.DeleteFile(tempPath); }
-            return null;
-        }
-        var loaded = SceneAsset.LoadResult(tempPath);
-        safe_io.DeleteFile(tempPath);
+        var loaded = SceneAsset.LoadTextResult(virtualPath, content);
         if loaded == null or loaded.IsOk == false {
             loadError = "Invalid or unsupported VSCN data.";
             if loaded != null { loadError = loaded.UnwrapErrStr(); }
@@ -5635,24 +5646,23 @@ class SceneEditor3D {
                 + "the scene.");
             return false;
         }
-        var tempPath = TempFile.PathWithExt("zannastudio_scene3d_save_", ".scene3d");
-        if tempPath == "" or scene.Save(tempPath) == 0 {
-            if tempPath != "" { safe_io.DeleteFile(tempPath); }
+        // ADR 0190: serialize entirely in memory — no staged temp file, no
+        // disk IO, and no sibling-directory churn per accepted edit.
+        var text = scene.SaveToText();
+        if text == "" {
             RollBackFailedCommit("The 3D scene could not be serialized.");
             return false;
         }
-        var readResult = safe_io.ReadAllTextBounded(tempPath, MAX_SCENE_BYTES);
-        safe_io.DeleteFile(tempPath);
-        if readResult.ok == false or readResult.text == "" {
+        if Str.get_Length(text) > MAX_SCENE_BYTES {
             RollBackFailedCommit(
                 "The serialized 3D scene exceeded Studio's 64 MB editing limit.");
             return false;
         }
-        if readResult.text == currentSerialized { return false; }
+        if text == currentSerialized { return false; }
         PushHistory(undoStack, currentSerialized);
         redoStack = [];
-        currentSerialized = readResult.text;
-        currentDoc.content = readResult.text;
+        currentSerialized = text;
+        currentDoc.content = text;
         currentDoc.isModified = currentSerialized != cleanSerialized;
         revision = revision + 1;
         renderDirty = true;
@@ -5662,10 +5672,14 @@ class SceneEditor3D {
     }
 
     /// @brief Append one bounded canonical VSCN history snapshot.
+    /// @details Entry count and aggregate bytes are both bounded (ADR 0190):
+    ///          oldest snapshots drop first so a document near the 64 MB
+    ///          editing limit cannot pin gigabytes of history.
     hide func PushHistory(stack: List[String], content: String) {
         if content == "" { return; }
         stack.add(content);
-        if stack.count() > MAX_3D_SCENE_HISTORY { stack.removeAt(0); }
+        scene_history.TrimHistory(
+            stack, MAX_3D_SCENE_HISTORY, MAX_3D_HISTORY_BYTES);
     }
 
     hide func RollBackFailedCommit(message: String) {
@@ -9893,23 +9907,67 @@ class SceneEditor3D {
     }
 
     /// @brief Retain one correctly sized windowless renderer and camera.
-    hide func EnsureViewportRenderer() -> Boolean {
-        if renderedViewportWidth <= 0 or renderedViewportHeight <= 0 {
+    /// @brief Enable or disable the accelerated offscreen viewport (ADR 0191).
+    /// @details Probes never call this, so they keep the byte-deterministic
+    ///          software constructor. The renderer is dropped and rebuilt on
+    ///          the next damaged frame; canonical content never changes.
+    expose func SetViewportAcceleration(enabled: Boolean) {
+        if viewportAccelerationRequested == enabled { return; }
+        viewportAccelerationRequested = enabled;
+        viewportRenderTarget = null;
+        viewportRenderCanvas = null;
+        viewportRenderCamera = null;
+        projectionCameraReady = false;
+        renderDirty = true;
+    }
+
+    /// @brief The render-target width backing the viewport (probe surface).
+    expose func ViewportTargetWidth() -> Integer {
+        return viewportTargetWidth;
+    }
+
+    /// @brief The render-target height backing the viewport (probe surface).
+    expose func ViewportTargetHeight() -> Integer {
+        return viewportTargetHeight;
+    }
+
+    /// @brief Whether this frame should render at reduced resolution.
+    /// @details Camera and gizmo drags re-render every frame; halving the
+    ///          shaded target during them keeps interaction fluid while the
+    ///          release path re-renders at full resolution (ADR 0191 interim).
+    hide func InteractiveDegradeActive() -> Boolean {
+        if flyActive { return true; }
+        if gizmoDragAxis != GIZMO_AXIS_NONE { return true; }
+        return viewportImage != null
+            and viewportImage.IsHovered()
+            and (Input.Mouse.IsDown(Input.Mouse.ButtonMiddle)
+                 or Input.Mouse.IsDown(Input.Mouse.ButtonRight));
+    }
+
+    hide func EnsureViewportRenderer(targetWidth: Integer,
+                                     targetHeight: Integer) -> Boolean {
+        if targetWidth <= 0 or targetHeight <= 0 {
             return false;
         }
         if viewportRenderTarget != null
            and viewportRenderCanvas != null
            and viewportRenderCamera != null
-           and viewportRenderTarget.Width == renderedViewportWidth
-           and viewportRenderTarget.Height == renderedViewportHeight {
+           and viewportRenderTarget.Width == targetWidth
+           and viewportRenderTarget.Height == targetHeight {
             return true;
         }
 
-        var target = RenderTarget3D.New(
-            renderedViewportWidth, renderedViewportHeight);
+        var target = RenderTarget3D.New(targetWidth, targetHeight);
         if target == null { return false; }
-        var canvas = Canvas3D.NewOffscreen(target);
+        var canvas: Canvas3D = null;
+        if viewportAccelerationRequested {
+            canvas = Canvas3D.NewOffscreenAccelerated(target);
+        } else {
+            canvas = Canvas3D.NewOffscreen(target);
+        }
         if canvas == null { return false; }
+        // Camera framing derives from the LOGICAL viewport so a reduced
+        // interactive target renders the identical view at lower resolution.
         var aspect =
             renderedViewportWidth / (renderedViewportHeight / 1.0);
         var halfHeight =
@@ -9925,6 +9983,8 @@ class SceneEditor3D {
         viewportRenderTarget = target;
         viewportRenderCanvas = canvas;
         viewportRenderCamera = camera;
+        viewportTargetWidth = targetWidth;
+        viewportTargetHeight = targetHeight;
         // The fresh camera has never been configured for the current view
         // state; Project must fall back to hand math until it is.
         projectionCameraReady = false;
@@ -9948,7 +10008,20 @@ class SceneEditor3D {
     ///          (ADR 0183): the shaded render, every overlay, and every pick
     ///          ray read the same configured state in both modes.
     hide func ConfigureViewportCamera() -> Boolean {
-        if scene == null or EnsureViewportRenderer() == false {
+        var targetWidth = renderedViewportWidth;
+        var targetHeight = renderedViewportHeight;
+        if InteractiveDegradeActive() {
+            targetWidth = targetWidth / INTERACTIVE_RESOLUTION_DIVISOR;
+            targetHeight = targetHeight / INTERACTIVE_RESOLUTION_DIVISOR;
+            if targetWidth < MIN_VIEWPORT_WIDTH {
+                targetWidth = MIN_VIEWPORT_WIDTH;
+            }
+            if targetHeight < MIN_VIEWPORT_HEIGHT {
+                targetHeight = MIN_VIEWPORT_HEIGHT;
+            }
+        }
+        if scene == null
+           or EnsureViewportRenderer(targetWidth, targetHeight) == false {
             projectionCameraReady = false;
             return false;
         }
@@ -10006,8 +10079,16 @@ class SceneEditor3D {
             VIEWPORT_CLEAR_GREEN,
             VIEWPORT_CLEAR_BLUE);
         scene.Draw(viewportRenderCanvas, viewportRenderCamera);
-        var rendered = viewportRenderTarget.AsPixels();
+        var rendered = viewportRenderTarget.AsPixels() as Pixels;
         if rendered == null { return false; }
+        if viewportTargetWidth != renderedViewportWidth
+           or viewportTargetHeight != renderedViewportHeight {
+            // Reduced-resolution interactive frame: upscale so overlays,
+            // picking, and the embedded image keep full-viewport coordinates.
+            rendered = rendered.Scale(
+                renderedViewportWidth, renderedViewportHeight) as Pixels;
+            if rendered == null { return false; }
+        }
         viewportPixels = rendered;
         return true;
     }

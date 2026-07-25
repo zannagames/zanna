@@ -26,6 +26,20 @@
 // Links: src/runtime/collections/rt_bytes.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares fixed-length mutable byte-array operations.
+///
+/// Bytes objects own contiguous payloads whose lengths are fixed at creation.
+/// Element mutation masks values to the requested field width. Slice, clone,
+/// string conversion, hexadecimal conversion, and Base64 conversion allocate
+/// independent results; direct data access instead returns a borrowed pointer.
+///
+/// Multi-byte integer helpers operate at caller-supplied offsets using explicit
+/// little- or big-endian order and trap unless the complete field is in bounds.
+/// Bytes objects are runtime-managed opaque handles and are not safe for
+/// unsynchronized concurrent writes.
+
 #pragma once
 
 #include <stdint.h>
@@ -41,29 +55,32 @@ extern "C" {
 
 /// @brief Create a new zero-filled byte array of given length.
 /// @param len Number of bytes to allocate. Negative values trap.
-/// @return Pointer to new Bytes object.
+/// @return A new runtime-managed Bytes object, or NULL after a size or
+///         allocation trap.
 void *rt_bytes_new(int64_t len);
 
 /// @brief Create a byte array from a string (UTF-8 bytes).
-/// @param str Source string.
-/// @return Pointer to new Bytes object containing string bytes.
+/// @param str Source string; NULL produces an empty Bytes object.
+/// @return New Bytes object containing a copy of the full runtime byte
+///         sequence, including embedded NUL bytes.
 void *rt_bytes_from_str(rt_string str);
 
 /// @brief Create a byte array from a hexadecimal string.
 /// @param hex Hex string (must have even full byte length).
-/// @return Pointer to new Bytes object.
+/// @return New Bytes object, or NULL after an allocation trap.
 void *rt_bytes_from_hex(rt_string hex);
 
 /// @brief Create a byte array from an RFC 4648 Base64 string.
 /// @details Uses the standard Base64 alphabet (A–Z a–z 0–9 + /) with '=' padding.
 ///          Traps on invalid characters, invalid padding, or invalid full byte length.
 /// @param b64 Base64 string to decode.
-/// @return Pointer to new Bytes object containing the decoded bytes.
+/// @return New Bytes object containing decoded bytes, or NULL after an
+///         allocation trap.
 void *rt_bytes_from_base64(rt_string b64);
 
 /// @brief Get the length of a byte array.
-/// @param obj Bytes object pointer.
-/// @return Number of bytes.
+/// @param obj Bytes handle, or NULL.
+/// @return Number of bytes, or zero for NULL.
 int64_t rt_bytes_len(void *obj);
 
 /// @brief Check whether an object is a Bytes instance.
@@ -72,18 +89,19 @@ int64_t rt_bytes_len(void *obj);
 int8_t rt_bytes_is_bytes(void *obj);
 
 /// @brief Get the mutable raw byte buffer for a Bytes object.
-/// @param obj Bytes object pointer.
-/// @return Raw byte pointer, or NULL for a NULL/empty Bytes object.
+/// @param obj Bytes handle, or NULL.
+/// @return Borrowed mutable payload pointer, or NULL for a null or empty object.
+/// @warning Do not free the pointer or retain it beyond the Bytes lifetime.
 uint8_t *rt_bytes_data(void *obj);
 
 /// @brief Get the const raw byte buffer for a Bytes object.
-/// @param obj Bytes object pointer.
-/// @return Raw byte pointer, or NULL for a NULL/empty Bytes object.
+/// @param obj Bytes handle, or NULL.
+/// @return Borrowed read-only payload pointer, or NULL for a null or empty object.
 const uint8_t *rt_bytes_data_const(void *obj);
 
 /// @brief Check if the byte array is empty (length 0).
-/// @param obj Bytes object pointer.
-/// @return 1 if empty, 0 otherwise.
+/// @param obj Bytes handle, or NULL.
+/// @return 1 if empty or NULL; otherwise 0.
 int8_t rt_bytes_is_empty(void *obj);
 
 /// @brief Get a byte value at the specified index.
@@ -132,12 +150,12 @@ rt_string rt_bytes_to_base64(void *obj);
 
 /// @brief Fill all bytes with the given value.
 /// @param obj Bytes object pointer.
-/// @param val Value to fill with (clamped to 0-255).
+/// @param val Value whose low 8 bits are used.
 void rt_bytes_fill(void *obj, int64_t val);
 
 /// @brief Find first occurrence of a byte value.
 /// @param obj Bytes object pointer.
-/// @param val Value to find (clamped to 0-255).
+/// @param val Value whose low 8 bits are searched for.
 /// @return Index of first occurrence, or -1 if not found.
 int64_t rt_bytes_find(void *obj, int64_t val);
 
@@ -146,7 +164,7 @@ int64_t rt_bytes_find(void *obj, int64_t val);
 ///          the byte is absent or @p obj is NULL. This preserves index 0 as a
 ///          valid success value without requiring a `-1` sentinel check.
 /// @param obj Bytes object pointer, or NULL.
-/// @param val Value to find (clamped to 0-255).
+/// @param val Value whose low 8 bits are searched for.
 /// @return Opaque Zanna.Option containing the first index, or None.
 void *rt_bytes_find_option(void *obj, int64_t val);
 
@@ -159,30 +177,66 @@ void *rt_bytes_clone(void *obj);
 // Binary Integer Read/Write Operations
 //=========================================================================
 
-/// @brief Read a 16-bit little-endian integer at the given offset.
+/// @brief Read a signed 16-bit little-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds two-byte field.
+/// @return Sign-extended decoded value; invalid ranges trap.
 int64_t rt_bytes_read_i16le(void *obj, int64_t offset);
-/// @brief Read a 16-bit big-endian integer at the given offset.
+/// @brief Read a signed 16-bit big-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds two-byte field.
+/// @return Sign-extended decoded value; invalid ranges trap.
 int64_t rt_bytes_read_i16be(void *obj, int64_t offset);
-/// @brief Read a 32-bit little-endian integer at the given offset.
+/// @brief Read a signed 32-bit little-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds four-byte field.
+/// @return Sign-extended decoded value; invalid ranges trap.
 int64_t rt_bytes_read_i32le(void *obj, int64_t offset);
-/// @brief Read a 32-bit big-endian integer at the given offset.
+/// @brief Read a signed 32-bit big-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds four-byte field.
+/// @return Sign-extended decoded value; invalid ranges trap.
 int64_t rt_bytes_read_i32be(void *obj, int64_t offset);
-/// @brief Read a 64-bit little-endian integer at the given offset.
+/// @brief Read a signed 64-bit little-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds eight-byte field.
+/// @return Decoded signed value; invalid ranges trap.
 int64_t rt_bytes_read_i64le(void *obj, int64_t offset);
-/// @brief Read a 64-bit big-endian integer at the given offset.
+/// @brief Read a signed 64-bit big-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds eight-byte field.
+/// @return Decoded signed value; invalid ranges trap.
 int64_t rt_bytes_read_i64be(void *obj, int64_t offset);
 
 /// @brief Write a 16-bit little-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds two-byte field.
+/// @param value Value whose low 16 bits are stored.
 void rt_bytes_write_i16le(void *obj, int64_t offset, int64_t value);
 /// @brief Write a 16-bit big-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds two-byte field.
+/// @param value Value whose low 16 bits are stored.
 void rt_bytes_write_i16be(void *obj, int64_t offset, int64_t value);
 /// @brief Write a 32-bit little-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds four-byte field.
+/// @param value Value whose low 32 bits are stored.
 void rt_bytes_write_i32le(void *obj, int64_t offset, int64_t value);
 /// @brief Write a 32-bit big-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds four-byte field.
+/// @param value Value whose low 32 bits are stored.
 void rt_bytes_write_i32be(void *obj, int64_t offset, int64_t value);
 /// @brief Write a 64-bit little-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds eight-byte field.
+/// @param value Signed value stored using its full 64-bit bit pattern.
 void rt_bytes_write_i64le(void *obj, int64_t offset, int64_t value);
 /// @brief Write a 64-bit big-endian integer at the given offset.
+/// @param obj Non-null Bytes handle.
+/// @param offset Start of an in-bounds eight-byte field.
+/// @param value Signed value stored using its full 64-bit bit pattern.
 void rt_bytes_write_i64be(void *obj, int64_t offset, int64_t value);
 
 #ifdef __cplusplus

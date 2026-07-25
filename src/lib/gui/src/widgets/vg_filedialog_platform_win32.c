@@ -4,20 +4,21 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_filedialog_platform_win32.c
-// Purpose: Win32 filesystem adapter for the GUI file-dialog widget.
-//
-// Key invariants:
-//   - Directory enumeration uses FindFirstFileW/FindNextFileW and closes each
-//     search handle before returning.
-//   - Hidden entries are identified via FILE_ATTRIBUTE_HIDDEN.
-//
-// Ownership/Lifetime:
-//   - All returned buffers and entry arrays are caller-owned.
-//
-// Links: lib/gui/src/widgets/vg_filedialog_platform.h,
-//        lib/gui/src/widgets/vg_filedialog.c
+///
+/// @file vg_filedialog_platform_win32.c
+/// @brief Implements the Win32 filesystem adapter for the file dialog.
+///
+/// @details Paths remain UTF-8 at the widget boundary and are converted to
+/// UTF-16 for wide-character Win32 APIs. Directory enumeration uses
+/// `FindFirstFileW()` and `FindNextFileW()`, closes every search handle before
+/// return, and derives hidden state from `FILE_ATTRIBUTE_HIDDEN`.
+///
+/// All returned buffers and entry arrays use malloc-compatible storage and
+/// transfer ownership to the caller. System-drive initialization is guarded by
+/// `INIT_ONCE` for process-wide thread safety.
+///
+/// @see vg_filedialog_platform.h
+/// @see vg_filedialog.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -94,6 +95,14 @@ static char *vg_filedialog_platform_wide_to_utf8(const wchar_t *text) {
     return utf8;
 }
 
+/// @brief Reads a Windows environment variable into an owned wide string.
+///
+/// @details The helper retries when the value grows between size discovery and
+/// retrieval, with a bounded attempt count to avoid unending churn.
+///
+/// @param name Non-empty wide environment-variable name.
+/// @return Owned null-terminated value, or null when absent, unstable, invalid,
+///         or allocation fails.
 static wchar_t *vg_filedialog_platform_environment_wide(const wchar_t *name) {
     DWORD capacity;
     if (!name || !*name)
@@ -157,6 +166,12 @@ static bool vg_filedialog_platform_append_entry(vg_filedialog_platform_entry_t *
 static INIT_ONCE g_vg_filedialog_root_once = INIT_ONCE_STATIC_INIT;
 static char g_vg_filedialog_root[] = "C:\\";
 
+/// @brief Initializes the process-wide fallback root from the Windows directory.
+///
+/// @param once Win32 one-time initialization token; otherwise unused.
+/// @param parameter Caller parameter; unused.
+/// @param context Optional context receiver; unused.
+/// @return `TRUE` so `InitOnceExecuteOnce()` records successful initialization.
 static BOOL CALLBACK vg_filedialog_platform_initialize_root(PINIT_ONCE once,
                                                             PVOID parameter,
                                                             PVOID *context) {

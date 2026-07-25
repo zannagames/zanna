@@ -33,6 +33,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements an immutable, open-addressed string map.
+///
+/// FrozenMap is built from parallel key/value Seqs, from two existing
+/// FrozenMaps during merge, or as an empty map. Construction retains key
+/// strings and values, resolves duplicate keys with last-writer-wins semantics,
+/// and sizes a power-of-two slot array for a load factor below one half.
+///
+/// Lookups and enumeration are read-only after construction. Getter results are
+/// borrowed; returned key/value Seqs retain their elements independently.
+/// Null key handles are not stored or queried. FrozenMap objects participate in
+/// runtime reference management and GC traversal.
+
 #include "rt_frozenmap.h"
 
 #include "rt_box.h"
@@ -52,15 +65,20 @@
 #include <setjmp.h>
 #include <stdio.h>
 
+/// Installs a non-local recovery target for runtime traps.
 void rt_trap_set_recovery(jmp_buf *buf);
+/// Clears the current runtime trap recovery target.
 void rt_trap_clear_recovery(void);
+/// Returns the current runtime trap error message.
 const char *rt_trap_get_error(void);
 
 // --- Helper: extract string from seq element (may be boxed) ---
 
 /// @brief Coerce a seq element to an rt_string, unboxing if necessary.
+/// @param elem Raw runtime string handle or boxed string value.
 /// @param owned Set to 1 if the result is a fresh unboxed string the caller
 ///              must release; 0 if @p elem was already a borrowed handle.
+/// @return Extracted runtime string, or NULL when @p elem is NULL.
 static rt_string fm_extract_str(void *elem, int *owned) {
     if (owned)
         *owned = 0;
@@ -76,11 +94,13 @@ static rt_string fm_extract_str(void *elem, int *owned) {
 
 // --- Hash table entry (open addressing) ---
 
+/// @brief One open-addressing slot; a null key denotes an unused slot.
 typedef struct {
     rt_string key; // NULL = empty slot
     void *value;
 } fm_slot;
 
+/// @brief Internal FrozenMap object and its immutable slot table.
 typedef struct {
     void *vptr;
     int64_t count;
@@ -90,6 +110,10 @@ typedef struct {
 
 /// @brief Checked cast of an opaque handle to the FrozenMap implementation.
 /// @details Traps with @p what if @p obj is NULL or not a FrozenMap.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used on validation failure.
+/// @return The validated implementation pointer, or NULL if a returning trap
+///         handler resumes after failed validation.
 static rt_frozenmap_impl *as_frozenmap(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_FROZENMAP_CLASS_ID, sizeof(rt_frozenmap_impl))) {
         rt_trap(what);
@@ -101,11 +125,16 @@ static rt_frozenmap_impl *as_frozenmap(void *obj, const char *what) {
 // --- Keyed hash ---
 
 /// @brief Per-process keyed hash of @p len bytes of @p data.
+/// @param data Key bytes; NULL is treated as an empty buffer.
+/// @param len Number of bytes to hash; non-positive values hash no bytes.
+/// @return Keyed 64-bit hash value.
 static uint64_t fm_hash(const char *data, int64_t len) {
     return rt_keyed_hash_bytes(data ? data : "", len > 0 ? (size_t)len : 0);
 }
 
 /// @brief Keyed hash of an rt_string's bytes (empty string for NULL).
+/// @param s Runtime string to hash.
+/// @return Keyed 64-bit hash of the string's accessible byte sequence.
 static uint64_t fm_str_hash(rt_string s) {
     if (!s)
         return fm_hash("", 0);
@@ -117,6 +146,10 @@ static uint64_t fm_str_hash(rt_string s) {
 // --- Internal helpers ---
 
 /// @brief Borrow the byte buffer + length of a key string (empty "" if null).
+/// @param key Runtime string to inspect.
+/// @param out_len Receives the usable byte length.
+/// @return Borrowed bytes, or a stable empty string for a null, empty, or
+///         inaccessible runtime string.
 static const char *fm_key_data(rt_string key, int64_t *out_len) {
     if (!key) {
         *out_len = 0;
@@ -137,6 +170,10 @@ static const char *fm_key_data(rt_string key, int64_t *out_len) {
 }
 
 /// @brief Byte-exact equality test between stored @p key and @p data/@p len.
+/// @param key Stored runtime string.
+/// @param data Candidate key bytes.
+/// @param len Number of candidate bytes.
+/// @return 1 for equal lengths and contents; otherwise 0.
 static int8_t fm_key_equals(rt_string key, const char *data, int64_t len) {
     int64_t key_len = 0;
     const char *key_data = fm_key_data(key, &key_len);
@@ -144,16 +181,26 @@ static int8_t fm_key_equals(rt_string key, const char *data, int64_t len) {
 }
 
 /// @brief Drop one GC reference to a stored value and free it at zero.
+/// @param value Retained runtime value, or NULL for a no-op.
 static void fm_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
 }
 
+/// @brief Copies the active trap message into a stable local buffer.
+/// @param buffer Destination character buffer.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Text used when no non-empty runtime error is available.
 static void fm_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Retains a new slot's key and value as one trap-safe operation.
+/// @param key Key reference to retain.
+/// @param value Value reference to retain.
+/// @details If either retain traps, any reference already acquired is released
+///          before the saved trap is raised again.
 static void fm_retain_new_slot_refs(rt_string key, void *value) {
     volatile int key_retained = 0;
     volatile int value_retained = 0;
@@ -209,6 +256,7 @@ static void fm_replace_slot_value(fm_slot *slot, void *value) {
 
 /// @brief GC finalizer: unref every occupied slot's key, release its value,
 ///        and free the slot array.
+/// @param obj FrozenMap object being finalized, or NULL for a no-op.
 static void fm_finalizer(void *obj) {
     if (!obj)
         return;
@@ -228,6 +276,9 @@ static void fm_finalizer(void *obj) {
 }
 
 /// @brief GC traversal: visit the value of every occupied slot.
+/// @param obj FrozenMap object to traverse.
+/// @param visitor Runtime callback invoked for each retained value.
+/// @param ctx Opaque visitor context forwarded unchanged.
 static void fm_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -245,6 +296,8 @@ static void fm_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// @brief Smallest power of two >= @p n, floor 16 (table capacities are
 ///        powers of two so hashing can mask instead of modulo). Traps on
 ///        overflow.
+/// @param n Minimum requested capacity.
+/// @return Power-of-two capacity of at least 16, or zero after an overflow trap.
 static int64_t fm_next_pow2(int64_t n) {
     int64_t p = 16;
     while (p < n) {
@@ -260,6 +313,9 @@ static int64_t fm_next_pow2(int64_t n) {
 /// @brief Allocate a FrozenMap sized for @p count entries (~2x load headroom,
 ///        power-of-two capacity). Installs finalizer + GC traversal; traps
 ///        on overflow/OOM.
+/// @param count Maximum source-entry count used to size the table.
+/// @return Newly allocated empty FrozenMap implementation, or NULL after a
+///         size or allocation trap.
 static rt_frozenmap_impl *fm_alloc(int64_t count) {
     int64_t needed = 8;
     if (count >= 4) {
@@ -297,6 +353,9 @@ static rt_frozenmap_impl *fm_alloc(int64_t count) {
 }
 
 /// @brief Linear-probe insert/update during construction (last writer wins).
+/// @param fm FrozenMap under construction.
+/// @param key Non-null key reference to retain.
+/// @param value Value reference to retain; may be NULL.
 /// @return 1 if a new entry was added, 0 if an existing key was updated.
 static int8_t fm_insert(rt_frozenmap_impl *fm, rt_string key, void *value) {
     uint64_t h = fm_str_hash(key);
@@ -324,6 +383,9 @@ static int8_t fm_insert(rt_frozenmap_impl *fm, rt_string key, void *value) {
 }
 
 /// @brief Linear-probe lookup of @p key; returns its slot or NULL if absent.
+/// @param fm FrozenMap implementation to search.
+/// @param key Key whose byte sequence is matched.
+/// @return Occupied matching slot, or NULL when absent.
 static fm_slot *fm_find(rt_frozenmap_impl *fm, rt_string key) {
     if (!fm || fm->count == 0)
         return NULL;
@@ -348,6 +410,12 @@ static fm_slot *fm_find(rt_frozenmap_impl *fm, rt_string key) {
 /// @brief Build an immutable map from parallel `keys` / `values` Seqs (zips them by index).
 /// Truncates to min(len(keys), len(values)). Internal storage is an open-addressed hash table
 /// sized for the entry count. The result cannot be mutated — use `Map` for mutable maps.
+/// @param keys Seq containing raw or boxed string keys.
+/// @param values Seq containing corresponding opaque values.
+/// @return A new runtime-managed FrozenMap. If either Seq is NULL, returns an
+///         empty map.
+/// @note Null extracted keys are skipped, and later duplicate keys replace
+///       earlier values.
 void *rt_frozenmap_from_seqs(void *keys, void *values) {
     if (!keys || !values)
         return (void *)fm_alloc(0);
@@ -371,11 +439,14 @@ void *rt_frozenmap_from_seqs(void *keys, void *values) {
 }
 
 /// @brief Construct an empty frozen map.
+/// @return A new runtime-managed empty FrozenMap.
 void *rt_frozenmap_empty(void) {
     return (void *)fm_alloc(0);
 }
 
 /// @brief Return the number of entries in the frozen (immutable) map.
+/// @param obj FrozenMap handle, or NULL to query an empty map.
+/// @return Entry count, or zero for NULL.
 int64_t rt_frozenmap_len(void *obj) {
     if (!obj)
         return 0;
@@ -383,11 +454,16 @@ int64_t rt_frozenmap_len(void *obj) {
 }
 
 /// @brief Check whether the frozen map has no entries.
+/// @param obj FrozenMap handle, or NULL to test an empty map.
+/// @return 1 if empty or NULL; otherwise 0.
 int8_t rt_frozenmap_is_empty(void *obj) {
     return rt_frozenmap_len(obj) == 0 ? 1 : 0;
 }
 
 /// @brief Look up `key`. Returns the borrowed value or NULL if absent. O(1) average via hash.
+/// @param obj FrozenMap handle, or NULL.
+/// @param key Non-null string key.
+/// @return Borrowed mapped value, or NULL if absent or either argument is NULL.
 void *rt_frozenmap_get(void *obj, rt_string key) {
     if (!obj || !key)
         return NULL;
@@ -397,6 +473,9 @@ void *rt_frozenmap_get(void *obj, rt_string key) {
 
 /// @brief Check whether a key exists in the frozen map.
 /// @details Uses hash-based lookup on the immutable backing array.
+/// @param obj FrozenMap handle, or NULL.
+/// @param key Non-null string key.
+/// @return 1 when present; otherwise 0.
 int8_t rt_frozenmap_has(void *obj, rt_string key) {
     if (!obj || !key)
         return 0;
@@ -404,6 +483,8 @@ int8_t rt_frozenmap_has(void *obj, rt_string key) {
 }
 
 /// @brief Return a Seq of every key in the map (slot-iteration order, not insertion order).
+/// @param obj FrozenMap handle, or NULL to enumerate an empty map.
+/// @return A new owning Seq retaining all key strings.
 void *rt_frozenmap_keys(void *obj) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -419,6 +500,9 @@ void *rt_frozenmap_keys(void *obj) {
 }
 
 /// @brief Return a Seq of every value in the map (parallel order to `_keys`).
+/// @param obj FrozenMap handle, or NULL to enumerate an empty map.
+/// @return A new owning Seq retaining all values in the same slot order used
+///         by `rt_frozenmap_keys()`.
 void *rt_frozenmap_values(void *obj) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -435,6 +519,11 @@ void *rt_frozenmap_values(void *obj) {
 
 /// @brief Look up `key`, returning `default_value` if absent. Lets callers avoid an explicit
 /// `_has` + `_get` pair.
+/// @param obj FrozenMap handle, or NULL.
+/// @param key Non-null string key.
+/// @param default_value Fallback pointer returned without retaining it.
+/// @return Borrowed mapped value, or @p default_value when absent or when
+///         either lookup argument is NULL.
 void *rt_frozenmap_get_or(void *obj, rt_string key, void *default_value) {
     if (!obj || !key)
         return default_value;
@@ -445,6 +534,10 @@ void *rt_frozenmap_get_or(void *obj, rt_string key, void *default_value) {
 /// @brief Build a new frozen map that contains every entry from `obj` plus every entry from
 /// `other`. Keys present in both maps take the value from `other` (override semantics). Traps
 /// on count overflow.
+/// @param obj First FrozenMap, or NULL for an empty first operand.
+/// @param other Second FrozenMap, or NULL for an empty second operand.
+/// @return A new independent FrozenMap retaining all result keys and values,
+///         or NULL after a size or allocation trap.
 void *rt_frozenmap_merge(void *obj, void *other) {
     int64_t la = rt_frozenmap_len(obj);
     int64_t lb = rt_frozenmap_len(other);
@@ -480,6 +573,9 @@ void *rt_frozenmap_merge(void *obj, void *other) {
 }
 
 /// @brief Value equality: pointer-identical or boxed-value equal.
+/// @param a First value pointer.
+/// @param b Second value pointer.
+/// @return 1 if identical or equal under `rt_box_equal()`; otherwise 0.
 static int8_t fm_value_equals(void *a, void *b) {
     return a == b || rt_box_equal(a, b);
 }
@@ -487,8 +583,11 @@ static int8_t fm_value_equals(void *a, void *b) {
 /// @brief Compare two frozen maps for structural equality.
 /// @details Two frozen maps are equal when they contain the same key-value
 ///          pairs. Order does not matter since the comparison checks
-///          membership in both directions.
-/// @brief Returns 1 if both maps have identical key→value sets (order-independent comparison).
+///          every key in equal-length maps.
+/// @param obj First FrozenMap, or NULL as an empty map.
+/// @param other Second FrozenMap, or NULL as an empty map.
+/// @return 1 if both maps have identical key/value associations under
+///         byte-exact key and boxed-value equality; otherwise 0.
 int8_t rt_frozenmap_equals(void *obj, void *other) {
     int64_t la = rt_frozenmap_len(obj);
     int64_t lb = rt_frozenmap_len(other);

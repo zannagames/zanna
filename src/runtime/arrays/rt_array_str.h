@@ -1,4 +1,11 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares the C ABI for arrays of reference-counted runtime strings.
+/// @details Container and element lifetimes are independent: every populated
+///          slot owns one string reference, reads return an additional retained
+///          handle to the caller, and only the last container release tears down
+///          the stored handles.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.

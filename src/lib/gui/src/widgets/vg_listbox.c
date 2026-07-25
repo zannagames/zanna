@@ -25,6 +25,13 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements owned and virtual list-box models, scrolling, selection,
+///        visible-row caching, painting, and input handling.
+/// @details Normal mode stores live item records in an owned linked list.
+///          Virtual mode stores only packed selection state and a bounded cache
+///          populated by the caller's provider. Item retirement and model-unbind
+///          callbacks provide explicit lifetime boundaries for managed callers.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
@@ -96,11 +103,16 @@ static vg_widget_vtable_t g_listbox_vtable = {
 //=============================================================================
 
 /// @brief Return the number of bytes needed for @p item_count packed selection bits.
+/// @param item_count Number of logical selection bits.
+/// @return Byte count rounded up to hold every bit.
 static size_t listbox_selection_bitmap_bytes(size_t item_count) {
     return (item_count + 7u) / 8u;
 }
 
 /// @brief Read one virtual-mode selection bit.
+/// @param lb List box containing the packed bitmap.
+/// @param index Zero-based logical row index.
+/// @return `true` only when @p index is in range and its bit is set.
 static bool listbox_selection_get(const vg_listbox_t *lb, size_t index) {
     if (!lb || !lb->selection_bitmap || index >= lb->selection_bitmap_size)
         return false;
@@ -108,7 +120,11 @@ static bool listbox_selection_get(const vg_listbox_t *lb, size_t index) {
 }
 
 /// @brief Set one virtual-mode selection bit.
-/// @return true if the bit changed, false if it already had @p selected.
+/// @param lb List box containing the packed bitmap.
+/// @param index Zero-based logical row index.
+/// @param selected Desired bit state.
+/// @return `true` if the bit changed; `false` for invalid input or an
+///         already-matching state.
 static bool listbox_selection_set(vg_listbox_t *lb, size_t index, bool selected) {
     if (!lb || !lb->selection_bitmap || index >= lb->selection_bitmap_size)
         return false;
@@ -123,6 +139,7 @@ static bool listbox_selection_set(vg_listbox_t *lb, size_t index, bool selected)
 }
 
 /// @brief Clear any unused high bits in the last logical selection byte.
+/// @param lb List box whose bitmap tail is normalized.
 static void listbox_selection_mask_tail(vg_listbox_t *lb) {
     if (!lb || !lb->selection_bitmap || lb->selection_bitmap_size == 0)
         return;
@@ -135,6 +152,7 @@ static void listbox_selection_mask_tail(vg_listbox_t *lb) {
 
 /// @brief Frees the text strings inside each cached visible row slot without releasing the cache
 /// array itself.
+/// @param lb List box whose cache-entry payloads are cleared.
 static void listbox_free_virtual_cache(vg_listbox_t *lb) {
     if (!lb->visible_cache)
         return;
@@ -147,6 +165,9 @@ static void listbox_free_virtual_cache(vg_listbox_t *lb) {
 }
 
 /// @brief Walks the non-virtual item list and returns the item at zero-based @p index, or NULL.
+/// @param lb Non-virtual list box to traverse.
+/// @param index Zero-based item index.
+/// @return Borrowed live item pointer, or `NULL` when out of range.
 static vg_listbox_item_t *listbox_item_at_index_nonvirtual(vg_listbox_t *lb, size_t index) {
     if (!lb)
         return NULL;
@@ -158,6 +179,9 @@ static vg_listbox_item_t *listbox_item_at_index_nonvirtual(vg_listbox_t *lb, siz
 
 /// @brief Returns the zero-based index of @p target in the non-virtual list, or SIZE_MAX if not
 /// found.
+/// @param lb List box expected to own @p target.
+/// @param target Live item to locate.
+/// @return Zero-based position, or `SIZE_MAX` when validation or lookup fails.
 static size_t listbox_index_of_item(vg_listbox_t *lb, vg_listbox_item_t *target) {
     if (!lb || !vg_listbox_item_is_live(target) || target->owner != lb)
         return SIZE_MAX;
@@ -171,11 +195,15 @@ static size_t listbox_index_of_item(vg_listbox_t *lb, vg_listbox_item_t *target)
 
 /// @brief Returns true if @p item is non-NULL, has the correct magic value, and still belongs to a
 /// listbox.
+/// @param item Item record to validate without transferring ownership.
+/// @return `true` when the record is live and associated with an owner.
 bool vg_listbox_item_is_live(const vg_listbox_item_t *item) {
     return item && item->magic == VG_LISTBOX_ITEM_MAGIC && item->owner != NULL;
 }
 
 /// @brief Override the text color for one live item.
+/// @param item Live item to modify; invalid or retired records are ignored.
+/// @param color Packed renderer color used for this row's text.
 void vg_listbox_item_set_text_color(vg_listbox_item_t *item, uint32_t color) {
     if (!vg_listbox_item_is_live(item))
         return;
@@ -186,6 +214,9 @@ void vg_listbox_item_set_text_color(vg_listbox_item_t *item, uint32_t color) {
 
 /// @brief Frees the text string inside @p item and zeroes its length, leaving the item struct
 /// itself intact.
+/// @details Owned user data is also released and per-item visual overrides are
+///          reset, preparing the record for retirement or destruction.
+/// @param item Item whose owned payload is cleared; `NULL` is ignored.
 static void listbox_free_item_payload(vg_listbox_item_t *item) {
     if (!item)
         return;
@@ -201,6 +232,7 @@ static void listbox_free_item_payload(vg_listbox_item_t *item) {
 }
 
 /// @brief Frees @p item's payload and then frees the item struct itself.
+/// @param item Owned item record to destroy; `NULL` is ignored.
 static void listbox_free_item(vg_listbox_item_t *item) {
     if (!item)
         return;
@@ -210,6 +242,8 @@ static void listbox_free_item(vg_listbox_item_t *item) {
 
 /// @brief Detaches @p item from the live list and moves it onto @p lb->retired_items for deferred
 /// freeing.
+/// @param lb List box receiving the retired record.
+/// @param item Detached item whose payload is released and liveness revoked.
 static void listbox_retire_item(vg_listbox_t *lb, vg_listbox_item_t *item) {
     if (!lb || !item)
         return;
@@ -224,6 +258,7 @@ static void listbox_retire_item(vg_listbox_t *lb, vg_listbox_item_t *item) {
 }
 
 /// @brief Walks @p lb->retired_items and frees every item in the deferred-free list.
+/// @param lb List box whose complete retirement chain is destroyed.
 static void listbox_free_retired_items(vg_listbox_t *lb) {
     if (!lb)
         return;
@@ -239,6 +274,9 @@ static void listbox_free_retired_items(vg_listbox_t *lb) {
 /// @brief Unlink and free one exact retained ListBox item record.
 /// @details See the public header for managed-wrapper preconditions. Pointer-to-pointer traversal
 ///          avoids dereferencing the caller-supplied address unless it is owned by the chain.
+/// @param listbox List box whose retirement chain is searched.
+/// @param item Exact retired-record address to reclaim.
+/// @return `true` when the address was found and freed; otherwise `false`.
 bool vg_listbox_reclaim_retired_item(vg_listbox_t *listbox, vg_listbox_item_t *item) {
     if (!listbox || !item)
         return false;
@@ -257,6 +295,8 @@ bool vg_listbox_reclaim_retired_item(vg_listbox_t *listbox, vg_listbox_item_t *i
 }
 
 /// @brief Returns the total item count: total_item_count in virtual mode, item_count otherwise.
+/// @param lb List box to inspect.
+/// @return Logical row count for the active storage mode.
 static size_t listbox_virtual_item_count(const vg_listbox_t *lb) {
     return lb->virtual_mode ? lb->total_item_count : (size_t)lb->item_count;
 }
@@ -277,6 +317,8 @@ static void listbox_notify_virtual_unbound(vg_listbox_t *lb) {
 }
 
 /// @brief Clamps lb->scroll_y to [0, max_scroll] based on total item count and viewport height.
+/// @param lb List box whose vertical offset is normalized.
+/// @param viewport_height Current visible height in pixels.
 static void listbox_clamp_scroll(vg_listbox_t *lb, float viewport_height) {
     if (!lb)
         return;
@@ -330,6 +372,9 @@ static void listbox_compute_virtual_range(vg_listbox_t *lb,
 }
 
 /// @brief Grows the visible-row cache array to at least @p needed entries, zeroing new slots.
+/// @details Failure or size overflow leaves the old allocation and capacity intact.
+/// @param lb Virtual list box owning the cache.
+/// @param needed Minimum number of cache entries required.
 static void listbox_ensure_virtual_cache(vg_listbox_t *lb, size_t needed) {
     if (needed <= lb->cache_capacity)
         return;
@@ -350,6 +395,8 @@ static void listbox_ensure_virtual_cache(vg_listbox_t *lb, size_t needed) {
 
 /// @brief Re-fetches text and selection state for the visible-cache slot at @p cache_index via the
 /// data provider.
+/// @param lb Virtual list box with a materialized visible range.
+/// @param cache_index Offset within the current visible cache.
 static void listbox_refresh_virtual_cache_entry(vg_listbox_t *lb, size_t cache_index) {
     if (!lb || !lb->visible_cache || cache_index >= lb->visible_count ||
         cache_index >= lb->cache_capacity)
@@ -370,6 +417,8 @@ static void listbox_refresh_virtual_cache_entry(vg_listbox_t *lb, size_t cache_i
 
 /// @brief Updates the virtual visible-row cache to match the current scroll position, re-fetching
 /// changed rows.
+/// @param lb Virtual list box whose cache is synchronized.
+/// @param viewport_height Current visible height in pixels.
 static void listbox_sync_virtual_cache(vg_listbox_t *lb, float viewport_height) {
     if (!lb || !lb->virtual_mode)
         return;
@@ -417,6 +466,11 @@ static void listbox_sync_virtual_cache(vg_listbox_t *lb, float viewport_height) 
 
 /// @brief Converts @p local_y (relative to the viewport top) to an item index accounting for
 /// scroll; false if out of range.
+/// @param lb List box providing row height, count, and scroll offset.
+/// @param widget Widget whose viewport receives the local coordinate.
+/// @param local_y Pointer Y coordinate relative to the viewport top.
+/// @param index Receives the zero-based logical row on success.
+/// @return `true` when the coordinate maps to an existing row.
 static bool listbox_item_at_y(vg_listbox_t *lb, vg_widget_t *widget, float local_y, size_t *index) {
     if (!lb || !widget || !index || lb->item_height <= 0.0f)
         return false;
@@ -435,6 +489,8 @@ static bool listbox_item_at_y(vg_listbox_t *lb, vg_widget_t *widget, float local
 }
 
 /// @brief Clears the selected flag on every item in the non-virtual linked list.
+/// @param lb Non-virtual list box to update.
+/// @return `true` when at least one selected flag was cleared.
 static bool listbox_clear_nonvirtual_selection(vg_listbox_t *lb) {
     if (!lb)
         return false;
@@ -447,6 +503,8 @@ static bool listbox_clear_nonvirtual_selection(vg_listbox_t *lb) {
     return changed;
 }
 
+/// @brief Advance selection state and the general widget change revision.
+/// @param lb List box whose logical selection changed; `NULL` is ignored.
 static void listbox_note_selection_changed(vg_listbox_t *lb) {
     if (lb) {
         if (lb->selection_revision < UINT64_MAX)
@@ -455,6 +513,9 @@ static void listbox_note_selection_changed(vg_listbox_t *lb) {
     }
 }
 
+/// @brief Test whether any non-virtual row is selected.
+/// @param lb Non-virtual list box to inspect.
+/// @return `true` when the primary pointer or any item flag records selection.
 static bool listbox_has_nonvirtual_selection(vg_listbox_t *lb) {
     if (!lb)
         return false;
@@ -467,6 +528,10 @@ static bool listbox_has_nonvirtual_selection(vg_listbox_t *lb) {
     return false;
 }
 
+/// @brief Test for selected rows other than one excluded item.
+/// @param lb Non-virtual list box to inspect.
+/// @param except Item omitted from the search.
+/// @return `true` when another row has its selected flag set.
 static bool listbox_has_nonvirtual_selection_except(vg_listbox_t *lb, vg_listbox_item_t *except) {
     if (!lb)
         return false;
@@ -478,6 +543,8 @@ static bool listbox_has_nonvirtual_selection_except(vg_listbox_t *lb, vg_listbox
 }
 
 /// @brief Zeroes the entire selection bitmap in virtual mode, deselecting all rows.
+/// @param lb Virtual list box whose bitmap is cleared.
+/// @return `true` when at least one bit was previously set.
 static bool listbox_clear_virtual_selection(vg_listbox_t *lb) {
     if (!lb || !lb->selection_bitmap)
         return false;
@@ -494,6 +561,8 @@ static bool listbox_clear_virtual_selection(vg_listbox_t *lb) {
 }
 
 /// @brief Returns the first selected item in the non-virtual list, or NULL if none is selected.
+/// @param lb Non-virtual list box to scan.
+/// @return Borrowed first selected item, or `NULL`.
 static vg_listbox_item_t *listbox_first_selected_nonvirtual(vg_listbox_t *lb) {
     if (!lb)
         return NULL;
@@ -506,6 +575,8 @@ static vg_listbox_item_t *listbox_first_selected_nonvirtual(vg_listbox_t *lb) {
 
 /// @brief Returns the index of the first selected row in the bitmap, or SIZE_MAX if nothing is
 /// selected.
+/// @param lb Virtual list box to scan.
+/// @return First selected logical index, or `SIZE_MAX`.
 static size_t listbox_first_selected_virtual(vg_listbox_t *lb) {
     if (!lb || !lb->selection_bitmap)
         return SIZE_MAX;
@@ -518,6 +589,10 @@ static size_t listbox_first_selected_virtual(vg_listbox_t *lb) {
 
 /// @brief Applies Ctrl/Shift selection semantics for @p item in non-virtual mode: range, toggle, or
 /// replace.
+/// @param lb Owning non-virtual list box.
+/// @param item Live target item.
+/// @param toggle `true` to toggle the target in multi-select mode.
+/// @param range `true` to select the inclusive anchor-to-target range.
 static void listbox_select_nonvirtual_with_modifiers(vg_listbox_t *lb,
                                                      vg_listbox_item_t *item,
                                                      bool toggle,
@@ -580,6 +655,10 @@ static void listbox_select_nonvirtual_with_modifiers(vg_listbox_t *lb,
 
 /// @brief Applies Ctrl/Shift selection semantics for row @p index in virtual mode using the
 /// selection bitmap.
+/// @param lb Virtual list box to update.
+/// @param index Zero-based target row.
+/// @param toggle `true` to toggle the target bit in multi-select mode.
+/// @param range `true` to select the inclusive anchor-to-target range.
 static void listbox_select_virtual_with_modifiers(vg_listbox_t *lb,
                                                   size_t index,
                                                   bool toggle,
@@ -635,6 +714,8 @@ static void listbox_select_virtual_with_modifiers(vg_listbox_t *lb,
 
 /// @brief VTable destroy: clears all items, frees the virtual cache, selection bitmap, and
 /// retired-item list.
+/// @details Also restores tooltip ownership and releases fitting scratch storage.
+/// @param widget List-box widget base being destroyed.
 static void listbox_destroy(vg_widget_t *widget) {
     vg_listbox_t *lb = (vg_listbox_t *)widget;
     vg_listbox_clear(lb);
@@ -657,6 +738,8 @@ static void listbox_destroy(vg_widget_t *widget) {
 
 /// @brief Computes the default row height from the theme input height and font metrics, taking the
 /// larger value.
+/// @param lb List box supplying the optional active font.
+/// @return Theme input height or padded font line height, whichever is larger.
 static float listbox_default_item_height(vg_listbox_t *lb) {
     vg_theme_t *theme = vg_theme_get_current();
     float scale = theme && theme->ui_scale > 0.0f ? theme->ui_scale : 1.0f;
@@ -674,6 +757,10 @@ static float listbox_default_item_height(vg_listbox_t *lb) {
 }
 
 /// @brief Returns the Y coordinate of the text baseline vertically centred within an item row.
+/// @param lb List box supplying font metrics.
+/// @param item_y Row's top coordinate.
+/// @param item_h Row height.
+/// @return Baseline Y coordinate, or @p item_y when no font is available.
 static float listbox_text_baseline(vg_listbox_t *lb, float item_y, float item_h) {
     if (!lb || !lb->font)
         return item_y;
@@ -684,6 +771,10 @@ static float listbox_text_baseline(vg_listbox_t *lb, float item_y, float item_h)
 }
 
 /// @brief Back a byte length up to a UTF-8 codepoint boundary.
+/// @param text UTF-8 byte string containing @p length as a valid index.
+/// @param length Candidate prefix length.
+/// @return Greatest prefix no longer than @p length that does not begin on a
+///         continuation byte.
 static size_t listbox_utf8_previous_boundary(const char *text, size_t length) {
     if (!text)
         return 0;
@@ -695,6 +786,11 @@ static size_t listbox_utf8_previous_boundary(const char *text, size_t length) {
 /// @brief Return paint text fitted to @p max_width, reusing listbox-owned scratch storage.
 /// @details The original item text is never mutated. A failed scratch allocation falls back to
 ///          the clipped original, preserving content even under memory pressure.
+/// @param lb List box supplying font metrics and scratch storage.
+/// @param text Null-terminated row text.
+/// @param max_width Maximum rendered width in pixels.
+/// @return Borrowed original text, list-box-owned ellipsized scratch text, or
+///         an empty string when no text can be drawn.
 static const char *listbox_fit_text(vg_listbox_t *lb, const char *text, float max_width) {
     if (!text)
         return "";
@@ -752,6 +848,8 @@ static const char *listbox_fit_text(vg_listbox_t *lb, const char *text, float ma
 }
 
 /// @brief Return the text under the pointer in normal or virtual mode.
+/// @param lb List box whose current hover state is inspected.
+/// @return Borrowed row text, or `NULL` when no materialized row is hovered.
 static const char *listbox_hovered_text(vg_listbox_t *lb) {
     if (!lb)
         return NULL;
@@ -767,6 +865,9 @@ static const char *listbox_hovered_text(vg_listbox_t *lb) {
 }
 
 /// @brief Promote clipped hovered-row text to the widget tooltip and restore caller text on exit.
+/// @details The original tooltip is copied before the first overflow promotion
+///          and restored when hover leaves or the row no longer overflows.
+/// @param lb List box whose tooltip state is synchronized.
 static void listbox_sync_hover_tooltip(vg_listbox_t *lb) {
     if (!lb)
         return;
@@ -815,6 +916,12 @@ static void listbox_sync_hover_tooltip(vg_listbox_t *lb) {
 
 /// @brief VTable measure: sizes to the widest item text (up to avail_w) and up to 5 visible rows
 /// tall.
+/// @details Text scanning is bounded for large lists; virtual and very large
+///          lists prefer the offered width instead of fetching every row.
+/// @param widget List-box widget base to measure.
+/// @param avail_w Width offered by the parent layout.
+/// @param avail_h Height offered by the parent; row count determines intrinsic
+///                height before constraints.
 static void listbox_measure(vg_widget_t *widget, float avail_w, float avail_h) {
     vg_listbox_t *lb = (vg_listbox_t *)widget;
     (void)avail_h;
@@ -844,6 +951,11 @@ static void listbox_measure(vg_widget_t *widget, float avail_w, float avail_h) {
 }
 
 /// @brief VTable arrange: sets the widget's final position and size from the layout pass.
+/// @param widget List-box widget base to arrange.
+/// @param x Final left coordinate.
+/// @param y Final top coordinate.
+/// @param w Final viewport width.
+/// @param h Final viewport height.
 static void listbox_arrange(vg_widget_t *widget, float x, float y, float w, float h) {
     widget->x = x;
     widget->y = y;
@@ -854,6 +966,11 @@ static void listbox_arrange(vg_widget_t *widget, float x, float y, float w, floa
 
 /// @brief VTable paint: draws background, selection highlights, row text, scrollbar thumb, and
 /// focus border.
+/// @details Virtual mode synchronizes only the visible range. Both modes clip
+///          row text, apply zebra backgrounds and hover/selection pills, and
+///          finish with a focus-sensitive border.
+/// @param widget Arranged list-box widget base to paint.
+/// @param canvas Backend canvas used by primitive and font drawing routines.
 static void listbox_paint(vg_widget_t *widget, void *canvas) {
     vg_listbox_t *lb = (vg_listbox_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -1013,6 +1130,12 @@ static void listbox_paint(vg_widget_t *widget, void *canvas) {
 }
 
 /// @brief VTable handle_event: dispatches mouse (click/scroll/keys) to selection and scroll logic.
+/// @details Supports hover tooltips, wheel scrolling, double-click/Enter
+///          activation, Ctrl/Super toggling, Shift ranges, and keyboard paging
+///          while keeping the selected row visible.
+/// @param widget List-box widget receiving input.
+/// @param event Mutable event marked handled when consumed.
+/// @return `true` when the list box consumed the event.
 static bool listbox_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_listbox_t *lb = (vg_listbox_t *)widget;
 
@@ -1216,12 +1339,15 @@ static bool listbox_handle_event(vg_widget_t *widget, vg_event_t *event) {
 }
 
 /// @brief VTable can_focus: returns true when the listbox is both enabled and visible.
+/// @param widget Candidate list-box widget.
+/// @return `true` when keyboard focus is permitted.
 static bool listbox_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }
 
 /// @brief Create a list box widget.
-///
+/// @details Initializes theme-derived colors, typography, row height, empty
+///          normal-mode storage, and no current or anchor selection.
 /// @param parent Widget to attach to as a child (may be NULL).
 /// @return Newly allocated vg_listbox_t, or NULL on allocation failure.
 vg_listbox_t *vg_listbox_create(vg_widget_t *parent) {
@@ -1255,7 +1381,8 @@ vg_listbox_t *vg_listbox_create(vg_widget_t *parent) {
 }
 
 /// @brief Append an item to the list box.
-///
+/// @details The item record and its text are owned by the list box. @p user_data
+///          remains caller-owned unless ownership is changed through other API.
 /// @param listbox   The list box to modify.
 /// @param text      Display text for the item (copied internally).
 /// @param user_data Opaque pointer stored in the item; not dereferenced here.
@@ -1294,7 +1421,9 @@ vg_listbox_item_t *vg_listbox_add_item(vg_listbox_t *listbox, const char *text, 
 }
 
 /// @brief Remove and retire a single item from the list box.
-///
+/// @details Selection, hover, and anchor references are detached before the
+///          item's owned payload is released and its stable record is moved to
+///          the retirement chain.
 /// @param listbox The list box to modify.
 /// @param item    Item to remove; must be live and owned by @p listbox.
 void vg_listbox_remove_item(vg_listbox_t *listbox, vg_listbox_item_t *item) {
@@ -1331,7 +1460,9 @@ void vg_listbox_remove_item(vg_listbox_t *listbox, vg_listbox_item_t *item) {
 }
 
 /// @brief Remove and retire all items from the list box.
-///
+/// @details Also detaches any virtual model, releases its cache and bitmap,
+///          restores tooltip state, clears selection, and schedules layout and
+///          painting.
 /// @param listbox The list box to clear.
 void vg_listbox_clear(vg_listbox_t *listbox) {
     if (!listbox)
@@ -1382,7 +1513,9 @@ void vg_listbox_clear(vg_listbox_t *listbox) {
 }
 
 /// @brief Set the selected item; fires on_select if the item changed.
-///
+/// @details In single-select mode all other item flags are cleared. Passing
+///          `NULL` deselects every row. Invalid or foreign item records are
+///          ignored.
 /// @param listbox The list box to update.
 /// @param item    Item to select (must be live and owned by @p listbox), or NULL to deselect.
 void vg_listbox_select(vg_listbox_t *listbox, vg_listbox_item_t *item) {
@@ -1466,6 +1599,14 @@ void vg_listbox_set_on_select(vg_listbox_t *listbox,
 
 /// @brief Enables or disables virtual-scroll mode, allocating a selection bitmap and visible-row
 /// cache for @p total_count items.
+/// @details Switching modes detaches an externally bound model, resets selection
+///          and scroll state, and invalidates layout. Allocation failure leaves
+///          virtual mode disabled.
+/// @param listbox List box to reconfigure.
+/// @param enabled `true` to use provider-backed logical rows.
+/// @param total_count Logical row count for virtual mode.
+/// @param item_height Positive row height override; non-positive values retain
+///                    the current height.
 void vg_listbox_set_virtual_mode(vg_listbox_t *listbox,
                                  bool enabled,
                                  size_t total_count,
@@ -1542,7 +1683,8 @@ void vg_listbox_set_virtual_mode(vg_listbox_t *listbox,
 }
 
 /// @brief Set the virtual-mode data provider callback used to populate visible rows.
-///
+/// @details Replacing a provider associated with an external-model unbind
+///          callback first notifies the previous binding.
 /// @param listbox   The list box to configure (must be in virtual mode).
 /// @param provider  Callback that fills a vg_listbox_cache_entry_t for a given index.
 /// @param user_data Opaque pointer passed to @p provider.
@@ -1560,7 +1702,19 @@ void vg_listbox_set_data_provider(vg_listbox_t *listbox,
     listbox->data_provider_user_data = user_data;
 }
 
-/// @brief Install a non-owning external model after allocating all replacement storage.
+/// @brief Install a non-owning external virtual model atomically.
+/// @details Selection and visible-cache allocations are completed before the
+///          previous model is notified and detached. The provider's returned
+///          text is copied when a row enters the visible cache.
+/// @param listbox List box receiving the model.
+/// @param total_count Logical number of model rows.
+/// @param item_height Finite positive row height in pixels.
+/// @param provider Callback supplying row data on demand.
+/// @param user_data Opaque context passed to @p provider and @p on_unbind.
+/// @param on_unbind Optional callback notified exactly once when detached.
+/// @return `true` after the model and replacement storage are installed;
+///         `false` with the previous binding intact on validation or allocation
+///         failure.
 bool vg_listbox_bind_virtual_model(vg_listbox_t *listbox,
                                    size_t total_count,
                                    float item_height,
@@ -1623,6 +1777,9 @@ bool vg_listbox_bind_virtual_model(vg_listbox_t *listbox,
 }
 
 /// @brief Detach an external ListBox model and release virtual-mode storage.
+/// @details Invokes the registered unbind callback once, clears provider
+///          references and selection, resets scrolling, and schedules layout.
+/// @param listbox List box whose model is detached; `NULL` is ignored.
 void vg_listbox_clear_virtual_model(vg_listbox_t *listbox) {
     if (!listbox)
         return;
@@ -1768,6 +1925,8 @@ void vg_listbox_invalidate_item(vg_listbox_t *listbox, size_t index) {
 }
 
 /// @brief Return the first row in the current virtual viewport without fetching model data.
+/// @param listbox Virtual list box to inspect.
+/// @return First logical visible index, or zero for an empty/non-virtual list.
 size_t vg_listbox_get_visible_first(vg_listbox_t *listbox) {
     size_t first = 0;
     listbox_compute_virtual_range(listbox, listbox ? listbox->base.height : 0.0f, &first, NULL);
@@ -1775,6 +1934,8 @@ size_t vg_listbox_get_visible_first(vg_listbox_t *listbox) {
 }
 
 /// @brief Return the viewport-sized virtual cache row count without fetching model data.
+/// @param listbox Virtual list box to inspect.
+/// @return Number of logical rows in the bounded materialization range.
 size_t vg_listbox_get_visible_count(vg_listbox_t *listbox) {
     size_t count = 0;
     listbox_compute_virtual_range(listbox, listbox ? listbox->base.height : 0.0f, NULL, &count);
@@ -1846,6 +2007,7 @@ size_t vg_listbox_get_selected_index(vg_listbox_t *listbox) {
 }
 
 /// @brief Scroll to the first row without changing selection.
+/// @param listbox List box whose scroll offset is reset; `NULL` is ignored.
 void vg_listbox_scroll_to_top(vg_listbox_t *listbox) {
     if (!listbox)
         return;
@@ -1856,6 +2018,10 @@ void vg_listbox_scroll_to_top(vg_listbox_t *listbox) {
 }
 
 /// @brief Scroll to the last row without changing selection.
+/// @details Computes the maximum offset from logical row count, row height, and
+///          current viewport height, then clamps it through the shared scroll
+///          policy.
+/// @param listbox List box to scroll; `NULL` is ignored.
 void vg_listbox_scroll_to_bottom(vg_listbox_t *listbox) {
     if (!listbox)
         return;

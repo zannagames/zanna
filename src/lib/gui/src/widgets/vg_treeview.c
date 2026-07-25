@@ -1,4 +1,18 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements retained and provider-backed hierarchical tree views.
+/// @details The retained path owns a hierarchy of stable node records with
+///          selection, expansion, lazy-loading, icons, scrolling, and optional
+///          drag-and-drop state. Removed subtrees become inert tombstones so
+///          external wrappers can test stale handles before reclamation. The
+///          virtual path instead materializes only visible row descriptors
+///          through application callbacks and allocates no per-row nodes.
+///
+///          Both paths share viewport metrics, scrollbar interaction, themed
+///          painting, scheduler-visible state edges, and keyboard/pointer
+///          behavior. Application-directed drag modes expose validated drop
+///          latches without mutating the retained hierarchy internally.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -136,6 +150,8 @@ typedef struct tree_node_stack {
     size_t cap;
 } tree_node_stack_t;
 
+/// @brief Release storage owned by a temporary iterative traversal stack.
+/// @param stack Stack to clear; `NULL` is ignored.
 static void tree_node_stack_destroy(tree_node_stack_t *stack) {
     if (!stack)
         return;
@@ -145,6 +161,13 @@ static void tree_node_stack_destroy(tree_node_stack_t *stack) {
     stack->cap = 0;
 }
 
+/// @brief Push a node onto a growable traversal stack.
+/// @details Capacity doubles from 64 entries with arithmetic-overflow checks.
+///          A `NULL` stack or node is treated as having no work to enqueue.
+/// @param stack Stack receiving the node.
+/// @param node Node pointer to append.
+/// @return `true` when the node is queued or intentionally ignored; `false`
+///         only when capacity cannot be grown safely.
 static bool tree_node_stack_push(tree_node_stack_t *stack, vg_tree_node_t *node) {
     if (!stack || !node)
         return true;
@@ -162,12 +185,20 @@ static bool tree_node_stack_push(tree_node_stack_t *stack, vg_tree_node_t *node)
     return true;
 }
 
+/// @brief Pop the most recently queued traversal node.
+/// @param stack Stack to consume; may be `NULL`.
+/// @return Popped node pointer, or `NULL` for an empty/absent stack.
 static vg_tree_node_t *tree_node_stack_pop(tree_node_stack_t *stack) {
     if (!stack || stack->count == 0)
         return NULL;
     return stack->items[--stack->count];
 }
 
+/// @brief Release resources owned directly by one node record.
+/// @details Text, icon text, stable identifier, and icon descriptors are
+///          destroyed. User data is freed only when `owns_user_data` is set;
+///          child and sibling records are not traversed here.
+/// @param node Node whose payload is cleared; `NULL` is ignored.
 static void free_node_payload(vg_tree_node_t *node) {
     if (!node)
         return;
@@ -189,7 +220,11 @@ static void free_node_payload(vg_tree_node_t *node) {
     node->owns_user_data = false;
 }
 
-/// @brief Iteratively free a node subtree, its text, and optionally its user_data.
+/// @brief Iteratively destroy a node subtree and its owned payloads.
+/// @details Leaf records are detached and freed while walking back toward the
+///          supplied root, avoiding recursion for arbitrarily deep trees.
+///          Parent child counts and sibling links are repaired during removal.
+/// @param node Root of the subtree to destroy; `NULL` is ignored.
 static void free_node(vg_tree_node_t *node) {
     if (!node)
         return;
@@ -223,7 +258,11 @@ static void free_node(vg_tree_node_t *node) {
     }
 }
 
-/// @brief Iteratively stamp VG_TREE_NODE_RETIRED_MAGIC and clear all payload fields on a subtree.
+/// @brief Convert every record in a subtree into an inert tombstone.
+/// @details Payload ownership is released, selection/loading state is cleared,
+///          and owner/magic fields are changed without freeing record storage
+///          or destroying the hierarchy used for later reclamation.
+/// @param node Root of the subtree to retire; `NULL` is ignored.
 static void mark_node_subtree_retired(vg_tree_node_t *node) {
     if (!node)
         return;
@@ -250,8 +289,12 @@ static void mark_node_subtree_retired(vg_tree_node_t *node) {
     }
 }
 
-/// @brief Mark node and its subtree retired and prepend them to tree->retired_nodes for deferred
-/// free.
+/// @brief Retire a detached subtree for deferred reclamation.
+/// @details The subtree is tombstoned, its external parent/sibling links are
+///          cleared, and its root is prepended to the TreeView's retired-root
+///          list.
+/// @param tree TreeView that owns the retired list.
+/// @param node Detached subtree root to retire.
 static void retire_node_subtree(vg_treeview_t *tree, vg_tree_node_t *node) {
     if (!tree || !node)
         return;
@@ -263,7 +306,8 @@ static void retire_node_subtree(vg_treeview_t *tree, vg_tree_node_t *node) {
     tree->retired_nodes = node;
 }
 
-/// @brief Walk tree->retired_nodes and free each retired subtree via free_node.
+/// @brief Destroy every subtree on a TreeView's retired list.
+/// @param tree TreeView whose tombstones are reclaimed; `NULL` is ignored.
 static void free_retired_nodes(vg_treeview_t *tree) {
     if (!tree)
         return;
@@ -277,11 +321,20 @@ static void free_retired_nodes(vg_treeview_t *tree) {
     tree->retired_nodes = NULL;
 }
 
+/// @brief Test whether a node handle still denotes a live retained-tree node.
+/// @param node Node handle to inspect; may be `NULL`.
+/// @return `true` only when the active magic value and non-null owner are both
+///         present.
 bool vg_tree_node_is_live(const vg_tree_node_t *node) {
     return node && node->magic == VG_TREE_NODE_MAGIC && node->owner != NULL;
 }
 
-/// @brief Count the total number of currently-visible (expanded) rows under node.
+/// @brief Count currently visible retained rows below a sentinel or node.
+/// @details Children are traversed iteratively and descendants are queued only
+///          for expanded nodes. Allocation failure or integer overflow
+///          saturates the result at `INT_MAX`.
+/// @param node Parent whose visible descendants are counted; may be `NULL`.
+/// @return Visible row count, zero for `NULL`, or `INT_MAX` when saturated.
 static int count_visible_nodes(vg_tree_node_t *node) {
     if (!node)
         return 0;
@@ -311,7 +364,14 @@ static int count_visible_nodes(vg_tree_node_t *node) {
     return count;
 }
 
-/// @brief Return the visible node at the given 0-based display index, or NULL if out of range.
+/// @brief Resolve a flattened visible-row index to its retained node.
+/// @details Iterative preorder traversal descends only through expanded nodes
+///          and advances the caller-provided running index.
+/// @param root Sentinel or subtree parent whose children define the row domain.
+/// @param target_index Zero-based flattened visible index.
+/// @param current In/out traversal index initialized by the caller.
+/// @return Borrowed node at @p target_index, or `NULL` when out of range or
+///         traversal storage cannot grow.
 static vg_tree_node_t *get_node_at_index(vg_tree_node_t *root, int target_index, int *current) {
     if (!root || !current || target_index < 0)
         return NULL;
@@ -345,7 +405,14 @@ static vg_tree_node_t *get_node_at_index(vg_tree_node_t *root, int target_index,
     return NULL;
 }
 
-/// @brief Return the 0-based display index of target in the visible tree, or -1 if not found.
+/// @brief Resolve a retained node to its flattened visible-row index.
+/// @details Iterative preorder traversal descends only through expanded nodes
+///          and advances the caller-provided running index.
+/// @param root Sentinel or subtree parent whose children define the row domain.
+/// @param target Exact node pointer to locate.
+/// @param current In/out traversal index initialized by the caller.
+/// @return Zero-based visible index, or `-1` when the target is hidden, absent,
+///         or traversal storage cannot grow.
 static int get_node_index(vg_tree_node_t *root, vg_tree_node_t *target, int *current) {
     if (!root || !target || !current)
         return -1;
@@ -407,7 +474,10 @@ static void treeview_notify_virtual_unbound(vg_treeview_t *tree) {
         callback(tree, user_data);
 }
 
-/// @brief Return true if candidate is root or any ancestor of candidate is root.
+/// @brief Test whether a retained node belongs to a subtree.
+/// @param root Candidate subtree root.
+/// @param candidate Node whose parent chain is inspected.
+/// @return `true` when @p candidate is @p root or one of its descendants.
 static bool node_in_subtree(const vg_tree_node_t *root, const vg_tree_node_t *candidate) {
     if (!root || !candidate)
         return false;
@@ -421,6 +491,10 @@ static bool node_in_subtree(const vg_tree_node_t *root, const vg_tree_node_t *ca
 
 /// @brief Advance through retained preorder, optionally skipping collapsed descendants.
 /// @details Parent links keep traversal iterative and allocation-free for arbitrarily deep trees.
+/// @param root Boundary node that traversal must not leave.
+/// @param node Current node.
+/// @param visible_only When `true`, do not descend into collapsed nodes.
+/// @return Next node in preorder, or `NULL` at the subtree boundary.
 static vg_tree_node_t *treeview_next_retained(vg_tree_node_t *root,
                                               vg_tree_node_t *node,
                                               bool visible_only) {
@@ -436,7 +510,10 @@ static vg_tree_node_t *treeview_next_retained(vg_tree_node_t *root,
     return NULL;
 }
 
-/// @brief Clear all retained selection flags except an optional live node.
+/// @brief Clear retained selection flags except for an optional node.
+/// @param tree TreeView whose complete retained hierarchy is scanned.
+/// @param keep Node whose selected flag is preserved; may be `NULL`.
+/// @return `true` when at least one selection flag changed.
 static bool treeview_clear_retained_selection(vg_treeview_t *tree, vg_tree_node_t *keep) {
     if (!tree || !tree->root)
         return false;
@@ -451,7 +528,9 @@ static bool treeview_clear_retained_selection(vg_treeview_t *tree, vg_tree_node_
     return changed;
 }
 
-/// @brief Return the first selected retained node in complete preorder.
+/// @brief Find the first selected node in complete retained preorder.
+/// @param tree TreeView to scan.
+/// @return Borrowed selected node pointer, or `NULL` when none is selected.
 static vg_tree_node_t *treeview_first_selected(vg_treeview_t *tree) {
     if (!tree || !tree->root)
         return NULL;
@@ -463,7 +542,9 @@ static vg_tree_node_t *treeview_first_selected(vg_treeview_t *tree) {
     return NULL;
 }
 
-/// @brief Return whether a retained subtree contains at least one selected node.
+/// @brief Determine whether a retained subtree contains a selection.
+/// @param root Subtree root to inspect; may be `NULL`.
+/// @return `true` when @p root or one of its descendants is selected.
 static bool treeview_subtree_has_selection(vg_tree_node_t *root) {
     if (!root)
         return false;
@@ -474,7 +555,12 @@ static bool treeview_subtree_has_selection(vg_tree_node_t *root) {
     return false;
 }
 
-/// @brief Publish one retained selection transition and keep the primary visible when possible.
+/// @brief Publish a retained selection transition and preserve primary visibility.
+/// @details A real change advances revision edges, scrolls the primary
+///          selection into view or clamps existing scroll, requests repaint,
+///          and notifies the registered selection callback.
+/// @param tree TreeView whose selection state was evaluated.
+/// @param changed Whether the operation changed logical selection state.
 static void treeview_publish_retained_selection(vg_treeview_t *tree, bool changed) {
     if (!tree || !changed)
         return;
@@ -488,7 +574,16 @@ static void treeview_publish_retained_selection(vg_treeview_t *tree, bool change
         tree->on_select(&tree->base, tree->selected, tree->on_select_data);
 }
 
-/// @brief Replace, toggle, or visibly range-select one retained node for user input.
+/// @brief Apply interactive single, toggle, or visible-range selection.
+/// @details Single selection clears peers and establishes a new range anchor.
+///          Toggle selection independently flips one node in multi-select mode.
+///          Range selection spans flattened visible preorder between the
+///          retained anchor and target.
+/// @param tree TreeView expected to own @p node.
+/// @param node Live target node.
+/// @param toggle Whether modifier input requests independent toggle semantics.
+/// @param range Whether modifier input requests anchor-to-target range
+///        selection.
 static void treeview_select_interactive(vg_treeview_t *tree,
                                         vg_tree_node_t *node,
                                         bool toggle,
@@ -562,7 +657,9 @@ static void treeview_select_interactive(vg_treeview_t *tree,
     treeview_publish_retained_selection(tree, changed);
 }
 
-/// @brief Return the flattened visible-row height without overflowing float arithmetic.
+/// @brief Compute total flattened content height without floating-point overflow.
+/// @param tree TreeView whose retained or virtual row domain is measured.
+/// @return Nonnegative content height, saturated at `FLT_MAX`.
 static float treeview_content_height(const vg_treeview_t *tree) {
     if (!tree)
         return 0.0f;
@@ -576,7 +673,9 @@ static float treeview_content_height(const vg_treeview_t *tree) {
     return (float)content_height;
 }
 
-/// @brief Return the largest valid vertical scroll offset for the current viewport.
+/// @brief Compute the largest valid vertical scroll offset.
+/// @param tree TreeView supplying content and viewport heights.
+/// @return Nonnegative maximum offset, saturated at `FLT_MAX`.
 static float treeview_max_scroll(const vg_treeview_t *tree) {
     if (!tree)
         return 0.0f;
@@ -587,7 +686,8 @@ static float treeview_max_scroll(const vg_treeview_t *tree) {
     return max_scroll;
 }
 
-/// @brief Clamp tree->scroll_y to [0, content_height - viewport_height].
+/// @brief Clamp a TreeView's vertical scroll offset to its current content.
+/// @param tree TreeView whose `scroll_y` is normalized; `NULL` is ignored.
 static void treeview_clamp_scroll(vg_treeview_t *tree) {
     if (!tree)
         return;
@@ -599,7 +699,11 @@ static void treeview_clamp_scroll(vg_treeview_t *tree) {
 }
 
 /// @brief Compute the visible vertical scrollbar and thumb geometry.
-/// @return true only when content overflows the current TreeView viewport.
+/// @param tree TreeView supplying viewport, content, and scroll state.
+/// @param out_width Optional destination for the scrollbar gutter width.
+/// @param out_thumb_y Optional destination for the thumb's local top edge.
+/// @param out_thumb_height Optional destination for the thumb height.
+/// @return `true` only when content overflows the current viewport.
 static bool treeview_scrollbar_geometry(const vg_treeview_t *tree,
                                         float *out_width,
                                         float *out_thumb_y,
@@ -648,6 +752,9 @@ static bool treeview_scrollbar_geometry(const vg_treeview_t *tree,
 /// @brief Handle scrollbar hover, track clicks, thumb dragging, and click suppression.
 /// @details Mouse coordinates are widget-local on the event path. This handler runs before
 /// retained/virtual row handling so the scrollbar gutter never selects or activates a file row.
+/// @param tree TreeView whose scrollbar state is updated.
+/// @param event Candidate pointer event.
+/// @return `true` when scrollbar interaction consumes the event.
 static bool treeview_handle_scrollbar_event(vg_treeview_t *tree, vg_event_t *event) {
     if (!tree || !event)
         return false;
@@ -759,7 +866,13 @@ static bool treeview_handle_scrollbar_event(vg_treeview_t *tree, vg_event_t *eve
     return false;
 }
 
-/// @brief Compute the flattened virtual rows needed by the current viewport without callbacks.
+/// @brief Compute the bounded virtual-row range needed for the viewport.
+/// @details The range begins at the row intersecting `scroll_y`, includes two
+///          rows of overscan, never exceeds the model suffix, and is capped at
+///          4096 descriptors per paint.
+/// @param tree Virtual-mode TreeView supplying row and viewport metrics.
+/// @param out_start Optional destination for the first flattened row index.
+/// @param out_count Optional destination for the number of rows to materialize.
 static void treeview_compute_virtual_range(vg_treeview_t *tree,
                                            size_t *out_start,
                                            size_t *out_count) {
@@ -785,7 +898,11 @@ static void treeview_compute_virtual_range(vg_treeview_t *tree,
         *out_count = count;
 }
 
-/// @brief Convert a viewport-local Y coordinate to a flattened virtual row index.
+/// @brief Convert a viewport-local Y coordinate to a virtual row index.
+/// @param tree Virtual-mode TreeView supplying scroll and row metrics.
+/// @param local_y Y coordinate relative to the widget's top edge.
+/// @param out_index Destination for the resolved flattened row index.
+/// @return `true` when the coordinate maps to a model row.
 static bool treeview_virtual_row_at_y(vg_treeview_t *tree, float local_y, size_t *out_index) {
     if (!tree || !tree->virtual_mode || !out_index || tree->row_height <= 0.0f ||
         !isfinite(local_y))
@@ -800,7 +917,9 @@ static bool treeview_virtual_row_at_y(vg_treeview_t *tree, float local_y, size_t
     return true;
 }
 
-/// @brief Keep a selected virtual row fully visible using O(1) scroll arithmetic.
+/// @brief Scroll minimally to make a virtual row fully visible.
+/// @param tree Virtual-mode TreeView whose scroll position is updated.
+/// @param index Flattened row index to reveal.
 static void treeview_scroll_virtual_to(vg_treeview_t *tree, size_t index) {
     if (!tree || !tree->virtual_mode || index >= tree->virtual_row_count)
         return;
@@ -813,18 +932,23 @@ static void treeview_scroll_virtual_to(vg_treeview_t *tree, size_t index) {
     treeview_clamp_scroll(tree);
 }
 
-/// @brief Return the current UI scale factor from the theme, defaulting to 1.0.
+/// @brief Obtain a positive UI scale for TreeView geometry.
+/// @return Current theme scale when positive, otherwise `1.0`.
 static float treeview_scale(void) {
     vg_theme_t *theme = vg_theme_get_current();
     return (theme && theme->ui_scale > 0.0f) ? theme->ui_scale : 1.0f;
 }
 
-/// @brief Return scaled outer horizontal padding (10 px * ui_scale).
+/// @brief Compute the scaled horizontal inset around row content.
+/// @return Ten base pixels multiplied by the current UI scale.
 static float treeview_outer_padding(void) {
     return 10.0f * treeview_scale();
 }
 
-/// @brief Recompute indent_size, icon_size, icon_gap, and row_height from current scale and font.
+/// @brief Recompute scaled row metrics from theme and font configuration.
+/// @details Row height is at least 28 scaled pixels and grows when the selected
+///          font's line height plus vertical padding requires more space.
+/// @param tree TreeView whose metric fields are updated; `NULL` is ignored.
 static void treeview_sync_metrics(vg_treeview_t *tree) {
     if (!tree)
         return;
@@ -845,7 +969,10 @@ static void treeview_sync_metrics(vg_treeview_t *tree) {
     tree->row_height = row_height;
 }
 
-/// @brief Return the Y coordinate of the text baseline that vertically centres text in a row.
+/// @brief Compute a vertically centered text baseline for one row.
+/// @param tree TreeView supplying font metrics and row height.
+/// @param row_y Row's top edge in the same coordinate space as the result.
+/// @return Baseline Y coordinate, or @p row_y when no font is configured.
 static float treeview_text_baseline(vg_treeview_t *tree, float row_y) {
     if (!tree || !tree->font)
         return row_y;
@@ -855,8 +982,16 @@ static float treeview_text_baseline(vg_treeview_t *tree, float row_y) {
     return row_y + (tree->row_height + (float)metrics.ascent + (float)metrics.descent) / 2.0f;
 }
 
-/// @brief Return a heap-allocated copy of text, truncated with '...' if it exceeds max_width
-/// pixels.
+/// @brief Create a width-constrained display copy of row text.
+/// @details Text that already fits is duplicated unchanged. Otherwise bytes are
+///          removed from the end until an ASCII ellipsis fits; this helper
+///          measures byte prefixes and does not itself enforce UTF-8 boundary
+///          truncation.
+/// @param tree TreeView supplying font and size.
+/// @param text Source label; `NULL` is treated as empty.
+/// @param max_width Maximum measured width in layout units.
+/// @return Newly allocated fitted text owned by the caller, or `NULL` on
+///         allocation failure.
 static char *treeview_fit_text(vg_treeview_t *tree, const char *text, float max_width) {
     if (!text)
         return vg_strdup("");
@@ -891,7 +1026,9 @@ static char *treeview_fit_text(vg_treeview_t *tree, const char *text, float max_
     return buf;
 }
 
-/// @brief Encode a Unicode codepoint into a NUL-terminated UTF-8 sequence (out must be 8 bytes).
+/// @brief Encode a codepoint as a null-terminated UTF-8 byte sequence.
+/// @param codepoint Value to encode.
+/// @param out Eight-byte output buffer; `NULL` is ignored.
 static void treeview_encode_glyph(uint32_t codepoint, char out[8]) {
     if (!out)
         return;
@@ -914,7 +1051,15 @@ static void treeview_encode_glyph(uint32_t codepoint, char out[8]) {
     }
 }
 
-/// @brief Draw a node's icon (or loading dots) centred vertically in the icon slot.
+/// @brief Paint a retained node's icon within its row slot.
+/// @details Loading dots take precedence, followed by UTF-8 icon text, expanded
+///          or base vector/glyph icons, and finally a neutral fallback dot.
+/// @param tree TreeView supplying font and icon metrics.
+/// @param canvas Destination graphics canvas.
+/// @param node Retained node whose icon state is rendered.
+/// @param icon_x Left edge of the icon slot.
+/// @param row_y Top edge of the row.
+/// @param color Foreground color for icon content.
 static void treeview_paint_icon(vg_treeview_t *tree,
                                 void *canvas,
                                 vg_tree_node_t *node,
@@ -1000,7 +1145,8 @@ static void treeview_paint_icon(vg_treeview_t *tree,
 ///
 /// @details Allocates a vg_treeview_t, initialises a hidden sentinel root node
 ///          (depth = -1, always expanded), seeds metrics from the current theme,
-///          and adds the widget to parent if non-NULL.
+///          and adds the widget to parent if non-NULL. The sentinel and all
+///          subsequently added retained nodes are owned by the TreeView.
 ///
 /// @param parent Optional parent widget to attach to; may be NULL.
 /// @return       Heap-allocated tree view, or NULL on allocation failure.
@@ -1071,7 +1217,11 @@ vg_treeview_t *vg_treeview_create(vg_widget_t *parent) {
     return tree;
 }
 
-/// @brief vtable destroy — frees the root node tree and all retired nodes.
+/// @brief Release all resources owned by a TreeView.
+/// @details The virtual model receives its single detach notification before
+///          both the live retained hierarchy and deferred tombstone subtrees
+///          are destroyed.
+/// @param widget TreeView base widget being destroyed.
 static void treeview_destroy(vg_widget_t *widget) {
     vg_treeview_t *tree = (vg_treeview_t *)widget;
 
@@ -1084,8 +1234,14 @@ static void treeview_destroy(vg_widget_t *widget) {
     free_retired_nodes(tree);
 }
 
-/// @brief vtable measure — measured_width fills available_width; measured_height is total content
-/// height.
+/// @brief Measure a TreeView against available viewport dimensions.
+/// @details Width fills a positive available constraint or defaults to 200.
+///          Retained mode uses all visible rows for intrinsic height, while
+///          virtual mode caps intrinsic height at five rows to avoid requesting
+///          model-sized geometry. Widget minimum constraints are applied last.
+/// @param widget TreeView base widget receiving measured dimensions.
+/// @param available_width Width constraint from the parent.
+/// @param available_height Height constraint from the parent.
 static void treeview_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_treeview_t *tree = (vg_treeview_t *)widget;
 
@@ -1110,7 +1266,18 @@ static void treeview_measure(vg_widget_t *widget, float available_width, float a
     }
 }
 
-/// @brief Recursively paint all visible child rows of node, advancing *y by row_height each step.
+/// @brief Paint visible retained rows beneath a hierarchy node.
+/// @details The traversal advances content-space Y for every flattened visible
+///          row, clips painting by viewport tests, and recursively descends only
+///          into expanded nodes. Row rendering includes zebra backgrounds,
+///          selection/hover treatment, disclosure arrows, icons, fitted text,
+///          and drag-target indicators.
+/// @param tree TreeView supplying state and presentation metrics.
+/// @param canvas Destination graphics canvas.
+/// @param node Parent whose child rows are traversed.
+/// @param x Base row-content X coordinate.
+/// @param y In/out content-space row cursor.
+/// @param width Paintable row width excluding any scrollbar gutter.
 static void paint_node(
     vg_treeview_t *tree, void *canvas, vg_tree_node_t *node, float x, float *y, float width) {
     vg_theme_t *theme = vg_theme_get_current();
@@ -1270,6 +1437,8 @@ static void paint_node(
 /// @brief Paint only the flattened virtual-tree rows intersecting the current viewport.
 /// @details Provider descriptors are borrowed and consumed synchronously. No per-model-row
 ///          allocation or retained node is created by this path.
+/// @param tree Virtual-mode TreeView to paint.
+/// @param canvas Destination graphics canvas.
 static void treeview_paint_virtual(vg_treeview_t *tree, void *canvas) {
     if (!tree || !tree->virtual_mode)
         return;
@@ -1404,7 +1573,11 @@ static void treeview_paint_virtual(vg_treeview_t *tree, void *canvas) {
     }
 }
 
-/// @brief Paint a theme-consistent vertical scrollbar over the TreeView's right gutter.
+/// @brief Paint the TreeView's vertical scrollbar overlay.
+/// @details The thumb uses active, hovered, or normal theme colors according to
+///          current interaction state. Nothing is drawn when content fits.
+/// @param tree TreeView supplying scrollbar geometry and state.
+/// @param canvas Destination graphics canvas.
 static void treeview_paint_scrollbar(vg_treeview_t *tree, void *canvas) {
     float width = 0.0f;
     float thumb_y = 0.0f;
@@ -1447,7 +1620,12 @@ static void treeview_paint_scrollbar(vg_treeview_t *tree, void *canvas) {
                             thumb_color);
 }
 
-/// @brief vtable paint — fills background, clips, then recursively paints all nodes.
+/// @brief Paint TreeView background, rows, scrollbar, and focus border.
+/// @details The content clip excludes a visible scrollbar gutter. Retained or
+///          virtual row rendering is selected by mode, after which the
+///          scrollbar and themed outer border are overlaid.
+/// @param widget TreeView base widget to paint.
+/// @param canvas Destination graphics canvas.
 static void treeview_paint(vg_widget_t *widget, void *canvas) {
     vg_treeview_t *tree = (vg_treeview_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -1493,7 +1671,12 @@ static void treeview_paint(vg_widget_t *widget, void *canvas) {
                                                  : theme->colors.border_primary);
 }
 
-/// @brief Find the visible node whose row covers content-space Y coordinate target_y.
+/// @brief Resolve a retained content-space Y coordinate to a visible node.
+/// @param tree TreeView supplying row height.
+/// @param node Parent whose visible descendants are searched.
+/// @param target_y Content-space Y coordinate.
+/// @param current_y In/out flattened content-space row cursor.
+/// @return Borrowed node covering @p target_y, or `NULL` outside all rows.
 static vg_tree_node_t *find_node_at_y(vg_treeview_t *tree,
                                       vg_tree_node_t *node,
                                       float target_y,
@@ -1517,6 +1700,13 @@ static vg_tree_node_t *find_node_at_y(vg_treeview_t *tree,
     return NULL;
 }
 
+/// @brief Hit-test a screen-space point against retained TreeView rows.
+/// @details Virtual mode and the scrollbar gutter deliberately return no
+///          retained node. The result is borrowed from the TreeView.
+/// @param tree TreeView to query.
+/// @param x Screen-space X coordinate.
+/// @param y Screen-space Y coordinate.
+/// @return Visible retained node at the point, or `NULL`.
 vg_tree_node_t *vg_treeview_node_at(vg_treeview_t *tree, float x, float y) {
     if (!tree || tree->virtual_mode)
         return NULL;
@@ -1538,8 +1728,15 @@ vg_tree_node_t *vg_treeview_node_at(vg_treeview_t *tree, float x, float y) {
     return find_node_at_y(tree, tree->root, target_y, &current_y);
 }
 
-/// @brief Return true if dropping source onto target at position is allowed by the can_drop
-/// callback.
+/// @brief Validate a candidate retained-tree drop.
+/// @details Self-drops and drops into the source subtree are rejected before
+///          the optional application predicate is consulted.
+/// @param tree TreeView owning both node handles.
+/// @param source Dragged subtree root.
+/// @param target Candidate target node.
+/// @param position Proposed before, into, or after placement.
+/// @return Application predicate result when present, otherwise `true` for a
+///         structurally valid candidate.
 static bool treeview_drop_is_valid(vg_treeview_t *tree,
                                    vg_tree_node_t *source,
                                    vg_tree_node_t *target,
@@ -1553,8 +1750,12 @@ static bool treeview_drop_is_valid(vg_treeview_t *tree,
     return true;
 }
 
-/// @brief Recompute drop_target and drop_position based on the cursor's local Y in a drag
-/// operation.
+/// @brief Recompute the retained drag target from a local cursor Y coordinate.
+/// @details Row thirds map to before/into/after in row-aware mode. Legacy
+///          application-directed mode permits only into drops on container
+///          targets. Invalid candidates clear the current target.
+/// @param tree TreeView with an active retained drag.
+/// @param local_y Cursor Y relative to the widget.
 static void treeview_update_drop_target(vg_treeview_t *tree, float local_y) {
     if (!tree || !tree->is_dragging || !tree->drag_node) {
         if (tree) {
@@ -1600,7 +1801,13 @@ static void treeview_update_drop_target(vg_treeview_t *tree, float local_y) {
     tree->drop_position = position;
 }
 
-/// @brief Install one virtual selection locally and optionally notify the external model.
+/// @brief Install one virtual selection and optionally notify the model.
+/// @details A changed local index is scrolled into view, advances selection
+///          revision state, repaints, and invokes the compatibility selection
+///          callback with no retained node.
+/// @param tree Virtual-mode TreeView.
+/// @param index Flattened model row to select.
+/// @param notify_model Whether to emit `VG_TREEVIEW_VIRTUAL_SELECT`.
 static void treeview_select_virtual_internal(vg_treeview_t *tree, size_t index, bool notify_model) {
     if (!tree || !tree->virtual_mode || index >= tree->virtual_row_count)
         return;
@@ -1617,8 +1824,13 @@ static void treeview_select_virtual_internal(vg_treeview_t *tree, size_t index, 
             tree, index, VG_TREEVIEW_VIRTUAL_SELECT, tree->virtual_model_user_data);
 }
 
-/// @brief Handle interaction for the provider-backed TreeView path without traversing retained
-/// nodes.
+/// @brief Handle provider-backed TreeView interaction without retained nodes.
+/// @details Pointer hover/click, disclosure toggles, activation, directional
+///          navigation, parent/child requests, and wheel scrolling operate on
+///          flattened indices and synchronously queried row descriptors.
+/// @param tree Virtual-mode TreeView receiving input.
+/// @param event Event in widget-local coordinates where applicable.
+/// @return `true` when the virtual path consumes the event.
 static bool treeview_handle_virtual_event(vg_treeview_t *tree, vg_event_t *event) {
     if (!tree || !tree->virtual_mode || !event)
         return false;
@@ -1784,7 +1996,14 @@ static bool treeview_handle_virtual_event(vg_treeview_t *tree, vg_event_t *event
     }
 }
 
-/// @brief vtable handle_event — routes mouse, scroll, keyboard, and drag-drop events.
+/// @brief Route retained or virtual TreeView input.
+/// @details Disabled widgets reject input. Scrollbar handling has first
+///          priority, followed by virtual dispatch or retained hover,
+///          selection, disclosure, activation, keyboard navigation, wheel
+///          scrolling, and drag/drop latching.
+/// @param widget TreeView base widget receiving the event.
+/// @param event Event in widget-local coordinates where applicable.
+/// @return `true` when the TreeView consumes the event.
 static bool treeview_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_treeview_t *tree = (vg_treeview_t *)widget;
 
@@ -2013,7 +2232,9 @@ static bool treeview_handle_event(vg_widget_t *widget, vg_event_t *event) {
     return false;
 }
 
-/// @brief vtable can_focus — returns true when the widget is both enabled and visible.
+/// @brief Determine whether a TreeView may accept keyboard focus.
+/// @param widget TreeView base widget to inspect.
+/// @return `true` when the widget is enabled and visible.
 static bool treeview_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }
@@ -2022,7 +2243,19 @@ static bool treeview_can_focus(vg_widget_t *widget) {
 // TreeView API
 //=============================================================================
 
-/// @brief Bind a flattened external model without allocating per-row retained nodes.
+/// @brief Bind a flattened external model without retained row allocation.
+/// @details Any previous virtual model is notified before callback fields are
+///          replaced. Selection, hover, scrolling, and visible-range state are
+///          reset, while the retained hierarchy remains available for later
+///          restoration.
+/// @param tree TreeView to switch into virtual mode.
+/// @param row_count Current flattened model row count.
+/// @param provider Required synchronous row-descriptor provider.
+/// @param action Optional callback for selection, toggle, activation, and
+///        parent navigation requests.
+/// @param user_data Opaque pointer forwarded to virtual callbacks.
+/// @param on_unbind Optional one-shot detach notification.
+/// @return `true` when the model was bound; `false` for invalid input.
 bool vg_treeview_bind_virtual_model(vg_treeview_t *tree,
                                     size_t row_count,
                                     vg_treeview_virtual_provider_t provider,
@@ -2050,7 +2283,11 @@ bool vg_treeview_bind_virtual_model(vg_treeview_t *tree,
     return true;
 }
 
-/// @brief Detach the current external model and restore retained-node rendering.
+/// @brief Detach the current external model and restore retained rendering.
+/// @details Callback pointers and virtual indices are cleared, scrolling
+///          returns to the top, and change/revision edges reflect whether a
+///          virtual selection existed.
+/// @param tree TreeView to detach; `NULL` is ignored.
 void vg_treeview_clear_virtual_model(vg_treeview_t *tree) {
     if (!tree)
         return;
@@ -2077,7 +2314,12 @@ void vg_treeview_clear_virtual_model(vg_treeview_t *tree) {
     }
 }
 
-/// @brief Update flattened model size and clamp virtual selection and scroll.
+/// @brief Update the flattened virtual-model row count.
+/// @details Selection and hover indices beyond the new suffix are cleared,
+///          scroll is reclamped, and layout/repaint plus revision state are
+///          invalidated.
+/// @param tree Virtual-mode TreeView to update.
+/// @param row_count New flattened row count.
 void vg_treeview_set_virtual_row_count(vg_treeview_t *tree, size_t row_count) {
     if (!tree || !tree->virtual_mode || tree->virtual_row_count == row_count)
         return;
@@ -2095,7 +2337,9 @@ void vg_treeview_set_virtual_row_count(vg_treeview_t *tree, size_t row_count) {
     tree->base.needs_paint = true;
 }
 
-/// @brief Synchronize a virtual selection without producing a model action callback.
+/// @brief Synchronize virtual selection without a model action callback.
+/// @param tree Virtual-mode TreeView.
+/// @param index Row to select, or `SIZE_MAX` to clear selection.
 void vg_treeview_select_virtual_index(vg_treeview_t *tree, size_t index) {
     if (!tree || !tree->virtual_mode)
         return;
@@ -2110,12 +2354,17 @@ void vg_treeview_select_virtual_index(vg_treeview_t *tree, size_t index) {
     treeview_select_virtual_internal(tree, index, false);
 }
 
-/// @brief Read the current virtual selection sentinel/index.
+/// @brief Read the current virtual selection.
+/// @param tree TreeView to inspect.
+/// @return Selected flattened row index, or `SIZE_MAX` outside virtual mode or
+///         when no row is selected.
 size_t vg_treeview_get_virtual_selected_index(const vg_treeview_t *tree) {
     return tree && tree->virtual_mode ? tree->virtual_selected_index : SIZE_MAX;
 }
 
-/// @brief Compute the first flattened row intersecting the TreeView viewport.
+/// @brief Compute the first virtual row intersecting the viewport.
+/// @param tree TreeView whose virtual range is queried.
+/// @return First flattened row index, or zero when no range is active.
 size_t vg_treeview_get_visible_first(vg_treeview_t *tree) {
     size_t first = 0;
     treeview_compute_virtual_range(tree, &first, NULL);
@@ -2123,13 +2372,18 @@ size_t vg_treeview_get_visible_first(vg_treeview_t *tree) {
 }
 
 /// @brief Compute the bounded virtual viewport materialization count.
+/// @param tree TreeView whose virtual range is queried.
+/// @return Number of provider rows needed for the current viewport.
 size_t vg_treeview_get_visible_count(vg_treeview_t *tree) {
     size_t count = 0;
     treeview_compute_virtual_range(tree, NULL, &count);
     return count;
 }
 
-/// @brief Schedule repaint after external virtual row descriptors change.
+/// @brief Invalidate externally supplied virtual row descriptors.
+/// @details No model callbacks are invoked; repaint and the non-consuming
+///          widget revision are advanced for the next render.
+/// @param tree Virtual-mode TreeView to invalidate.
 void vg_treeview_invalidate_virtual_rows(vg_treeview_t *tree) {
     if (!tree || !tree->virtual_mode)
         return;
@@ -2341,6 +2595,8 @@ void vg_treeview_clear(vg_treeview_t *tree) {
 ///          without dereferencing freed memory. This explicit pruning hook lets
 ///          owners reclaim that memory after they have discarded all node handles
 ///          returned before the corresponding remove/clear calls.
+/// @param tree TreeView whose complete retired list is reclaimed; `NULL` is
+///        ignored.
 void vg_treeview_prune_retired_nodes(vg_treeview_t *tree) {
     free_retired_nodes(tree);
 }
@@ -2348,6 +2604,9 @@ void vg_treeview_prune_retired_nodes(vg_treeview_t *tree) {
 /// @brief Unlink and destroy one exact retired TreeView root subtree.
 /// @details Only roots are linked in `retired_nodes`; descendants remain connected for one
 ///          iterative `free_node` call after the embedding runtime proves the group unreferenced.
+/// @param tree TreeView whose retired-root list is searched.
+/// @param retired_root Exact tombstone root pointer to reclaim.
+/// @return `true` when the root was found and destroyed.
 bool vg_treeview_reclaim_retired_subtree(vg_treeview_t *tree, vg_tree_node_t *retired_root) {
     if (!tree || !retired_root)
         return false;
@@ -2486,7 +2745,12 @@ void vg_treeview_select(vg_treeview_t *tree, vg_tree_node_t *node) {
     treeview_publish_retained_selection(tree, changed);
 }
 
-/// @brief Configure retained-node multi-selection, preserving only the primary when disabled.
+/// @brief Configure retained-node multi-selection.
+/// @details Disabling the mode preserves the live primary selection when
+///          possible, clears every other selected flag, resets the range anchor,
+///          and publishes a selection revision if state changed.
+/// @param tree TreeView to configure; `NULL` is ignored.
+/// @param enabled Whether independent and range selection are permitted.
 void vg_treeview_set_multi_select(vg_treeview_t *tree, bool enabled) {
     if (!tree || tree->multi_select == enabled)
         return;
@@ -2547,7 +2811,13 @@ void vg_treeview_scroll_to(vg_treeview_t *tree, vg_tree_node_t *node) {
         vg_widget_note_revision(&tree->base);
 }
 
-/// @brief Replace a live node's display text without losing the old value on allocation failure.
+/// @brief Replace a live node's display text atomically.
+/// @details The input is copied before existing storage is released. A changed
+///          value invalidates layout, paint, and widget revision state.
+/// @param node Live node to update.
+/// @param text New label; `NULL` is stored as an empty string.
+/// @return `true` on success or an unchanged value; `false` for a stale node or
+///         allocation failure.
 bool vg_tree_node_set_text(vg_tree_node_t *node, const char *text) {
     if (!vg_tree_node_is_live(node))
         return false;
@@ -2572,6 +2842,10 @@ bool vg_tree_node_set_text(vg_tree_node_t *node, const char *text) {
 ///          instead of literal text, so the existing TreeView.Node.SetIcon
 ///          runtime surface reaches vector icons with no new API (plan 04).
 ///          Unknown names degrade to no icon (the fallback dot renders).
+/// @param node Live node to update.
+/// @param icon_text UTF-8 icon label, vector specification, or `NULL` to clear.
+/// @return `true` on success or an unchanged value; `false` for a stale node or
+///         allocation failure.
 bool vg_tree_node_set_icon_text(vg_tree_node_t *node, const char *icon_text) {
     if (!vg_tree_node_is_live(node))
         return false;
@@ -2628,12 +2902,21 @@ bool vg_tree_node_set_icon_text(vg_tree_node_t *node, const char *icon_text) {
     return true;
 }
 
-/// @brief Return borrowed UTF-8 icon text for a live node.
+/// @brief Return a live node's borrowed UTF-8 icon text.
+/// @param node Node to inspect.
+/// @return Borrowed icon-text pointer, or `NULL` for stale nodes or nodes using
+///         resource-backed icons.
 const char *vg_tree_node_get_icon_text(const vg_tree_node_t *node) {
     return vg_tree_node_is_live(node) ? node->icon_text : NULL;
 }
 
 /// @brief Replace a live node's application-stable identifier atomically.
+/// @details Empty input clears the allocation. A successful change advances
+///          widget revision without affecting layout or paint.
+/// @param node Live node to update.
+/// @param stable_id Identifier to copy, or `NULL` to clear.
+/// @return `true` on success or an unchanged value; `false` for a stale node or
+///         allocation failure.
 bool vg_tree_node_set_stable_id(vg_tree_node_t *node, const char *stable_id) {
     if (!vg_tree_node_is_live(node))
         return false;
@@ -2652,7 +2935,10 @@ bool vg_tree_node_set_stable_id(vg_tree_node_t *node, const char *stable_id) {
     return true;
 }
 
-/// @brief Return a live node's borrowed stable identifier or an empty sentinel.
+/// @brief Return a node's application-stable identifier.
+/// @param node Node to inspect.
+/// @return Borrowed identifier for a live node, otherwise a static empty
+///         string.
 const char *vg_tree_node_get_stable_id(const vg_tree_node_t *node) {
     return vg_tree_node_is_live(node) && node->stable_id ? node->stable_id : "";
 }
@@ -2677,8 +2963,10 @@ void vg_tree_node_set_data(vg_tree_node_t *node, void *data) {
 
 /// @brief Set the font and size for all node labels, then resync layout metrics.
 ///
+/// @details The font pointer is borrowed. A null font disables label and glyph
+///          drawing; a nonpositive size selects the theme's normal size.
 /// @param tree The tree view to configure; may be NULL.
-/// @param font Font to use for labels; NULL resets to default.
+/// @param font Font to use for labels; may be `NULL`.
 /// @param size Font size in points; if <= 0, the theme's normal size is used.
 void vg_treeview_set_font(vg_treeview_t *tree, vg_font_t *font, float size) {
     if (!tree)
@@ -2743,6 +3031,9 @@ void vg_treeview_set_on_activate(vg_treeview_t *tree,
 /// @brief Set the icon displayed when the node is collapsed (or always, if no expanded_icon is
 /// set).
 ///
+/// @details Ownership of @p icon transfers to this function. Literal icon text
+///          and the previous base icon are cleared; stale-node input destroys
+///          the incoming icon instead.
 /// @param node The node to update; must be live.
 /// @param icon Icon value; VG_ICON_NONE removes the icon.
 void vg_tree_node_set_icon(vg_tree_node_t *node, vg_icon_t icon) {
@@ -2762,6 +3053,8 @@ void vg_tree_node_set_icon(vg_tree_node_t *node, vg_icon_t icon) {
 
 /// @brief Set the icon displayed when the node is expanded; overrides the base icon when visible.
 ///
+/// @details Ownership of @p icon transfers to this function. Stale-node input
+///          destroys the incoming icon instead.
 /// @param node The node to update; must be live.
 /// @param icon Icon shown when node->expanded is true; VG_ICON_NONE falls back to the base icon.
 void vg_tree_node_set_expanded_icon(vg_tree_node_t *node, vg_icon_t icon) {
@@ -2781,6 +3074,8 @@ void vg_tree_node_set_expanded_icon(vg_tree_node_t *node, vg_icon_t icon) {
 
 /// @brief Enable or disable drag-and-drop reordering in the tree view.
 ///
+/// @details This flag controls retained drag recognition; callback registration
+///          remains independent.
 /// @param tree    The tree view to configure; may be NULL.
 /// @param enabled true to allow node dragging (requires drag callbacks to be set).
 void vg_treeview_set_drag_enabled(vg_treeview_t *tree, bool enabled) {
@@ -2789,11 +3084,23 @@ void vg_treeview_set_drag_enabled(vg_treeview_t *tree, bool enabled) {
     tree->drag_enabled = enabled;
 }
 
+/// @brief Enable legacy application-directed into-only drag/drop mode.
+/// @param tree TreeView to configure; `NULL` is ignored.
+/// @param enabled `true` for legacy polling mode, `false` for callback-directed
+///        mode with dragging disabled.
 void vg_treeview_set_app_directed_dnd(vg_treeview_t *tree, bool enabled) {
     vg_treeview_set_app_directed_dnd_mode(
         tree, enabled ? VG_TREEVIEW_APP_DND_LEGACY_INTO : VG_TREEVIEW_APP_DND_DISABLED);
 }
 
+/// @brief Select the application-directed drag/drop policy.
+/// @details Changing policy cancels any active drag, releases TreeView input
+///          capture, clears pending drop latches, and synchronizes
+///          `drag_enabled` with whether the selected mode is disabled.
+/// @param tree TreeView to configure; `NULL` is ignored.
+/// @param mode One of `VG_TREEVIEW_APP_DND_DISABLED`,
+///        `VG_TREEVIEW_APP_DND_LEGACY_INTO`, or
+///        `VG_TREEVIEW_APP_DND_ROW_AWARE`; out-of-range values are ignored.
 void vg_treeview_set_app_directed_dnd_mode(vg_treeview_t *tree, int mode) {
     if (!tree)
         return;
@@ -2819,22 +3126,38 @@ void vg_treeview_set_app_directed_dnd_mode(vg_treeview_t *tree, int mode) {
     tree->base.needs_paint = true;
 }
 
+/// @brief Test whether application-directed drag/drop has latched a drop.
+/// @param tree TreeView to inspect; may be `NULL`.
+/// @return `true` while an unconsumed source/target/position latch exists.
 bool vg_treeview_has_pending_drop(const vg_treeview_t *tree) {
     return tree && tree->drop_latched;
 }
 
+/// @brief Read the source node from the pending application-directed drop.
+/// @param tree TreeView to inspect; may be `NULL`.
+/// @return Borrowed latched source pointer, or `NULL`.
 vg_tree_node_t *vg_treeview_drop_source(vg_treeview_t *tree) {
     return tree ? tree->latched_src : NULL;
 }
 
+/// @brief Read the target node from the pending application-directed drop.
+/// @param tree TreeView to inspect; may be `NULL`.
+/// @return Borrowed latched target pointer, or `NULL`.
 vg_tree_node_t *vg_treeview_drop_target_node(vg_treeview_t *tree) {
     return tree ? tree->latched_tgt : NULL;
 }
 
+/// @brief Read the placement from the pending application-directed drop.
+/// @param tree TreeView to inspect; may be `NULL`.
+/// @return Latched `vg_tree_drop_position_t` represented as an integer, or
+///         `VG_TREE_DROP_INTO` when no tree is supplied.
 int vg_treeview_drop_position_value(const vg_treeview_t *tree) {
     return tree ? (int)tree->latched_pos : (int)VG_TREE_DROP_INTO;
 }
 
+/// @brief Consume and clear an application-directed drop latch.
+/// @param tree TreeView whose latched source, target, and position are reset;
+///        `NULL` is ignored.
 void vg_treeview_clear_drop(vg_treeview_t *tree) {
     if (!tree)
         return;
@@ -2846,6 +3169,9 @@ void vg_treeview_clear_drop(vg_treeview_t *tree) {
 
 /// @brief Set all drag-and-drop callbacks and user data in one call.
 ///
+/// @details Predicates are consulted during retained drag recognition and
+///          target validation. `on_drop` is bypassed in application-directed
+///          modes, where the same result is exposed through polling latches.
 /// @param tree      The tree view to configure; may be NULL.
 /// @param can_drag  Predicate: return true if a node is draggable; NULL allows all.
 /// @param can_drop  Predicate: return true if (source, target, position) is a valid drop; NULL
@@ -2925,16 +3251,25 @@ void vg_tree_node_set_loading(vg_tree_node_t *node, bool loading) {
 }
 
 /// @brief Return whether a live node has materialized or lazily advertised children.
+/// @param node Node to inspect.
+/// @return `true` when a live node has a child record or its advertised
+///         `has_children` flag is set.
 bool vg_tree_node_has_children(const vg_tree_node_t *node) {
     return vg_tree_node_is_live(node) && (node->has_children || node->child_count > 0);
 }
 
 /// @brief Return whether a live node currently displays the loading indicator.
+/// @param node Node to inspect.
+/// @return `true` when @p node is live and marked as loading.
 bool vg_tree_node_is_loading(const vg_tree_node_t *node) {
     return vg_tree_node_is_live(node) && node->loading;
 }
 
 /// @brief Consume the independent lazy-child-request edge.
+/// @details Each load-request revision is reported at most once through this
+///          compatibility polling API.
+/// @param tree Live TreeView to inspect.
+/// @return `true` exactly once for each unreported lazy-child request.
 bool vg_treeview_was_load_children_requested(vg_treeview_t *tree) {
     if (!tree || !vg_widget_is_live(&tree->base) ||
         tree->reported_load_request_revision == tree->load_request_revision)
@@ -2944,6 +3279,9 @@ bool vg_treeview_was_load_children_requested(vg_treeview_t *tree) {
 }
 
 /// @brief Return the most recently requested lazy-child node when it remains live.
+/// @param tree Live TreeView to inspect.
+/// @return Borrowed requested node owned by @p tree, or `NULL` if the record is
+///         absent, stale, or foreign.
 vg_tree_node_t *vg_treeview_get_load_requested_node(vg_treeview_t *tree) {
     if (!tree || !vg_widget_is_live(&tree->base) ||
         !vg_tree_node_is_live(tree->last_load_requested) ||
@@ -2953,6 +3291,9 @@ vg_tree_node_t *vg_treeview_get_load_requested_node(vg_treeview_t *tree) {
 }
 
 /// @brief Return the most recently activated node when it remains live.
+/// @param tree Live TreeView to inspect.
+/// @return Borrowed activated node owned by @p tree, or `NULL` if the record is
+///         absent, stale, or foreign.
 vg_tree_node_t *vg_treeview_get_activated_node(vg_treeview_t *tree) {
     if (!tree || !vg_widget_is_live(&tree->base) || !vg_tree_node_is_live(tree->last_activated) ||
         tree->last_activated->owner != tree)

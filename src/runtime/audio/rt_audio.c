@@ -32,6 +32,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the Zanna runtime's sound, music, mix-group, and audio
+///        effect bridge.
+/// @details The audio-enabled implementation owns the process-wide ZannaAUD
+///          context, validates runtime wrapper handles, tracks active voices,
+///          and coordinates music crossfades under the audio-state lock. The
+///          audio-disabled branch preserves queryable logical volume/group
+///          state while trapping operations that require a backend. Runtime
+///          strings passed as file paths or group names are validated and
+///          canonicalized before crossing into the backend or fixed-size
+///          registry storage.
+
 #include "rt_audio.h"
 #include "rt_asset.h"
 #include "rt_audio_fx.h"
@@ -105,15 +117,15 @@ static void audio_groups_init_unlocked(void) {
     g_group_names_initialized = 1;
 }
 
-/// @brief Copy a runtime string group name into a fixed @p cap buffer,
-///        trimming leading/trailing spaces/tabs and NUL-terminating
-///        (truncated to fit). Empty buffer on NULL @p name.
 /// @brief Canonicalize a mix-group name into @p dst.
 /// @details Trims space/tab edges and replaces embedded NUL bytes with '_'.
 ///          Names whose canonical form exceeds the storage capacity are
 ///          REJECTED (dst becomes empty, so registration/lookup return -1)
 ///          instead of silently truncated — truncation made distinct names
 ///          alias the same group and could split UTF-8 sequences (VDOC-118).
+/// @param dst Destination buffer, which is cleared when the input is invalid.
+/// @param cap Total destination capacity including the terminating NUL byte.
+/// @param name Runtime string to canonicalize; NULL produces an empty result.
 static void audio_group_copy_name(char *dst, size_t cap, rt_string name) {
     if (!dst || cap == 0)
         return;
@@ -140,6 +152,13 @@ static void audio_group_copy_name(char *dst, size_t cap, rt_string name) {
 }
 
 #ifdef ZANNA_ENABLE_AUDIO
+/// @brief Validate a runtime string for use as a NUL-terminated backend path.
+/// @details Rejects NULL strings, missing string storage, and embedded NUL
+///          bytes within the runtime string's declared length so the backend
+///          cannot observe a silently truncated path.
+/// @param path Runtime string containing a filesystem or asset path.
+/// @return Borrowed NUL-terminated character data, or NULL when invalid. The
+///         returned pointer remains owned by @p path.
 static const char *audio_path_cstr(rt_string path) {
     if (!path)
         return NULL;
@@ -197,9 +216,13 @@ static int8_t audio_group_id_valid_unlocked(int64_t group) {
     return group >= 0 && group < RT_MIXGROUP_MAX_GROUPS && g_group_in_use[group];
 }
 
-/// @brief Convert a fade/duration in seconds to whole milliseconds, saturating
-///        at INT64_MAX; non-finite or non-positive input yields 0.
 #ifdef ZANNA_ENABLE_AUDIO
+/// @brief Convert a duration in seconds to rounded whole milliseconds.
+/// @details Non-finite and non-positive durations map to zero. Positive
+///          results that cannot be represented by `int64_t` saturate at
+///          `INT64_MAX`.
+/// @param seconds Duration expressed in seconds.
+/// @return Rounded duration in milliseconds, within `[0, INT64_MAX]`.
 static int64_t seconds_to_ms_i64(float seconds) {
     if (!isfinite(seconds) || seconds <= 0.0f)
         return 0;
@@ -276,11 +299,28 @@ typedef struct {
 
 static rt_music_crossfade_state g_crossfades[VAUD_MAX_MUSIC];
 
+/// @brief Tell ZannaAUD whether a mix group currently has an effect chain.
+/// @details Registered as the backend effect-query callback. The callback
+///          delegates to the runtime effect registry; @p userdata is unused
+///          because that registry is process-wide.
+/// @param userdata Backend callback context; ignored.
+/// @param group_id Mix-group identifier being considered by the mixer.
+/// @return Non-zero when the group has at least one active effect.
 static int rt_audio_fx_query_cb(void *userdata, int64_t group_id) {
     (void)userdata;
     return rt_audio_fx_group_has_effects(group_id);
 }
 
+/// @brief Process one interleaved sample block through a group's effect chain.
+/// @details Registered as the ZannaAUD effect-processing callback and delegates
+///          in-place processing to the runtime effect registry. No sample
+///          storage is retained after the call.
+/// @param userdata Backend callback context; ignored.
+/// @param group_id Mix group whose effect chain should process the block.
+/// @param samples Writable interleaved floating-point sample buffer.
+/// @param frames Number of sample frames in @p samples.
+/// @param channels Number of interleaved channels per frame.
+/// @param sample_rate Sample rate in hertz.
 static void rt_audio_fx_process_cb(void *userdata,
                                    int64_t group_id,
                                    float *samples,
@@ -385,7 +425,11 @@ static rt_sound *rt_sound_from_handle_locked(void *sound) {
     return NULL;
 }
 
-/// @brief Finalizer for sound objects.
+/// @brief Finalize a runtime sound wrapper and its backend resource.
+/// @details Removes the wrapper from the protected live-handle registry,
+///          invalidates its discriminator, and releases the detached ZannaAUD
+///          sound after dropping the audio-state lock.
+/// @param obj Runtime-managed `rt_sound` object; NULL is ignored.
 static void rt_sound_finalize(void *obj) {
     if (!obj)
         return;
@@ -468,7 +512,11 @@ static rt_music *rt_music_from_handle_locked(void *music) {
     return NULL;
 }
 
-/// @brief Finalizer for music objects.
+/// @brief Finalize a runtime music wrapper and its streaming backend resource.
+/// @details Removes the wrapper from the protected registry, invalidates its
+///          discriminator, and frees the detached ZannaAUD stream after the
+///          audio-state lock has been released.
+/// @param obj Runtime-managed `rt_music` object; NULL is ignored.
 static void rt_music_finalize(void *obj) {
     if (!obj)
         return;
@@ -1086,7 +1134,11 @@ void rt_audio_shutdown(void) {
     rt_audio_drain_releases(&releases);
 }
 
-/// @brief Set the global master volume (0 = mute, 100 = full volume).
+/// @brief Set the process-wide logical master volume.
+/// @details Clamps the requested percentage to `[0, 100]`, stores it even when
+///          no backend context exists, and immediately applies it to a live
+///          ZannaAUD context.
+/// @param volume Requested master volume percentage.
 void rt_audio_set_master_volume(int64_t volume) {
     volume = clamp_volume_100(volume);
 
@@ -1097,7 +1149,11 @@ void rt_audio_set_master_volume(int64_t volume) {
     audio_state_unlock();
 }
 
-/// @brief Get the current master volume as an integer (0–100).
+/// @brief Get the current master volume as an integer percentage.
+/// @details When a backend context exists, samples its floating-point master
+///          gain and updates the module's logical copy; otherwise returns the
+///          last stored value.
+/// @return Master volume in `[0, 100]`.
 int64_t rt_audio_get_master_volume(void) {
     audio_state_lock();
     int64_t result = g_master_volume;
@@ -1111,6 +1167,9 @@ int64_t rt_audio_get_master_volume(void) {
 }
 
 /// @brief Pause all currently playing sounds and music.
+/// @details Records the global paused state even without a backend and forwards
+///          the request to ZannaAUD when a context is live. Crossfade clocks
+///          observe this flag and do not advance while globally paused.
 void rt_audio_pause_all(void) {
     audio_state_lock();
     g_audio_paused = 1;
@@ -1119,7 +1178,10 @@ void rt_audio_pause_all(void) {
     audio_state_unlock();
 }
 
-/// @brief Resume all paused sounds and music.
+/// @brief Resume all sounds and music paused by the global audio control.
+/// @details Clears the global pause flag and forwards the request to a live
+///          backend. Individual music/crossfade pause state remains governed by
+///          the related-track APIs.
 void rt_audio_resume_all(void) {
     audio_state_lock();
     g_audio_paused = 0;
@@ -1128,7 +1190,10 @@ void rt_audio_resume_all(void) {
     audio_state_unlock();
 }
 
-/// @brief Advance time-based audio state using the monotonic clock.
+/// @brief Advance backend maintenance and time-based crossfade state.
+/// @details Updates the live ZannaAUD context, computes monotonic elapsed time
+///          for each unpaused crossfade, and drains references completed by a
+///          transition only after releasing the audio-state lock.
 void rt_audio_update(void) {
     rt_deferred_release_list releases = {0};
 
@@ -1164,7 +1229,9 @@ void rt_audio_update(void) {
     rt_audio_drain_releases(&releases);
 }
 
-/// @brief Stop all currently playing sound effects (music is unaffected).
+/// @brief Stop all currently playing sound effects.
+/// @details Forwards the stop to a live backend and clears the runtime's
+///          tracked-voice table. Music streams and crossfades are unaffected.
 void rt_audio_stop_all_sounds(void) {
     audio_state_lock();
     if (g_audio_ctx)
@@ -1255,9 +1322,6 @@ int64_t rt_audio_get_backend_write_failures(void) {
 // Sound Effects
 //===----------------------------------------------------------------------===//
 
-/// @brief Detect audio file format from an in-memory header.
-/// @return 1=WAV/RIFF, 2=OGG, 3=MP3, 0=unknown
-
 /// @brief Wrap a freshly-loaded ZannaAUD sound in an `rt_sound` heap object.
 /// @details Allocates an `rt_sound` via `rt_obj_new_i64`, stamps the
 ///          discriminator magic (`RT_SOUND_MAGIC`), installs the finalizer
@@ -1291,7 +1355,11 @@ static void *rt_sound_wrap_loaded_locked(vaud_sound_t snd) {
 
 /// @brief Load a sound effect from a file (WAV, OGG, or MP3 auto-detected from magic bytes).
 /// @details OGG and MP3 files are decoded to WAV in memory before loading into the
-///          audio engine. The returned handle can be played multiple times concurrently.
+///          audio engine. The returned handle can be played multiple times
+///          concurrently and is registered for runtime handle validation.
+/// @param path Runtime string containing a path without embedded NUL bytes.
+/// @return New reference-counted sound wrapper, or NULL when the path is
+///         invalid, initialization/decoding/loading fails, or allocation fails.
 void *rt_sound_load(rt_string path) {
     if (!path)
         return NULL;
@@ -1347,6 +1415,12 @@ void *rt_sound_load(rt_string path) {
 }
 
 /// @brief Load a sound effect through the runtime asset manager.
+/// @details Loads the named asset into temporary raw storage, delegates format
+///          detection and backend creation to @ref rt_sound_load_mem, and frees
+///          the temporary bytes before returning.
+/// @param name Runtime asset name.
+/// @return New reference-counted sound wrapper, or NULL when the asset is
+///         missing, empty, too large, invalid, or cannot be loaded.
 void *rt_sound_load_asset(rt_string name) {
     if (!name)
         return NULL;
@@ -1369,7 +1443,14 @@ void *rt_sound_load_asset(rt_string name) {
     return sound;
 }
 
-/// @brief Load a sound effect from an in-memory buffer (WAV/OGG/MP3 supported).
+/// @brief Load a sound effect from an in-memory WAV, OGG, or MP3 buffer.
+/// @details OGG and MP3 input is decoded into temporary WAV storage before
+///          backend loading. The function does not retain or modify the
+///          caller's input buffer.
+/// @param data Borrowed encoded audio bytes.
+/// @param size Number of readable bytes in @p data.
+/// @return New reference-counted sound wrapper, or NULL for invalid input or
+///         any initialization, decoding, backend, or allocation failure.
 void *rt_sound_load_mem(const void *data, int64_t size) {
     if (!data || size <= 0)
         return NULL;
@@ -1418,7 +1499,11 @@ void *rt_sound_load_mem(const void *data, int64_t size) {
     return wrapper;
 }
 
-/// @brief Destroy a sound handle and release the underlying audio buffer.
+/// @brief Release one caller-owned reference to a sound wrapper.
+/// @details Invalid and NULL handles are ignored. When the reference count
+///          reaches zero, the runtime finalizer unregisters the wrapper and
+///          releases its underlying backend sound.
+/// @param sound Opaque sound handle returned by a load operation.
 void rt_sound_destroy(void *sound) {
     if (!sound)
         return;
@@ -1477,6 +1562,13 @@ static int64_t rt_sound_play_internal(
     return result;
 }
 
+/// @brief Determine whether a pointer names a live runtime sound wrapper.
+/// @details Looks up @p sound in the protected wrapper registry instead of
+///          dereferencing arbitrary caller memory. A registered wrapper whose
+///          backend sound was detached during shutdown still counts as a
+///          handle; use @ref rt_sound_is_playable to require backend attachment.
+/// @param sound Opaque pointer to examine; NULL is never a valid handle.
+/// @return `1` for a registered sound wrapper, otherwise `0`.
 int64_t rt_sound_is_handle(void *sound) {
     if (!sound)
         return 0;
@@ -1492,6 +1584,9 @@ int64_t rt_sound_is_handle(void *sound) {
 ///          `Audio.Shutdown()` in the registry with their ZannaAUD handles
 ///          detached, and such zombies must not register as playable
 ///          (VDOC-121).
+/// @param sound Opaque pointer to examine.
+/// @return `1` when @p sound is a registered wrapper attached to the active
+///         backend context, otherwise `0`.
 int64_t rt_sound_is_playable(void *sound) {
     if (!sound)
         return 0;
@@ -1502,22 +1597,35 @@ int64_t rt_sound_is_playable(void *sound) {
     return ok;
 }
 
-/// @brief Play a sound effect at default volume and center pan. Returns a voice ID.
+/// @brief Play a sound effect at full logical volume and centered pan.
+/// @param sound Opaque playable sound wrapper.
+/// @return Backend voice identifier, or `-1` when playback cannot start.
 int64_t rt_sound_play(void *sound) {
     return rt_sound_play_internal(sound, 100, 0, 0, RT_MIXGROUP_SFX);
 }
 
-/// @brief Play a sound with explicit volume (0–100) and stereo pan (-100 to 100).
+/// @brief Play a sound once with explicit volume and stereo pan.
+/// @param sound Opaque playable sound wrapper.
+/// @param volume Logical volume clamped to `[0, 100]`.
+/// @param pan Stereo pan clamped to `[-100, 100]`.
+/// @return Backend voice identifier, or `-1` when playback cannot start.
 int64_t rt_sound_play_ex(void *sound, int64_t volume, int64_t pan) {
     return rt_sound_play_internal(sound, volume, pan, 0, RT_MIXGROUP_SFX);
 }
 
-/// @brief Play a sound in a continuous loop with explicit volume and pan. Returns a voice ID.
+/// @brief Play a sound continuously with explicit volume and stereo pan.
+/// @param sound Opaque playable sound wrapper.
+/// @param volume Logical volume clamped to `[0, 100]`.
+/// @param pan Stereo pan clamped to `[-100, 100]`.
+/// @return Backend voice identifier, or `-1` when playback cannot start.
 int64_t rt_sound_play_loop(void *sound, int64_t volume, int64_t pan) {
     return rt_sound_play_internal(sound, volume, pan, 1, RT_MIXGROUP_SFX);
 }
 
-/// @brief Stop a playing voice immediately by its voice ID.
+/// @brief Stop a playing voice immediately.
+/// @details Removes the identifier from runtime tracking even when no backend
+///          context exists. Negative identifiers are ignored.
+/// @param voice_id Identifier returned by a sound playback operation.
 void rt_voice_stop(int64_t voice_id) {
     if (voice_id < 0)
         return;
@@ -1529,7 +1637,12 @@ void rt_voice_stop(int64_t voice_id) {
     audio_state_unlock();
 }
 
-/// @brief Change the volume of a playing voice (0–100).
+/// @brief Change a playing voice's logical pre-group volume.
+/// @details Clamps @p volume to `[0, 100]`, records it in the tracked-voice
+///          table, reapplies the voice's mix-group multiplier, and sends the
+///          resulting gain to the live backend.
+/// @param voice_id Identifier returned by a sound playback operation.
+/// @param volume Requested logical volume percentage.
 void rt_voice_set_volume(int64_t voice_id, int64_t volume) {
     if (voice_id < 0)
         return;
@@ -1554,7 +1667,10 @@ void rt_voice_set_volume(int64_t voice_id, int64_t volume) {
     audio_state_unlock();
 }
 
-/// @brief Change the stereo pan of a playing voice (-100 = full left, 100 = full right).
+/// @brief Change the stereo pan of a playing voice.
+/// @param voice_id Identifier returned by a sound playback operation.
+/// @param pan Pan position clamped to `[-100, 100]`, where negative values are
+///        left and positive values are right.
 void rt_voice_set_pan(int64_t voice_id, int64_t pan) {
     if (voice_id < 0)
         return;
@@ -1572,6 +1688,10 @@ void rt_voice_set_pan(int64_t voice_id, int64_t pan) {
 }
 
 /// @brief Check whether a voice is currently playing.
+/// @details Stale identifiers are removed from runtime voice tracking when the
+///          backend reports that playback has ended.
+/// @param voice_id Identifier returned by a sound playback operation.
+/// @return `1` while the backend voice is active, otherwise `0`.
 int64_t rt_voice_is_playing(int64_t voice_id) {
     if (voice_id < 0)
         return 0;
@@ -1589,6 +1709,8 @@ int64_t rt_voice_is_playing(int64_t voice_id) {
 /// @details 1.0 = native rate; the mixer clamps to 0.25–4.0 and resamples
 ///          with a fractional cursor, so both pitch and duration scale.
 ///          Safe no-op on finished/invalid voices.
+/// @param voice_id Identifier returned by a sound playback operation.
+/// @param pitch Requested playback-rate multiplier.
 void rt_voice_set_pitch(int64_t voice_id, double pitch) {
     if (voice_id < 0)
         return;
@@ -1599,7 +1721,10 @@ void rt_voice_set_pitch(int64_t voice_id, double pitch) {
     audio_state_unlock();
 }
 
-/// @brief Get a voice's playback-rate (pitch) multiplier (1.0 default).
+/// @brief Get a voice's playback-rate multiplier.
+/// @param voice_id Identifier returned by a sound playback operation.
+/// @return Current backend pitch multiplier, or `1.0` for an invalid voice or
+///         unavailable context.
 double rt_voice_get_pitch(int64_t voice_id) {
     if (voice_id < 0)
         return 1.0;
@@ -1614,6 +1739,8 @@ double rt_voice_get_pitch(int64_t voice_id) {
 /// @brief Set a direct per-voice lowpass cutoff in Hz (<= 0 disables).
 /// @details Useful for scoped-focus/underwater effects; composes with the
 ///          occlusion sweep (the lower cutoff wins).
+/// @param voice_id Identifier returned by a sound playback operation.
+/// @param cutoff_hz Cutoff frequency in hertz; non-positive disables the filter.
 void rt_voice_set_lowpass(int64_t voice_id, double cutoff_hz) {
     if (voice_id < 0)
         return;
@@ -1629,6 +1756,8 @@ void rt_voice_set_lowpass(int64_t voice_id, double cutoff_hz) {
 ///          the mixer smooths changes (~80 ms) so gameplay-driven line-of-
 ///          sight flips never zipper. The caller supplies the amount (e.g.
 ///          from its own occlusion raycasts).
+/// @param voice_id Identifier returned by a sound playback operation.
+/// @param amount Requested occlusion fraction.
 void rt_voice_set_occlusion(int64_t voice_id, double amount) {
     if (voice_id < 0)
         return;
@@ -1639,7 +1768,11 @@ void rt_voice_set_occlusion(int64_t voice_id, double amount) {
     audio_state_unlock();
 }
 
-/// @brief Enable/disable per-voice RMS metering (lip sync level tap).
+/// @brief Enable or disable per-voice RMS metering.
+/// @details Metering provides a lip-sync/source-level tap for the last mixed
+///          block and is disabled by default.
+/// @param voice_id Identifier returned by a sound playback operation.
+/// @param enabled Non-zero to collect RMS levels; zero to disable collection.
 void rt_voice_enable_metering(int64_t voice_id, int8_t enabled) {
     if (voice_id < 0)
         return;
@@ -1649,7 +1782,10 @@ void rt_voice_enable_metering(int64_t voice_id, int8_t enabled) {
     audio_state_unlock();
 }
 
-/// @brief RMS source level (0..~1) of the last mixed block; 0 when unmetered.
+/// @brief Read the RMS source level of the last mixed block.
+/// @param voice_id Identifier returned by a sound playback operation.
+/// @return Most recent level, nominally `0..1`, or `0` when the voice is
+///         invalid, unmetered, or no context exists.
 double rt_voice_get_level(int64_t voice_id) {
     double level = 0.0;
     if (voice_id < 0)
@@ -1664,6 +1800,11 @@ double rt_voice_get_level(int64_t voice_id) {
 /// @brief Play a sound with volume (0-100), pan (-100..100), and pitch.
 /// @details PlayEx plus a playback-rate multiplier applied atomically at
 ///          start so the first rendered chunk is already pitch-shifted.
+/// @param sound Opaque playable sound wrapper.
+/// @param volume Logical volume clamped to `[0, 100]`.
+/// @param pan Stereo pan clamped to `[-100, 100]`.
+/// @param pitch Requested playback-rate multiplier.
+/// @return Backend voice identifier, or `-1` when playback cannot start.
 int64_t rt_sound_play_ex2(void *sound, int64_t volume, int64_t pan, double pitch) {
     int64_t voice_id = rt_sound_play_ex(sound, volume, pan);
     if (voice_id >= 0)
@@ -1678,6 +1819,11 @@ int64_t rt_sound_play_ex2(void *sound, int64_t volume, int64_t pan, double pitch
 ///          over @p release_sec. amount <= 0 removes the rule. Group names
 ///          are resolved through the same registry as `RegisterGroup`
 ///          (registering them on first use).
+/// @param trigger_group Name of the group whose audible activity drives ducking.
+/// @param target_group Name of the group whose gain should be reduced.
+/// @param amount Requested attenuation fraction; non-positive removes the rule.
+/// @param attack_sec Time in seconds to reach the attenuated gain.
+/// @param release_sec Time in seconds to restore the target group's gain.
 void rt_audio_set_group_ducking(rt_string trigger_group,
                                 rt_string target_group,
                                 double amount,
@@ -1710,7 +1856,11 @@ void rt_audio_set_group_ducking(rt_string trigger_group,
 
 /// @brief Load a music track for streaming playback (WAV, OGG, or MP3 auto-detected).
 /// @details Unlike sounds, music streams from disk and is not fully decoded into memory.
-///          Only one music track plays at a time (use crossfade for transitions).
+///          Only one foreground music track plays at a time unless crossfade
+///          coordination explicitly retains two streams.
+/// @param path Runtime string containing a path without embedded NUL bytes.
+/// @return New reference-counted music wrapper, or NULL when the path is
+///         invalid or initialization, loading, or allocation fails.
 void *rt_music_load(rt_string path) {
     if (!path)
         return NULL;
@@ -1774,7 +1924,10 @@ void *rt_music_load(rt_string path) {
     return wrapper_obj;
 }
 
-/// @brief Destroy a music handle and release streaming resources.
+/// @brief Release one caller-owned reference to a music wrapper.
+/// @details Invalid and NULL handles are ignored. The final reference
+///          unregisters the wrapper and releases its streaming backend object.
+/// @param music Opaque music handle returned by @ref rt_music_load.
 void rt_music_destroy(void *music) {
     if (!music)
         return;
@@ -1791,6 +1944,7 @@ void rt_music_destroy(void *music) {
 ///          lookup via @ref rt_music_from_handle_locked. Used externally
 ///          to reject ABI mismatches before forwarding into the rest of
 ///          the music API.
+/// @param music Opaque pointer to examine.
 /// @return 1 if @p music is a valid handle, 0 otherwise.
 int64_t rt_music_is_handle(void *music) {
     if (!music)
@@ -1801,7 +1955,12 @@ int64_t rt_music_is_handle(void *music) {
     return ok;
 }
 
-/// @brief Start playing a music track (loop=1 for continuous looping, 0 for one-shot).
+/// @brief Start a music track as the foreground stream.
+/// @details Stores the loop preference, cancels or releases unrelated active
+///          music as needed, starts the backend stream, and reapplies logical
+///          and music-group volume. Invalid or detached handles are ignored.
+/// @param music Opaque live music wrapper.
+/// @param loop Non-zero for continuous looping; zero for one-shot playback.
 void rt_music_play(void *music, int64_t loop) {
     if (!music)
         return;
@@ -1825,17 +1984,26 @@ void rt_music_play(void *music, int64_t loop) {
     rt_audio_drain_releases(&releases);
 }
 
-/// @brief Stop music playback and reset the position to the beginning.
+/// @brief Stop a music track and reset its playback position.
+/// @details Delegates to @ref rt_music_stop_related so an active crossfade is
+///          cancelled consistently with its paired track.
+/// @param music Opaque music wrapper; invalid handles are ignored.
 void rt_music_stop(void *music) {
     rt_music_stop_related(music);
 }
 
-/// @brief Pause music playback at the current position (can be resumed).
+/// @brief Pause music playback at the current position.
+/// @details Delegates to @ref rt_music_pause_related so both sides of an active
+///          crossfade pause together.
+/// @param music Opaque music wrapper; invalid handles are ignored.
 void rt_music_pause(void *music) {
     rt_music_pause_related(music);
 }
 
-/// @brief Resume paused music playback from where it was paused.
+/// @brief Resume music playback from its paused position.
+/// @details Delegates to @ref rt_music_resume_related so paired crossfade state
+///          and its monotonic clock resume coherently.
+/// @param music Opaque music wrapper; invalid handles are ignored.
 void rt_music_resume(void *music) {
     rt_music_resume_related(music);
 }
@@ -1870,7 +2038,12 @@ void rt_music_set_loop(void *music, int64_t loop) {
     audio_state_unlock();
 }
 
-/// @brief Set the music playback volume (0–100).
+/// @brief Set a music track's logical pre-group volume.
+/// @details Clamps the value to `[0, 100]`. When the track participates in a
+///          crossfade, updates the corresponding curve anchor and reapplies
+///          both envelopes; otherwise applies the volume directly.
+/// @param music Opaque live music wrapper.
+/// @param volume Requested logical volume percentage.
 void rt_music_set_volume(void *music, int64_t volume) {
     if (!music)
         return;
@@ -1897,7 +2070,9 @@ void rt_music_set_volume(void *music, int64_t volume) {
     audio_state_unlock();
 }
 
-/// @brief Get the current music playback volume (0–100).
+/// @brief Get a music track's logical pre-group volume.
+/// @param music Opaque live music wrapper.
+/// @return Stored volume in `[0, 100]`, or `0` for an invalid/detached handle.
 int64_t rt_music_get_volume(void *music) {
     if (!music)
         return 0;
@@ -1916,6 +2091,8 @@ int64_t rt_music_get_volume(void *music) {
 }
 
 /// @brief Check whether a music track is currently playing.
+/// @param music Opaque live music wrapper.
+/// @return `1` when its backend stream is playing, otherwise `0`.
 int64_t rt_music_is_playing(void *music) {
     if (!music)
         return 0;
@@ -1934,7 +2111,12 @@ int64_t rt_music_is_playing(void *music) {
     return playing;
 }
 
-/// @brief Seek to a position in the music track (in milliseconds from the start).
+/// @brief Seek to a position measured from the start of a music track.
+/// @details Clamps negative positions to zero and positions beyond a known
+///          duration to the end. Active crossfade envelopes are reapplied after
+///          seeking so the track retains its instantaneous transition gain.
+/// @param music Opaque live music wrapper.
+/// @param position_ms Requested zero-based position in milliseconds.
 void rt_music_seek(void *music, int64_t position_ms) {
     if (!music)
         return;
@@ -1964,7 +2146,10 @@ void rt_music_seek(void *music, int64_t position_ms) {
     audio_state_unlock();
 }
 
-/// @brief Get the current playback position in milliseconds.
+/// @brief Get the current music playback position.
+/// @param music Opaque live music wrapper.
+/// @return Rounded milliseconds from the start, or `0` for an invalid handle,
+///         unavailable stream, or non-positive/non-finite backend result.
 int64_t rt_music_get_position(void *music) {
     if (!music)
         return 0;
@@ -1982,7 +2167,10 @@ int64_t rt_music_get_position(void *music) {
     return seconds_to_ms_i64(seconds);
 }
 
-/// @brief Get the total duration of a music track in milliseconds.
+/// @brief Get the total duration of a music track.
+/// @param music Opaque live music wrapper.
+/// @return Rounded duration in milliseconds, or `0` for an invalid handle,
+///         unavailable stream, or non-positive/non-finite backend result.
 int64_t rt_music_get_duration(void *music) {
     if (!music)
         return 0;
@@ -2170,7 +2358,12 @@ void rt_music_set_crossfade_pair_volume(void *music, int64_t volume) {
 // Mix Groups — real implementation
 //===----------------------------------------------------------------------===//
 
-/// @brief Set the volume for a mix group (0–100). Sounds in this group are scaled by this.
+/// @brief Set the logical volume multiplier for a mix group.
+/// @details Ignores invalid or currently unused group identifiers. The value is
+///          clamped to `[0, 100]` and immediately reapplied to active music or
+///          tracked voices assigned to the group.
+/// @param group Registered mix-group identifier.
+/// @param volume Requested group volume in percent.
 void rt_audio_set_group_volume(int64_t group, int64_t volume) {
     audio_state_lock();
     if (!audio_group_id_valid_unlocked(group)) {
@@ -2185,7 +2378,10 @@ void rt_audio_set_group_volume(int64_t group, int64_t volume) {
     audio_state_unlock();
 }
 
-/// @brief Get the volume of a mix group (0–100).
+/// @brief Read the logical volume multiplier for a mix group.
+/// @param group Registered mix-group identifier.
+/// @return Stored volume in `[0, 100]`, or the neutral default `100` when
+///         @p group is invalid or unused.
 int64_t rt_audio_get_group_volume(int64_t group) {
     audio_state_lock();
     int64_t volume = audio_group_id_valid_unlocked(group) ? g_group_volume[group] : 100;
@@ -2193,6 +2389,13 @@ int64_t rt_audio_get_group_volume(int64_t group) {
     return volume;
 }
 
+/// @brief Register a canonicalized named mix group.
+/// @details Leading and trailing spaces/tabs are removed. Re-registering an
+///          existing name returns its current identifier; a new name claims
+///          the first available named-group slot with volume `100`.
+/// @param group_name Runtime string naming the group.
+/// @return Group identifier, or `-1` for an empty, overlong, or otherwise
+///         invalid name, or when the fixed registry is full.
 int64_t rt_audio_register_group(rt_string group_name) {
     char name[32];
     audio_group_copy_name(name, sizeof(name), group_name);
@@ -2202,6 +2405,10 @@ int64_t rt_audio_register_group(rt_string group_name) {
     return id;
 }
 
+/// @brief Find a previously registered mix group by canonical name.
+/// @param group_name Runtime string naming a built-in or named group.
+/// @return Registered group identifier, or `-1` when the canonicalized name is
+///         empty, invalid, or absent.
 int64_t rt_audio_find_group(rt_string group_name) {
     char name[32];
     audio_group_copy_name(name, sizeof(name), group_name);
@@ -2222,6 +2429,13 @@ void *rt_audio_find_group_option(rt_string group_name) {
     return id >= 0 ? rt_option_some_i64(id) : rt_option_none();
 }
 
+/// @brief Set the volume of a named mix group, registering it when necessary.
+/// @details The canonicalized name is looked up or allocated under the
+///          audio-state lock. Successful updates are clamped to `[0, 100]` and
+///          immediately propagated to active music or tracked voices.
+/// @param group_name Runtime string naming the target group.
+/// @param volume Requested volume in percent. Invalid names or registry
+///        exhaustion leave state unchanged.
 void rt_audio_set_group_volume_named(rt_string group_name, int64_t volume) {
     char name[32];
     audio_group_copy_name(name, sizeof(name), group_name);
@@ -2237,6 +2451,10 @@ void rt_audio_set_group_volume_named(rt_string group_name, int64_t volume) {
     audio_state_unlock();
 }
 
+/// @brief Read the volume of a named mix group.
+/// @param group_name Runtime string naming a built-in or registered group.
+/// @return Stored volume in `[0, 100]`, or the neutral default `100` when the
+///         name is invalid or has not been registered.
 int64_t rt_audio_get_group_volume_named(rt_string group_name) {
     char name[32];
     audio_group_copy_name(name, sizeof(name), group_name);
@@ -2247,6 +2465,10 @@ int64_t rt_audio_get_group_volume_named(rt_string group_name) {
     return volume;
 }
 
+/// @brief Obtain the canonical name associated with a mix-group identifier.
+/// @param group_id Registered mix-group identifier.
+/// @return Runtime-owned copy of the stored group name, or the shared empty
+///         runtime string for an invalid/unused identifier.
 rt_string rt_audio_group_name(int64_t group_id) {
     audio_state_lock();
     const char *name = audio_group_id_valid_unlocked(group_id) ? g_group_names[group_id] : "";
@@ -2255,6 +2477,9 @@ rt_string rt_audio_group_name(int64_t group_id) {
     return result;
 }
 
+/// @brief Check whether an identifier may be used with the runtime FX registry.
+/// @param group Mix-group identifier to validate.
+/// @return Non-zero when @p group is in range and currently registered.
 static int8_t rt_audio_fx_group_valid(int64_t group) {
     audio_state_lock();
     int8_t ok = audio_group_id_valid_unlocked(group);
@@ -2262,54 +2487,105 @@ static int8_t rt_audio_fx_group_valid(int64_t group) {
     return ok;
 }
 
+/// @brief Append a low-pass filter to a mix group's effect chain.
+/// @param group Registered mix-group identifier.
+/// @param cutoff_hz Filter cutoff frequency in hertz.
+/// @param q Filter resonance/quality factor.
+/// @return Effect identifier, or `-1` when @p group is invalid or the effect
+///         cannot be allocated.
 int64_t rt_snd_group_add_lowpass(int64_t group, double cutoff_hz, double q) {
     if (!rt_audio_fx_group_valid(group))
         return -1;
     return rt_audio_fx_add_lowpass(group, cutoff_hz, q);
 }
 
+/// @brief Append a high-pass filter to a mix group's effect chain.
+/// @param group Registered mix-group identifier.
+/// @param cutoff_hz Filter cutoff frequency in hertz.
+/// @param q Filter resonance/quality factor.
+/// @return Effect identifier, or `-1` when @p group is invalid or the effect
+///         cannot be allocated.
 int64_t rt_snd_group_add_highpass(int64_t group, double cutoff_hz, double q) {
     if (!rt_audio_fx_group_valid(group))
         return -1;
     return rt_audio_fx_add_highpass(group, cutoff_hz, q);
 }
 
+/// @brief Append a peaking equalizer to a mix group's effect chain.
+/// @param group Registered mix-group identifier.
+/// @param freq_hz Center frequency in hertz.
+/// @param q Filter bandwidth/quality factor.
+/// @param gain_db Gain applied at the center frequency, in decibels.
+/// @return Effect identifier, or `-1` when @p group is invalid or the effect
+///         cannot be allocated.
 int64_t rt_snd_group_add_peaking(int64_t group, double freq_hz, double q, double gain_db) {
     if (!rt_audio_fx_group_valid(group))
         return -1;
     return rt_audio_fx_add_peaking(group, freq_hz, q, gain_db);
 }
 
+/// @brief Append a feedback delay to a mix group's effect chain.
+/// @param group Registered mix-group identifier.
+/// @param delay_ms Delay time in milliseconds.
+/// @param feedback Fraction of delayed output fed back into the delay line.
+/// @param wet Wet-signal mix level.
+/// @return Effect identifier, or `-1` when @p group is invalid or the effect
+///         cannot be allocated.
 int64_t rt_snd_group_add_delay(int64_t group, double delay_ms, double feedback, double wet) {
     if (!rt_audio_fx_group_valid(group))
         return -1;
     return rt_audio_fx_add_delay(group, delay_ms, feedback, wet);
 }
 
-/// @brief Update a group reverb insert's parameters in place (zone easing).
+/// @brief Update a group reverb insert's parameters in place.
+/// @details Delegates effect lookup and parameter normalization to the FX
+///          registry. This supports gradual zone transitions without replacing
+///          the existing effect and its accumulated state.
+/// @param group Mix-group identifier containing the effect.
+/// @param fx_id Reverb effect identifier returned by
+///        @ref rt_snd_group_add_reverb.
+/// @param room_size Reverb room-size parameter.
+/// @param damping High-frequency damping parameter.
+/// @param wet Wet-signal mix level.
 void rt_snd_group_set_reverb(
     int64_t group, int64_t fx_id, double room_size, double damping, double wet) {
     rt_audio_fx_set_reverb_params(group, fx_id, room_size, damping, wet);
 }
 
+/// @brief Append a reverb processor to a mix group's effect chain.
+/// @param group Registered mix-group identifier.
+/// @param room_size Reverb room-size parameter.
+/// @param damping High-frequency damping parameter.
+/// @param wet Wet-signal mix level.
+/// @return Effect identifier, or `-1` when @p group is invalid or the effect
+///         cannot be allocated.
 int64_t rt_snd_group_add_reverb(int64_t group, double room_size, double damping, double wet) {
     if (!rt_audio_fx_group_valid(group))
         return -1;
     return rt_audio_fx_add_reverb(group, room_size, damping, wet);
 }
 
+/// @brief Enable or bypass one effect in a mix group's chain.
+/// @param group Registered mix-group identifier.
+/// @param fx_id Effect identifier returned by an add operation.
+/// @param bypass Non-zero to bypass processing; zero to enable it.
 void rt_snd_group_fx_bypass(int64_t group, int64_t fx_id, int8_t bypass) {
     if (!rt_audio_fx_group_valid(group))
         return;
     rt_audio_fx_set_bypass(group, fx_id, bypass);
 }
 
+/// @brief Remove one effect from a mix group's chain.
+/// @param group Registered mix-group identifier.
+/// @param fx_id Effect identifier returned by an add operation.
 void rt_snd_group_remove_fx(int64_t group, int64_t fx_id) {
     if (!rt_audio_fx_group_valid(group))
         return;
     rt_audio_fx_remove(group, fx_id);
 }
 
+/// @brief Remove every effect from a mix group's processing chain.
+/// @param group Registered mix-group identifier. Invalid groups are ignored.
 void rt_snd_group_clear_fx(int64_t group) {
     if (!rt_audio_fx_group_valid(group))
         return;
@@ -2322,7 +2598,13 @@ void rt_snd_group_clear_fx(int64_t group) {
 
 /// @brief Begin a crossfade transition between two music tracks over the given duration.
 /// @details Fades out the current track while fading in the new track simultaneously.
-///          Both tracks are retained for the duration of the crossfade.
+///          Both tracks are retained for the duration of the crossfade and
+///          released after the transition outside the audio-state lock. A
+///          non-positive duration performs an immediate transition. Invalid,
+///          detached, or identical handle combinations are ignored.
+/// @param current_music Opaque music handle to fade out; may be NULL.
+/// @param new_music Opaque music handle to fade in; may be NULL.
+/// @param duration_ms Transition duration in milliseconds.
 void rt_music_crossfade_to(void *current_music, void *new_music, int64_t duration_ms) {
     rt_deferred_release_list releases = {0};
 
@@ -2432,7 +2714,8 @@ void rt_music_crossfade_to(void *current_music, void *new_music, int64_t duratio
     rt_audio_drain_releases(&releases);
 }
 
-/// @brief Check whether a music crossfade is currently in progress.
+/// @brief Check whether any music crossfade is currently in progress.
+/// @return Non-zero while at least one crossfade slot is active.
 int8_t rt_music_is_crossfading(void) {
     audio_state_lock();
     int8_t active = 0;
@@ -2446,7 +2729,11 @@ int8_t rt_music_is_crossfading(void) {
     return active;
 }
 
-/// @brief Advance the crossfade by dt_ms milliseconds (call each frame during a crossfade).
+/// @brief Advance every active music crossfade by an explicit time delta.
+/// @details Paused crossfades only refresh their monotonic timestamp. Positive
+///          deltas update active envelopes and defer any final reference
+///          releases until after the audio-state lock is dropped.
+/// @param dt_ms Elapsed milliseconds; non-positive values do not advance.
 void rt_music_crossfade_update(int64_t dt_ms) {
     rt_deferred_release_list releases = {0};
 
@@ -2525,17 +2812,33 @@ static void rt_audio_update_crossfade_entry_locked(rt_music_crossfade_state *xf,
 // Group-Aware Sound Playback — real implementation
 //===----------------------------------------------------------------------===//
 
-/// @brief Play a sound at default volume, scaled by the given mix group's volume.
+/// @brief Play a sound at default volume in a selected mix group.
+/// @param sound Opaque live sound wrapper.
+/// @param group Registered target group; invalid values fall back to the
+///        built-in sound-effects group.
+/// @return Backend voice identifier, or `-1` when playback cannot start.
 int64_t rt_sound_play_in_group(void *sound, int64_t group) {
     return rt_sound_play_internal(sound, 100, 0, 0, group);
 }
 
-/// @brief Play a sound with explicit volume/pan, scaled by the mix group's volume.
+/// @brief Play a sound with explicit volume and pan in a selected mix group.
+/// @param sound Opaque live sound wrapper.
+/// @param volume Logical pre-group volume, clamped to `[0, 100]`.
+/// @param pan Stereo pan, clamped to `[-100, 100]`.
+/// @param group Registered target group; invalid values fall back to the
+///        built-in sound-effects group.
+/// @return Backend voice identifier, or `-1` when playback cannot start.
 int64_t rt_sound_play_ex_in_group(void *sound, int64_t volume, int64_t pan, int64_t group) {
     return rt_sound_play_internal(sound, volume, pan, 0, group);
 }
 
-/// @brief Play a looping sound with explicit volume/pan, scaled by the mix group's volume.
+/// @brief Play a looping sound with explicit volume and pan in a mix group.
+/// @param sound Opaque live sound wrapper.
+/// @param volume Logical pre-group volume, clamped to `[0, 100]`.
+/// @param pan Stereo pan, clamped to `[-100, 100]`.
+/// @param group Registered target group; invalid values fall back to the
+///        built-in sound-effects group.
+/// @return Backend voice identifier, or `-1` when playback cannot start.
 int64_t rt_sound_play_loop_in_group(void *sound, int64_t volume, int64_t pan, int64_t group) {
     return rt_sound_play_internal(sound, volume, pan, 1, group);
 }

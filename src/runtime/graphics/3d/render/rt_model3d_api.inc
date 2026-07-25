@@ -47,7 +47,7 @@ static void *model3d_load_value_to_result(void *value, const char *fallback) {
 /// @brief Load a model from the filesystem (no asset-manager resolution). See header.
 void *rt_model3d_load(rt_string path) {
     rt_asset_error_begin_load();
-    void *model = rt_model3d_load_impl(path, 0, NULL, 0, NULL, NULL, 0);
+    void *model = rt_model3d_load_impl(path, 0, NULL, 0, NULL, NULL, 0, NULL, 0);
     if (model) {
         rt_asset_error_end_load_success();
     } else {
@@ -62,6 +62,42 @@ void *rt_model3d_load(rt_string path) {
 /// @return Owned Zanna.Result value.
 void *rt_model3d_load_result(rt_string path) {
     return model3d_load_value_to_result(rt_model3d_load(path), "SceneAsset.Load failed");
+}
+
+/// @brief Load VSCN text as a SceneAsset without reading the document from disk (ADR 0190).
+/// @details @p path must carry a `.scene3d`/`.vscn` extension; it routes format detection,
+///          diagnostics, and relative prefab base-directory resolution (referenced prefab
+///          files still load from disk under the ADR 0187 guards). Traps on null arguments
+///          like the sibling loaders; wrong extensions and malformed text are recoverable
+///          failures reported through the shared asset-diagnostic channel.
+static void *model3d_load_text_value(rt_string path, rt_string text) {
+    rt_asset_error_begin_load();
+    if (!path || !rt_string_cstr(path)) {
+        rt_asset_error_end_load_failure();
+        rt_trap("SceneAsset.LoadTextResult: invalid path");
+        return NULL;
+    }
+    if (!text) {
+        rt_asset_error_end_load_failure();
+        rt_trap("SceneAsset.LoadTextResult: text must not be null");
+        return NULL;
+    }
+    void *model = rt_model3d_load_impl(
+        path, 0, NULL, 0, NULL, NULL, 0, rt_string_cstr(text), (size_t)rt_str_len(text));
+    if (model) {
+        rt_asset_error_end_load_success();
+    } else {
+        rt_asset_error_set_if_empty(RT_ASSET_ERROR_CORRUPT,
+                                    "SceneAsset.LoadTextResult: failed to load scene text");
+        rt_asset_error_end_load_failure();
+    }
+    return model;
+}
+
+/// @brief Result companion for VSCN text loading: `Ok(SceneAsset)` or `Err(message)`.
+void *rt_model3d_load_text_result(rt_string path, rt_string text) {
+    return model3d_load_value_to_result(model3d_load_text_value(path, text),
+                                        "SceneAsset.LoadTextResult failed");
 }
 
 /// @brief Save the complete Model3D inventory through the model-aware VSCN v5 serializer.
@@ -182,7 +218,7 @@ void *rt_model3d_load_result_with_options(rt_string path, int8_t force_tangents)
 /// @brief Load a model through the asset manager (mounted/embedded + dev fallback). See header.
 void *rt_model3d_load_asset(rt_string path) {
     rt_asset_error_begin_load();
-    void *model = rt_model3d_load_impl(path, 1, NULL, 0, NULL, NULL, 0);
+    void *model = rt_model3d_load_impl(path, 1, NULL, 0, NULL, NULL, 0, NULL, 0);
     if (model) {
         rt_asset_error_end_load_success();
     } else {
@@ -213,7 +249,7 @@ void *rt_model3d_load_preloaded_gltf(rt_string path,
         return load_assets ? rt_model3d_load_asset(path) : rt_model3d_load(path);
     }
     return rt_model3d_load_impl(
-        path, load_assets ? 1 : 0, preloaded_data, preloaded_size, NULL, NULL, 0);
+        path, load_assets ? 1 : 0, preloaded_data, preloaded_size, NULL, NULL, 0, NULL, 0);
 }
 
 /// @brief Internal async path: build an FBX Model3D from worker-staged root bytes.
@@ -229,7 +265,7 @@ void *rt_model3d_load_preloaded_fbx(rt_string path,
         return load_assets ? rt_model3d_load_asset(path) : rt_model3d_load(path);
     }
     return rt_model3d_load_impl(
-        path, load_assets ? 1 : 0, NULL, 0, NULL, preloaded_data, preloaded_size);
+        path, load_assets ? 1 : 0, NULL, 0, NULL, preloaded_data, preloaded_size, NULL, 0);
 }
 
 /// @brief Build a Model3D from a glTF asset that was staged off-thread into @p bundle.
@@ -246,7 +282,7 @@ void *rt_model3d_load_preloaded_gltf_bundle(rt_string path,
         rt_gltf_preload_bundle_free(bundle);
         return load_assets ? rt_model3d_load_asset(path) : rt_model3d_load(path);
     }
-    return rt_model3d_load_impl(path, load_assets ? 1 : 0, NULL, 0, bundle, NULL, 0);
+    return rt_model3d_load_impl(path, load_assets ? 1 : 0, NULL, 0, bundle, NULL, 0, NULL, 0);
 }
 
 /// @brief Number of meshes loaded into this model.

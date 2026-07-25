@@ -1,4 +1,10 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares an RAII bridge from runtime output hooks to an owned byte buffer.
+/// @details The public header avoids exposing the runtime C hook record through
+///          an opaque private state type. A capture has unique ownership because
+///          nested hook replacement/restoration is tied to construction order.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -42,18 +48,22 @@ class ScopedReplOutputCapture {
     ///          across compile/run paths that may return early on errors.
     ~ScopedReplOutputCapture() noexcept;
 
+    /// @brief Disable copying because each guard owns one hook-restoration scope.
     ScopedReplOutputCapture(const ScopedReplOutputCapture &) = delete;
+    /// @brief Disable copy assignment because hook-restoration scope is unique.
+    /// @return This declaration is deleted and cannot be invoked.
     ScopedReplOutputCapture &operator=(const ScopedReplOutputCapture &) = delete;
 
     /// @brief Return all bytes captured so far.
     /// @details The returned string may contain arbitrary bytes, including
     ///          embedded NUL characters. The REPL currently prints it as text.
-    /// @return Captured runtime stdout bytes.
+    /// @return Borrowed reference valid for the lifetime of this guard.
     const std::string &output() const noexcept {
         return output_;
     }
 
   private:
+    /// @brief Opaque storage for the previously installed runtime hook.
     struct HookState;
 
     /// @brief Runtime C callback that forwards captured bytes into @p ctx.

@@ -28,6 +28,13 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements ANSI-aware output retention, text selection, and an
+///        interactive terminal cursor/escape-sequence model.
+/// @details Append-only and terminal modes share a circular line buffer of
+///          owned styled segments. Terminal mode additionally materializes one
+///          editable row as cells, translates input to xterm byte sequences,
+///          and preserves parser state across chunk boundaries.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_event.h"
 #include "../../include/vg_ide_widgets.h"
@@ -90,6 +97,9 @@ static const uint32_t g_ansi_bright_colors[] = {
 };
 
 /// @brief Map an ANSI SGR color code to a packed AARRGGBB value.
+/// @param code Standard or bright ANSI foreground SGR code.
+/// @return Opaque packed color, or the pane's default light foreground for an
+///         unsupported code.
 static uint32_t ansi_code_to_color(int code) {
     if (code >= 30 && code <= 37) {
         return g_ansi_colors[code - 30];
@@ -2664,6 +2674,9 @@ void vg_outputpane_set_font(vg_outputpane_t *pane, vg_font_t *font, float size) 
     pane->base.needs_paint = true;
 }
 
+/// @brief Measure the terminal's representative monospace cell width.
+/// @param pane Output pane supplying font and size.
+/// @return Rounded width of the `M` glyph in pixels, or zero when unavailable.
 int vg_outputpane_cell_width(const vg_outputpane_t *pane) {
     if (!pane || !pane->font || pane->font_size <= 0.0f)
         return 0;
@@ -2674,12 +2687,19 @@ int vg_outputpane_cell_width(const vg_outputpane_t *pane) {
     return (int)(metrics.width + 0.5f);
 }
 
+/// @brief Query the pane's configured terminal cell height.
+/// @param pane Output pane to inspect.
+/// @return Rounded line height in pixels, or zero when unavailable.
 int vg_outputpane_cell_height(const vg_outputpane_t *pane) {
     if (!pane || !pane->font || pane->line_height <= 0.0f)
         return 0;
     return (int)(pane->line_height + 0.5f);
 }
 
+/// @brief Measure a complete string using the output pane's active font.
+/// @param pane Output pane supplying font and size.
+/// @param text Null-terminated text to measure.
+/// @return Rounded rendered width in pixels, or zero for invalid/empty input.
 int vg_outputpane_measure_text(const vg_outputpane_t *pane, const char *text) {
     if (!pane || !pane->font || pane->font_size <= 0.0f || !text || text[0] == '\0')
         return 0;
@@ -2690,6 +2710,9 @@ int vg_outputpane_measure_text(const vg_outputpane_t *pane, const char *text) {
     return (int)(metrics.width + 0.5f);
 }
 
+/// @brief Convert the arranged pane width to whole terminal columns.
+/// @param pane Arranged output pane to inspect.
+/// @return Number of representative cells that fit across the width, or zero.
 int vg_outputpane_columns_for_width(const vg_outputpane_t *pane) {
     int cell = vg_outputpane_cell_width(pane);
     if (cell <= 0 || pane->base.width <= 0.0f)
@@ -2697,6 +2720,9 @@ int vg_outputpane_columns_for_width(const vg_outputpane_t *pane) {
     return (int)(pane->base.width / (float)cell);
 }
 
+/// @brief Convert the arranged pane height to whole terminal rows.
+/// @param pane Arranged output pane to inspect.
+/// @return Number of configured line-height cells that fit vertically, or zero.
 int vg_outputpane_rows_for_height(const vg_outputpane_t *pane) {
     int cell = vg_outputpane_cell_height(pane);
     if (cell <= 0 || pane->base.height <= 0.0f)

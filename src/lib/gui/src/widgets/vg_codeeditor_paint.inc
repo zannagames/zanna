@@ -34,6 +34,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @brief Scales and alpha-blends a raster gutter icon into the active framebuffer.
+///
+/// @details The source image is sampled with nearest-neighbour scaling and
+/// composited directly into the canvas framebuffer. Both the framebuffer bounds
+/// and the canvas clip rectangle are honored. Fully transparent pixels are
+/// skipped, while fully opaque pixels take the fast replacement path.
+///
+/// @param canvas Destination canvas whose framebuffer receives the icon.
+/// @param icon Gutter icon containing an RGBA image. A null icon, a non-image
+///             icon, or an image without pixels is ignored.
+/// @param dst_x Left edge of the destination rectangle in framebuffer pixels.
+/// @param dst_y Top edge of the destination rectangle in framebuffer pixels.
+/// @param dst_w Destination width in pixels; non-positive values are ignored.
+/// @param dst_h Destination height in pixels; non-positive values are ignored.
 static void codeeditor_draw_gutter_icon_image(vgfx_window_t canvas,
                                               const struct vg_gutter_icon *icon,
                                               int32_t dst_x,
@@ -102,8 +116,19 @@ static void codeeditor_draw_gutter_icon_image(vgfx_window_t canvas,
     }
 }
 
-/// @brief Draws a '+' or '-' fold marker in the fold gutter column for the region starting at @p
-/// line.
+/// @brief Draws the expansion marker for a fold region that starts on a line.
+///
+/// @details A folded region is represented by a centered `+`; an expanded
+/// region is represented by `-`. Nothing is drawn when the line does not begin
+/// a fold region or the fold gutter is unavailable.
+///
+/// @param editor Editor that owns the fold regions and rendering attributes.
+/// @param canvas Destination drawing context.
+/// @param fold_gutter_x Left edge of the fold-marker gutter.
+/// @param fold_gutter_width Width available for centering the marker.
+/// @param line_y Top coordinate of the displayed line.
+/// @param font_metrics Metrics used to place the marker on the text baseline.
+/// @param line Zero-based logical line whose fold region is queried.
 static void codeeditor_draw_fold_marker(vg_codeeditor_t *editor,
                                         void *canvas,
                                         float fold_gutter_x,
@@ -129,7 +154,18 @@ static void codeeditor_draw_fold_marker(vg_codeeditor_t *editor,
                       editor->line_number_color);
 }
 
-/// @brief Draws a "..." continuation marker after the last visible character of a folded region.
+/// @brief Draws a continuation ellipsis after a folded line's visible text.
+///
+/// @details The ellipsis is positioned after @p start_col using the editor's
+/// fixed character width. The helper is a no-op unless @p line begins a
+/// currently folded region.
+///
+/// @param editor Editor that owns the fold region and text style.
+/// @param canvas Destination drawing context.
+/// @param content_x Horizontal origin of the editor content area.
+/// @param baseline_y Text baseline for the ellipsis.
+/// @param line Zero-based logical line whose fold state is queried.
+/// @param start_col Visual column after which the ellipsis is placed.
 static void codeeditor_draw_fold_ellipsis(vg_codeeditor_t *editor,
                                           void *canvas,
                                           float content_x,
@@ -150,7 +186,14 @@ static void codeeditor_draw_fold_ellipsis(vg_codeeditor_t *editor,
                       editor->line_number_color);
 }
 
-/// @brief Draws an editor highlight span as an underline so diagnostics do not obscure the text.
+/// @brief Draws a highlight span as an underline without obscuring its text.
+///
+/// @param canvas Destination drawing context; null is ignored.
+/// @param x Left edge of the highlighted span.
+/// @param y Top edge of the containing text row.
+/// @param width Width of the highlighted span; non-positive values are ignored.
+/// @param line_height Height of the containing row, used to place the underline.
+/// @param color Packed color used for the underline.
 static void codeeditor_draw_highlight_underline(
     void *canvas, float x, float y, float width, float line_height, uint32_t color) {
     if (!canvas || width <= 0.0f || line_height <= 0.0f)
@@ -176,6 +219,24 @@ static void codeeditor_draw_highlight_underline(
                    (vgfx_color_t)color);
 }
 
+/// @brief Paints all inlay hints that belong to one displayed line segment.
+///
+/// @details The editor's sorted hint array is scanned from the first hint on
+/// @p line. Hint columns are clamped to the line bounds and, for wrapped rows,
+/// filtered to the requested segment. Each hint receives a translucent
+/// background sized from its measured text followed by the hint text itself.
+///
+/// @param editor Editor that owns the hints, source lines, font, and colors.
+/// @param canvas Destination drawing context.
+/// @param line Zero-based logical line containing the segment.
+/// @param segment_start Byte column at which the displayed segment begins.
+/// @param segment_len Number of bytes represented by the segment.
+/// @param content_x Horizontal origin of the segment's text.
+/// @param row_y Top coordinate of the displayed row.
+/// @param scroll_x Horizontal scroll offset to subtract from hint positions.
+/// @param baseline_y Text baseline on which hint labels are drawn.
+/// @param wrapped Whether columns must be translated relative to a wrapped
+///                segment rather than the complete logical line.
 static void codeeditor_paint_inlay_hints_for_segment(vg_codeeditor_t *editor,
                                                      void *canvas,
                                                      int line,
@@ -239,12 +300,18 @@ static void codeeditor_paint_inlay_hints_for_segment(vg_codeeditor_t *editor,
     }
 }
 
-/// @brief Draw faint vertical indent guides for one (non-wrapped) line.
+/// @brief Draws faint vertical indent guides for one non-wrapped line.
 ///
-/// One guide per indentation level — columns 0, tab_width, 2*tab_width, … up to
-/// the line's leading-whitespace depth (tabs snap to the next tab stop). The
-/// guide color falls back to a muted dark grey when unset. Wrapped continuation
-/// rows are not handled (the non-wrapped paint path is the only caller).
+/// @details One guide is drawn per complete indentation level from column zero
+/// through the line's leading-whitespace depth. Tabs advance to the next tab
+/// stop, off-screen guides are skipped, and an unset guide color falls back to
+/// a muted dark grey. Wrapped continuation rows are intentionally not handled.
+///
+/// @param editor Editor that owns the line, tab width, scroll offset, and style.
+/// @param canvas Destination drawing context.
+/// @param line Zero-based logical line whose indentation is inspected.
+/// @param content_x Horizontal origin of the editor content area.
+/// @param line_y Top coordinate of the displayed line.
 static void codeeditor_paint_indent_guides(
     vg_codeeditor_t *editor, void *canvas, int line, float content_x, float line_y) {
     if (!editor || line < 0 || line >= editor->line_count)
@@ -286,13 +353,17 @@ static void codeeditor_paint_indent_guides(
     }
 }
 
-/// @brief Whether the whitespace byte at column @p col of @p ln shows a marker
-///        under @p mode. Factored out so the boundary/all/none rules are unit
-///        testable without a font or window.
-/// @param ln   Line whose text is inspected (may be NULL).
-/// @param col  Byte column into ln->text.
-/// @param mode vg_whitespace_mode value.
-/// @return true when the cell is a space/tab that should be marked.
+/// @brief Determines whether a whitespace cell should receive a visible marker.
+///
+/// @details Boundary mode selects only leading or trailing spaces and tabs,
+/// while all mode selects every whitespace cell and none mode selects nothing.
+/// Factoring the policy out keeps it independent of fonts and windows.
+///
+/// @param ln Line whose text is inspected; may be null.
+/// @param col Zero-based byte column in `ln->text`.
+/// @param mode One of the `VG_WHITESPACE_*` display modes.
+/// @return `true` when the indexed cell is a space or tab selected by @p mode;
+///         otherwise `false`.
 static bool codeeditor_whitespace_cell_visible(const vg_code_line_t *ln, int col, int mode) {
     if (mode == VG_WHITESPACE_NONE)
         return false;
@@ -319,12 +390,20 @@ static bool codeeditor_whitespace_cell_visible(const vg_code_line_t *ln, int col
     return col > last_non_ws;
 }
 
-/// @brief Paint faint space/tab markers for one line inside the viewport.
-/// @details Space cells draw a small centered dot; tab cells draw a thin arrow
-///          spanning to the next tab stop. Only cells selected by
-///          render_whitespace_mode are drawn, and only those inside the visible
-///          x-range. Visual columns are tracked so tab expansion and multibyte
-///          text stay aligned with the rendered glyphs.
+/// @brief Paints space and tab markers for one line inside the viewport.
+///
+/// @details Space cells receive a small centered dot and tab cells receive a
+/// thin arrow spanning to the next tab stop. Only cells selected by the
+/// configured whitespace mode and intersecting the visible horizontal range
+/// are drawn. Visual columns account for tab expansion and UTF-8 continuation
+/// bytes so the markers remain aligned with rendered glyphs.
+///
+/// @param editor Editor that owns the line and whitespace-rendering settings.
+/// @param canvas Destination drawing context.
+/// @param line Zero-based logical line to inspect.
+/// @param content_x Left edge of the editor content viewport.
+/// @param content_width Width of the content viewport.
+/// @param line_y Top coordinate of the displayed line.
 static void codeeditor_paint_whitespace(vg_codeeditor_t *editor,
                                         void *canvas,
                                         int line,
@@ -392,6 +471,12 @@ static void codeeditor_paint_whitespace(vg_codeeditor_t *editor,
 ///          shadow silhouettes by (w,h,radius,blur) and the caret is a constant
 ///          size, the glow is computed once and reused every frame. The crisp
 ///          caret is a slightly rounded AA bar painted on top. Cost is O(1).
+///
+/// @param canvas Destination drawing context; null is ignored.
+/// @param x Horizontal coordinate of the caret's crisp center bar.
+/// @param y Top coordinate of the caret.
+/// @param h Caret height; non-positive values are ignored.
+/// @param color Packed color used for both the glow and crisp bar.
 static void codeeditor_draw_caret(void *canvas, float x, float y, float h, uint32_t color) {
     if (!canvas || h <= 0.0f)
         return;
@@ -409,6 +494,14 @@ static void codeeditor_draw_caret(void *canvas, float x, float y, float h, uint3
 ///          toward the top for a gentle sense of depth; the rail is a rounded AA
 ///          fill in the accent colour. Drawn once per frame (the cursor's line),
 ///          so the gradient cost is trivial.
+///
+/// @param canvas Destination drawing context; null is ignored.
+/// @param x Left edge of the highlight band.
+/// @param y Top edge of the highlight band.
+/// @param w Width of the band; non-positive values are ignored.
+/// @param h Height of the band; non-positive values are ignored.
+/// @param base_bg Packed base color used at the lower edge of the gradient.
+/// @param accent Packed color used for the leading accent rail.
 static void codeeditor_draw_current_line(
     void *canvas, float x, float y, float w, float h, uint32_t base_bg, uint32_t accent) {
     if (!canvas || w <= 0.0f || h <= 0.0f)
@@ -418,8 +511,16 @@ static void codeeditor_draw_current_line(
     vg_draw_round_rect_fill((vgfx_window_t)canvas, x, y, 3.0f, h, 1.0f, accent);
 }
 
-/// @brief VTable paint: renders background, gutter, current-line highlight, selection,
-/// syntax-coloured text, cursor, and scrollbar.
+/// @brief Paints the complete code-editor widget for its vtable callback.
+///
+/// @details Rendering includes the background, gutters, fold and diagnostic
+/// decorations, current-line and selection layers, syntax-colored text, inlay
+/// hints, carets, and both scrollbars. The function derives visible logical
+/// lines or wrapped rows from the current scroll state, applies a content clip,
+/// and temporarily scopes font ligature shaping to the editor preference.
+///
+/// @param widget Code-editor base widget to paint.
+/// @param canvas Destination drawing context.
 static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
     vg_codeeditor_t *editor = (vg_codeeditor_t *)widget;
 

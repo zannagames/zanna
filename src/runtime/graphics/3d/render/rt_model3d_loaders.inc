@@ -856,7 +856,9 @@ static void *rt_model3d_load_impl(rt_string path,
                                   size_t preloaded_gltf_size,
                                   struct rt_gltf_preload_bundle *preloaded_gltf_bundle,
                                   uint8_t *preloaded_fbx_data,
-                                  size_t preloaded_fbx_size) {
+                                  size_t preloaded_fbx_size,
+                                  const char *preloaded_vscn_text,
+                                  size_t preloaded_vscn_len) {
     const char *path_cstr = path ? rt_string_cstr(path) : NULL;
     const char *api_name = load_assets ? "Model3D.LoadAsset" : "Model3D.Load";
     rt_model3d *model;
@@ -866,6 +868,18 @@ static void *rt_model3d_load_impl(rt_string path,
         free(preloaded_fbx_data);
         rt_gltf_preload_bundle_free(preloaded_gltf_bundle);
         rt_trap(load_assets ? "Model3D.LoadAsset: invalid path" : "Model3D.Load: invalid path");
+        return NULL;
+    }
+
+    /* ADR 0190 text loading is VSCN-only; other formats stay file-routed. A
+     * wrong extension is a recoverable Err for LoadTextResult, never a trap. */
+    if (preloaded_vscn_text &&
+        !(model_has_ext(path_cstr, ".scene3d") || model_has_ext(path_cstr, ".vscn"))) {
+        free(preloaded_gltf_data);
+        free(preloaded_fbx_data);
+        rt_gltf_preload_bundle_free(preloaded_gltf_bundle);
+        rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
+                           "SceneAsset.LoadTextResult: text loading supports VSCN documents only");
         return NULL;
     }
 
@@ -880,7 +894,15 @@ static void *rt_model3d_load_impl(rt_string path,
 
     if (model_has_ext(path_cstr, ".scene3d") || model_has_ext(path_cstr, ".vscn")) {
         rt_scene3d *scene = NULL;
-        if (load_assets) {
+        if (preloaded_vscn_text) {
+            /* ADR 0190: the document bytes come from the caller; @p path only
+             * names the prefab base-directory and diagnostics, and a text
+             * parse failure never falls back to reading the path from disk. */
+            scene = (rt_scene3d *)rt_scene3d_load_from_memory(
+                path, preloaded_vscn_text, preloaded_vscn_len);
+            if (!scene)
+                goto fail;
+        } else if (load_assets) {
             size_t asset_size = 0;
             uint8_t *asset_bytes = rt_asset_load_raw(path, &asset_size);
             if (asset_bytes) {

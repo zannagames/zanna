@@ -44,6 +44,10 @@ void *rt_model3d_load(rt_string path);
 /// @details This side-channel-free companion to @ref rt_model3d_load preserves the same loader
 /// behavior while returning recoverable failure diagnostics directly in the Result.
 void *rt_model3d_load_result(rt_string path);
+/// @brief Load VSCN text as `Result.Ok(SceneAsset)` or `Result.Err(String)` without reading
+///        the document from disk (ADR 0190). @p path must carry a .scene3d/.vscn extension
+///        and names the relative prefab base directory plus diagnostics.
+void *rt_model3d_load_text_result(rt_string path, rt_string text);
 /// @brief Load with explicit import options: `force_tangents` generates tangents for
 ///        every UV0-mapped glTF primitive even without a normal map bound at load.
 void *rt_model3d_load_with_options(rt_string path, int8_t force_tangents);

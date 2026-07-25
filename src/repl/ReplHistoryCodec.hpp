@@ -1,4 +1,10 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares stateless structured persistence for REPL command history.
+/// @details The codec preserves arbitrary entry bytes with length-prefixed
+///          records, accepts legacy line-delimited files, and returns value-owned
+///          decoded strings without retaining file or session state.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.

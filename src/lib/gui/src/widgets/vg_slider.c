@@ -19,6 +19,12 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements horizontal and vertical sliders with clamping, step
+///        snapping, pointer capture, keyboard control, and change callbacks.
+/// @details Geometry conversion consistently reserves the thumb radius at both
+///          track ends. Value mutations normalize non-finite input and notify
+///          only on an actual stored-value transition.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
@@ -56,6 +62,8 @@ static vg_widget_vtable_t g_slider_vtable = {
 //=============================================================================
 
 /// @brief Returns the slider's current value as a normalised fraction in [0, 1] within [min, max].
+/// @param slider Slider whose stored value and range are inspected.
+/// @return Clamped normalized fraction, or zero for a degenerate range.
 static float slider_normalized_value(const vg_slider_t *slider) {
     float range = slider->max_value - slider->min_value;
     float norm = (range > 0.0f) ? (slider->value - slider->min_value) / range : 0.0f;
@@ -68,6 +76,10 @@ static float slider_normalized_value(const vg_slider_t *slider) {
 
 /// @brief Converts widget-local coordinates @p x/@p y to a normalised fraction [0, 1] along the
 /// track axis.
+/// @param slider Arranged slider supplying orientation and thumb size.
+/// @param x Pointer X coordinate relative to the widget.
+/// @param y Pointer Y coordinate relative to the widget.
+/// @return Clamped normalized position; vertical sliders increase upward.
 static float slider_normalized_from_point(const vg_slider_t *slider, float x, float y) {
     float thumb_r = slider->thumb_size > 0.0f ? slider->thumb_size * 0.5f : 8.0f;
     float norm = 0.0f;
@@ -87,6 +99,9 @@ static float slider_normalized_from_point(const vg_slider_t *slider, float x, fl
 
 /// @brief VTable measure: sets a 100 px preferred length along the track axis and thumb_size along
 /// the cross axis.
+/// @param widget Slider widget base to measure.
+/// @param available_width Offered width, unused before constraints.
+/// @param available_height Offered height, unused before constraints.
 static void slider_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_slider_t *slider = (vg_slider_t *)widget;
     (void)available_width;
@@ -103,6 +118,11 @@ static void slider_measure(vg_widget_t *widget, float available_width, float ava
 
 /// @brief VTable arrange: stores the assigned position and dimensions; the slider has no children
 /// to arrange.
+/// @param widget Slider widget base to arrange.
+/// @param x Assigned left coordinate.
+/// @param y Assigned top coordinate.
+/// @param w Assigned width.
+/// @param h Assigned height.
 static void slider_arrange(vg_widget_t *widget, float x, float y, float w, float h) {
     widget->x = x;
     widget->y = y;
@@ -111,12 +131,16 @@ static void slider_arrange(vg_widget_t *widget, float x, float y, float w, float
 }
 
 /// @brief VTable can_focus: returns true when the widget is both enabled and visible.
+/// @param widget Candidate slider widget.
+/// @return `true` when keyboard focus is permitted.
 static bool slider_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }
 
 /// @brief VTable paint: draws the track background, filled portion, thumb circle with border and
 /// hover/drag tint, and focus rect.
+/// @param widget Arranged slider widget base to paint.
+/// @param canvas Backend canvas used for track, thumb, and focus primitives.
 static void slider_paint(vg_widget_t *widget, void *canvas) {
     vg_slider_t *slider = (vg_slider_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -197,6 +221,9 @@ static void slider_paint(vg_widget_t *widget, void *canvas) {
 
 /// @brief VTable handle_event: handles thumb drag (mouse-down/move/up), track click-to-jump, leave
 /// unhover, and arrow/Home/End keyboard control.
+/// @param widget Slider widget receiving input.
+/// @param event Pointer or keyboard event to interpret.
+/// @return `true` when dragging, jumping, or keyboard adjustment consumes the event.
 static bool slider_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_slider_t *slider = (vg_slider_t *)widget;
     float w = widget->width, h = widget->height;

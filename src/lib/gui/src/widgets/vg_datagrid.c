@@ -4,20 +4,23 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_datagrid.c
-// Purpose: Interactive viewport-aware data grid exposed as Zanna.GUI.Grid,
-//          retaining the original display-table compatibility surface.
-// Key invariants:
-//   - cells is a flat [row_capacity * col_count] array; entry (r,c) at index
-//     r * col_count + c. Each header/cell string is heap-owned (or NULL).
-//   - Virtual rows use a sorted sparse cell array; logical row count never
-//     causes per-row allocation and paint visits only the viewport slice.
-//   - Effective column widths are cached outside paint. Zero explicit width
-//     means auto width; selection/sort/resize/edit edges are independent.
-// Ownership/Lifetime:
-//   - Headers, dense/sparse cells, and column metadata are owned by the grid.
-// Links: lib/gui/include/vg_ide_widgets_panels.h, lib/gui/include/vg_font.h
+///
+/// @file vg_datagrid.c
+/// @brief Implements the interactive, viewport-aware data-grid widget.
+///
+/// @details The grid supports dense compatibility storage and a sparse virtual
+/// mode for very large logical row counts. Dense cells occupy a flat
+/// `row_capacity * col_count` array, while virtual cells are sorted by row and
+/// column so lookup and insertion use binary search. Painting visits only the
+/// current viewport slice.
+///
+/// The grid owns all headers, cell strings, sparse entries, and column metadata.
+/// Effective automatic widths are cached outside painting; an explicit width
+/// of zero selects the cached automatic width. Selection, sorting, resizing,
+/// and editing expose independent edge counters for external controllers.
+///
+/// @see vg_ide_widgets_panels.h
+/// @see vg_font.h
 //
 //===----------------------------------------------------------------------===//
 #include "../../../graphics/include/vgfx.h"
@@ -958,6 +961,14 @@ static void datagrid_destroy(vg_widget_t *widget) {
 // Public API
 //=============================================================================
 
+/// @brief Creates an empty data grid with theme-derived defaults.
+///
+/// @details The grid begins without columns, rows, selection, sorting, or edit
+/// state. Its default font and row height come from the current theme when that
+/// font is live, otherwise an 18-pixel row height is used.
+///
+/// @param parent Widget to receive the grid as a child; may be null.
+/// @return Newly allocated grid, or null on allocation failure.
 vg_datagrid_t *vg_datagrid_create(vg_widget_t *parent) {
     vg_datagrid_t *grid = (vg_datagrid_t *)calloc(1, sizeof(vg_datagrid_t));
     if (!grid)
@@ -997,12 +1008,24 @@ vg_datagrid_t *vg_datagrid_create(vg_widget_t *parent) {
     return grid;
 }
 
+/// @brief Destroys a grid and all dense, sparse, header, and metadata storage.
+///
+/// @param grid Grid to destroy; may be null.
 void vg_datagrid_destroy(vg_datagrid_t *grid) {
     if (!grid)
         return;
     vg_widget_destroy(&grid->base);
 }
 
+/// @brief Replaces the grid's column schema with an empty schema of a given size.
+///
+/// @details Negative counts normalize to zero. New header and interaction
+/// metadata arrays are allocated atomically before existing dense or virtual
+/// rows are discarded. Selection, sort, resize, edit, and viewport state reset
+/// to their defaults. Allocation failure preserves the current grid.
+///
+/// @param grid Grid to reconfigure.
+/// @param count Requested column count; negative values select zero columns.
 void vg_datagrid_set_columns(vg_datagrid_t *grid, int count) {
     if (!grid)
         return;
@@ -1072,6 +1095,15 @@ void vg_datagrid_set_columns(vg_datagrid_t *grid, int count) {
         vg_widget_note_change(&grid->base);
 }
 
+/// @brief Sets or clears the copied header text for one column.
+///
+/// @details Null or empty text clears the header. The grid displays its header
+/// row whenever at least one column has non-empty text. Automatic width and
+/// layout caches are updated after successful replacement.
+///
+/// @param grid Grid to update.
+/// @param col Zero-based column index.
+/// @param text Header text to copy; may be null or empty to clear.
 void vg_datagrid_set_header(vg_datagrid_t *grid, int col, const char *text) {
     if (!grid || !grid->headers || col < 0 || col >= grid->col_count)
         return;
@@ -1098,6 +1130,17 @@ void vg_datagrid_set_header(vg_datagrid_t *grid, int col, const char *text) {
     vg_widget_note_change(&grid->base);
 }
 
+/// @brief Sets or clears one dense cell, growing row storage as needed.
+///
+/// @details Null or empty text represents an empty cell. Writing through this
+/// compatibility API exits sparse virtual mode, releases its materialized
+/// cells, and establishes a dense row count through @p row. Input text is copied
+/// before mutation, so allocation failure preserves the prior value.
+///
+/// @param grid Grid to update.
+/// @param row Non-negative dense row index.
+/// @param col Zero-based column index.
+/// @param text Cell text to copy; may be null or empty to clear.
 void vg_datagrid_set_cell(vg_datagrid_t *grid, int row, int col, const char *text) {
     if (!grid || col < 0 || col >= grid->col_count || row < 0 || row == INT_MAX)
         return;
@@ -1139,10 +1182,23 @@ void vg_datagrid_set_cell(vg_datagrid_t *grid, int row, int col, const char *tex
     vg_widget_note_change(&grid->base);
 }
 
+/// @brief Returns one dense or sparse logical cell value.
+///
+/// @param grid Grid to inspect.
+/// @param row Logical row index.
+/// @param col Zero-based column index.
+/// @return Borrowed text owned by @p grid, or null for an empty or invalid cell.
 const char *vg_datagrid_get_cell(const vg_datagrid_t *grid, size_t row, int col) {
     return datagrid_get_cell_at(grid, row, col);
 }
 
+/// @brief Removes every row and cell while preserving the column schema.
+///
+/// @details Dense or sparse storage is released according to the current mode.
+/// Headers and column settings remain intact, automatic widths are recomputed,
+/// and invalid selection or editing state is cleared.
+///
+/// @param grid Grid to clear; may be null.
 void vg_datagrid_clear(vg_datagrid_t *grid) {
     if (!grid)
         return;
@@ -1161,6 +1217,16 @@ void vg_datagrid_clear(vg_datagrid_t *grid) {
     vg_widget_note_change(&grid->base);
 }
 
+/// @brief Sets the borrowed grid font and refreshes text-dependent geometry.
+///
+/// @details A non-finite or non-positive size retains the current size. A live
+/// font with valid metrics updates the row height. All automatic column widths
+/// are recomputed and layout plus paint are invalidated.
+///
+/// @param grid Grid to configure.
+/// @param font Borrowed font; may be null to disable text rendering.
+/// @param size Finite positive font size, or an invalid value to retain the
+///             current size.
 void vg_datagrid_set_font(vg_datagrid_t *grid, vg_font_t *font, float size) {
     if (!grid)
         return;
@@ -1181,6 +1247,12 @@ void vg_datagrid_set_font(vg_datagrid_t *grid, vg_font_t *font, float size) {
     vg_widget_note_revision(&grid->base);
 }
 
+/// @brief Returns a column's effective rounded width.
+///
+/// @param grid Grid to inspect.
+/// @param col Zero-based column index.
+/// @return Explicit width when configured, otherwise cached automatic width;
+///         zero for an invalid column.
 int vg_datagrid_column_width(const vg_datagrid_t *grid, int col) {
     if (!grid || col < 0 || col >= grid->col_count)
         return 0;
@@ -1189,6 +1261,10 @@ int vg_datagrid_column_width(const vg_datagrid_t *grid, int col) {
     return grid->auto_column_widths ? grid->auto_column_widths[col] : 0;
 }
 
+/// @brief Returns the logical row count through the compatibility integer API.
+///
+/// @param grid Grid to inspect.
+/// @return Logical row count saturated at `INT_MAX`, or zero for null.
 int vg_datagrid_row_count(const vg_datagrid_t *grid) {
     size_t rows = datagrid_total_rows(grid);
     return rows > (size_t)INT_MAX ? INT_MAX : (int)rows;
@@ -1201,6 +1277,10 @@ size_t vg_datagrid_logical_row_count(const vg_datagrid_t *grid) {
     return datagrid_total_rows(grid);
 }
 
+/// @brief Returns the configured number of columns.
+///
+/// @param grid Grid to inspect.
+/// @return Non-negative column count, or zero for null.
 int vg_datagrid_column_count(const vg_datagrid_t *grid) {
     return grid ? grid->col_count : 0;
 }

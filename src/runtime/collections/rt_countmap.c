@@ -33,6 +33,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements a hash-based frequency map from strings to counts.
+///
+/// CountMap owns copied key bytes and associates each distinct key with a
+/// strictly positive signed 64-bit count. A running total permits constant-time
+/// aggregation. Decrementing or assigning a non-positive count removes the
+/// mapping, so stored entries never represent zero.
+///
+/// Keys use their complete runtime byte lengths, including embedded NUL bytes;
+/// a null string denotes the empty key. Snapshot and ranking operations return
+/// owning Seqs of newly created strings. CountMap objects are runtime-managed,
+/// and mutation is unsynchronized.
+
 #include "rt_countmap.h"
 
 #include "rt_collection_ids.h"
@@ -45,11 +58,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// Initial number of hash buckets.
 #define CM_INITIAL_CAPACITY 16
+/// Numerator of the table growth threshold.
 #define CM_LOAD_FACTOR_NUM 3
+/// Denominator of the table growth threshold.
 #define CM_LOAD_FACTOR_DEN 4
 #include "rt_hash_util.h"
 
+/// @brief One owned key/count entry in a bucket collision chain.
 typedef struct rt_cm_entry {
     char *key;
     size_t key_len;
@@ -57,6 +74,7 @@ typedef struct rt_cm_entry {
     struct rt_cm_entry *next;
 } rt_cm_entry;
 
+/// @brief Internal CountMap state and aggregate counters.
 typedef struct rt_countmap_impl {
     void **vptr;
     rt_cm_entry **buckets;
@@ -67,6 +85,10 @@ typedef struct rt_countmap_impl {
 
 /// @brief Checked cast of an opaque handle to the CountMap implementation.
 /// @details Traps with @p what if @p obj is NULL or not a CountMap.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used on validation failure.
+/// @return The validated implementation pointer, or NULL if a returning trap
+///         handler resumes after failed validation.
 static rt_countmap_impl *as_countmap(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_COUNTMAP_CLASS_ID, sizeof(rt_countmap_impl))) {
         rt_trap(what);
@@ -76,6 +98,10 @@ static rt_countmap_impl *as_countmap(void *obj, const char *what) {
 }
 
 /// @brief Borrow the byte buffer + length of an rt_string (empty "" if null).
+/// @param s Runtime string to inspect; NULL denotes an empty key.
+/// @param out_len Receives the usable byte length.
+/// @return Borrowed key bytes, or a stable empty string for a null, empty, or
+///         inaccessible runtime string.
 static const char *get_str_data(rt_string s, size_t *out_len) {
     if (!s) {
         *out_len = 0;
@@ -96,6 +122,10 @@ static const char *get_str_data(rt_string s, size_t *out_len) {
 }
 
 /// @brief Linear scan of a bucket chain for an exact key match (NULL if none).
+/// @param head First entry in the bucket chain.
+/// @param key Key bytes to compare.
+/// @param key_len Number of bytes in @p key.
+/// @return Matching entry, or NULL if no chain entry has the same byte string.
 static rt_cm_entry *find_entry(rt_cm_entry *head, const char *key, size_t key_len) {
     for (rt_cm_entry *e = head; e; e = e->next) {
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0)
@@ -105,6 +135,7 @@ static rt_cm_entry *find_entry(rt_cm_entry *head, const char *key, size_t key_le
 }
 
 /// @brief Free a chain entry and its owned key buffer (NULL-safe).
+/// @param entry Entry to destroy, or NULL for a no-op.
 static void free_entry(rt_cm_entry *entry) {
     if (!entry)
         return;
@@ -113,6 +144,7 @@ static void free_entry(rt_cm_entry *entry) {
 }
 
 /// @brief GC finalizer: free every chain entry, the bucket array, and reset.
+/// @param obj CountMap object being finalized, or NULL for a no-op.
 static void countmap_finalizer(void *obj) {
     if (!obj)
         return;
@@ -139,6 +171,9 @@ static void countmap_finalizer(void *obj) {
 
 /// @brief Double the bucket array and rehash all entries into it.
 /// @details No-op past the SIZE_MAX/2 cap; traps on allocation overflow/OOM.
+/// @param cm CountMap whose bucket table is to grow.
+/// @return 1 after installing the larger table, or 0 when capacity cannot
+///         double or allocation fails. The original table remains installed.
 static int resize(rt_countmap_impl *cm) {
     if (cm->capacity > SIZE_MAX / 2)
         return 0;
@@ -173,6 +208,9 @@ static int resize(rt_countmap_impl *cm) {
 
 /// @brief True when the load factor (count/capacity) reaches the grow
 ///        threshold CM_LOAD_FACTOR_NUM/CM_LOAD_FACTOR_DEN.
+/// @param cm CountMap whose current occupancy is inspected.
+/// @return Non-zero when the next new-key insertion should first grow the
+///         bucket table.
 static int should_resize(rt_countmap_impl *cm) {
     return (long double)cm->count * (long double)CM_LOAD_FACTOR_DEN >=
            (long double)cm->capacity * (long double)CM_LOAD_FACTOR_NUM;
@@ -180,6 +218,8 @@ static int should_resize(rt_countmap_impl *cm) {
 
 /// @brief Construct an empty count map (string → int64). Designed for tally workloads —
 /// histogram counting, frequency tables, vote totals. Internal storage is a chained hash table.
+/// @return A new runtime-managed CountMap, or NULL after reporting an
+///         allocation trap if construction cannot complete.
 void *rt_countmap_new(void) {
     rt_countmap_impl *cm =
         (rt_countmap_impl *)rt_obj_new_i64(RT_COUNTMAP_CLASS_ID, sizeof(rt_countmap_impl));
@@ -204,35 +244,38 @@ void *rt_countmap_new(void) {
     return cm;
 }
 
-/// @brief Get the count of countmap len.
-/// @param obj
-/// @return Result value.
+/// @brief Returns the number of distinct keys with positive counts.
+/// @param obj CountMap handle, or NULL to query an empty map.
+/// @return Distinct-key count, or zero when @p obj is NULL.
 int64_t rt_countmap_len(void *obj) {
     if (!obj)
         return 0;
     return (int64_t)as_countmap(obj, "CountMap.Len: invalid CountMap object")->count;
 }
 
-/// @brief Get the count of countmap is empty.
-/// @param obj
-/// @return Result value.
+/// @brief Tests whether a CountMap contains no stored keys.
+/// @param obj CountMap handle, or NULL to test an empty map.
+/// @return 1 when empty or NULL; otherwise 0.
 int8_t rt_countmap_is_empty(void *obj) {
     return rt_countmap_len(obj) == 0 ? 1 : 0;
 }
 
-/// @brief Get the count of countmap inc.
-/// @param obj
-/// @param key
-/// @return Result value.
+/// @brief Increments one key's count by one.
+/// @param obj CountMap handle, or NULL for a no-op.
+/// @param key Key to increment; NULL denotes the empty string.
+/// @return The post-increment count, or zero if @p obj is NULL or the
+///         operation cannot complete after a trap.
 int64_t rt_countmap_inc(void *obj, rt_string key) {
     return rt_countmap_inc_by(obj, key, 1);
 }
 
-/// @brief Get the count of countmap inc by.
-/// @param obj
-/// @param key
-/// @param n
-/// @return Result value.
+/// @brief Adds a non-negative amount to one key's count.
+/// @param obj CountMap handle, or NULL for a no-op.
+/// @param key Key to update; NULL denotes the empty string.
+/// @param n Amount to add. Zero performs a lookup without inserting; negative
+///        values raise a runtime trap.
+/// @return The key's post-operation count. Overflow or allocation failures
+///         trap and leave the prior mapping unchanged.
 int64_t rt_countmap_inc_by(void *obj, rt_string key, int64_t n) {
     if (!obj)
         return 0;
@@ -311,10 +354,11 @@ int64_t rt_countmap_inc_by(void *obj, rt_string key, int64_t n) {
     return e->count;
 }
 
-/// @brief Get the count of countmap dec.
-/// @param obj
-/// @param key
-/// @return Result value.
+/// @brief Decrements one key and removes it when its count reaches zero.
+/// @param obj CountMap handle, or NULL for a no-op.
+/// @param key Key to decrement; NULL denotes the empty string.
+/// @return The post-decrement count, or zero if the key was absent, removed,
+///         or @p obj is NULL.
 int64_t rt_countmap_dec(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -353,10 +397,10 @@ int64_t rt_countmap_dec(void *obj, rt_string key) {
     return 0;
 }
 
-/// @brief Get the count of countmap get.
-/// @param obj
-/// @param key
-/// @return Result value.
+/// @brief Returns the current count associated with a key.
+/// @param obj CountMap handle, or NULL to query an empty map.
+/// @param key Key to find; NULL denotes the empty string.
+/// @return Positive stored count, or zero when absent or @p obj is NULL.
 int64_t rt_countmap_get(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -376,10 +420,13 @@ int64_t rt_countmap_get(void *obj, rt_string key) {
     return e ? e->count : 0;
 }
 
-/// @brief Get the count of countmap set.
-/// @param obj
-/// @param key
-/// @param count
+/// @brief Assigns a key's count directly.
+/// @param obj CountMap handle, or NULL for a no-op.
+/// @param key Key to update; NULL denotes the empty string.
+/// @param count New count. Positive values insert or replace; zero and
+///        negative values remove an existing mapping.
+/// @note Total overflow and allocation failures trap without installing a new
+///       or increased count.
 void rt_countmap_set(void *obj, rt_string key, int64_t count) {
     if (!obj)
         return;
@@ -471,17 +518,17 @@ void rt_countmap_set(void *obj, rt_string key, int64_t count) {
     cm->total += count;
 }
 
-/// @brief Get the count of countmap has.
-/// @param obj
-/// @param key
-/// @return Result value.
+/// @brief Tests whether a key has a positive stored count.
+/// @param obj CountMap handle, or NULL to query an empty map.
+/// @param key Key to find; NULL denotes the empty string.
+/// @return 1 if present; otherwise 0.
 int8_t rt_countmap_has(void *obj, rt_string key) {
     return rt_countmap_get(obj, key) > 0 ? 1 : 0;
 }
 
-/// @brief Get the count of countmap total.
-/// @param obj
-/// @return Result value.
+/// @brief Returns the sum of all stored counts.
+/// @param obj CountMap handle, or NULL to query an empty map.
+/// @return Aggregate count, or zero when @p obj is NULL.
 int64_t rt_countmap_total(void *obj) {
     if (!obj)
         return 0;
@@ -490,6 +537,9 @@ int64_t rt_countmap_total(void *obj) {
 }
 
 /// @brief Return a Seq of every key currently stored. Snapshot, not a live view.
+/// @param obj CountMap handle, or NULL to enumerate an empty map.
+/// @return A new owning Seq of newly created key strings in unspecified
+///         bucket order, or NULL if Seq allocation fails.
 void *rt_countmap_keys(void *obj) {
     void *seq = rt_seq_new();
     if (!seq)
@@ -513,6 +563,10 @@ void *rt_countmap_keys(void *obj) {
 
 /// @brief qsort comparator ordering entry pointers by count, descending
 ///        (used by the "most common" / ranked-tally accessors).
+/// @param a Pointer to the first entry pointer.
+/// @param b Pointer to the second entry pointer.
+/// @return Negative if @p a has a greater count, positive if @p b has a
+///         greater count, or zero for a tie.
 static int cmp_entries_desc(const void *a, const void *b) {
     const rt_cm_entry *ea = *(const rt_cm_entry *const *)a;
     const rt_cm_entry *eb = *(const rt_cm_entry *const *)b;
@@ -525,6 +579,11 @@ static int cmp_entries_desc(const void *a, const void *b) {
 
 /// @brief Return the top-`n` most-frequent keys as a Seq, sorted descending by count. Returns
 /// every key if `n` exceeds the map size. Useful for top-N reports / leaderboards.
+/// @param obj CountMap handle, or NULL to rank an empty map.
+/// @param n Maximum number of keys; non-positive values produce an empty Seq.
+/// @return A new owning Seq of newly created key strings, or NULL if initial
+///         Seq allocation fails.
+/// @note Equal-count keys have unspecified relative order.
 void *rt_countmap_most_common(void *obj, int64_t n) {
     void *seq = rt_seq_new();
     if (!seq)
@@ -575,10 +634,10 @@ void *rt_countmap_most_common(void *obj, int64_t n) {
     return seq;
 }
 
-/// @brief Get the count of countmap remove.
-/// @param obj
-/// @param key
-/// @return Result value.
+/// @brief Removes a key and subtracts its complete count from the total.
+/// @param obj CountMap handle, or NULL for a no-op.
+/// @param key Key to remove; NULL denotes the empty string.
+/// @return 1 if a mapping was removed; otherwise 0.
 int8_t rt_countmap_remove(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -607,8 +666,8 @@ int8_t rt_countmap_remove(void *obj, rt_string key) {
     return 0;
 }
 
-/// @brief Get the count of countmap clear.
-/// @param obj
+/// @brief Removes every mapping while retaining the bucket table for reuse.
+/// @param obj CountMap handle, or NULL for a no-op.
 void rt_countmap_clear(void *obj) {
     if (!obj)
         return;

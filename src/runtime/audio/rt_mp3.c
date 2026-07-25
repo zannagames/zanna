@@ -20,6 +20,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements bounded batch and frame-streaming MP3 decoding to PCM.
+/// @details The decoder parses MPEG Layer III headers and side information,
+///          maintains the main-data reservoir, reconstructs spectral samples,
+///          and performs IMDCT plus polyphase synthesis into interleaved signed
+///          16-bit PCM. Decoder instances own overlap/reservoir state; batch
+///          output buffers transfer to the caller, while streaming output is a
+///          borrowed frame buffer owned by the stream.
+
 #include "rt_mp3.h"
 #include "rt_mp3_tables.h"
 
@@ -54,14 +63,22 @@ typedef struct {
 // (header field widths from 1..32 bits).
 // ---------------------------------------------------------------------------
 
-/// @brief Reset a bitstream onto a fresh byte buffer; computes bit length from byte length.
+/// @brief Reset an MSB-first bit reader onto a byte buffer.
+/// @param b Reader state to initialize.
+/// @param data Borrowed encoded bytes.
+/// @param byte_len Number of readable bytes; converted to the stored bit length.
 static void mp3_bits_init(mp3_bits_t *b, const uint8_t *data, size_t byte_len) {
     b->data = data;
     b->len = byte_len * 8;
     b->pos = 0;
 }
 
-/// @brief Pull `count` MSB-first bits from the stream as a uint32. Returns 0 at EOF.
+/// @brief Pull up to 32 MSB-first bits from the current reader position.
+/// @details If the buffer ends mid-field, returns the accumulated prefix and
+///          leaves unread low-order result bits as zero.
+/// @param b Initialized bit reader.
+/// @param count Number of bits to consume; non-positive values consume none.
+/// @return Decoded unsigned field, or zero when no bits are requested/available.
 static uint32_t mp3_bits_read(mp3_bits_t *b, int count) {
     if (count <= 0)
         return 0;
@@ -101,6 +118,9 @@ typedef struct {
 /// Validates the 11-bit sync word, decodes the version / layer /
 /// bitrate / sample-rate / channel-mode fields per ISO 11172-3,
 /// and computes the frame size. Returns -1 on invalid header.
+/// @param hdr Pointer to at least four frame-header bytes.
+/// @param out Receives parsed header fields and derived sizes on success.
+/// @return `0` for a supported Layer III header, otherwise `-1`.
 static int mp3_parse_header(const uint8_t *hdr, mp3_frame_header_t *out) {
     // Sync word check: 11 bits of 1
     if (hdr[0] != 0xFF || (hdr[1] & 0xE0) != 0xE0)
@@ -196,6 +216,12 @@ typedef struct {
 /// compress, window switching flag, table selectors, region counts,
 /// preflag, scalefac_scale, count1table_select). These drive the
 /// Huffman + scalefactor decode for each granule's main data.
+/// @param data Borrowed side-information bytes.
+/// @param size Side-information length in bytes.
+/// @param channels Parsed channel count.
+/// @param mpeg1 Non-zero for the two-granule MPEG-1 layout.
+/// @param si Receives parsed stream and granule fields.
+/// @return `0` after parsing.
 static int mp3_parse_side_info(
     const uint8_t *data, int size, int channels, int mpeg1, mp3_side_info_t *si) {
     mp3_bits_t bits;
@@ -277,13 +303,15 @@ struct mp3_decoder {
     int reservoir_size;
 };
 
-/// @brief Allocate a new MP3 decoder state (per-frame decode via mp3_stream or batch).
+/// @brief Allocate zero-initialized MP3 decoder state.
+/// @return Caller-owned decoder, or NULL on allocation failure.
 mp3_decoder_t *mp3_decoder_new(void) {
     mp3_decoder_t *dec = (mp3_decoder_t *)calloc(1, sizeof(mp3_decoder_t));
     return dec;
 }
 
 /// @brief Free an MP3 decoder state.
+/// @param dec Decoder returned by @ref mp3_decoder_new; NULL is accepted.
 void mp3_decoder_free(mp3_decoder_t *dec) {
     free(dec);
 }
@@ -308,7 +336,12 @@ static void mp3_decoder_reset(mp3_decoder_t *dec) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Decode one (x, y) pair from a Huffman tree stored as flat node array.
-/// @return 0 on success, -1 on error.
+/// @param bits Main-data bit reader.
+/// @param tree Flat branch/leaf table.
+/// @param tree_size Number of entries in @p tree.
+/// @param x Receives the high-nibble symbol.
+/// @param y Receives the low-nibble symbol.
+/// @return `0` on reaching a leaf, or `-1` for an invalid tree/walk.
 static int mp3_huff_tree_decode(
     mp3_bits_t *bits, const mp3_huff_node_t *tree, int tree_size, int *x, int *y) {
     if (!tree || tree_size <= 0)
@@ -334,7 +367,9 @@ static int mp3_huff_tree_decode(
 }
 
 /// @brief Get the Huffman tree for a given table index (small tables only).
-/// @return Tree pointer and size, or NULL if table uses fallback decode.
+/// @param table_idx Layer III Huffman table index.
+/// @param out_size Receives the flat tree's entry count, or zero when absent.
+/// @return Static tree pointer, or NULL when no explicit tree is stored.
 static const mp3_huff_node_t *mp3_get_huff_tree(int table_idx, int *out_size) {
     switch (table_idx) {
         case 1:
@@ -379,6 +414,10 @@ static int mp3_huff_table_supported(int table_idx) {
 
 /// @brief Decode one Huffman pair using tree walk (small tables) or bit-width
 /// approximation (large tables where full ISO trees aren't stored).
+/// @param bits Main-data bit reader.
+/// @param table_idx Layer III Huffman table index.
+/// @param x Receives the first non-negative spectral value.
+/// @param y Receives the second non-negative spectral value.
 static void mp3_huff_decode_pair(mp3_bits_t *bits, int table_idx, int *x, int *y) {
     if (table_idx <= 0 || table_idx >= 32 || mp3_huff_info[table_idx].max_val == 0) {
         *x = *y = 0;
@@ -423,6 +462,8 @@ static void mp3_huff_decode_pair(mp3_bits_t *bits, int table_idx, int *x, int *y
 /// Converts 18 frequency-domain samples back to 36 time-domain
 /// samples, with the standard MDCT windowing folded in. Adjacent
 /// long blocks overlap-add by 18 samples to give continuous output.
+/// @param in Eighteen frequency-domain coefficients.
+/// @param out Receives 36 time-domain samples.
 static void mp3_imdct36(const float *in, float *out) {
     // 36-point IMDCT: X[i] = sum_{k=0}^{17} in[k] * cos(pi/36 * (2*i+1+18) * (2*k+1) / 2)
     for (int i = 0; i < 36; i++) {
@@ -439,6 +480,8 @@ static void mp3_imdct36(const float *in, float *out) {
 /// Short blocks improve the time-resolution of the codec for
 /// percussive content; the encoder switches to them via the
 /// `block_type` flag in side-info.
+/// @param in Six frequency-domain coefficients.
+/// @param out Receives 12 time-domain samples.
 static void mp3_imdct12(const float *in, float *out) {
     // 12-point IMDCT for short blocks
     for (int i = 0; i < 12; i++) {
@@ -462,6 +505,10 @@ static void mp3_imdct12(const float *in, float *out) {
 /// pre-baked window matrix and outputs 32 PCM samples per call.
 /// Per-channel state (`v[]` ring buffer) carries across calls for
 /// the windowed overlap-add.
+/// @param dec Decoder carrying per-channel synthesis history.
+/// @param ch Zero-based channel index.
+/// @param subbands Thirty-two reconstructed subband samples.
+/// @param pcm_out Receives 32 clamped signed 16-bit PCM samples.
 static void mp3_synth_filter(mp3_decoder_t *dec,
                              int ch,
                              const float subbands[32],
@@ -506,7 +553,11 @@ static void mp3_synth_filter(mp3_decoder_t *dec,
 // Main decode function
 //===----------------------------------------------------------------------===//
 
-/// @brief Skip ID3v2 tag if present.
+/// @brief Determine the byte offset immediately after an optional ID3v2 tag.
+/// @param data Complete MP3 byte buffer.
+/// @param len Buffer length in bytes.
+/// @return Tag-end offset, zero when no ID3v2 prefix exists, or @p len when a
+///         declared tag extends beyond the available buffer.
 static size_t mp3_skip_id3v2(const uint8_t *data, size_t len) {
     if (len >= 10 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') {
         // Syncsafe integer size (4 bytes, 7 bits each)
@@ -518,7 +569,11 @@ static size_t mp3_skip_id3v2(const uint8_t *data, size_t len) {
     return 0;
 }
 
-/// @brief Find the next valid frame sync in the data.
+/// @brief Find the next parseable Layer III frame header.
+/// @param data Complete MP3 byte buffer.
+/// @param len Buffer length in bytes.
+/// @param start First byte offset to consider.
+/// @return Offset of the next valid header, or @p len when none is found.
 static size_t mp3_find_sync(const uint8_t *data, size_t len, size_t start) {
     for (size_t i = start; i + 3 < len; i++) {
         if (data[i] == 0xFF && (data[i + 1] & 0xE0) == 0xE0) {
@@ -970,7 +1025,16 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
 /// Walks the container scanning for valid sync words, skipping any
 /// ID3 prefix or junk bytes. Each frame is decoded into a
 /// per-frame PCM block and appended to the output buffer.
-/// @return 0 on success, negative on parse error / OOM.
+/// @param dec Reusable decoder instance; its state is reset before decoding.
+/// @param data Complete borrowed MP3 byte buffer.
+/// @param len Buffer length in bytes.
+/// @param out_pcm Receives a `malloc`-allocated interleaved PCM buffer.
+/// @param out_samples Receives decoded frame count per channel.
+/// @param out_channels Receives the constant stream channel count.
+/// @param out_sample_rate Receives the constant stream sample rate in hertz.
+/// @return `0` on success, or `-1` on validation, unsupported data, inconsistent
+///         stream format, size-limit, allocation, or decode failure.
+/// @note The caller must free successful @p out_pcm storage.
 int mp3_decode_file(mp3_decoder_t *dec,
                     const uint8_t *data,
                     size_t len,
@@ -1078,9 +1142,12 @@ struct mp3_stream {
 };
 
 /// @brief Open an MP3 file for frame-sliced playback.
-/// @details The file is decoded once up front, then exposed through the
-///          streaming API as stable 1152-frame slices. This avoids the broken
-///          per-frame reparse path and yields deterministic seek/duration.
+/// @details Reads the bounded file into memory and pre-scans frame headers for
+///          the first-frame offset, stable channel/rate metadata, and total
+///          per-channel sample count. Audio frames remain encoded until
+///          @ref mp3_stream_decode_frame advances through them.
+/// @param filepath NUL-terminated MP3 file path; files above 256 MiB are rejected.
+/// @return Caller-owned stream, or NULL on file, metadata, or allocation failure.
 mp3_stream_t *mp3_stream_open(const char *filepath) {
     if (!filepath)
         return NULL;
@@ -1143,7 +1210,15 @@ mp3_stream_t *mp3_stream_open(const char *filepath) {
     return s;
 }
 
-/// @brief Decode the next MP3 frame, returning PCM samples. Returns sample count or 0 at EOF.
+/// @brief Decode the next valid MP3 frame into stream-owned PCM storage.
+/// @details Malformed headers are skipped while scanning forward. The returned
+///          pointer is overwritten by the next decode or rewind and becomes
+///          invalid when the stream is freed.
+/// @param stream Open MP3 stream.
+/// @param out_pcm Receives a borrowed interleaved PCM frame on success, or NULL
+///        at end-of-stream/error.
+/// @return Frame count per channel, `0` at end-of-stream, or `-1` for invalid
+///         arguments, unsupported data, or a mid-stream format change.
 int mp3_stream_decode_frame(mp3_stream_t *stream, int16_t **out_pcm) {
     if (!stream || !out_pcm)
         return -1;
@@ -1177,21 +1252,30 @@ int mp3_stream_decode_frame(mp3_stream_t *stream, int16_t **out_pcm) {
 }
 
 /// @brief Get the sample rate of the MP3 stream (determined from the first frame header).
+/// @param stream Open stream, or NULL.
+/// @return Sample rate in hertz, or zero for NULL.
 int mp3_stream_sample_rate(const mp3_stream_t *stream) {
     return stream ? stream->sample_rate : 0;
 }
 
 /// @brief Get the channel count of the MP3 stream (1=mono, 2=stereo).
+/// @param stream Open stream, or NULL.
+/// @return Channel count, or zero for NULL.
 int mp3_stream_channels(const mp3_stream_t *stream) {
     return stream ? stream->channels : 0;
 }
 
 /// @brief Get the total decoded frame count of the MP3 stream.
+/// @param stream Open stream, or NULL.
+/// @return Pre-scanned sample-frame count per channel, or zero for NULL.
 int mp3_stream_total_samples(const mp3_stream_t *stream) {
     return stream ? stream->total_samples : 0;
 }
 
 /// @brief Rewind the MP3 stream to the beginning for re-playback.
+/// @details Restores the first-frame cursor and clears reservoir, overlap-add,
+///          and synthesis-filter history.
+/// @param stream Open stream; NULL is ignored.
 void mp3_stream_rewind(mp3_stream_t *stream) {
     if (!stream)
         return;
@@ -1199,7 +1283,10 @@ void mp3_stream_rewind(mp3_stream_t *stream) {
     mp3_decoder_reset(stream->dec);
 }
 
-/// @brief Close the MP3 stream and free the decoder, file handle, and read buffer.
+/// @brief Close an MP3 stream and release all memory it owns.
+/// @details Frees the decoder state, in-memory encoded file bytes, and stream
+///          object. No file handle remains open after @ref mp3_stream_open.
+/// @param stream Stream returned by @ref mp3_stream_open; NULL is accepted.
 void mp3_stream_free(mp3_stream_t *stream) {
     if (!stream)
         return;

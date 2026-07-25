@@ -27,6 +27,14 @@
 //        rt_soundbank.h (named registry)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares a bounded procedural song builder that renders to Sound.
+/// @details Timing uses centbeats, modulation rates use centi-hertz, and pitch
+///          offsets use cents. Channels and notes are stored directly in the
+///          runtime song object; Build pre-renders fixed-format stereo PCM into
+///          a temporary WAV image and returns a normal caller-owned Sound handle.
+
 #pragma once
 
 #include <stdint.h>
@@ -39,15 +47,20 @@ extern "C" {
 // Constants
 //===------------------------------------------------------------------===//
 
-/// Waveform types (extends rt_synth.h RT_WAVE_* with noise).
+/// @brief Sine oscillator waveform identifier.
 #define MUSICGEN_WAVE_SINE 0
+/// @brief Variable-duty square oscillator waveform identifier.
 #define MUSICGEN_WAVE_SQUARE 1
+/// @brief Sawtooth oscillator waveform identifier.
 #define MUSICGEN_WAVE_SAWTOOTH 2
+/// @brief Triangle oscillator waveform identifier.
 #define MUSICGEN_WAVE_TRIANGLE 3
+/// @brief Deterministic filtered-noise waveform identifier.
 #define MUSICGEN_WAVE_NOISE 4
 
-/// Resource limits.
+/// @brief Maximum number of synthesis channels in one song.
 #define MUSICGEN_MAX_CHANNELS 8
+/// @brief Maximum scheduled notes stored by each channel.
 #define MUSICGEN_MAX_NOTES 4096
 
 //===------------------------------------------------------------------===//
@@ -56,13 +69,13 @@ extern "C" {
 
 /// @brief Create a new song builder at the given tempo.
 /// @param bpm Beats per minute (clamped to 20-300).
-/// @return Opaque song builder handle.
+/// @return Caller-owned opaque song builder handle, or NULL on allocation failure.
 void *rt_musicgen_new(int64_t bpm);
 
 /// @brief Add a channel with the specified waveform type.
 /// @param song Song builder handle.
 /// @param waveform Waveform type (0-4: sine/square/saw/triangle/noise).
-/// @return Channel index (0-7), or -1 if full.
+/// @return Channel index (0-7), or `-1` if the song is invalid/full.
 int64_t rt_musicgen_add_channel(void *song, int64_t waveform);
 
 /// @brief Set the ADSR envelope for a channel.
@@ -88,7 +101,7 @@ void rt_musicgen_set_channel_vol(void *song, int64_t ch, int64_t volume);
 /// @brief Set square wave duty cycle (pulse width).
 /// @param song Song builder handle.
 /// @param ch Channel index.
-/// @param duty Duty cycle percentage (0-100). NES: 12, 25, 50, 75.
+/// @param duty Duty cycle clamped to 1-99 percent. NES: 12, 25, 50, 75.
 void rt_musicgen_set_duty(void *song, int64_t ch, int64_t duty);
 
 /// @brief Set stereo pan position for a channel.
@@ -169,6 +182,8 @@ int64_t rt_musicgen_add_note_vel(void *song,
 //===------------------------------------------------------------------===//
 
 /// @brief Set the song length in centbeats.
+/// @details The implementation clamps the value to the tempo-dependent
+///          five-minute render limit.
 /// @param song Song builder handle.
 /// @param length_centbeats Song length (100 = 1 beat).
 void rt_musicgen_set_length(void *song, int64_t length_centbeats);
@@ -184,12 +199,18 @@ void rt_musicgen_set_swing(void *song, int64_t swing);
 void rt_musicgen_set_loopable(void *song, int64_t loopable);
 
 /// @brief Get the BPM of the song.
+/// @param song Song builder handle.
+/// @return Stored tempo, or zero for an invalid object.
 int64_t rt_musicgen_get_bpm(void *song);
 
 /// @brief Get the song length in centbeats.
+/// @param song Song builder handle.
+/// @return Stored length, or zero for an invalid object.
 int64_t rt_musicgen_get_length(void *song);
 
 /// @brief Get the number of channels added.
+/// @param song Song builder handle.
+/// @return Active channel count, or zero for an invalid object.
 int64_t rt_musicgen_get_channel_count(void *song);
 
 //===------------------------------------------------------------------===//
@@ -205,8 +226,9 @@ int64_t rt_musicgen_get_channel_count(void *song);
 /// preserving the requested song length.
 ///
 /// @param song Song builder handle.
-/// @return Sound object ready for playback, or NULL on failure.
-///         Failure: 0 channels, 0 length, memory allocation error.
+/// @return Caller-owned Sound object ready for playback, or NULL when audio is
+///         unavailable, the song has no channels/length, a size limit is
+///         exceeded, or allocation/loading fails.
 void *rt_musicgen_build(void *song);
 
 #ifdef __cplusplus

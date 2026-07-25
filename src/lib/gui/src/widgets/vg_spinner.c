@@ -27,6 +27,12 @@
 //        docs/adr/0167-spinner-mixed-value-state.md
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements numeric spinner display, direct text editing, mixed-value
+///        presentation, and step-based pointer/keyboard adjustment.
+/// @details The committed finite value is always range-clamped. The owned edit
+///          buffer may temporarily contain incomplete numeric text, while
+///          commit and cancellation explicitly reconcile it with stored state.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
@@ -60,6 +66,8 @@ static vg_widget_vtable_t g_spinner_vtable = {.destroy = spinner_destroy,
                                               .on_focus = NULL};
 
 /// @brief Add delta to the spinner's current value and clamp the result.
+/// @param spinner Spinner to adjust.
+/// @param delta Signed amount added through the normal value-setting path.
 static void spinner_adjust_value(vg_spinner_t *spinner, double delta) {
     if (!spinner)
         return;
@@ -67,18 +75,30 @@ static void spinner_adjust_value(vg_spinner_t *spinner, double delta) {
 }
 
 /// @brief Return true if local coordinates (x,y) fall within the up-arrow button.
+/// @param spinner Arranged spinner providing button geometry.
+/// @param x Widget-local horizontal coordinate.
+/// @param y Widget-local vertical coordinate.
+/// @return `true` when the point lies in the upper button half.
 static bool spinner_point_in_up_button(const vg_spinner_t *spinner, float x, float y) {
     return x >= spinner->base.width - spinner->button_width && x < spinner->base.width &&
            y >= 0.0f && y < spinner->base.height * 0.5f;
 }
 
 /// @brief Return true if local coordinates (x,y) fall within the down-arrow button.
+/// @param spinner Arranged spinner providing button geometry.
+/// @param x Widget-local horizontal coordinate.
+/// @param y Widget-local vertical coordinate.
+/// @return `true` when the point lies in the lower button half.
 static bool spinner_point_in_down_button(const vg_spinner_t *spinner, float x, float y) {
     return x >= spinner->base.width - spinner->button_width && x < spinner->base.width &&
            y >= spinner->base.height * 0.5f && y < spinner->base.height;
 }
 
 /// @brief Return true if local coordinates (x,y) fall within the text display area.
+/// @param spinner Arranged spinner providing button geometry.
+/// @param x Widget-local horizontal coordinate.
+/// @param y Widget-local vertical coordinate.
+/// @return `true` when the point lies left of the button gutter.
 static bool spinner_point_in_text_area(const vg_spinner_t *spinner, float x, float y) {
     return x >= 0.0f && x < spinner->base.width - spinner->button_width && y >= 0.0f &&
            y < spinner->base.height;
@@ -130,6 +150,7 @@ vg_spinner_t *vg_spinner_create(vg_widget_t *parent) {
 }
 
 /// @brief VTable destroy: releases input capture if held; no heap fields beyond the widget struct.
+/// @param widget Spinner widget base being destroyed.
 static void spinner_destroy(vg_widget_t *widget) {
     vg_spinner_t *spinner = (vg_spinner_t *)widget;
     free(spinner->text_buffer);
@@ -140,6 +161,9 @@ static void spinner_destroy(vg_widget_t *widget) {
 
 /// @brief VTable measure: sizes the spinner from text extent plus up/down button gutter and input
 /// padding.
+/// @param widget Spinner widget base to measure.
+/// @param available_width Offered width, unused before constraints.
+/// @param available_height Offered height, unused before constraints.
 static void spinner_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_spinner_t *spinner = (vg_spinner_t *)widget;
     (void)available_width;
@@ -168,6 +192,8 @@ static void spinner_measure(vg_widget_t *widget, float available_width, float av
 
 /// @brief VTable paint: draws the input field background, current value text, up/down arrow buttons
 /// with hover/press tints, border, and focus ring.
+/// @param widget Arranged spinner widget base to paint.
+/// @param canvas Backend canvas used for field, glyph, text, and caret drawing.
 static void spinner_paint(vg_widget_t *widget, void *canvas) {
     vg_spinner_t *spinner = (vg_spinner_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -298,6 +324,9 @@ static void spinner_paint(vg_widget_t *widget, void *canvas) {
 
 /// @brief VTable handle_event: handles click on up/down arrow buttons, mouse-wheel
 /// increment/decrement, arrow/Home/End keys, and inline text editing.
+/// @param widget Spinner widget receiving input.
+/// @param event Pointer, wheel, key, or character event to interpret.
+/// @return `true` when the spinner consumes the event.
 static bool spinner_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_spinner_t *spinner = (vg_spinner_t *)widget;
     if (widget->state & VG_STATE_DISABLED)
@@ -477,11 +506,16 @@ static bool spinner_handle_event(vg_widget_t *widget, vg_event_t *event) {
 }
 
 /// @brief VTable can_focus: returns true when the widget is both enabled and visible.
+/// @param widget Candidate spinner widget.
+/// @return `true` when keyboard focus is permitted.
 static bool spinner_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }
 
 /// @brief Reformat spinner->value into text_buffer using the current decimal_places setting.
+/// @details Storage is resized only after the required formatted length is
+///          known; allocation failure preserves the previous buffer.
+/// @param spinner Spinner whose owned display buffer is rebuilt.
 static void update_text_buffer(vg_spinner_t *spinner) {
     if (!spinner)
         return;
@@ -509,6 +543,7 @@ static void update_text_buffer(vg_spinner_t *spinner) {
 }
 
 /// @brief Enter inline edit mode, placing the cursor at end of text.
+/// @param spinner Spinner to begin editing; mixed presentation is first resolved.
 static void spinner_begin_edit(vg_spinner_t *spinner) {
     if (!spinner)
         return;
@@ -521,6 +556,7 @@ static void spinner_begin_edit(vg_spinner_t *spinner) {
 }
 
 /// @brief Abandon inline edit and restore text_buffer from the committed value.
+/// @param spinner Spinner whose in-progress text is discarded.
 static void spinner_cancel_edit(vg_spinner_t *spinner) {
     if (!spinner)
         return;
@@ -529,6 +565,9 @@ static void spinner_cancel_edit(vg_spinner_t *spinner) {
 }
 
 /// @brief Parse text_buffer and commit it as the new value; cancels on invalid input.
+/// @param spinner Spinner with an active owned edit buffer.
+/// @return `true` when the complete buffer parsed as a finite number and was
+///         committed.
 static bool spinner_commit_edit(vg_spinner_t *spinner) {
     if (!spinner || !spinner->editing || !spinner->text_buffer)
         return false;
@@ -551,6 +590,8 @@ static bool spinner_commit_edit(vg_spinner_t *spinner) {
 }
 
 /// @brief Insert a character at the cursor position if it is numerically valid.
+/// @param spinner Spinner whose owned edit buffer is extended.
+/// @param ch ASCII digit, decimal point, or leading minus candidate.
 static void spinner_insert_char(vg_spinner_t *spinner, char ch) {
     if (!spinner || !spinner->text_buffer)
         return;
@@ -650,6 +691,8 @@ void vg_spinner_set_indeterminate(vg_spinner_t *spinner, bool indeterminate) {
 }
 
 /// @brief Return whether a spinner currently presents a mixed group value.
+/// @param spinner Spinner to inspect.
+/// @return Current indeterminate state, or `false` for `NULL`.
 bool vg_spinner_is_indeterminate(const vg_spinner_t *spinner) {
     return spinner ? spinner->indeterminate : false;
 }

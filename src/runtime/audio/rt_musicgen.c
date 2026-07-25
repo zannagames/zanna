@@ -29,6 +29,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the procedural tracker-style music builder and renderer.
+/// @details Songs contain bounded channel/note arrays and render ahead into
+///          44.1-kHz stereo 16-bit PCM. Rendering applies waveform synthesis,
+///          ADSR, pan, detune, modulation, arpeggio, portamento, swing, and
+///          optional loop-boundary crossfade before wrapping the temporary WAV
+///          image as a runtime Sound handle.
+
 #include "rt_musicgen.h"
 #include "rt_audio.h"
 #include "rt_object.h"
@@ -110,7 +118,11 @@ typedef struct {
 // Clamping Helpers
 //===----------------------------------------------------------------------===//
 
-/// @brief Clamp `v` into the inclusive range `[lo, hi]`.
+/// @brief Clamp an integer into an inclusive range.
+/// @param v Value to normalize.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @return @p v limited to `[@p lo, @p hi]`.
 static int64_t mg_clamp(int64_t v, int64_t lo, int64_t hi) {
     if (v < lo)
         return lo;
@@ -156,6 +168,7 @@ static int mg_centbeats_to_frames(int64_t centbeats,
 }
 
 /// @brief Safe-cast an opaque handle to mg_song_t.
+/// @param song_ptr Opaque runtime object to validate.
 /// @return The song, or NULL if @p song_ptr is not a MusicGen song object.
 static mg_song_t *mg_as_song(void *song_ptr) {
     if (!rt_obj_is_instance(song_ptr, MG_CLASS_ID, sizeof(mg_song_t)))
@@ -167,8 +180,12 @@ static mg_song_t *mg_as_song(void *song_ptr) {
 // Sine Approximation (no libm — identical to rt_synth.c)
 //===----------------------------------------------------------------------===//
 
-/// Bhaskara I's approximation. Phase in [0,1) maps to [0,2*PI).
-/// Max error ~0.08% — inaudible for audio synthesis.
+/// @brief Approximate sine without the platform math library.
+/// @details Normalizes any phase into `[0, 1)`, maps it to `[0, 2π)`, and
+///          applies Bhaskara I's approximation with approximately 0.08% maximum
+///          error.
+/// @param phase Wave-cycle phase, where one unit is a complete cycle.
+/// @return Approximate sine value in `[-1, 1]`.
 static double mg_sin(double phase) {
     phase = phase - (double)(int64_t)phase;
     if (phase < 0.0)
@@ -450,10 +467,9 @@ static double mg_waveform(double phase, int64_t waveform, int64_t duty) {
 // ADSR Envelope
 //===----------------------------------------------------------------------===//
 
-/// @brief Calculate ADSR envelope amplitude at a given sample offset.
+/// @brief Calculate attack/decay/sustain amplitude at a time after note-on.
 /// @param env Envelope parameters.
-/// @param sample_offset Samples since note-on.
-/// @param note_dur_samples Note duration in samples (before release).
+/// @param t_s Elapsed time since note-on, in seconds.
 /// @return Amplitude multiplier in [0.0, 1.0].
 static double mg_adsr_note_level_at(const mg_envelope_t *env, double t_s) {
     double atk_s = (double)env->attack_ms / 1000.0;
@@ -512,6 +528,8 @@ typedef struct {
 } mg_noise_t;
 
 /// @brief Initialize noise generator with a seed.
+/// @param n Noise/filter state to initialize.
+/// @param seed Deterministic initial linear-congruential state.
 static void mg_noise_init(mg_noise_t *n, uint32_t seed) {
     n->state = seed;
     n->prev_sample = 0.0;
@@ -547,6 +565,9 @@ static double mg_noise_sample(mg_noise_t *n, double cutoff_freq) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Compare notes by beat position, then insertion order for qsort.
+/// @param a Pointer to the first @ref mg_note_t.
+/// @param b Pointer to the second @ref mg_note_t.
+/// @return Negative, zero, or positive according to stable render order.
 static int mg_note_compare(const void *a, const void *b) {
     const mg_note_t *na = (const mg_note_t *)a;
     const mg_note_t *nb = (const mg_note_t *)b;
@@ -566,12 +587,16 @@ static int mg_note_compare(const void *a, const void *b) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Write a 16-bit little-endian integer to a byte buffer.
+/// @param p Destination with space for two bytes.
+/// @param v Value to encode.
 static void mg_write_le16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)(v & 0xFFu);
     p[1] = (uint8_t)((v >> 8) & 0xFFu);
 }
 
 /// @brief Write a 32-bit little-endian integer to a byte buffer.
+/// @param p Destination with space for four bytes.
+/// @param v Value to encode.
 static void mg_write_le32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v & 0xFFu);
     p[1] = (uint8_t)((v >> 8) & 0xFFu);
@@ -580,6 +605,10 @@ static void mg_write_le32(uint8_t *p, uint32_t v) {
 }
 
 /// @brief Validate frame count and compute WAV byte sizes without signed overflow.
+/// @param num_frames Positive stereo PCM frame count.
+/// @param data_size_out Optional destination for PCM payload bytes.
+/// @param wav_size_out Optional destination for total header-plus-payload bytes.
+/// @return Non-zero when the sizes are representable in RIFF and `size_t`.
 static int mg_wav_sizes(int32_t num_frames, uint32_t *data_size_out, size_t *wav_size_out) {
     if (num_frames <= 0)
         return 0;
@@ -597,6 +626,8 @@ static int mg_wav_sizes(int32_t num_frames, uint32_t *data_size_out, size_t *wav
 }
 
 /// @brief Write a WAV header for stereo 16-bit PCM data.
+/// @param buf Destination with at least @ref MG_WAV_HEADER writable bytes.
+/// @param data_size PCM payload length in bytes.
 static void mg_write_wav_header(uint8_t *buf, uint32_t data_size) {
     uint32_t file_size = (uint32_t)(MG_WAV_HEADER - 8) + data_size;
     int32_t byte_rate = MG_SAMPLE_RATE * MG_CHANNELS * (MG_BITS / 8);
@@ -635,6 +666,8 @@ typedef struct {
 ///          Used per-sample so an arrangement that piles up many
 ///          loud channels degrades gracefully into clipping rather
 ///          than into wrap-around glitches.
+/// @param dst Accumulator sample to update.
+/// @param value Signed contribution to add.
 static void mg_accum_add_saturated(int32_t *dst, int32_t value) {
     int64_t sum = (int64_t)*dst + (int64_t)value;
     if (sum > INT32_MAX)
@@ -833,6 +866,8 @@ static void mg_render_note(int32_t *accum,
 /// scale the excess by 1/4 to round off the corner instead of
 /// hard-clipping. Saturates at ±32767. Avoids the harshness
 /// of digital clipping on summed-note loud passages.
+/// @param v Mixed signed accumulator sample.
+/// @return Soft-limited signed 16-bit PCM sample.
 static int16_t mg_soft_clip(int32_t v) {
     if (v > MG_CLIP_THRESHOLD) {
         v = MG_CLIP_THRESHOLD + (v - MG_CLIP_THRESHOLD) / 4;
@@ -854,7 +889,9 @@ static int16_t mg_soft_clip(int32_t v) {
 /// @details MusicGen builds chiptune-style music programmatically. Add channels
 ///          with different waveforms, set per-channel effects (vibrato, tremolo,
 ///          arpeggio, portamento), add notes, then call build() to render to a
-///          playable Sound or Music handle.
+///          playable Sound handle.
+/// @param bpm Requested tempo, clamped to `[20, 300]`.
+/// @return Caller-owned runtime song object, or NULL on allocation failure.
 void *rt_musicgen_new(int64_t bpm) {
     mg_song_t *song = (mg_song_t *)rt_obj_new_i64(MG_CLASS_ID, (int64_t)sizeof(mg_song_t));
     if (!song)
@@ -895,6 +932,9 @@ void *rt_musicgen_new(int64_t bpm) {
 
 /// @brief Add a synthesis channel with the given waveform (0=sine, 1=square, 2=saw, 3=triangle,
 /// 4=noise).
+/// @param song_ptr Valid MusicGen song object.
+/// @param waveform Waveform identifier, clamped to `[0, 4]`.
+/// @return Zero-based channel index, or `-1` for an invalid song/full channel table.
 int64_t rt_musicgen_add_channel(void *song_ptr, int64_t waveform) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
@@ -915,7 +955,10 @@ int64_t rt_musicgen_add_channel(void *song_ptr, int64_t waveform) {
 // Public API — Channel Configuration
 //===----------------------------------------------------------------------===//
 
-/// Helper to validate song + channel index.
+/// @brief Validate a song handle and retrieve one configured channel.
+/// @param song_ptr Opaque MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @return Mutable channel state, or NULL for an invalid song/index.
 static mg_channel_t *mg_get_channel(void *song_ptr, int64_t ch) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
@@ -929,6 +972,12 @@ static mg_channel_t *mg_get_channel(void *song_ptr, int64_t ch) {
 ///
 /// Times are in milliseconds; sustain is a 0.0–1.0 amplitude scale.
 /// Applied to every note added to the track until changed again.
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param attack_ms Attack duration, clamped to `[0, 5000]`.
+/// @param decay_ms Decay duration, clamped to `[0, 5000]`.
+/// @param sustain_pct Sustain level, clamped to `[0, 100]`.
+/// @param release_ms Release duration, clamped to `[0, 5000]`.
 void rt_musicgen_set_envelope(void *song,
                               int64_t ch,
                               int64_t attack_ms,
@@ -945,6 +994,9 @@ void rt_musicgen_set_envelope(void *song,
 }
 
 /// @brief Set the volume of a channel (0–100).
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param volume Requested channel percentage, clamped to `[0, 100]`.
 void rt_musicgen_set_channel_vol(void *song, int64_t ch, int64_t volume) {
     mg_channel_t *c = mg_get_channel(song, ch);
     if (!c)
@@ -953,6 +1005,9 @@ void rt_musicgen_set_channel_vol(void *song, int64_t ch, int64_t volume) {
 }
 
 /// @brief Set the duty cycle for square wave channels (1–99, default 50).
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param duty Requested high-phase percentage, clamped to `[1, 99]`.
 void rt_musicgen_set_duty(void *song, int64_t ch, int64_t duty) {
     mg_channel_t *c = mg_get_channel(song, ch);
     if (!c)
@@ -961,6 +1016,9 @@ void rt_musicgen_set_duty(void *song, int64_t ch, int64_t duty) {
 }
 
 /// @brief Set the stereo pan for a channel (-100=left, 0=center, 100=right).
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param pan Requested pan position, clamped to `[-100, 100]`.
 void rt_musicgen_set_pan(void *song, int64_t ch, int64_t pan) {
     mg_channel_t *c = mg_get_channel(song, ch);
     if (!c)
@@ -969,6 +1027,9 @@ void rt_musicgen_set_pan(void *song, int64_t ch, int64_t pan) {
 }
 
 /// @brief Detune a channel by the given number of cents (-1200 to +1200).
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param cents Pitch offset, clamped to `[-1200, 1200]`.
 void rt_musicgen_set_detune(void *song, int64_t ch, int64_t cents) {
     mg_channel_t *c = mg_get_channel(song, ch);
     if (!c)
@@ -977,6 +1038,10 @@ void rt_musicgen_set_detune(void *song, int64_t ch, int64_t cents) {
 }
 
 /// @brief Set vibrato (pitch wobble) depth and speed for a channel.
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param depth Pitch excursion in cents, clamped to `[0, 200]`.
+/// @param speed Hundredths of a hertz, clamped to `[0, 5000]`.
 void rt_musicgen_set_vibrato(void *song, int64_t ch, int64_t depth, int64_t speed) {
     mg_channel_t *c = mg_get_channel(song, ch);
     if (!c)
@@ -986,6 +1051,10 @@ void rt_musicgen_set_vibrato(void *song, int64_t ch, int64_t depth, int64_t spee
 }
 
 /// @brief Set tremolo (volume wobble) depth and speed for a channel.
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param depth Modulation depth percentage, clamped to `[0, 100]`.
+/// @param speed Hundredths of a hertz, clamped to `[0, 5000]`.
 void rt_musicgen_set_tremolo(void *song, int64_t ch, int64_t depth, int64_t speed) {
     mg_channel_t *c = mg_get_channel(song, ch);
     if (!c)
@@ -995,6 +1064,11 @@ void rt_musicgen_set_tremolo(void *song, int64_t ch, int64_t depth, int64_t spee
 }
 
 /// @brief Set arpeggio (rapid pitch cycling) intervals and speed for a channel.
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param semi1 First pitch interval, clamped to `[0, 24]` semitones.
+/// @param semi2 Second pitch interval, clamped to `[0, 24]` semitones.
+/// @param speed Cycling rate in hundredths of a hertz, clamped to `[0, 5000]`.
 void rt_musicgen_set_arpeggio(void *song, int64_t ch, int64_t semi1, int64_t semi2, int64_t speed) {
     mg_channel_t *c = mg_get_channel(song, ch);
     if (!c)
@@ -1005,6 +1079,9 @@ void rt_musicgen_set_arpeggio(void *song, int64_t ch, int64_t semi1, int64_t sem
 }
 
 /// @brief Set portamento (pitch slide) speed for a channel (0 = off, ms to reach new pitch).
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param speed_ms Slide duration, clamped to `[0, 2000]` milliseconds.
 void rt_musicgen_set_portamento(void *song, int64_t ch, int64_t speed_ms) {
     mg_channel_t *c = mg_get_channel(song, ch);
     if (!c)
@@ -1017,6 +1094,12 @@ void rt_musicgen_set_portamento(void *song, int64_t ch, int64_t speed_ms) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Schedule a note on a track. Equivalent to `add_note_vel` with full velocity.
+/// @param song Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param beat_pos Start position in centbeats.
+/// @param midi_note MIDI note number, clamped to `[0, 127]`.
+/// @param duration Positive duration in centbeats.
+/// @return `1` on success or `0` when the note cannot be scheduled.
 int64_t rt_musicgen_add_note(
     void *song, int64_t ch, int64_t beat_pos, int64_t midi_note, int64_t duration) {
     return rt_musicgen_add_note_vel(song, ch, beat_pos, midi_note, duration, 100);
@@ -1029,6 +1112,13 @@ int64_t rt_musicgen_add_note(
 /// Velocity scales note volume linearly. Returns 1 on success or 0 on failure.
 /// Notes at or beyond the maximum renderable span are rejected so clamped
 /// extreme timestamps cannot create zero-length notes at the end boundary.
+/// @param song_ptr Valid MusicGen song object.
+/// @param ch Zero-based channel index.
+/// @param beat_pos Start position in centbeats, normalized to the render span.
+/// @param midi_note MIDI note number, clamped to `[0, 127]`.
+/// @param duration Duration in centbeats, clipped to the remaining render span.
+/// @param velocity Note gain percentage, clamped to `[0, 100]`.
+/// @return `1` on success or `0` for invalid input/full note storage.
 int64_t rt_musicgen_add_note_vel(void *song_ptr,
                                  int64_t ch,
                                  int64_t beat_pos,
@@ -1073,6 +1163,8 @@ int64_t rt_musicgen_add_note_vel(void *song_ptr,
 //===----------------------------------------------------------------------===//
 
 /// @brief Set the total song length in centbeats (100 centbeats = 1 beat).
+/// @param song_ptr Valid MusicGen song object.
+/// @param length_centbeats Requested length, clamped to the five-minute render cap.
 void rt_musicgen_set_length(void *song_ptr, int64_t length_centbeats) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
@@ -1081,6 +1173,8 @@ void rt_musicgen_set_length(void *song_ptr, int64_t length_centbeats) {
 }
 
 /// @brief Set the swing amount (0–100; offbeat notes shifted later for groove feel).
+/// @param song_ptr Valid MusicGen song object.
+/// @param swing Requested off-beat delay percentage, clamped to `[0, 100]`.
 void rt_musicgen_set_swing(void *song_ptr, int64_t swing) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
@@ -1089,6 +1183,8 @@ void rt_musicgen_set_swing(void *song_ptr, int64_t swing) {
 }
 
 /// @brief Mark the song as loopable (seamless loop point at the end).
+/// @param song_ptr Valid MusicGen song object.
+/// @param loopable Non-zero to apply loop-boundary treatment during rendering.
 void rt_musicgen_set_loopable(void *song_ptr, int64_t loopable) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
@@ -1097,6 +1193,8 @@ void rt_musicgen_set_loopable(void *song_ptr, int64_t loopable) {
 }
 
 /// @brief Get the song's beats-per-minute.
+/// @param song_ptr MusicGen song object.
+/// @return Stored tempo, or zero for an invalid object.
 int64_t rt_musicgen_get_bpm(void *song_ptr) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
@@ -1105,6 +1203,8 @@ int64_t rt_musicgen_get_bpm(void *song_ptr) {
 }
 
 /// @brief Get the song length in centbeats.
+/// @param song_ptr MusicGen song object.
+/// @return Stored length, or zero for an invalid object.
 int64_t rt_musicgen_get_length(void *song_ptr) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
@@ -1113,6 +1213,8 @@ int64_t rt_musicgen_get_length(void *song_ptr) {
 }
 
 /// @brief Get the number of channels added to the song.
+/// @param song_ptr MusicGen song object.
+/// @return Active channel count, or zero for an invalid object.
 int64_t rt_musicgen_get_channel_count(void *song_ptr) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
@@ -1129,6 +1231,9 @@ int64_t rt_musicgen_get_channel_count(void *song_ptr) {
 ///          synthesized with its channel's waveform, ADSR envelope, and effects
 ///          (vibrato, tremolo, arpeggio, portamento). The result can be played
 ///          with rt_sound_play or loaded as music.
+/// @param song_ptr Valid MusicGen song with positive length and at least one channel.
+/// @return Caller-owned runtime Sound handle, or NULL when audio is unavailable,
+///         the song is invalid/empty, a size limit is exceeded, or allocation/loading fails.
 void *rt_musicgen_build(void *song_ptr) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)

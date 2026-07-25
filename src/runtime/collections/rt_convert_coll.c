@@ -7,9 +7,8 @@
 //
 // File: src/runtime/collections/rt_convert_coll.c
 // Purpose: Implements conversion functions between Zanna collection types.
-//   Provides rt_seq_to_list, rt_seq_to_set, rt_seq_to_stack, rt_seq_to_queue,
-//   rt_seq_to_ring, rt_seq_to_deque, and their reverse counterparts, allowing
-//   any collection to be converted to any other via a Seq intermediate form.
+//   Provides direct conversions among common sequence, set, map-view, stack,
+//   queue, deque, bag, and ring representations.
 //
 // Key invariants:
 //   - All conversions iterate the source using the source collection's public
@@ -34,6 +33,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements collection-to-collection conversion helpers.
+///
+/// Every conversion allocates a destination and leaves the source unchanged.
+/// Ordered sources retain their documented traversal order; unordered sources
+/// retain only their source-defined enumeration order. Pointer-valued elements
+/// are shared under the destination collection's retain/release conventions,
+/// while Bag conversions copy string values according to the Bag API.
+///
+/// Stack and Queue conversions traverse clones so even partially completed
+/// work cannot consume the source. Null sources produce newly allocated empty
+/// destinations. Variadic constructors consume exactly @p count object
+/// pointers when the count is positive.
+
 #include "rt_convert_coll.h"
 
 #include "rt_box.h"
@@ -53,12 +66,15 @@
 #include <stdlib.h>
 
 /// @brief Drop one GC reference to a transient @p obj and free it at zero.
+/// @param obj Temporary runtime object reference, or NULL for a no-op.
 static void release_temp_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief Allocate an owned (refcounted) seq for conversion results.
+/// @return A new Seq configured to own its elements, or NULL on allocation
+///         failure.
 static void *new_owned_seq(void) {
     return rt_seq_new_owned();
 }
@@ -68,6 +84,9 @@ static void *new_owned_seq(void) {
 //=============================================================================
 
 /// @brief Seq to list.
+/// @param seq Source Seq, or NULL.
+/// @return A new List containing source elements in index order, or an empty
+///         List for NULL.
 void *rt_seq_to_list(void *seq) {
     void *list = rt_list_new();
     if (!seq || !list)
@@ -82,6 +101,9 @@ void *rt_seq_to_list(void *seq) {
 }
 
 /// @brief Seq to set.
+/// @param seq Source Seq, or NULL.
+/// @return A new Set populated in index order; duplicates collapse according
+///         to Set equality semantics.
 void *rt_seq_to_set(void *seq) {
     void *set = rt_set_new();
     if (!seq || !set)
@@ -96,6 +118,9 @@ void *rt_seq_to_set(void *seq) {
 }
 
 /// @brief Seq to stack.
+/// @param seq Source Seq, or NULL.
+/// @return A new owning Stack whose bottom is element zero and whose top is
+///         the final Seq element.
 void *rt_seq_to_stack(void *seq) {
     void *stack = rt_stack_new();
     if (!seq || !stack)
@@ -111,6 +136,8 @@ void *rt_seq_to_stack(void *seq) {
 }
 
 /// @brief Seq to queue.
+/// @param seq Source Seq, or NULL.
+/// @return A new owning Queue whose front is element zero.
 void *rt_seq_to_queue(void *seq) {
     void *queue = rt_queue_new();
     if (!seq || !queue)
@@ -126,6 +153,8 @@ void *rt_seq_to_queue(void *seq) {
 }
 
 /// @brief Seq to deque.
+/// @param seq Source Seq, or NULL.
+/// @return A new Deque containing elements from front to back in Seq order.
 void *rt_seq_to_deque(void *seq) {
     void *deque = rt_deque_new();
     if (!seq || !deque)
@@ -140,6 +169,9 @@ void *rt_seq_to_deque(void *seq) {
 }
 
 /// @brief Seq to bag.
+/// @param seq Source Seq of raw or boxed runtime strings, or NULL.
+/// @return A new Bag containing unique copied string values.
+/// @note Non-string elements trap through `rt_seq_get_str()`.
 void *rt_seq_to_bag(void *seq) {
     void *bag = rt_bag_new();
     if (!seq || !bag)
@@ -159,6 +191,8 @@ void *rt_seq_to_bag(void *seq) {
 //=============================================================================
 
 /// @brief List to seq.
+/// @param list Source List, or NULL.
+/// @return A new owning Seq containing List elements in index order.
 void *rt_list_to_seq(void *list) {
     void *seq = new_owned_seq();
     if (!list || !seq)
@@ -174,6 +208,8 @@ void *rt_list_to_seq(void *list) {
 }
 
 /// @brief List to set.
+/// @param list Source List, or NULL.
+/// @return A new Set containing the List's unique elements.
 void *rt_list_to_set(void *list) {
     void *set = rt_set_new();
     if (!list || !set)
@@ -189,6 +225,8 @@ void *rt_list_to_set(void *list) {
 }
 
 /// @brief List to stack.
+/// @param list Source List, or NULL.
+/// @return A new owning Stack with the first List element at the bottom.
 void *rt_list_to_stack(void *list) {
     void *stack = rt_stack_new();
     if (!list || !stack)
@@ -205,6 +243,8 @@ void *rt_list_to_stack(void *list) {
 }
 
 /// @brief List to queue.
+/// @param list Source List, or NULL.
+/// @return A new owning Queue with the first List element at the front.
 void *rt_list_to_queue(void *list) {
     void *queue = rt_queue_new();
     if (!list || !queue)
@@ -225,6 +265,8 @@ void *rt_list_to_queue(void *list) {
 //=============================================================================
 
 /// @brief Set to seq.
+/// @param set Source Set, or NULL.
+/// @return A new owning Seq in the Set's unspecified enumeration order.
 void *rt_set_to_seq(void *set) {
     if (!set)
         return new_owned_seq();
@@ -233,6 +275,8 @@ void *rt_set_to_seq(void *set) {
 }
 
 /// @brief Set to list.
+/// @param set Source Set, or NULL.
+/// @return A new List in the Set's unspecified enumeration order.
 void *rt_set_to_list(void *set) {
     void *seq = rt_set_to_seq(set);
     void *list = rt_seq_to_list(seq);
@@ -246,6 +290,9 @@ void *rt_set_to_list(void *set) {
 //=============================================================================
 
 /// @brief Stack to seq.
+/// @param stack Source Stack, or NULL.
+/// @return A new owning Seq ordered from stack bottom to top.
+/// @note The source is cloned before traversal and is never popped directly.
 void *rt_stack_to_seq(void *stack) {
     void *seq = new_owned_seq();
     if (!stack || !seq)
@@ -289,6 +336,8 @@ void *rt_stack_to_seq(void *stack) {
 }
 
 /// @brief Stack to list.
+/// @param stack Source Stack, or NULL.
+/// @return A new List ordered from stack bottom to top.
 void *rt_stack_to_list(void *stack) {
     void *seq = rt_stack_to_seq(stack);
     void *list = rt_seq_to_list(seq);
@@ -302,6 +351,9 @@ void *rt_stack_to_list(void *stack) {
 //=============================================================================
 
 /// @brief Queue to seq.
+/// @param queue Source Queue, or NULL.
+/// @return A new owning Seq ordered from queue front to back.
+/// @note The source is cloned before traversal and is never popped directly.
 void *rt_queue_to_seq(void *queue) {
     void *seq = new_owned_seq();
     if (!queue || !seq)
@@ -332,6 +384,8 @@ void *rt_queue_to_seq(void *queue) {
 }
 
 /// @brief Queue to list.
+/// @param queue Source Queue, or NULL.
+/// @return A new List ordered from queue front to back.
 void *rt_queue_to_list(void *queue) {
     void *seq = rt_queue_to_seq(queue);
     void *list = rt_seq_to_list(seq);
@@ -345,6 +399,8 @@ void *rt_queue_to_list(void *queue) {
 //=============================================================================
 
 /// @brief Deque to seq.
+/// @param deque Source Deque, or NULL.
+/// @return A new owning Seq ordered from deque front to back.
 void *rt_deque_to_seq(void *deque) {
     void *seq = new_owned_seq();
     if (!deque || !seq)
@@ -360,6 +416,8 @@ void *rt_deque_to_seq(void *deque) {
 }
 
 /// @brief Deque to list.
+/// @param deque Source Deque, or NULL.
+/// @return A new List ordered from deque front to back.
 void *rt_deque_to_list(void *deque) {
     void *seq = rt_deque_to_seq(deque);
     void *list = rt_seq_to_list(seq);
@@ -373,6 +431,8 @@ void *rt_deque_to_list(void *deque) {
 //=============================================================================
 
 /// @brief Map keys to seq.
+/// @param map Source Map, or NULL.
+/// @return A new owning Seq of keys in Map enumeration order.
 void *rt_map_keys_to_seq(void *map) {
     if (!map)
         return new_owned_seq();
@@ -381,6 +441,8 @@ void *rt_map_keys_to_seq(void *map) {
 }
 
 /// @brief Map values to seq.
+/// @param map Source Map, or NULL.
+/// @return A new owning Seq of values corresponding to Map enumeration order.
 void *rt_map_values_to_seq(void *map) {
     if (!map)
         return new_owned_seq();
@@ -393,6 +455,8 @@ void *rt_map_values_to_seq(void *map) {
 //=============================================================================
 
 /// @brief Bag to seq.
+/// @param bag Source Bag, or NULL.
+/// @return A new owning Seq of copied strings in unspecified Bag order.
 void *rt_bag_to_seq(void *bag) {
     if (!bag)
         return new_owned_seq();
@@ -401,6 +465,8 @@ void *rt_bag_to_seq(void *bag) {
 }
 
 /// @brief Bag to set.
+/// @param bag Source Bag, or NULL.
+/// @return A new Set of boxed string values in unspecified Bag order.
 void *rt_bag_to_set(void *bag) {
     void *set = rt_set_new();
     if (!bag || !set)
@@ -434,6 +500,8 @@ void *rt_bag_to_set(void *bag) {
 //=============================================================================
 
 /// @brief Ring to seq.
+/// @param ring Source Ring, or NULL.
+/// @return A new owning Seq in logical Ring index order.
 void *rt_ring_to_seq(void *ring) {
     void *seq = new_owned_seq();
     if (!ring || !seq)
@@ -452,6 +520,10 @@ void *rt_ring_to_seq(void *ring) {
 //=============================================================================
 
 /// @brief Seq of.
+/// @param count Number of following object pointers; non-positive counts
+///        produce an empty Seq.
+/// @param ... Exactly @p count element pointers.
+/// @return A new Seq containing arguments in call order.
 void *rt_seq_of(int64_t count, ...) {
     void *seq = rt_seq_new();
     if (!seq || count <= 0)
@@ -469,6 +541,10 @@ void *rt_seq_of(int64_t count, ...) {
 }
 
 /// @brief List of.
+/// @param count Number of following object pointers; non-positive counts
+///        produce an empty List.
+/// @param ... Exactly @p count element pointers.
+/// @return A new List containing arguments in call order.
 void *rt_list_of(int64_t count, ...) {
     void *list = rt_list_new();
     if (!list || count <= 0)
@@ -486,6 +562,11 @@ void *rt_list_of(int64_t count, ...) {
 }
 
 /// @brief Set of.
+/// @param count Number of following object pointers; non-positive counts
+///        produce an empty Set.
+/// @param ... Exactly @p count element pointers.
+/// @return A new Set populated in call order, with duplicates collapsed by Set
+///         equality semantics.
 void *rt_set_of(int64_t count, ...) {
     void *set = rt_set_new();
     if (!set || count <= 0)

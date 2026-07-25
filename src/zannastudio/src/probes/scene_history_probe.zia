@@ -1,0 +1,111 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_history_probe.zia
+// Purpose: Pin the shared scene-history trimming rule used by both scene
+//          editors' undo/redo snapshot stacks.
+// Key invariants:
+//   - Entry-count trimming drops oldest entries first.
+//   - Byte-budget trimming drops oldest entries first and always retains the
+//     newest snapshot, even when it alone exceeds the budget.
+//   - Within-budget stacks are untouched and report zero removals.
+// Ownership/Lifetime:
+//   - Pure value probe; no display, filesystem, or widget state.
+// Links: zannastudio/src/ui/scene_history.zia,
+//        docs/adr/0190-scene3d-text-serialization.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_history_probe;
+
+// ============================================================================
+// MODULE: scene_history_probe
+// PURPOSE: Prove the ADR 0190 history bounds without compiling the large
+//          scene-editor graphs: the rule is pure list-and-bytes logic.
+//
+// WHERE-THIS-FITS: scene_editor_2d/3d delegate their PushHistory bounds to
+//          scene_history.TrimHistory; this probe owns that contract.
+//
+// TEACHING-NOTE: Snapshot text uses Repeat so byte totals are exact and the
+//          probe never allocates anywhere near a real document's size.
+// ============================================================================
+
+bind "../ui/scene_history";
+
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func Snapshot(marker: String, bytes: Integer) -> String {
+    var text = marker;
+    while Str.get_Length(text) < bytes {
+        text = text + "x";
+    }
+    return text;
+}
+
+func main() {
+    // Within both budgets: nothing is removed and order is untouched.
+    var stack: List[String] = [];
+    stack.add(Snapshot("a", 8));
+    stack.add(Snapshot("b", 8));
+    stack.add(Snapshot("c", 8));
+    if scene_history.TrimHistory(stack, 5, 1000) != 0
+       or stack.count() != 3
+       or Str.StartsWith(stack.get(0), "a") == false {
+        fail("within-budget stacks must be untouched");
+        return;
+    }
+
+    // Entry-count trimming drops the oldest entries first.
+    if scene_history.TrimHistory(stack, 2, 1000) != 1
+       or stack.count() != 2
+       or Str.StartsWith(stack.get(0), "b") == false
+       or Str.StartsWith(stack.get(1), "c") == false {
+        fail("entry trimming must drop oldest entries first");
+        return;
+    }
+
+    // Byte trimming drops oldest entries until the total fits.
+    var byteStack: List[String] = [];
+    byteStack.add(Snapshot("d", 40));
+    byteStack.add(Snapshot("e", 40));
+    byteStack.add(Snapshot("f", 40));
+    if scene_history.TrimHistory(byteStack, 100, 90) != 1
+       or byteStack.count() != 2
+       or Str.StartsWith(byteStack.get(0), "e") == false {
+        fail("byte trimming must drop oldest entries until within budget");
+        return;
+    }
+
+    // The newest snapshot survives even when it alone exceeds the budget.
+    var oversized: List[String] = [];
+    oversized.add(Snapshot("g", 30));
+    oversized.add(Snapshot("h", 200));
+    if scene_history.TrimHistory(oversized, 100, 50) != 1
+       or oversized.count() != 1
+       or Str.StartsWith(oversized.get(0), "h") == false {
+        fail("the newest snapshot must always be retained");
+        return;
+    }
+
+    // Degenerate limits still retain exactly one newest entry.
+    var floorStack: List[String] = [];
+    floorStack.add(Snapshot("i", 8));
+    floorStack.add(Snapshot("j", 8));
+    if scene_history.TrimHistory(floorStack, 0, 0) != 1
+       or floorStack.count() != 1
+       or Str.StartsWith(floorStack.get(0), "j") == false {
+        fail("degenerate limits must clamp to one retained entry");
+        return;
+    }
+
+    Terminal.Say("RESULT: ok");
+}

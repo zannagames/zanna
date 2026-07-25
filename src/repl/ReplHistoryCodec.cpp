@@ -1,4 +1,12 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements structured and legacy REPL history persistence.
+/// @details Version-two history stores each nonempty submission as a decimal
+///          byte length followed by its exact bytes, preserving embedded
+///          newlines. Loading remains backward compatible with line-delimited
+///          files. Malformed structured input stops at the first incomplete or
+///          invalid record while retaining previously decoded entries.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -30,6 +38,7 @@ namespace {
 constexpr const char *kHistoryMagic = "# zanna-repl-history-v2";
 
 /// @brief Trim @p entries to the newest @p maxEntries elements.
+/// @details Relative order of retained entries is preserved.
 /// @param entries History entries to mutate in place.
 /// @param maxEntries Maximum number of entries to keep.
 void trimToMaxEntries(std::vector<std::string> &entries, size_t maxEntries) {
@@ -46,8 +55,8 @@ void trimToMaxEntries(std::vector<std::string> &entries, size_t maxEntries) {
 /// @brief Decode one unsigned byte count from @p text at @p pos.
 /// @details Stops at the next newline and rejects empty or non-decimal lengths.
 /// @param text Complete history file text.
-/// @param pos Current offset, advanced past the newline on success.
-/// @param len Decoded length.
+/// @param[in,out] pos Current offset, advanced past the newline on success.
+/// @param[out] len Decoded length.
 /// @return True when a syntactically valid length was decoded.
 bool readLengthLine(const std::string &text, size_t &pos, size_t &len) {
     if (pos >= text.size())
@@ -75,6 +84,9 @@ bool readLengthLine(const std::string &text, size_t &pos, size_t &len) {
 }
 
 /// @brief Load legacy line-delimited history from @p text.
+/// @details Empty lines are omitted, `decodedEntryCount` records the number
+///          accepted before retention trimming, and returned strings own their
+///          content.
 /// @param text Entire history file contents.
 /// @param maxEntries Maximum number of entries to retain.
 /// @return Decoded entries and pre-trim count.
@@ -99,6 +111,8 @@ ReplHistoryLoadResult loadLegacy(const std::string &text, size_t maxEntries) {
 }
 
 /// @brief Load structured length-prefixed history from @p text.
+/// @details Decoding begins after the magic line and stops safely at the first
+///          malformed length or truncated payload. Empty records are omitted.
 /// @param text Entire history file contents.
 /// @param maxEntries Maximum number of entries to retain.
 /// @return Decoded entries and pre-trim count.
@@ -133,6 +147,15 @@ ReplHistoryLoadResult loadStructured(const std::string &text, size_t maxEntries)
 
 } // namespace
 
+/// @brief Load REPL history from a filesystem path.
+/// @details The file is read in binary mode so structured payload byte counts
+///          remain exact. A leading version-two magic string selects structured
+///          decoding; all other content uses legacy line decoding.
+/// @param path History file to read.
+/// @param maxEntries Maximum newest entries to retain; zero returns none while
+///        preserving the pre-trim decoded count.
+/// @return Owned decoded entries and their pre-trim count, or an empty result
+///         when the file cannot be opened.
 ReplHistoryLoadResult ReplHistoryCodec::load(const std::filesystem::path &path, size_t maxEntries) {
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open())
@@ -144,6 +167,12 @@ ReplHistoryLoadResult ReplHistoryCodec::load(const std::filesystem::path &path, 
     return loadLegacy(text, maxEntries);
 }
 
+/// @brief Save REPL history in the version-two length-prefixed format.
+/// @details Missing parent directories are created, empty entries are skipped,
+///          and payloads are written in binary mode with exact byte lengths.
+/// @param path Destination history file.
+/// @param entries Entries to serialize in order; source strings are borrowed.
+/// @return `true` when directory creation, opening, and every write succeed.
 bool ReplHistoryCodec::save(const std::filesystem::path &path,
                             const std::vector<std::string> &entries) {
     std::error_code ec;

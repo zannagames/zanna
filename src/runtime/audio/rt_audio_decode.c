@@ -13,6 +13,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements audio-container detection and conversion to PCM WAV data.
+/// @details The runtime recognizes RIFF/WAV, Ogg Vorbis, and MP3 inputs from
+///          leading bytes. Ogg and MP3 decoders produce bounded interleaved
+///          16-bit PCM, which is wrapped in an in-memory RIFF/WAVE container
+///          for the common sound-loading path. Every returned byte buffer is
+///          allocated with `malloc` and transfers ownership to the caller.
+
 #include "rt_audio.h"
 #include "rt_asset.h"
 #include "rt_error.h"
@@ -34,6 +42,14 @@
 #include <string.h>
 #include "rt_audio_internal.h"
 
+/// @brief Identify an encoded audio format from its leading bytes.
+/// @details Recognizes RIFF/WAV and Ogg capture signatures, MP3 streams with an
+///          ID3 tag, and MP3 frame-sync headers. The input is borrowed and only
+///          the first four bytes are inspected.
+/// @param data Encoded byte buffer.
+/// @param size Number of readable bytes in @p data.
+/// @return `1` for RIFF/WAV, `2` for Ogg, `3` for MP3, or `0` for invalid,
+///         undersized, or unrecognized input.
 int detect_audio_format_mem(const void *data, size_t size) {
     if (!data || size < 4)
         return 0;
@@ -50,7 +66,11 @@ int detect_audio_format_mem(const void *data, size_t size) {
 }
 
 /// @brief Detect audio file format from magic bytes.
-/// @return 1=WAV/RIFF, 2=OGG, 3=MP3, 0=unknown
+/// @details Reads at most four leading bytes and delegates recognition to
+///          @ref detect_audio_format_mem.
+/// @param filepath NUL-terminated path to the encoded audio file.
+/// @return `1` for RIFF/WAV, `2` for Ogg, `3` for MP3, or `0` when the file
+///         cannot be opened/read or its signature is unrecognized.
 int detect_audio_format(const char *filepath) {
     FILE *af = fopen(filepath, "rb");
     if (!af)
@@ -348,6 +368,14 @@ int mp3_data_to_wav(const uint8_t *data, size_t size, uint8_t **out_data, size_t
 }
 
 /// @brief Decode an MP3 file to a WAV-format memory buffer.
+/// @details Reads the entire source file into temporary storage, rejecting
+///          empty files and files larger than 256 MiB, then delegates decoding
+///          to @ref mp3_data_to_wav. Temporary MP3 bytes are released before
+///          return.
+/// @param filepath NUL-terminated path to the MP3 file.
+/// @param out_data Receives a `malloc`-allocated WAV buffer on success.
+/// @param out_len Receives the WAV buffer length in bytes on success.
+/// @return `0` on success, or `-1` on file, size, allocation, or decode failure.
 int mp3_file_to_wav(const char *filepath, uint8_t **out_data, size_t *out_len) {
     FILE *mf = fopen(filepath, "rb");
     if (!mf)

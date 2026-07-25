@@ -13,7 +13,7 @@
 // Key invariants:
 //   - Output is always 16-bit PCM, mono, 44100 Hz.
 //   - WAV data is built in a temporary heap buffer, loaded, then freed.
-//   - Sine approximation uses a 5th-order polynomial (no libm dependency).
+//   - Sine approximation uses Bhaskara I's rational formula (no libm dependency).
 //   - All parameter values are clamped to safe ranges.
 //
 // Ownership/Lifetime:
@@ -23,6 +23,14 @@
 // Links: rt_audio.h (rt_sound_load_mem), rt_synth.h (public API)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements bounded procedural Sound synthesis without external assets.
+/// @details Tone, linear sweep, decaying noise, and preset generators create
+///          temporary 44.1-kHz mono signed 16-bit PCM, wrap it in a minimal WAV
+///          image, and load it through the normal runtime Sound path. Temporary
+///          sample/WAV storage is released before returning the caller-owned
+///          Sound wrapper.
 
 #include "rt_synth.h"
 #include "rt_audio.h"
@@ -84,12 +92,16 @@ static double synth_sin(double phase) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Write a 16-bit little-endian integer into the WAV header buffer.
+/// @param p Destination with at least two writable bytes.
+/// @param v Value to encode.
 static void write_le16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)(v & 0xFFu);
     p[1] = (uint8_t)((v >> 8) & 0xFFu);
 }
 
 /// @brief Write a 32-bit little-endian integer into the WAV header buffer.
+/// @param p Destination with at least four writable bytes.
+/// @param v Value to encode.
 static void write_le32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v & 0xFFu);
     p[1] = (uint8_t)((v >> 8) & 0xFFu);
@@ -98,6 +110,10 @@ static void write_le32(uint8_t *p, uint32_t v) {
 }
 
 /// @brief Validate the sample count and compute WAV byte sizes without overflow.
+/// @param num_samples Positive mono PCM sample count.
+/// @param data_size_out Optional destination for PCM payload bytes.
+/// @param wav_size_out Optional destination for header-plus-payload bytes.
+/// @return Non-zero when both RIFF and platform sizes are representable.
 static int synth_wav_sizes(int32_t num_samples, uint32_t *data_size_out, size_t *wav_size_out) {
     if (num_samples <= 0)
         return 0;
@@ -114,6 +130,8 @@ static int synth_wav_sizes(int32_t num_samples, uint32_t *data_size_out, size_t 
 }
 
 /// @brief Write a minimal WAV header for mono 16-bit PCM data.
+/// @param buf Destination with at least @ref WAV_HEADER_SIZE writable bytes.
+/// @param data_size PCM payload length in bytes.
 static void write_wav_header(uint8_t *buf, uint32_t data_size) {
     uint32_t file_size = (uint32_t)(WAV_HEADER_SIZE - 8) + data_size;
     int32_t byte_rate = SYNTH_SAMPLE_RATE * SYNTH_CHANNELS * (SYNTH_BITS / 8);
@@ -179,9 +197,12 @@ static double waveform_sample(double phase, int64_t waveform) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Build a WAV from PCM samples and load as a Sound object.
-/// @param samples Array of int16_t PCM samples.
-/// @param num_samples Number of samples.
-/// @return Sound object or NULL on failure.
+/// @details Copies samples into temporary WAV storage and does not retain the
+///          input array.
+/// @param samples Borrowed array of signed 16-bit mono PCM samples.
+/// @param num_samples Positive sample count.
+/// @return Caller-owned Sound object or NULL when audio is unavailable or
+///         sizing, allocation, or loading fails.
 static void *samples_to_sound(const int16_t *samples, int32_t num_samples) {
     if (!rt_audio_is_available())
         return NULL;
@@ -211,6 +232,10 @@ static void *samples_to_sound(const int16_t *samples, int32_t num_samples) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Clamp @p v into the inclusive range `[lo, hi]`.
+/// @param v Value to normalize.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @return Clamped value.
 static int64_t clamp_i64(int64_t v, int64_t lo, int64_t hi) {
     if (v < lo)
         return lo;
@@ -277,6 +302,10 @@ static double synth_edge_envelope(int32_t sample_index, int32_t num_samples, int
 /// @details Synthesizes PCM samples at 44100 Hz using the selected waveform
 ///          (0=sine, 1=square, 2=sawtooth, 3=triangle). Applies 10ms fade-in/out
 ///          envelopes to prevent audible clicks.
+/// @param freq_hz Frequency clamped to `[20, 20000]` hertz.
+/// @param duration_ms Duration clamped to `[1, 10000]` milliseconds.
+/// @param waveform Waveform identifier clamped to `[0, 3]`.
+/// @return Caller-owned Sound handle, or NULL on allocation/loading failure.
 void *rt_synth_tone(int64_t freq_hz, int64_t duration_ms, int64_t waveform) {
     freq_hz = clamp_i64(freq_hz, 20, 20000);
     duration_ms = clamp_i64(duration_ms, 1, 10000);
@@ -312,6 +341,11 @@ void *rt_synth_tone(int64_t freq_hz, int64_t duration_ms, int64_t waveform) {
 /// @brief Generate a frequency sweep (glissando) from start_hz to end_hz as a playable Sound.
 /// @details Linear frequency interpolation with fade envelopes. Useful for laser,
 ///          power-up, and sci-fi sound effects.
+/// @param start_hz Initial frequency clamped to `[20, 20000]` hertz.
+/// @param end_hz Final frequency clamped to `[20, 20000]` hertz.
+/// @param duration_ms Duration clamped to `[1, 10000]` milliseconds.
+/// @param waveform Waveform identifier clamped to `[0, 3]`.
+/// @return Caller-owned Sound handle, or NULL on allocation/loading failure.
 void *rt_synth_sweep(int64_t start_hz, int64_t end_hz, int64_t duration_ms, int64_t waveform) {
     start_hz = clamp_i64(start_hz, 20, 20000);
     end_hz = clamp_i64(end_hz, 20, 20000);
@@ -350,6 +384,11 @@ void *rt_synth_sweep(int64_t start_hz, int64_t end_hz, int64_t duration_ms, int6
 }
 
 /// @brief Generate white noise as a playable Sound handle (LCG PRNG, fade envelopes).
+/// @details Applies a quadratic decay and short edge envelope to deterministic
+///          LCG samples seeded from the runtime RNG.
+/// @param duration_ms Duration clamped to `[1, 10000]` milliseconds.
+/// @param volume Amplitude percentage clamped to `[0, 100]`.
+/// @return Caller-owned Sound handle, or NULL on allocation/loading failure.
 void *rt_synth_noise(int64_t duration_ms, int64_t volume) {
     duration_ms = clamp_i64(duration_ms, 1, 10000);
     volume = clamp_i64(volume, 0, 100);
@@ -390,11 +429,13 @@ void *rt_synth_noise(int64_t duration_ms, int64_t volume) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Generate "jump" sound: quick ascending frequency sweep.
+/// @return Caller-owned preset Sound, or NULL on failure.
 static void *sfx_jump(void) {
     return rt_synth_sweep(200, 600, 150, RT_WAVE_SQUARE);
 }
 
 /// @brief Generate "coin" sound: two quick high-pitched tones.
+/// @return Caller-owned preset Sound, or NULL on failure.
 static void *sfx_coin(void) {
     /* Two-tone coin: 880Hz + 1760Hz, 80ms total */
     int32_t half = (int32_t)(80 * SYNTH_SAMPLE_RATE / 1000) / 2;
@@ -431,21 +472,25 @@ static void *sfx_coin(void) {
 }
 
 /// @brief Generate "hit" sound: short noise burst with fast decay.
+/// @return Caller-owned preset Sound, or NULL on failure.
 static void *sfx_hit(void) {
     return rt_synth_noise(80, 90);
 }
 
 /// @brief Generate "explosion" sound: longer noise with slow decay.
+/// @return Caller-owned preset Sound, or NULL on failure.
 static void *sfx_explosion(void) {
     return rt_synth_noise(500, 100);
 }
 
 /// @brief Generate "powerup" sound: ascending sweep with triangle wave.
+/// @return Caller-owned preset Sound, or NULL on failure.
 static void *sfx_powerup(void) {
     return rt_synth_sweep(300, 1200, 400, RT_WAVE_TRIANGLE);
 }
 
 /// @brief Generate "laser" sound: quick descending sweep with sawtooth.
+/// @return Caller-owned preset Sound, or NULL on failure.
 static void *sfx_laser(void) {
     return rt_synth_sweep(1500, 200, 120, RT_WAVE_SAWTOOTH);
 }
@@ -454,6 +499,8 @@ static void *sfx_laser(void) {
 /// @details Thin switch that maps @ref rt_sfx_preset_t to the
 ///          corresponding `sfx_*` helper. Returns NULL for unknown
 ///          types so callers can detect bad input.
+/// @param sfx_type Preset identifier from @ref rt_sfx_preset_t.
+/// @return Caller-owned preset Sound, or NULL for an unknown type/failure.
 void *rt_synth_sfx(int64_t sfx_type) {
     switch (sfx_type) {
         case RT_SFX_JUMP:

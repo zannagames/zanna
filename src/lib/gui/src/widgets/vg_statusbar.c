@@ -25,6 +25,12 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements three-zone status-bar layout, heterogeneous item
+///        ownership, painting, hit testing, and deferred retirement.
+/// @details Left and center zones lay out forward while the right zone lays out
+///          in reverse so high-priority edge items survive constrained widths.
+///          Shared layout metrics keep painting and button hit testing aligned.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
@@ -90,6 +96,11 @@ static vg_widget_vtable_t g_statusbar_vtable = {.destroy = statusbar_destroy,
 //=============================================================================
 
 /// @brief Grow *items to fit at least needed entries, doubling from INITIAL_ITEM_CAPACITY.
+/// @param items Address of the owned item-pointer array.
+/// @param capacity Address of its current element capacity.
+/// @param needed Minimum capacity required.
+/// @return `true` when the array can hold @p needed entries; `false` with the
+///         previous allocation valid on overflow or allocation failure.
 static bool ensure_item_capacity(vg_statusbar_item_t ***items, size_t *capacity, size_t needed) {
     if (needed <= *capacity)
         return true;
@@ -113,6 +124,7 @@ static bool ensure_item_capacity(vg_statusbar_item_t ***items, size_t *capacity,
 }
 
 /// @brief Free an item's text, tooltip, and the item struct itself.
+/// @param item Owned live or retired item to destroy; `NULL` is ignored.
 static void free_item(vg_statusbar_item_t *item) {
     if (!item)
         return;
@@ -123,6 +135,9 @@ static void free_item(vg_statusbar_item_t *item) {
     free(item);
 }
 
+/// @brief Validate that a status-bar item remains attached to an owner.
+/// @param item Item handle to inspect.
+/// @return `true` when live magic and an owning status bar are present.
 bool vg_statusbar_item_is_live(const vg_statusbar_item_t *item) {
     return item && item->magic == VG_STATUSBAR_ITEM_MAGIC && item->owner != NULL;
 }
@@ -130,6 +145,8 @@ bool vg_statusbar_item_is_live(const vg_statusbar_item_t *item) {
 /// @brief Tear down @p item's owned strings and park it on @p sb's retired
 ///        list for deferred freeing (so removal during event dispatch can't
 ///        free memory still referenced up the call stack).
+/// @param sb Status bar receiving the retired record.
+/// @param item Detached item whose callbacks and ownership are revoked.
 static void retire_item(vg_statusbar_t *sb, vg_statusbar_item_t *item) {
     if (!sb || !item)
         return;
@@ -146,6 +163,7 @@ static void retire_item(vg_statusbar_t *sb, vg_statusbar_item_t *item) {
 }
 
 /// @brief Drain and free every status-bar item on @p sb's retired list.
+/// @param sb Status bar whose retirement chain is destroyed.
 static void free_retired_items(vg_statusbar_t *sb) {
     if (!sb)
         return;
@@ -160,6 +178,9 @@ static void free_retired_items(vg_statusbar_t *sb) {
 }
 
 /// @brief Allocate and zero-initialise a status bar item of the given type with optional text.
+/// @param type Item behavior and rendering type.
+/// @param text Optional label copied by the item.
+/// @return Detached live item ready for zone insertion, or `NULL` on failure.
 static vg_statusbar_item_t *create_item(vg_statusbar_item_type_t type, const char *text) {
     vg_statusbar_item_t *item = calloc(1, sizeof(vg_statusbar_item_t));
     if (!item)
@@ -186,6 +207,9 @@ static vg_statusbar_item_t *create_item(vg_statusbar_item_type_t type, const cha
 }
 
 /// @brief Return the pixel width of item, honouring min_width, max_width, and text measurement.
+/// @param sb Status bar supplying font metrics.
+/// @param item Visible item to measure.
+/// @return Natural or constrained item width; flexible spacers return zero.
 static float measure_item_width(vg_statusbar_t *sb, vg_statusbar_item_t *item) {
     if (!item->visible)
         return 0;
@@ -222,6 +246,9 @@ static float measure_item_width(vg_statusbar_t *sb, vg_statusbar_item_t *item) {
 }
 
 /// @brief Back @p len up to a UTF-8 codepoint boundary before copying a prefix.
+/// @param text UTF-8 byte string containing @p len as a valid index.
+/// @param len Candidate prefix byte count.
+/// @return Greatest safe prefix no longer than @p len.
 static size_t statusbar_utf8_prev_boundary(const char *text, size_t len) {
     while (len > 0 && (((unsigned char)text[len] & 0xC0u) == 0x80u))
         len--;
@@ -229,6 +256,10 @@ static size_t statusbar_utf8_prev_boundary(const char *text, size_t len) {
 }
 
 /// @brief Return a heap copy of @p text fitted to @p max_width with "..." if needed.
+/// @param sb Status bar supplying font metrics.
+/// @param text Null-terminated source text.
+/// @param max_width Maximum rendered width.
+/// @return Newly allocated full, ellipsized, or empty string; `NULL` on failure.
 static char *statusbar_fit_text(vg_statusbar_t *sb, const char *text, float max_width) {
     if (!text || !sb->font || max_width <= 0.0f)
         return vg_strdup("");
@@ -263,6 +294,10 @@ static char *statusbar_fit_text(vg_statusbar_t *sb, const char *text, float max_
 }
 
 /// @brief Measure visible items in a zone, separating fixed items from flexible spacers.
+/// @param sb Status bar supplying item metrics.
+/// @param items Zone item array.
+/// @param count Number of array entries.
+/// @return Aggregate natural width and visibility/spacer counts.
 static statusbar_zone_metrics_t statusbar_measure_zone(vg_statusbar_t *sb,
                                                        vg_statusbar_item_t **items,
                                                        size_t count) {
@@ -283,6 +318,9 @@ static statusbar_zone_metrics_t statusbar_measure_zone(vg_statusbar_t *sb,
 }
 
 /// @brief Width assigned to each flexible spacer in a zone.
+/// @param metrics Aggregate fixed width and spacer count.
+/// @param zone_width Width allocated to the complete zone.
+/// @return Equal flexible width per spacer, or zero when no excess remains.
 static float statusbar_spacer_width(statusbar_zone_metrics_t metrics, float zone_width) {
     if (metrics.spacer_count == 0 || zone_width <= metrics.fixed_width)
         return 0.0f;
@@ -290,6 +328,10 @@ static float statusbar_spacer_width(statusbar_zone_metrics_t metrics, float zone
 }
 
 /// @brief Compute non-overlapping local or screen-space rectangles for all zones.
+/// @param sb Status bar whose zones are measured.
+/// @param origin_x Horizontal origin in the caller's coordinate space.
+/// @param width Total available status-bar width.
+/// @param layout Receives left, centered, and right-aligned zone rectangles.
 static void statusbar_compute_layout(vg_statusbar_t *sb,
                                      float origin_x,
                                      float width,
@@ -797,6 +839,10 @@ static bool statusbar_handle_event(vg_widget_t *widget, vg_event_t *event) {
 //=============================================================================
 
 /// @brief Append item to the given zone's array, growing capacity if needed; sets item->owner.
+/// @param sb Status bar that takes ownership.
+/// @param zone Destination left, center, or right zone.
+/// @param item Detached item to append.
+/// @return Attached item handle, or `NULL` after freeing it on failure.
 static vg_statusbar_item_t *add_item_to_zone(vg_statusbar_t *sb,
                                              vg_statusbar_zone_t zone,
                                              vg_statusbar_item_t *item) {
@@ -1059,6 +1105,11 @@ void vg_statusbar_item_set_text_color(vg_statusbar_item_t *item, uint32_t color)
         item->owner->base.needs_paint = true;
 }
 
+/// @brief Set or clear the leading vector icon for a text or button item.
+/// @details Negative identifiers normalize to -1. A changed icon affects the
+///          item's measured width and schedules layout and painting.
+/// @param item Live status-bar item to configure.
+/// @param vector_id Registered vector icon identifier, or a negative value for none.
 void vg_statusbar_item_set_icon_vector(vg_statusbar_item_t *item, int32_t vector_id) {
     if (!vg_statusbar_item_is_live(item))
         return;

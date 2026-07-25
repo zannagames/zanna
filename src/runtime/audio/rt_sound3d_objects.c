@@ -31,6 +31,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements graphics-bound SoundListener3D and SoundSource3D objects.
+/// @details Graphics-enabled builds retain optional SceneNode3D/Camera3D
+///          bindings, synchronize world transforms on the main thread, derive
+///          bounded velocities from frame deltas, and forward sanitized state
+///          to the low-level spatial voice API. Objects live in weak global
+///          traversal lists; retained bindings/sounds are released by runtime
+///          finalizers. Graphics-disabled builds emit only a translation-unit
+///          guard because the low-level file supplies the sync no-op.
+
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d.h"
@@ -110,6 +120,8 @@ static rt_soundlistener3d *s_active_listener_obj = NULL;
 #define SOUND3D_SYNC_DT_MAX 1.0
 
 /// @brief Checked cast of an opaque handle to SoundListener3D; NULL on class mismatch.
+/// @param obj Opaque runtime object to validate.
+/// @return Listener storage, or NULL on class/size mismatch.
 static rt_soundlistener3d *sound3d_listener_checked(void *obj) {
     if (!rt_obj_is_instance(obj, RT_G3D_SOUNDLISTENER3D_CLASS_ID, sizeof(rt_soundlistener3d)))
         return NULL;
@@ -117,6 +129,8 @@ static rt_soundlistener3d *sound3d_listener_checked(void *obj) {
 }
 
 /// @brief Checked cast of an opaque handle to SoundSource3D; NULL on class mismatch.
+/// @param obj Opaque runtime object to validate.
+/// @return Source storage, or NULL on class/size mismatch.
 static rt_soundsource3d *sound3d_source_checked(void *obj) {
     if (!rt_obj_is_instance(obj, RT_G3D_SOUNDSOURCE3D_CLASS_ID, sizeof(rt_soundsource3d)))
         return NULL;
@@ -136,6 +150,8 @@ static void sound3d_release_ref(void **slot) {
 }
 
 /// @brief Release a retained Graphics3D slot only when it still has the expected class.
+/// @param slot Address of the retained object slot.
+/// @param class_id Required Graphics3D class identifier.
 static void sound3d_release_class_ref(void **slot, int64_t class_id) {
     if (!slot || !*slot)
         return;
@@ -147,17 +163,25 @@ static void sound3d_release_class_ref(void **slot, int64_t class_id) {
 }
 
 /// @brief Drop one reference and free if zero. Safe on NULL.
+/// @param obj Runtime object whose local reference should be released.
 static void sound3d_release_local(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief Return @p value when finite, else @p fallback.
+/// @param value Value to validate.
+/// @param fallback Replacement for non-finite input.
+/// @return Finite input or @p fallback.
 static double sound3d_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Clamp a finite scalar to +/- @p max_abs, substituting @p fallback for NaN/Inf.
+/// @param value Value to normalize.
+/// @param fallback Replacement for non-finite input.
+/// @param max_abs Maximum supported magnitude.
+/// @return Sanitized bounded scalar.
 static double sound3d_clamp_abs_or(double value, double fallback, double max_abs) {
     value = sound3d_finite_or(value, fallback);
     if (value < -max_abs)
@@ -168,6 +192,9 @@ static double sound3d_clamp_abs_or(double value, double fallback, double max_abs
 }
 
 /// @brief Clamp a positive distance, preserving the caller's fallback for invalid values.
+/// @param value Distance to normalize.
+/// @param fallback Replacement for negative/non-finite input.
+/// @return Non-negative distance capped at @ref SOUND3D_DISTANCE_MAX.
 static double sound3d_distance_or(double value, double fallback) {
     value = sound3d_finite_or(value, fallback);
     if (value < 0.0)
@@ -178,6 +205,7 @@ static double sound3d_distance_or(double value, double fallback) {
 }
 
 /// @brief Clamp velocity components to the range accepted by Doppler math.
+/// @param velocity Mutable XYZ vector; NULL is ignored.
 static void sound3d_clamp_velocity3(double *velocity) {
     if (!velocity)
         return;
@@ -187,6 +215,8 @@ static void sound3d_clamp_velocity3(double *velocity) {
 }
 
 /// @brief Clamp a Doppler factor to the mixer-supported range.
+/// @param value Factor to normalize.
+/// @return Finite factor in `[0.5, 2]`, with invalid input mapped to `1`.
 static double sound3d_doppler_or(double value) {
     value = sound3d_finite_or(value, 1.0);
     if (value < 0.5)
@@ -214,6 +244,8 @@ static void sound3d_copy3(double *dst, const double *src) {
 }
 
 /// @brief Build a sanitized listener-state snapshot without mutating the listener object.
+/// @param listener Listener object, or NULL for identity state.
+/// @param out_state Receives the sanitized snapshot.
 static void sound3d_listener_sanitized_state(const rt_soundlistener3d *listener,
                                              rt_sound3d_listener_state *out_state) {
     if (!out_state)
@@ -714,6 +746,7 @@ static void sound3d_source_finalize(void *obj) {
 /// each one's bound scene-node or camera into world position+forward, computing velocity from
 /// the position delta over `dt`. Called by the game loop so spatial audio tracks moving entities
 /// without per-source manual updates.
+/// @param dt Frame delta in seconds, normalized to `[0, 1]`.
 void rt_sound3d_sync_bindings(double dt) {
     RT_ASSERT_MAIN_THREAD();
     rt_soundlistener3d *listener = s_listener_head;
@@ -735,6 +768,7 @@ void rt_sound3d_sync_bindings(double dt) {
 /// @brief Create a 3D audio listener (the "ears" of the scene). Initializes to identity
 /// (origin, forward = -Z, zero velocity). The first listener constructed becomes the active
 /// one automatically; subsequent ones must be activated with `_set_is_active`.
+/// @return Caller-owned SoundListener3D object, or NULL on allocation failure.
 void *rt_soundlistener3d_new(void) {
     rt_soundlistener3d *listener = (rt_soundlistener3d *)rt_obj_new_i64(
         RT_G3D_SOUNDLISTENER3D_CLASS_ID, (int64_t)sizeof(rt_soundlistener3d));
@@ -751,6 +785,8 @@ void *rt_soundlistener3d_new(void) {
 
 /// @brief Read the listener's world-space position. If the listener is bound to a node/camera,
 /// re-syncs the binding first to ensure the returned value reflects the current transform.
+/// @param obj SoundListener3D object.
+/// @return New Vec3 position object, or NULL for an invalid listener/allocation failure.
 void *rt_soundlistener3d_get_position(void *obj) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     rt_sound3d_listener_state state;
@@ -763,6 +799,8 @@ void *rt_soundlistener3d_get_position(void *obj) {
 
 /// @brief Manually set the listener world position. Resets the velocity tracker so the next
 /// sync starts fresh (no spurious large-velocity blip from a teleport).
+/// @param obj SoundListener3D object.
+/// @param position Vec3 world position; invalid handles are ignored.
 void rt_soundlistener3d_set_position(void *obj, void *position) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     double pos[3];
@@ -777,6 +815,10 @@ void rt_soundlistener3d_set_position(void *obj, void *position) {
 }
 
 /// @brief Convenience overload of `_set_position` taking three doubles instead of a Vec3.
+/// @param obj SoundListener3D object.
+/// @param x World X coordinate.
+/// @param y World Y coordinate.
+/// @param z World Z coordinate.
 void rt_soundlistener3d_set_position_vec(void *obj, double x, double y, double z) {
     void *position = rt_vec3_new(x, y, z);
     rt_soundlistener3d_set_position(obj, position);
@@ -785,6 +827,8 @@ void rt_soundlistener3d_set_position_vec(void *obj, double x, double y, double z
 
 /// @brief Read the listener's world-space forward (look-at) vector. Re-syncs binding first
 /// so the result tracks attached nodes/cameras.
+/// @param obj SoundListener3D object.
+/// @return New normalized Vec3 direction, or NULL for an invalid listener/allocation failure.
 void *rt_soundlistener3d_get_forward(void *obj) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     rt_sound3d_listener_state state;
@@ -797,6 +841,8 @@ void *rt_soundlistener3d_get_forward(void *obj) {
 
 /// @brief Set the listener's forward vector explicitly (for left/right pan calculations).
 /// The vector is normalized inside the audio core; magnitude is irrelevant.
+/// @param obj SoundListener3D object.
+/// @param forward Vec3 facing direction.
 void rt_soundlistener3d_set_forward(void *obj, void *forward) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     double fwd[3];
@@ -814,6 +860,8 @@ void rt_soundlistener3d_set_forward(void *obj, void *forward) {
 
 /// @brief Read the listener's world-space up vector. Re-syncs binding first
 /// so the result tracks attached nodes.
+/// @param obj SoundListener3D object.
+/// @return New normalized Vec3 up vector, or NULL for an invalid listener/allocation failure.
 void *rt_soundlistener3d_get_up(void *obj) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     rt_sound3d_listener_state state;
@@ -826,6 +874,8 @@ void *rt_soundlistener3d_get_up(void *obj) {
 
 /// @brief Set the listener's up vector explicitly. The basis is orthonormalized
 /// against the current forward vector inside the audio core.
+/// @param obj SoundListener3D object.
+/// @param up Vec3 up direction.
 void rt_soundlistener3d_set_up(void *obj, void *up) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     double upv[3];
@@ -842,6 +892,8 @@ void rt_soundlistener3d_set_up(void *obj, void *up) {
 }
 
 /// @brief Read the listener's velocity (used for Doppler effects). Auto-synced from binding.
+/// @param obj SoundListener3D object.
+/// @return New Vec3 velocity, or NULL for an invalid listener/allocation failure.
 void *rt_soundlistener3d_get_velocity(void *obj) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     rt_sound3d_listener_state state;
@@ -854,6 +906,8 @@ void *rt_soundlistener3d_get_velocity(void *obj) {
 
 /// @brief Override the listener's velocity. Useful for non-physical movements (e.g., camera
 /// scripted shake) where the position-delta-based auto-velocity would lie about real motion.
+/// @param obj SoundListener3D object.
+/// @param velocity Vec3 world velocity.
 void rt_soundlistener3d_set_velocity(void *obj, void *velocity) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     if (!listener)
@@ -866,6 +920,8 @@ void rt_soundlistener3d_set_velocity(void *obj, void *velocity) {
 
 /// @brief Return 1 if this listener is the currently-active one (i.e., the one feeding the
 /// audio core's pan/volume calculations). Only one listener can be active at a time.
+/// @param obj SoundListener3D object.
+/// @return `1` when active, otherwise `0`.
 int8_t rt_soundlistener3d_get_is_active(void *obj) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     return listener && listener->is_active ? 1 : 0;
@@ -873,7 +929,9 @@ int8_t rt_soundlistener3d_get_is_active(void *obj) {
 
 /// @brief Make this listener the active one (deactivating any previously-active listener).
 /// Setting `active=0` deactivates this listener and clears the audio core's listener state,
-/// which makes spatial sources fall back to centered/full-volume output.
+/// which makes spatial sources use the low-level fallback listener.
+/// @param obj SoundListener3D object.
+/// @param active Non-zero to activate; zero to deactivate this listener.
 void rt_soundlistener3d_set_is_active(void *obj, int8_t active) {
     RT_ASSERT_MAIN_THREAD();
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
@@ -899,6 +957,8 @@ void rt_soundlistener3d_set_is_active(void *obj, int8_t active) {
 
 /// @brief Bind the listener to a SceneNode3D — its position and forward will track the node's
 /// world transform every `_sync_bindings` tick. Replaces any prior node/camera binding.
+/// @param obj SoundListener3D object.
+/// @param node SceneNode3D object to retain, or NULL to clear.
 void rt_soundlistener3d_bind_node(void *obj, void *node) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     if (!listener)
@@ -916,6 +976,7 @@ void rt_soundlistener3d_bind_node(void *obj, void *node) {
 
 /// @brief Detach the listener from any bound scene node. Subsequent position/forward stay at
 /// the most recent values until manually changed.
+/// @param obj SoundListener3D object.
 void rt_soundlistener3d_clear_node_binding(void *obj) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     if (!listener)
@@ -925,6 +986,8 @@ void rt_soundlistener3d_clear_node_binding(void *obj) {
 
 /// @brief Bind the listener to a Camera3D — preferred over node binding for FPS-style audio
 /// since the camera's forward already encodes head orientation. Replaces any prior binding.
+/// @param obj SoundListener3D object.
+/// @param camera Camera3D object to retain, or NULL to clear.
 void rt_soundlistener3d_bind_camera(void *obj, void *camera) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     if (!listener)
@@ -941,6 +1004,7 @@ void rt_soundlistener3d_bind_camera(void *obj, void *camera) {
 }
 
 /// @brief Detach the listener from any bound camera. Position/forward freeze at last sync.
+/// @param obj SoundListener3D object.
 void rt_soundlistener3d_clear_camera_binding(void *obj) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     if (!listener)
@@ -952,6 +1016,8 @@ void rt_soundlistener3d_clear_camera_binding(void *obj) {
 /// 1 world unit, max distance 50 world units, volume 100/100, non-looping, position at
 /// origin. Spatial volume/pan are computed per-frame from the active listener once playback
 /// starts via `_play`.
+/// @param sound Sound handle retained by the new object; may be NULL.
+/// @return Caller-owned SoundSource3D object, or NULL on allocation failure.
 void *rt_soundsource3d_new(void *sound) {
     rt_soundsource3d *source = (rt_soundsource3d *)rt_obj_new_i64(
         RT_G3D_SOUNDSOURCE3D_CLASS_ID, (int64_t)sizeof(rt_soundsource3d));
@@ -976,6 +1042,8 @@ void *rt_soundsource3d_new(void *sound) {
 
 /// @brief Read the source's world-space position. Re-syncs binding so the result reflects
 /// the bound node's current world transform.
+/// @param obj SoundSource3D object.
+/// @return New Vec3 position, or NULL for an invalid source/allocation failure.
 void *rt_soundsource3d_get_position(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     double position[3];
@@ -988,6 +1056,8 @@ void *rt_soundsource3d_get_position(void *obj) {
 
 /// @brief Manually set the source's world position. Resets the velocity tracker (no jump) and
 /// re-applies spatial volume/pan immediately so playback continues at the new location.
+/// @param obj SoundSource3D object.
+/// @param position Vec3 world position.
 void rt_soundsource3d_set_position(void *obj, void *position) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1000,6 +1070,10 @@ void rt_soundsource3d_set_position(void *obj, void *position) {
 }
 
 /// @brief Convenience overload of `_set_position` taking three doubles instead of a Vec3.
+/// @param obj SoundSource3D object.
+/// @param x World X coordinate.
+/// @param y World Y coordinate.
+/// @param z World Z coordinate.
 void rt_soundsource3d_set_position_vec(void *obj, double x, double y, double z) {
     void *position = rt_vec3_new(x, y, z);
     rt_soundsource3d_set_position(obj, position);
@@ -1011,6 +1085,10 @@ void rt_soundsource3d_set_position_vec(void *obj, double x, double y, double z) 
 ///          scene rebase already shifted, so only unbound sources (playAt / nodeless
 ///          playAttached) need their fallback position moved. Subtracts the delta to
 ///          match the scene/physics/body rebase convention (contents move by -delta).
+/// @param obj SoundSource3D object.
+/// @param dx Origin X displacement.
+/// @param dy Origin Y displacement.
+/// @param dz Origin Z displacement.
 void rt_soundsource3d_rebase_origin(void *obj, double dx, double dy, double dz) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1029,6 +1107,8 @@ void rt_soundsource3d_rebase_origin(void *obj, double dx, double dy, double dz) 
 }
 
 /// @brief Read the source's velocity (Doppler input). Re-syncs binding before returning.
+/// @param obj SoundSource3D object.
+/// @return New Vec3 velocity, or NULL for an invalid source/allocation failure.
 void *rt_soundsource3d_get_velocity(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     double velocity[3];
@@ -1042,6 +1122,8 @@ void *rt_soundsource3d_get_velocity(void *obj) {
 
 /// @brief Override the source's velocity. Skips the auto-derived position-delta velocity for
 /// the next frame; useful for scripted or non-Newtonian motion.
+/// @param obj SoundSource3D object.
+/// @param velocity Vec3 world velocity.
 void rt_soundsource3d_set_velocity(void *obj, void *velocity) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1053,6 +1135,8 @@ void rt_soundsource3d_set_velocity(void *obj, void *velocity) {
 }
 
 /// @brief Latest Doppler factor computed from listener/source velocity.
+/// @param obj SoundSource3D object.
+/// @return Bounded factor in `[0.5, 2]`, or `1` for an invalid source.
 double rt_soundsource3d_get_doppler_factor(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1064,6 +1148,8 @@ double rt_soundsource3d_get_doppler_factor(void *obj) {
 }
 
 /// @brief Maximum audible distance in world units. Beyond this the source contributes 0 volume.
+/// @param obj SoundSource3D object.
+/// @return Stored non-negative maximum distance, or zero for an invalid source.
 double rt_soundsource3d_get_max_distance(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     return source ? sound3d_distance_or(source->max_distance, 0.0) : 0.0;
@@ -1071,6 +1157,8 @@ double rt_soundsource3d_get_max_distance(void *obj) {
 
 /// @brief Set audible-falloff distance (clamped to ≥ 0). Larger = louder for further-away
 /// sources. Spatial volume/pan are recomputed immediately so playback adapts to the new range.
+/// @param obj SoundSource3D object.
+/// @param max_distance Requested zero-volume distance.
 void rt_soundsource3d_set_max_distance(void *obj, double max_distance) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1083,6 +1171,8 @@ void rt_soundsource3d_set_max_distance(void *obj, double max_distance) {
 }
 
 /// @brief Full-volume reference distance in world units. Falloff begins past this radius.
+/// @param obj SoundSource3D object.
+/// @return Stored non-negative reference distance, or zero for an invalid source.
 double rt_soundsource3d_get_ref_distance(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     return source ? sound3d_distance_or(source->ref_distance, 0.0) : 0.0;
@@ -1090,6 +1180,8 @@ double rt_soundsource3d_get_ref_distance(void *obj) {
 
 /// @brief Set the full-volume reference radius. The max distance is raised when needed so
 /// the attenuation interval remains well-formed.
+/// @param obj SoundSource3D object.
+/// @param ref_distance Requested positive full-volume radius.
 void rt_soundsource3d_set_ref_distance(void *obj, double ref_distance) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1103,6 +1195,8 @@ void rt_soundsource3d_set_ref_distance(void *obj, double ref_distance) {
 }
 
 /// @brief Read the source's nominal volume (0..100). Spatial attenuation is applied separately.
+/// @param obj SoundSource3D object.
+/// @return Logical volume in `[0, 100]`, or zero for an invalid source.
 int64_t rt_soundsource3d_get_volume(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     return source ? sound3d_clamp_volume(source->volume) : 0;
@@ -1110,6 +1204,8 @@ int64_t rt_soundsource3d_get_volume(void *obj) {
 
 /// @brief Set the source's nominal volume (clamped to 0..100). Re-applies spatial mixing
 /// immediately so an active voice picks up the change next tick.
+/// @param obj SoundSource3D object.
+/// @param volume Requested logical volume.
 void rt_soundsource3d_set_volume(void *obj, int64_t volume) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1119,6 +1215,8 @@ void rt_soundsource3d_set_volume(void *obj, int64_t volume) {
 }
 
 /// @brief Get the source's user playback-rate multiplier (1.0 default).
+/// @param obj SoundSource3D object.
+/// @return Positive user multiplier, or `1` for invalid/unset state.
 double rt_soundsource3d_get_pitch(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     return source && source->pitch > 0.0 ? source->pitch : 1.0;
@@ -1128,6 +1226,8 @@ double rt_soundsource3d_get_pitch(void *obj) {
 /// @details Composes multiplicatively with the Doppler factor; the mixer
 ///          clamps the combined rate to 0.25–4.0. Applies immediately to a
 ///          voice in flight.
+/// @param obj SoundSource3D object.
+/// @param pitch Positive user playback-rate multiplier; invalid input becomes `1`.
 void rt_soundsource3d_set_pitch(void *obj, double pitch) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1139,6 +1239,8 @@ void rt_soundsource3d_set_pitch(void *obj, double pitch) {
 }
 
 /// @brief Get the source's occlusion amount (0 open .. 1 fully occluded).
+/// @param obj SoundSource3D object.
+/// @return Stored occlusion fraction, or zero for an invalid source.
 double rt_soundsource3d_get_occlusion(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     return source ? source->occlusion : 0.0;
@@ -1148,6 +1250,8 @@ double rt_soundsource3d_get_occlusion(void *obj) {
 /// @details The game supplies the amount (typically from its own line-of-
 ///          sight raycasts); the mixer applies a smoothed perceptual lowpass
 ///          sweep plus up to -6 dB of attenuation.
+/// @param obj SoundSource3D object.
+/// @param amount Requested occlusion fraction, clamped to `[0, 1]`.
 void rt_soundsource3d_set_occlusion(void *obj, double amount) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1161,6 +1265,8 @@ void rt_soundsource3d_set_occlusion(void *obj, double amount) {
 }
 
 /// @brief Returns 1 if the source plays in a loop (vs. fire-and-forget one-shot).
+/// @param obj SoundSource3D object.
+/// @return `1` when future playback loops, otherwise `0`.
 int8_t rt_soundsource3d_get_looping(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     return source && source->looping ? 1 : 0;
@@ -1168,6 +1274,8 @@ int8_t rt_soundsource3d_get_looping(void *obj) {
 
 /// @brief Toggle looping mode. Takes effect on the next `_play` call (does not affect a voice
 /// already in flight; stop and replay to apply mid-stream).
+/// @param obj SoundSource3D object.
+/// @param looping Non-zero to loop future playback.
 void rt_soundsource3d_set_looping(void *obj, int8_t looping) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1177,6 +1285,8 @@ void rt_soundsource3d_set_looping(void *obj, int8_t looping) {
 
 /// @brief Returns 1 if the underlying voice is still active. Auto-reaps stale voice IDs whose
 /// playback has finished (so subsequent calls return 0 cleanly).
+/// @param obj SoundSource3D object.
+/// @return `1` while the owned voice is playing, otherwise `0`.
 int8_t rt_soundsource3d_get_is_playing(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     return source ? sound3d_source_refresh_play_state(source) : 0;
@@ -1184,6 +1294,8 @@ int8_t rt_soundsource3d_get_is_playing(void *obj) {
 
 /// @brief Return the underlying voice ID (for low-level voice control). Returns 0 if the
 /// source isn't playing or the voice has finished. Always re-checks live state first.
+/// @param obj SoundSource3D object.
+/// @return Positive live voice identifier, or zero when inactive/invalid.
 int64_t rt_soundsource3d_get_voice_id(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1194,7 +1306,9 @@ int64_t rt_soundsource3d_get_voice_id(void *obj) {
 
 /// @brief Start playback of the bound sound. Computes initial spatial volume/pan against the
 /// active listener, then plays via `rt_sound_play_loop` (looping) or `rt_sound_play_ex` (one-
-/// shot). Stops any prior voice this source owned. Returns the voice ID, or 0 on failure.
+/// shot). Stops any prior voice this source owned.
+/// @param obj SoundSource3D object.
+/// @return Positive voice identifier, or `-1` on failure.
 int64_t rt_soundsource3d_play(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     rt_sound3d_listener_state listener;
@@ -1238,6 +1352,7 @@ int64_t rt_soundsource3d_play(void *obj) {
 }
 
 /// @brief Stop the active voice (if any) and clear the source's voice ID. No-op if not playing.
+/// @param obj SoundSource3D object.
 void rt_soundsource3d_stop(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1249,6 +1364,8 @@ void rt_soundsource3d_stop(void *obj) {
 
 /// @brief Bind the source to a SceneNode3D — the source position will track the node's world
 /// transform every `_sync_bindings` tick. Replaces any prior binding and immediately syncs.
+/// @param obj SoundSource3D object.
+/// @param node SceneNode3D object to retain, or NULL to clear.
 void rt_soundsource3d_bind_node(void *obj, void *node) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1264,6 +1381,7 @@ void rt_soundsource3d_bind_node(void *obj, void *node) {
 }
 
 /// @brief Detach the source from any bound node. Position freezes at last sync.
+/// @param obj SoundSource3D object.
 void rt_soundsource3d_clear_node_binding(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1274,6 +1392,8 @@ void rt_soundsource3d_clear_node_binding(void *obj) {
 /// @brief Route the source's future playback voices to a mix group.
 /// @details Applies from the next play; a live voice keeps its group. Invalid
 ///   group ids fall back to the SFX group.
+/// @param obj SoundSource3D object.
+/// @param group Numeric mix-group identifier.
 void rt_soundsource3d_set_mix_group(void *obj, int64_t group) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
@@ -1282,6 +1402,8 @@ void rt_soundsource3d_set_mix_group(void *obj, int64_t group) {
 }
 
 /// @brief Mix group future playback voices route to.
+/// @param obj SoundSource3D object.
+/// @return Stored group, or the built-in SFX group for an invalid source.
 int64_t rt_soundsource3d_get_mix_group(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     return source ? source->mix_group : RT_MIXGROUP_SFX;

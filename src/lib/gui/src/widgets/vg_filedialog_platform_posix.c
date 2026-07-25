@@ -4,20 +4,17 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_filedialog_platform_posix.c
-// Purpose: POSIX filesystem adapter for the GUI file-dialog widget.
-//
-// Key invariants:
-//   - Directory enumeration uses opendir/readdir/stat and returns malloc-owned
-//     UTF-8 path strings without retaining DIR resources.
-//   - Hidden entries are identified by a leading '.' in the filename.
-//
-// Ownership/Lifetime:
-//   - All returned buffers and entry arrays are caller-owned.
-//
-// Links: lib/gui/src/widgets/vg_filedialog_platform.h,
-//        lib/gui/src/widgets/vg_filedialog.c
+///
+/// @file vg_filedialog_platform_posix.c
+/// @brief Implements the POSIX filesystem adapter for the file dialog.
+///
+/// @details Directory enumeration uses `opendir()`, `readdir()`, and `lstat()`
+/// without retaining directory handles after return. Hidden entries are
+/// identified by a leading dot. All returned paths, names, and entry arrays use
+/// malloc-compatible storage and transfer ownership to the caller.
+///
+/// @see vg_filedialog_platform.h
+/// @see vg_filedialog.c
 //
 //===----------------------------------------------------------------------===//
 

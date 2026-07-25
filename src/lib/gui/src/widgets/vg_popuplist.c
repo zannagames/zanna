@@ -18,6 +18,11 @@
 // Links: lib/gui/include/vg_ide_widgets_ui.h, lib/gui/include/vg_font.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements the caret-anchored, filterable popup-list overlay.
+/// @details The widget owns all candidate strings and a parallel array of
+///          matching item indices. It contributes no normal-flow layout size;
+///          explicit anchor coordinates and visual bounds describe its overlay.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_font.h"
 #include "../../include/vg_ide_widgets.h"
@@ -55,6 +60,9 @@ static vg_widget_vtable_t g_popuplist_vtable = {
 // Internal helpers
 //=============================================================================
 
+/// @brief Allocate a private copy of a popup-list string.
+/// @param text Null-terminated source string.
+/// @return Newly allocated copy, or `NULL` for null input/allocation failure.
 static char *popuplist_dup(const char *text) {
     if (!text)
         return NULL;
@@ -66,6 +74,10 @@ static char *popuplist_dup(const char *text) {
 }
 
 /// @brief Case-insensitive substring test; an empty/NULL needle always matches.
+/// @param hay Candidate string to search.
+/// @param needle Filter string.
+/// @return `true` when @p needle is empty or occurs under bytewise ASCII-style
+///         case folding.
 static bool popuplist_contains_ci(const char *hay, const char *needle) {
     if (!needle || !needle[0])
         return true;
@@ -84,6 +96,7 @@ static bool popuplist_contains_ci(const char *hay, const char *needle) {
 }
 
 /// @brief Rebuild filtered[] from items + filter and clamp the selection.
+/// @param list Popup list whose match-index array is regenerated.
 static void popuplist_recompute(vg_popuplist_t *list) {
     list->filtered_count = 0;
     if (list->filtered) {
@@ -101,6 +114,11 @@ static void popuplist_recompute(vg_popuplist_t *list) {
 }
 
 /// @brief Grow items[] and filtered[] to hold at least @p min_cap entries.
+/// @details Existing arrays remain valid when either allocation fails, though a
+///          successful first resize may provide reusable excess capacity.
+/// @param list Popup list owning both arrays.
+/// @param min_cap Minimum required entry capacity.
+/// @return `true` when both arrays can hold @p min_cap entries.
 static bool popuplist_ensure_capacity(vg_popuplist_t *list, int min_cap) {
     if (min_cap <= list->item_capacity)
         return true;
@@ -123,6 +141,10 @@ static bool popuplist_ensure_capacity(vg_popuplist_t *list, int min_cap) {
 // VTable implementations
 //=============================================================================
 
+/// @brief Measure the absolute overlay as zero-sized normal-flow content.
+/// @param widget Popup-list widget base to measure.
+/// @param avail_w Offered width, unused.
+/// @param avail_h Offered height, unused.
 static void popuplist_measure(vg_widget_t *widget, float avail_w, float avail_h) {
     (void)avail_w;
     (void)avail_h;
@@ -132,6 +154,12 @@ static void popuplist_measure(vg_widget_t *widget, float avail_w, float avail_h)
     vg_widget_apply_constraints(widget);
 }
 
+/// @brief Store the layout rectangle assigned by the parent.
+/// @param widget Popup-list widget base to arrange.
+/// @param x Assigned left coordinate.
+/// @param y Assigned top coordinate.
+/// @param w Assigned width.
+/// @param h Assigned height.
 static void popuplist_arrange(vg_widget_t *widget, float x, float y, float w, float h) {
     widget->x = x;
     widget->y = y;
@@ -175,6 +203,11 @@ static void popuplist_get_visual_bounds(
         *height = (float)rows * line_height;
 }
 
+/// @brief Paint the visible filtered rows at the absolute popup anchor.
+/// @details Limits rows to `max_rows`, scrolls the logical window to retain the
+///          selection, and draws the selected row with theme-derived colors.
+/// @param widget Popup-list widget base owning overlay state.
+/// @param canvas Backend canvas for rectangle and text drawing.
 static void popuplist_paint_overlay(vg_widget_t *widget, void *canvas) {
     vg_popuplist_t *list = (vg_popuplist_t *)widget;
     if (!widget->visible || list->filtered_count == 0 || !list->font)
@@ -223,6 +256,8 @@ static void popuplist_paint_overlay(vg_widget_t *widget, void *canvas) {
     }
 }
 
+/// @brief Release item strings, index storage, and the copied filter.
+/// @param widget Popup-list widget base being destroyed.
 static void popuplist_destroy(vg_widget_t *widget) {
     vg_popuplist_t *list = (vg_popuplist_t *)widget;
     for (int i = 0; i < list->item_count; i++)
@@ -236,6 +271,9 @@ static void popuplist_destroy(vg_widget_t *widget) {
 // Public API
 //=============================================================================
 
+/// @brief Create a hidden popup list with theme-derived styling.
+/// @param root Optional root widget that receives the popup as a child.
+/// @return Newly allocated popup list, or `NULL` on allocation failure.
 vg_popuplist_t *vg_popuplist_create(vg_widget_t *root) {
     vg_popuplist_t *list = (vg_popuplist_t *)calloc(1, sizeof(vg_popuplist_t));
     if (!list)
@@ -268,12 +306,17 @@ vg_popuplist_t *vg_popuplist_create(vg_widget_t *root) {
     return list;
 }
 
+/// @brief Destroy a popup list and all copied candidate strings.
+/// @param list Popup list to destroy; `NULL` is ignored.
 void vg_popuplist_destroy(vg_popuplist_t *list) {
     if (!list)
         return;
     vg_widget_destroy(&list->base);
 }
 
+/// @brief Append a copied candidate and recompute filter matches.
+/// @param list Popup list to modify.
+/// @param text Null-terminated display text copied by the list.
 void vg_popuplist_add_item(vg_popuplist_t *list, const char *text) {
     if (!list || !text)
         return;
@@ -287,6 +330,8 @@ void vg_popuplist_add_item(vg_popuplist_t *list, const char *text) {
     list->base.needs_paint = true;
 }
 
+/// @brief Remove every candidate while retaining reusable array capacity.
+/// @param list Popup list to clear; `NULL` is ignored.
 void vg_popuplist_clear(vg_popuplist_t *list) {
     if (!list)
         return;
@@ -298,6 +343,11 @@ void vg_popuplist_clear(vg_popuplist_t *list) {
     list->base.needs_paint = true;
 }
 
+/// @brief Replace the case-insensitive substring filter.
+/// @details The filter is copied, selection returns to the first matching row,
+///          and the filtered-index array is rebuilt.
+/// @param list Popup list to update.
+/// @param filter Null-terminated filter text, or `NULL` to match all candidates.
 void vg_popuplist_set_filter(vg_popuplist_t *list, const char *filter) {
     if (!list)
         return;
@@ -308,10 +358,15 @@ void vg_popuplist_set_filter(vg_popuplist_t *list, const char *filter) {
     list->base.needs_paint = true;
 }
 
+/// @brief Query the number of candidates matching the active filter.
+/// @param list Popup list to inspect.
+/// @return Filtered row count, or zero for `NULL`.
 int vg_popuplist_visible_count(const vg_popuplist_t *list) {
     return list ? list->filtered_count : 0;
 }
 
+/// @brief Move selection one matching row upward without wrapping.
+/// @param list Popup list to navigate.
 void vg_popuplist_navigate_up(vg_popuplist_t *list) {
     if (!list || list->filtered_count == 0)
         return;
@@ -320,6 +375,8 @@ void vg_popuplist_navigate_up(vg_popuplist_t *list) {
     list->base.needs_paint = true;
 }
 
+/// @brief Move selection one matching row downward without wrapping.
+/// @param list Popup list to navigate.
 void vg_popuplist_navigate_down(vg_popuplist_t *list) {
     if (!list || list->filtered_count == 0)
         return;
@@ -328,6 +385,9 @@ void vg_popuplist_navigate_down(vg_popuplist_t *list) {
     list->base.needs_paint = true;
 }
 
+/// @brief Select a row by its index in the filtered view.
+/// @param list Popup list to update.
+/// @param index Requested filtered index, clamped to available matches.
 void vg_popuplist_set_selected_index(vg_popuplist_t *list, int index) {
     if (!list || list->filtered_count == 0)
         return;
@@ -339,12 +399,18 @@ void vg_popuplist_set_selected_index(vg_popuplist_t *list, int index) {
     list->base.needs_paint = true;
 }
 
+/// @brief Query the selected index within the filtered view.
+/// @param list Popup list to inspect.
+/// @return Selected filtered index, or -1 when no match exists.
 int vg_popuplist_selected_index(const vg_popuplist_t *list) {
     if (!list || list->filtered_count == 0)
         return -1;
     return list->selected;
 }
 
+/// @brief Return the candidate text represented by the selected filtered row.
+/// @param list Popup list to inspect.
+/// @return Borrowed list-owned string, or `NULL` when selection is invalid.
 const char *vg_popuplist_selected_text(const vg_popuplist_t *list) {
     if (!list || list->filtered_count == 0 || list->selected < 0 ||
         list->selected >= list->filtered_count)
@@ -352,11 +418,16 @@ const char *vg_popuplist_selected_text(const vg_popuplist_t *list) {
     return list->items[list->filtered[list->selected]];
 }
 
+/// @brief Latch an acceptance event when a matching row is selected.
+/// @param list Popup list whose selected row is accepted.
 void vg_popuplist_accept_selected(vg_popuplist_t *list) {
     if (list && list->filtered_count > 0)
         list->accepted = true;
 }
 
+/// @brief Consume the popup's edge-triggered acceptance latch.
+/// @param list Popup list to query.
+/// @return Previous acceptance state; the latch is cleared before return.
 bool vg_popuplist_was_accepted(vg_popuplist_t *list) {
     if (!list)
         return false;
@@ -365,6 +436,10 @@ bool vg_popuplist_was_accepted(vg_popuplist_t *list) {
     return accepted;
 }
 
+/// @brief Set the overlay's absolute top-left anchor.
+/// @param list Popup list to position.
+/// @param x Absolute horizontal coordinate.
+/// @param y Absolute vertical coordinate.
 void vg_popuplist_anchor_at(vg_popuplist_t *list, float x, float y) {
     if (!list)
         return;
@@ -373,6 +448,9 @@ void vg_popuplist_anchor_at(vg_popuplist_t *list, float x, float y) {
     list->base.needs_paint = true;
 }
 
+/// @brief Set a positive popup width.
+/// @param list Popup list to resize.
+/// @param width Requested width in pixels; non-positive values are ignored.
 void vg_popuplist_set_width(vg_popuplist_t *list, float width) {
     if (list && width > 0.0f) {
         list->width = width;
@@ -380,6 +458,9 @@ void vg_popuplist_set_width(vg_popuplist_t *list, float width) {
     }
 }
 
+/// @brief Limit the number of rows painted at once.
+/// @param list Popup list to configure.
+/// @param max_rows Positive visible-row limit.
 void vg_popuplist_set_max_rows(vg_popuplist_t *list, int max_rows) {
     if (list && max_rows > 0) {
         list->max_rows = max_rows;
@@ -387,6 +468,10 @@ void vg_popuplist_set_max_rows(vg_popuplist_t *list, int max_rows) {
     }
 }
 
+/// @brief Set the borrowed font and recompute row height.
+/// @param list Popup list to configure.
+/// @param font Font that must outlive its use by the list.
+/// @param size Positive font size, or non-positive to retain the current size.
 void vg_popuplist_set_font(vg_popuplist_t *list, vg_font_t *font, float size) {
     if (!list)
         return;
@@ -401,6 +486,9 @@ void vg_popuplist_set_font(vg_popuplist_t *list, vg_font_t *font, float size) {
     list->base.needs_paint = true;
 }
 
+/// @brief Show or hide popup overlay painting.
+/// @param list Popup list to update.
+/// @param visible `true` to expose the filtered rows.
 void vg_popuplist_set_visible(vg_popuplist_t *list, bool visible) {
     if (!list)
         return;
@@ -408,6 +496,9 @@ void vg_popuplist_set_visible(vg_popuplist_t *list, bool visible) {
     list->base.needs_paint = true;
 }
 
+/// @brief Query the popup widget's visibility flag.
+/// @param list Popup list to inspect.
+/// @return Current visibility, or `false` for `NULL`.
 bool vg_popuplist_is_visible(const vg_popuplist_t *list) {
     return list ? list->base.visible : false;
 }

@@ -31,6 +31,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements listener selection and per-voice 3D spatialization.
+/// @details The module stores sanitized fallback/active listener snapshots,
+///          derives orthonormal orientation bases, computes distance gain,
+///          stereo pan, and bounded Doppler pitch, and tracks per-voice distance
+///          metadata in a growable main-thread table. Capacity pressure first
+///          reclaims completed voices and records diagnostics before any
+///          round-robin eviction of live metadata.
+
 #include "rt_sound3d.h"
 
 #include "rt_audio_diagnostics.h"
@@ -90,12 +99,20 @@ static int32_t s_voice_dist_capacity = 0;
 static int32_t s_voice_dist_next = 0;
 static int8_t s_voice_dist_test_force_all_playing = 0;
 
+/// @brief Force metadata reclamation probes to treat every tracked voice as live.
+/// @details Test-support hook for deterministic capacity/eviction coverage.
+///          Must be called on the runtime main thread.
+/// @param enabled Non-zero to suppress normal backend liveness checks.
 void rt_sound3d_test_set_all_voices_playing(int8_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     s_voice_dist_test_force_all_playing = enabled ? 1 : 0;
 }
 
 /// @brief Clamp @p value into the inclusive `[lo, hi]` range.
+/// @param value Integer to normalize.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @return Clamped integer.
 static int64_t clamp_i64(int64_t value, int64_t lo, int64_t hi) {
     if (value < lo)
         return lo;
@@ -106,11 +123,18 @@ static int64_t clamp_i64(int64_t value, int64_t lo, int64_t hi) {
 
 /// @brief Return @p value when finite, else @p fallback.
 /// @details Defensive guard for spatial audio math against NaN/inf inputs.
+/// @param value Value to validate.
+/// @param fallback Replacement for non-finite input.
+/// @return Finite input or @p fallback.
 static double finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Clamp a finite scalar to +/- @p max_abs, substituting @p fallback for NaN/Inf.
+/// @param value Value to normalize.
+/// @param fallback Replacement for non-finite input.
+/// @param max_abs Maximum allowed magnitude.
+/// @return Finite value in `[-max_abs, max_abs]`.
 static double clamp_abs_or(double value, double fallback, double max_abs) {
     value = finite_or(value, fallback);
     if (value < -max_abs)
@@ -121,6 +145,9 @@ static double clamp_abs_or(double value, double fallback, double max_abs) {
 }
 
 /// @brief Clamp an attenuation distance while preserving invalid-value fallback behavior.
+/// @param value Distance to normalize.
+/// @param fallback Replacement for negative/non-finite input.
+/// @return Non-negative distance capped at @ref SOUND3D_DISTANCE_MAX.
 static double sound3d_distance_or(double value, double fallback) {
     value = finite_or(value, fallback);
     if (value < 0.0)
@@ -131,6 +158,8 @@ static double sound3d_distance_or(double value, double fallback) {
 }
 
 /// @brief Clamp one velocity component before Doppler math.
+/// @param value Velocity component to normalize.
+/// @return Finite component capped to the supported absolute velocity.
 static double sound3d_velocity_or(double value) {
     return clamp_abs_or(value, 0.0, SOUND3D_VELOCITY_ABS_MAX);
 }
@@ -174,6 +203,9 @@ static void sound3d_vec_from_obj(void *vec, double *out_xyz) {
 }
 
 /// @brief Cross product out = a x b for 3-vectors.
+/// @param a First three-component vector.
+/// @param b Second three-component vector.
+/// @param out Receives @p a crossed with @p b.
 static void sound3d_cross3(const double *a, const double *b, double *out) {
     out[0] = a[1] * b[2] - a[2] * b[1];
     out[1] = a[2] * b[0] - a[0] * b[2];
@@ -261,7 +293,9 @@ static void sound3d_set_basis(rt_sound3d_listener_state *state,
 }
 
 /// @brief Reset a listener-state struct to the canonical identity orientation.
-/// Origin position, zero velocity, forward = -Z, right = +X, up = +Y. Marks the state as valid.
+/// @details Uses origin position, zero velocity, forward = -Z, right = +X,
+///          and up = +Y, and marks the state valid.
+/// @param state Listener snapshot to initialize; NULL is ignored.
 void rt_sound3d_listener_state_identity(rt_sound3d_listener_state *state) {
     if (!state)
         return;
@@ -276,8 +310,12 @@ void rt_sound3d_listener_state_identity(rt_sound3d_listener_state *state) {
 }
 
 /// @brief Populate a listener-state struct from explicit position/forward/velocity arrays.
-/// Forward is normalized; up defaults to +Y and the full basis is orthonormalized.
-/// Pass NULL for any component to default it to zero (or -Z forward).
+/// @details Forward is normalized; up defaults to +Y and the full basis is
+///          orthonormalized. NULL components default to zero (or -Z forward).
+/// @param state Listener snapshot to populate.
+/// @param position Optional three-component world position.
+/// @param forward Optional three-component facing direction.
+/// @param velocity Optional three-component world velocity.
 void rt_sound3d_listener_state_set(rt_sound3d_listener_state *state,
                                    const double *position,
                                    const double *forward,
@@ -286,6 +324,11 @@ void rt_sound3d_listener_state_set(rt_sound3d_listener_state *state,
 }
 
 /// @brief Populate a listener-state struct from explicit position/forward/up/velocity arrays.
+/// @param state Listener snapshot to populate.
+/// @param position Optional three-component world position.
+/// @param forward Optional three-component facing direction.
+/// @param up Optional three-component up direction, preserving listener roll.
+/// @param velocity Optional three-component world velocity.
 void rt_sound3d_listener_state_set_pose(rt_sound3d_listener_state *state,
                                         const double *position,
                                         const double *forward,
@@ -300,8 +343,10 @@ void rt_sound3d_listener_state_set_pose(rt_sound3d_listener_state *state,
 }
 
 /// @brief Read the listener state currently driving spatial audio.
-/// Returns the active SoundListener3D's state if one is bound; otherwise the
-/// fallback listener configured via `rt_sound3d_set_listener`.
+/// @details Returns the active SoundListener3D's state if one is bound;
+///          otherwise returns the fallback configured through
+///          @ref rt_sound3d_set_listener. Must be called on the main thread.
+/// @param out_state Receives the effective listener snapshot; NULL is ignored.
 void rt_sound3d_get_effective_listener_state(rt_sound3d_listener_state *out_state) {
     RT_ASSERT_MAIN_THREAD();
     if (!out_state)
@@ -314,7 +359,9 @@ void rt_sound3d_get_effective_listener_state(rt_sound3d_listener_state *out_stat
 }
 
 /// @brief Promote a listener-state snapshot to the active spatial-audio listener.
-/// Called by SoundListener3D.Activate. Passing NULL or invalid state clears.
+/// @details Called by SoundListener3D.Activate. Passing NULL or invalid state
+///          clears the active listener. Must be called on the main thread.
+/// @param state Valid listener snapshot to copy.
 void rt_sound3d_set_active_listener_state(const rt_sound3d_listener_state *state) {
     RT_ASSERT_MAIN_THREAD();
     if (!state || !state->valid) {
@@ -326,6 +373,8 @@ void rt_sound3d_set_active_listener_state(const rt_sound3d_listener_state *state
 }
 
 /// @brief Detach any active SoundListener3D and revert to the fallback listener.
+/// @details Resets the stored active snapshot and marks it invalid. Must be
+///          called on the main thread.
 void rt_sound3d_clear_active_listener_state(void) {
     RT_ASSERT_MAIN_THREAD();
     rt_sound3d_listener_state_identity(&s_active_listener);
@@ -396,6 +445,11 @@ static int32_t sound3d_find_reclaimable_voice_slot(void) {
 }
 
 /// @brief Store one voice metadata record into an existing table slot.
+/// @param slot Zero-based allocated table slot.
+/// @param voice Positive backend voice identifier.
+/// @param ref_dist Full-volume reference distance.
+/// @param max_dist Zero-volume falloff distance.
+/// @param base_volume Logical unattenuated volume in `[0, 100]`.
 static void sound3d_store_voice_slot(
     int32_t slot, int64_t voice, double ref_dist, double max_dist, int64_t base_volume) {
     if (!s_voice_dist || slot < 0 || slot >= s_voice_dist_capacity)
@@ -413,6 +467,10 @@ static void sound3d_store_voice_slot(
 ///          This table holds it. New voices append to a growable table; only if
 ///          the bounded table cannot grow and every tracked voice is still live
 ///          do we fall back to the legacy round-robin eviction path.
+/// @param voice Positive backend voice identifier.
+/// @param ref_dist Full-volume reference distance; invalid values become zero.
+/// @param max_dist Zero-volume distance, normalized not to precede @p ref_dist.
+/// @param base_volume Logical unattenuated volume, clamped to `[0, 100]`.
 void rt_sound3d_register_voice_ex(int64_t voice,
                                   double ref_dist,
                                   double max_dist,
@@ -458,11 +516,15 @@ void rt_sound3d_register_voice_ex(int64_t voice,
 
 /// @brief Register a voice's 3D attenuation params with a default reference distance of 0.
 /// @details Convenience wrapper over rt_sound3d_register_voice_ex.
+/// @param voice Positive backend voice identifier.
+/// @param max_dist Zero-volume falloff distance.
+/// @param base_volume Logical unattenuated volume.
 void rt_sound3d_register_voice(int64_t voice, double max_dist, int64_t base_volume) {
     rt_sound3d_register_voice_ex(voice, 0.0, max_dist, base_volume);
 }
 
 /// @brief Return the number of occupied entries in the growable 3D voice metadata table.
+/// @details Must be called on the runtime main thread.
 /// @return Tracked voice-entry count in [0, SOUND3D_MAX_VOICE_CAPACITY].
 int64_t rt_sound3d_tracked_voice_count(void) {
     RT_ASSERT_MAIN_THREAD();
@@ -470,6 +532,7 @@ int64_t rt_sound3d_tracked_voice_count(void) {
 }
 
 /// @brief Return the current capacity of the growable 3D voice metadata table.
+/// @details Must be called on the runtime main thread.
 /// @return Current allocated capacity, or the legacy initial capacity before the first voice.
 int64_t rt_sound3d_tracked_voice_capacity(void) {
     RT_ASSERT_MAIN_THREAD();
@@ -506,10 +569,13 @@ static int lookup_voice_params(int64_t voice,
 /// [-100, 100]. Sources at the listener position receive centered pan.
 /// @param listener Active listener state (NULL → fallback).
 /// @param source_position World-space xyz of the source.
+/// @param source_velocity Optional world-space source velocity for Doppler.
+/// @param ref_dist Distance within which attenuation remains at full gain.
 /// @param max_dist Falloff radius; sources beyond this become silent.
 /// @param base_vol Pre-attenuation volume (0–100).
 /// @param out_vol Receives the attenuated volume.
 /// @param out_pan Receives the stereo pan (-100 left, 0 center, 100 right).
+/// @param out_doppler Optional destination for playback-rate factor in `[0.5, 2]`.
 void rt_sound3d_compute_voice_params_ex(const rt_sound3d_listener_state *listener,
                                         const double *source_position,
                                         const double *source_velocity,
@@ -625,9 +691,16 @@ void rt_sound3d_compute_voice_params_ex(const rt_sound3d_listener_state *listene
     }
 }
 
-/// @brief Compute a spatialized voice's volume, stereo pan, and Doppler factor for one listener.
+/// @brief Compute a spatialized voice's volume and stereo pan for one listener.
 /// @details Combines distance attenuation (out to @p max_dist), left/right panning from the
-///          source's bearing in the listener frame, and a relative-velocity Doppler shift.
+///          source's bearing in the listener frame. This compatibility form
+///          omits source velocity and does not return Doppler.
+/// @param listener Listener snapshot, or NULL for the fallback listener.
+/// @param source_position Three-component source world position.
+/// @param max_dist Zero-volume falloff distance; zero means unattenuated.
+/// @param base_vol Logical unattenuated volume in `[0, 100]`.
+/// @param out_vol Receives attenuated volume.
+/// @param out_pan Receives stereo pan in `[-100, 100]`.
 void rt_sound3d_compute_voice_params(const rt_sound3d_listener_state *listener,
                                      const double *source_position,
                                      double max_dist,
@@ -697,6 +770,11 @@ void rt_sound3d_update_voice(int64_t voice, void *position, double max_distance)
 /// @details Extended form of rt_sound3d_update_voice: @p source_velocity drives Doppler, and
 ///          @p ref_distance / @p max_distance override the attenuation range (0 keeps prior
 ///          values).
+/// @param voice Positive backend voice identifier.
+/// @param position Vec3 current world-space source position.
+/// @param source_velocity Optional three-component source velocity.
+/// @param ref_distance Positive full-volume distance override, or zero to reuse.
+/// @param max_distance Positive zero-volume distance override, or zero to reuse.
 void rt_sound3d_update_voice_ex(int64_t voice,
                                 void *position,
                                 const double *source_velocity,
@@ -738,6 +816,8 @@ void rt_sound3d_update_voice_ex(int64_t voice,
 }
 
 #ifndef ZANNA_ENABLE_GRAPHICS
+/// @brief Graphics-disabled no-op for synchronizing bound listener/source objects.
+/// @param dt Frame delta in seconds; ignored because no graphics bindings exist.
 void rt_sound3d_sync_bindings(double dt) {
     (void)dt;
 }

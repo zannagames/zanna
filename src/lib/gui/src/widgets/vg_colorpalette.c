@@ -4,23 +4,23 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_colorpalette.c
-// Purpose: Color palette widget — displays a grid of colour swatches that the
-//          user can click to select; fires a per-colour callback on selection.
-// Key invariants:
-//   - colors is a heap-allocated uint32_t array (AARRGGBB); NULL when empty.
-//   - selected_index is -1 when no swatch is selected.
-//   - Measured size is computed from columns × swatch_size + gaps; a single
-//     swatch_size fallback is used when color_count == 0.
-//   - colorpalette_hit_test_swatch uses widget-local event coordinates; gaps
-//     between swatches intentionally return -1 (no hit).
-// Ownership/Lifetime:
-//   - palette->colors is owned by the widget; freed on colorpalette_destroy,
-//     vg_colorpalette_clear, and each call to vg_colorpalette_set_colors.
-// Links: lib/gui/include/vg_widgets.h,
-//        lib/gui/include/vg_theme.h,
-//        lib/gui/include/vg_event.h
+///
+/// @file vg_colorpalette.c
+/// @brief Implements the selectable grid-based color-palette widget.
+///
+/// @details The palette displays packed AARRGGBB colors as uniformly sized
+/// swatches, supports pointer and keyboard selection, publishes an accessible
+/// textual value, and invokes application callbacks when users activate an
+/// entry. Grid dimensions are derived from the configured column count, swatch
+/// size, and gap. Hit testing deliberately excludes the gaps between swatches.
+///
+/// The widget owns its heap-allocated color array. Replacing or clearing the
+/// palette releases that storage, and destruction releases any remaining
+/// array. A selected index of `-1` represents no selection.
+///
+/// @see vg_widgets.h
+/// @see vg_theme.h
+/// @see vg_event.h
 //
 //===----------------------------------------------------------------------===//
 #include "../../../graphics/include/vgfx.h"
@@ -134,7 +134,9 @@ vg_colorpalette_t *vg_colorpalette_create(vg_widget_t *parent) {
     return palette;
 }
 
-/// @brief VTable destroy: frees the owned colours array and resets color_count to zero.
+/// @brief Releases the palette's owned color storage during widget destruction.
+///
+/// @param widget Palette base widget being destroyed.
 static void colorpalette_destroy(vg_widget_t *widget) {
     vg_colorpalette_t *palette = (vg_colorpalette_t *)widget;
     if (palette->colors) {
@@ -144,8 +146,15 @@ static void colorpalette_destroy(vg_widget_t *widget) {
     palette->color_count = 0;
 }
 
-/// @brief VTable measure: computes grid dimensions from column count × swatch_size + gaps, then
-/// applies constraints; falls back to a single swatch size when the palette is empty.
+/// @brief Measures the swatch grid and applies the widget's size constraints.
+///
+/// @details Non-empty palettes use the configured columns, swatch size, and
+/// inter-swatch gap. An empty palette reports the dimensions of one swatch.
+///
+/// @param widget Palette base widget whose measured dimensions are updated.
+/// @param available_width Width offered by the parent; currently unused because
+///                        the grid uses explicit swatch geometry.
+/// @param available_height Height offered by the parent; currently unused.
 static void colorpalette_measure(vg_widget_t *widget,
                                  float available_width,
                                  float available_height) {
@@ -186,8 +195,14 @@ static void colorpalette_measure(vg_widget_t *widget,
     }
 }
 
-/// @brief VTable paint: fills the background, draws each swatch in the grid, and renders a
-/// double-border highlight around the selected swatch.
+/// @brief Paints the palette background, swatch grid, selection, and focus ring.
+///
+/// @details Current theme colors take precedence over the palette's cached
+/// fallback colors. Empty palettes still receive a border, and the selected
+/// swatch receives a double border in the focus color.
+///
+/// @param widget Palette base widget to render.
+/// @param canvas Destination drawing context.
 static void colorpalette_paint(vg_widget_t *widget, void *canvas) {
     vg_colorpalette_t *palette = (vg_colorpalette_t *)widget;
     vgfx_window_t win = (vgfx_window_t)canvas;
@@ -241,7 +256,15 @@ static void colorpalette_paint(vg_widget_t *widget, void *canvas) {
         vgfx_rect(win, bx - 2, by - 2, bw + 4, bh + 4, selected);
 }
 
-/// @brief Return the index of the swatch under widget-local coordinates, or -1 if none.
+/// @brief Finds the swatch under a pair of widget-local coordinates.
+///
+/// @details Coordinates landing in an inter-swatch gap, outside the configured
+/// columns, or beyond the final partial row do not select an entry.
+///
+/// @param palette Palette whose swatch grid is queried.
+/// @param x Horizontal coordinate relative to the widget's content origin.
+/// @param y Vertical coordinate relative to the widget's content origin.
+/// @return Zero-based swatch index, or `-1` when no swatch contains the point.
 static int colorpalette_hit_test_swatch(vg_colorpalette_t *palette, float x, float y) {
     if (palette->color_count == 0 || !palette->colors) {
         return -1;
@@ -279,9 +302,12 @@ static int colorpalette_hit_test_swatch(vg_colorpalette_t *palette, float x, flo
     return index;
 }
 
-/// @brief Notify application callbacks of one user-activated palette color.
-/// @details Selection is already committed before this helper runs. Keyboard and pointer paths use
-///          the same callback order and generic click hook.
+/// @brief Notifies application callbacks of the selected palette color.
+///
+/// @details Selection is already committed before this helper runs. Keyboard
+/// and pointer activation share the same ordering: the color-specific callback
+/// runs first, followed by the widget's generic click callback.
+///
 /// @param palette Palette containing the selected entry.
 static void colorpalette_activate_selected(vg_colorpalette_t *palette) {
     if (!palette || palette->selected_index < 0 || palette->selected_index >= palette->color_count)
@@ -293,8 +319,15 @@ static void colorpalette_activate_selected(vg_colorpalette_t *palette) {
         palette->base.on_click(&palette->base, palette->base.callback_data);
 }
 
-/// @brief VTable handle_event: hit-tests mouse-down and click events against the swatch grid,
-/// updating selected_index and firing on_select on a confirmed click.
+/// @brief Handles pointer activation and keyboard navigation for the palette.
+///
+/// @details Clicks select and activate the hit swatch. Arrow, Home, and End
+/// keys clamp selection movement within the array, while Space and Enter
+/// activate the current entry. Disabled palettes reject all events.
+///
+/// @param widget Palette base widget receiving the event.
+/// @param event Event to inspect and mark handled when consumed.
+/// @return `true` when the event was consumed; otherwise `false`.
 static bool colorpalette_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_colorpalette_t *palette = (vg_colorpalette_t *)widget;
 
@@ -368,14 +401,20 @@ static bool colorpalette_handle_event(vg_widget_t *widget, vg_event_t *event) {
     return false;
 }
 
-/// @brief VTable can_focus: returns true when the widget is both enabled and visible.
+/// @brief Reports whether the palette may participate in keyboard focus.
+///
+/// @param widget Palette base widget to inspect.
+/// @return `true` when the widget is enabled and visible; otherwise `false`.
 static bool colorpalette_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }
 
-/// @brief Refresh the palette's semantic selection value.
-/// @details Empty/unselected palettes expose an empty value. Selected palettes expose a
-///          one-based position, total count, and RGB hex value for headless/native bridges.
+/// @brief Refreshes the palette's semantic selection value.
+///
+/// @details Empty or unselected palettes expose an empty value. A selected
+/// palette exposes its one-based position, total count, and six-digit RGB value
+/// for accessibility and headless or native bridges.
+///
 /// @param palette Palette whose semantic value should be refreshed.
 static void colorpalette_update_accessible_value(vg_colorpalette_t *palette) {
     if (!palette)
@@ -401,11 +440,12 @@ static void colorpalette_update_accessible_value(vg_colorpalette_t *palette) {
 /// @brief Replace the palette's colour list with a copy of the supplied array.
 ///
 /// @details The previous colour array is freed.  The selection index is reset
-///          to -1.  Passing NULL or count ≤ 0 clears the palette.
+/// to `-1`. Passing null or a non-positive count clears the palette. The input
+/// array is copied, and ownership remains with the caller.
 ///
 /// @param palette The color palette to update.
-/// @param colors  Array of count AARRGGBB colour values; may be NULL to clear.
-/// @param count   Number of colours in the array.
+/// @param colors Array of @p count AARRGGBB color values; may be null to clear.
+/// @param count Number of colors in @p colors.
 void vg_colorpalette_set_colors(vg_colorpalette_t *palette, const uint32_t *colors, int count) {
     if (!palette)
         return;
@@ -445,10 +485,13 @@ void vg_colorpalette_set_colors(vg_colorpalette_t *palette, const uint32_t *colo
     vg_widget_note_change(&palette->base);
 }
 
-/// @brief Append a single colour to the end of the palette.
+/// @brief Appends a single color to the end of the palette.
+///
+/// @details The owned color array is grown as needed. Allocation failure or a
+/// count that cannot be represented leaves the palette unchanged.
 ///
 /// @param palette The color palette to update.
-/// @param color   AARRGGBB colour value to append.
+/// @param color AARRGGBB color value to append.
 void vg_colorpalette_add_color(vg_colorpalette_t *palette, uint32_t color) {
     if (!palette)
         return;
@@ -473,11 +516,13 @@ void vg_colorpalette_add_color(vg_colorpalette_t *palette, uint32_t color) {
 }
 
 /// @brief Remove one palette color by zero-based index.
-/// @details Storage is compacted in place. Selection follows a surviving logical entry and clears
-///          if the selected entry itself is removed.
+///
+/// @details Storage is compacted in place. Selection follows a surviving
+/// logical entry and clears if the selected entry itself is removed.
+///
 /// @param palette Palette to update.
 /// @param index Zero-based entry index.
-/// @return true when an entry was removed, otherwise false.
+/// @return `true` when an entry was removed; otherwise `false`.
 bool vg_colorpalette_remove_color(vg_colorpalette_t *palette, int index) {
     if (!palette || index < 0 || index >= palette->color_count)
         return false;
@@ -508,7 +553,10 @@ bool vg_colorpalette_remove_color(vg_colorpalette_t *palette, int index) {
     return true;
 }
 
-/// @brief Remove all colours from the palette and reset the selection.
+/// @brief Removes all colors from the palette and resets its selection.
+///
+/// @details The owned color array is released, the widget is marked for layout
+/// and paint, and observers are notified when the state actually changes.
 ///
 /// @param palette The color palette to clear.
 void vg_colorpalette_clear(vg_colorpalette_t *palette) {
@@ -530,18 +578,20 @@ void vg_colorpalette_clear(vg_colorpalette_t *palette) {
     vg_widget_note_change(&palette->base);
 }
 
-/// @brief Return the number of stored palette colors.
+/// @brief Returns the number of stored palette colors.
+///
 /// @param palette Palette to inspect.
-/// @return Non-negative count, or zero for NULL.
+/// @return Non-negative color count, or zero when @p palette is null.
 int vg_colorpalette_get_color_count(const vg_colorpalette_t *palette) {
     return palette ? palette->color_count : 0;
 }
 
-/// @brief Read one palette color into an output parameter.
+/// @brief Reads one palette color into an output parameter.
+///
 /// @param palette Palette to inspect.
 /// @param index Zero-based color index.
 /// @param out_color Receives AARRGGBB on success.
-/// @return true for a valid index/output pointer, otherwise false.
+/// @return `true` for a valid index and output pointer; otherwise `false`.
 bool vg_colorpalette_get_color_at(const vg_colorpalette_t *palette,
                                   int index,
                                   uint32_t *out_color) {
@@ -554,7 +604,7 @@ bool vg_colorpalette_get_color_at(const vg_colorpalette_t *palette,
 /// @brief Set the number of columns in the swatch grid.
 ///
 /// @param palette The color palette to configure.
-/// @param columns Number of columns; values ≤ 0 are ignored.
+/// @param columns Positive number of columns; other values are ignored.
 void vg_colorpalette_set_columns(vg_colorpalette_t *palette, int columns) {
     if (!palette || columns <= 0)
         return;
@@ -569,9 +619,12 @@ void vg_colorpalette_set_columns(vg_colorpalette_t *palette, int columns) {
 
 /// @brief Programmatically select a swatch by zero-based index.
 ///
+/// @details Out-of-range values normalize to no selection. Changing the
+/// selection refreshes the accessible value and notifies widget observers, but
+/// does not invoke the user-activation callback.
+///
 /// @param palette The color palette to update.
-/// @param index   Zero-based index of the swatch to select; out-of-range or
-///                negative values clear the selection (set to -1).
+/// @param index Zero-based swatch index, or `-1` to clear the selection.
 void vg_colorpalette_set_selected(vg_colorpalette_t *palette, int index) {
     if (!palette)
         return;
@@ -588,20 +641,22 @@ void vg_colorpalette_set_selected(vg_colorpalette_t *palette, int index) {
     vg_widget_note_change(&palette->base);
 }
 
-/// @brief Return the index of the currently selected swatch.
+/// @brief Returns the index of the currently selected swatch.
 ///
 /// @param palette The color palette to query.
-/// @return Zero-based selected index, or -1 if none selected or palette is NULL.
+/// @return Zero-based selected index, or `-1` if none is selected or
+///         @p palette is null.
 int vg_colorpalette_get_selected(vg_colorpalette_t *palette) {
     if (!palette)
         return -1;
     return palette->selected_index;
 }
 
-/// @brief Return the AARRGGBB colour of the currently selected swatch.
+/// @brief Returns the AARRGGBB color of the selected swatch.
 ///
 /// @param palette The color palette to query.
-/// @return Selected colour, or 0 if no swatch is selected or palette is NULL.
+/// @return Selected color, or zero when the selection is invalid or
+///         @p palette is null.
 uint32_t vg_colorpalette_get_selected_color(vg_colorpalette_t *palette) {
     if (!palette || palette->selected_index < 0 ||
         palette->selected_index >= palette->color_count) {
@@ -610,11 +665,11 @@ uint32_t vg_colorpalette_get_selected_color(vg_colorpalette_t *palette) {
     return palette->colors[palette->selected_index];
 }
 
-/// @brief Register a callback invoked when a swatch is clicked.
+/// @brief Registers the callback invoked when a swatch is user-activated.
 ///
-/// @param palette   The color palette to configure.
-/// @param callback  Function called with (widget, color, index, user_data) on
-///                  each swatch click.  May be NULL to unregister.
+/// @param palette The color palette to configure.
+/// @param callback Function called with the widget, color, index, and
+///                 @p user_data on activation; may be null to unregister.
 /// @param user_data Opaque pointer forwarded unchanged to the callback.
 void vg_colorpalette_set_on_select(vg_colorpalette_t *palette,
                                    vg_colorpalette_callback_t callback,
@@ -626,10 +681,11 @@ void vg_colorpalette_set_on_select(vg_colorpalette_t *palette,
     palette->on_select_data = user_data;
 }
 
-/// @brief Set the uniform pixel size (width and height) of each swatch.
+/// @brief Sets the uniform width and height of each swatch.
 ///
 /// @param palette The color palette to configure.
-/// @param size    Desired swatch size in logical pixels; values ≤ 0 are ignored.
+/// @param size Finite positive swatch size in logical pixels; other values are
+///             ignored.
 void vg_colorpalette_set_swatch_size(vg_colorpalette_t *palette, float size) {
     if (!palette || !isfinite(size) || size <= 0 || palette->swatch_size == size)
         return;
@@ -640,7 +696,10 @@ void vg_colorpalette_set_swatch_size(vg_colorpalette_t *palette, float size) {
     vg_widget_note_revision(&palette->base);
 }
 
-/// @brief Populate the palette with the classic 16 Windows/DOS colours in 2 rows of 8.
+/// @brief Populates the palette with the classic 16 Windows/DOS colors.
+///
+/// @details Existing colors and selection are replaced, and the grid is
+/// configured as two rows of eight entries.
 ///
 /// @param palette The color palette to populate.
 void vg_colorpalette_load_standard_16(vg_colorpalette_t *palette) {

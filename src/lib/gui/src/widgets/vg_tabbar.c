@@ -27,6 +27,12 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements scrollable, closable, reorderable tabs and stable
+///        tombstone-backed external tab handles.
+/// @details Tab geometry, title fitting, close hit testing, hover tooltips, and
+///          drag insertion all account for horizontal overflow. Removed tabs
+///          become inert until explicit or final retirement cleanup.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
@@ -80,11 +86,15 @@ static vg_widget_vtable_t g_tabbar_vtable = {.destroy = tabbar_destroy,
 // Helper Functions
 //=============================================================================
 
+/// @brief Validate that a tab handle remains attached to a live tab bar.
+/// @param tab Tab handle to inspect.
+/// @return `true` when live magic and an owning tab bar are present.
 bool vg_tab_is_live(const vg_tab_t *tab) {
     return tab && tab->magic == VG_TAB_MAGIC && tab->owner != NULL;
 }
 
 /// @brief Free a tab and its owned title/tooltip strings (NULL-safe).
+/// @param tab Owned live or retired tab to destroy.
 static void free_tab(vg_tab_t *tab) {
     if (!tab)
         return;
@@ -99,6 +109,8 @@ static void free_tab(vg_tab_t *tab) {
 /// @brief Tear down @p tab's owned strings/links and park it on @p tabbar's
 ///        retired list for deferred freeing (use-after-free defense when a
 ///        tab is closed during event dispatch).
+/// @param tabbar Tab bar receiving the retired record.
+/// @param tab Detached tab whose external handle becomes inert.
 static void retire_tab(vg_tabbar_t *tabbar, vg_tab_t *tab) {
     if (!tabbar || !tab)
         return;
@@ -122,6 +134,7 @@ static void retire_tab(vg_tabbar_t *tabbar, vg_tab_t *tab) {
 }
 
 /// @brief Drain and free every tab on @p tabbar's retired list.
+/// @param tabbar Tab bar whose retirement chain is destroyed.
 static void free_retired_tabs(vg_tabbar_t *tabbar) {
     if (!tabbar)
         return;
@@ -137,6 +150,9 @@ static void free_retired_tabs(vg_tabbar_t *tabbar) {
 
 /// @brief Returns the pixel width of @p tab's button including title text, padding, and optional
 /// close-button gutter; clamped to max_tab_width.
+/// @param tabbar Tab bar supplying typography and size policy.
+/// @param tab Live tab to measure.
+/// @return Physical tab-button width.
 static float get_tab_width(vg_tabbar_t *tabbar, vg_tab_t *tab) {
     if (!tabbar->font || !tab->title) {
         return tabbar->max_tab_width > 0.0f ? tabbar->max_tab_width : 100.0f;
@@ -166,6 +182,8 @@ static float get_tab_width(vg_tabbar_t *tabbar, vg_tab_t *tab) {
 
 /// @brief Returns a heap-allocated copy of the tab title, appending " *" when the tab is marked
 /// modified; caller must free.
+/// @param tab Tab whose presentation title is built.
+/// @return Newly allocated display title, or `NULL` on allocation failure.
 static char *make_tab_title(const vg_tab_t *tab) {
     if (!tab || !tab->title)
         return vg_strdup("");
@@ -186,6 +204,9 @@ static char *make_tab_title(const vg_tab_t *tab) {
 
 /// @brief Back @p len up to the nearest UTF-8 codepoint boundary so title
 ///        truncation never splits a multi-byte character.
+/// @param text UTF-8 title containing @p len as a valid index.
+/// @param len Candidate byte prefix.
+/// @return Greatest codepoint-safe prefix no longer than @p len.
 static size_t utf8_prev_boundary(const char *text, size_t len) {
     while (len > 0 && (((unsigned char)text[len] & 0xC0u) == 0x80u))
         len--;
@@ -194,6 +215,10 @@ static size_t utf8_prev_boundary(const char *text, size_t len) {
 
 /// @brief Returns a heap-allocated copy of @p title truncated with "..." to fit within @p max_width
 /// pixels; caller must free.
+/// @param tabbar Tab bar supplying font metrics.
+/// @param title Presentation title to fit.
+/// @param max_width Maximum rendered width.
+/// @return Newly allocated full, ellipsized, or empty title; `NULL` on failure.
 static char *fit_tab_title(vg_tabbar_t *tabbar, const char *title, float max_width) {
     if (!title)
         return vg_strdup("");
@@ -231,6 +256,9 @@ static char *fit_tab_title(vg_tabbar_t *tabbar, const char *title, float max_wid
 
 /// @brief Returns the tab whose button spans widget-local @p x (accounting for scroll_x), or NULL
 /// if no tab covers that coordinate.
+/// @param tabbar Tab bar whose button geometry is scanned.
+/// @param x Widget-local horizontal coordinate.
+/// @return Borrowed live tab under the coordinate, or `NULL`.
 static vg_tab_t *find_tab_at_x(vg_tabbar_t *tabbar, float x) {
     float tab_x = -tabbar->scroll_x;
 
@@ -261,6 +289,9 @@ int vg_tabbar_index_at(vg_tabbar_t *tabbar, int x, int y) {
 
 /// @brief Returns the absolute X offset (before scroll) of @p target's left edge within the tab
 /// strip.
+/// @param tabbar Tab bar whose list is traversed.
+/// @param target Target tab.
+/// @return Unscrolled horizontal offset accumulated from preceding tabs.
 static float get_tab_x(vg_tabbar_t *tabbar, vg_tab_t *target) {
     float x = 0;
     for (vg_tab_t *tab = tabbar->first_tab; tab && tab != target; tab = tab->next) {
@@ -271,6 +302,9 @@ static float get_tab_x(vg_tabbar_t *tabbar, vg_tab_t *target) {
 
 /// @brief Returns the insertion index (0-based) at which a dragged tab should be dropped based on
 /// @p local_x position.
+/// @param tabbar Tab bar supplying tab midpoint geometry.
+/// @param local_x Pointer X relative to the widget.
+/// @return Clamped insertion index.
 static int tabbar_target_index_from_x(vg_tabbar_t *tabbar, float local_x) {
     if (!tabbar || tabbar->tab_count <= 1)
         return 0;
@@ -288,6 +322,10 @@ static int tabbar_target_index_from_x(vg_tabbar_t *tabbar, float local_x) {
 
 /// @brief Moves @p tab to @p new_index in the doubly-linked list, updating first_tab/last_tab;
 /// returns true if the order changed.
+/// @param tabbar Owning tab bar.
+/// @param tab Live tab to relocate.
+/// @param new_index Requested zero-based destination index.
+/// @return `true` when list order and reorder metadata changed.
 static bool tabbar_move_tab_to_index(vg_tabbar_t *tabbar, vg_tab_t *tab, int new_index) {
     if (!tabbar || !tab || tabbar->tab_count < 2)
         return false;
@@ -356,6 +394,11 @@ static bool tabbar_move_tab_to_index(vg_tabbar_t *tabbar, vg_tab_t *tab, int new
 
 /// @brief Returns true if @p local_x/local_y falls within @p tab's close button rectangle (only
 /// when the tab is closable).
+/// @param tabbar Tab bar supplying scrolled tab geometry.
+/// @param tab Candidate tab.
+/// @param local_x Pointer X relative to the widget.
+/// @param local_y Pointer Y relative to the widget.
+/// @return `true` when the closable tab's close affordance contains the point.
 static bool tab_close_button_hit(vg_tabbar_t *tabbar, vg_tab_t *tab, float local_x, float local_y) {
     if (!tabbar || !tab || !tab->closable)
         return false;
@@ -1278,6 +1321,8 @@ void vg_tab_set_title(vg_tab_t *tab, const char *title) {
 }
 
 /// @brief Return a live tab's borrowed title or an empty sentinel.
+/// @param tab Tab to inspect.
+/// @return Borrowed title, or a static empty string for an invalid/missing title.
 const char *vg_tab_get_title(const vg_tab_t *tab) {
     return vg_tab_is_live(tab) && tab->title ? tab->title : "";
 }
@@ -1342,11 +1387,15 @@ void vg_tab_set_data(vg_tab_t *tab, void *data) {
 }
 
 /// @brief Return a live tab's borrowed opaque data pointer.
+/// @param tab Tab to inspect.
+/// @return Stored borrowed pointer, or `NULL` for an invalid tab.
 void *vg_tab_get_data(const vg_tab_t *tab) {
     return vg_tab_is_live(tab) ? tab->user_data : NULL;
 }
 
 /// @brief Set whether a live tab displays and accepts its close affordance.
+/// @param tab Live tab to configure.
+/// @param closable `true` to reserve and enable the close-button gutter.
 void vg_tab_set_closable(vg_tab_t *tab, bool closable) {
     if (!vg_tab_is_live(tab) || tab->closable == closable)
         return;
@@ -1357,11 +1406,17 @@ void vg_tab_set_closable(vg_tab_t *tab, bool closable) {
 }
 
 /// @brief Return whether a live tab is closable.
+/// @param tab Tab to inspect.
+/// @return `true` only for a live closable tab.
 bool vg_tab_is_closable(const vg_tab_t *tab) {
     return vg_tab_is_live(tab) && tab->closable;
 }
 
 /// @brief Replace a live tab's stable identifier atomically.
+/// @param tab Live tab to update.
+/// @param stable_id Identifier to copy, or `NULL` to clear.
+/// @return `true` after a successful replacement or identical no-op; `false`
+///         for an invalid tab or allocation failure.
 bool vg_tab_set_stable_id(vg_tab_t *tab, const char *stable_id) {
     if (!vg_tab_is_live(tab))
         return false;
@@ -1380,6 +1435,8 @@ bool vg_tab_set_stable_id(vg_tab_t *tab, const char *stable_id) {
 }
 
 /// @brief Return a live tab's borrowed stable identifier or an empty sentinel.
+/// @param tab Tab to inspect.
+/// @return Borrowed identifier, or a static empty string when absent/invalid.
 const char *vg_tab_get_stable_id(const vg_tab_t *tab) {
     return vg_tab_is_live(tab) && tab->stable_id ? tab->stable_id : "";
 }
@@ -1405,6 +1462,10 @@ void vg_tabbar_set_font(vg_tabbar_t *tabbar, vg_font_t *font, float size) {
 }
 
 /// @brief Move one indexed tab and notify the callback after committing the new order.
+/// @param tabbar Tab bar to reorder.
+/// @param from_index Existing zero-based source index.
+/// @param to_index Zero-based destination index.
+/// @return `true` when order changed and callbacks were notified.
 bool vg_tabbar_move_tab(vg_tabbar_t *tabbar, int from_index, int to_index) {
     if (!tabbar || from_index < 0 || to_index < 0 || from_index >= tabbar->tab_count ||
         to_index >= tabbar->tab_count)
@@ -1419,6 +1480,8 @@ bool vg_tabbar_move_tab(vg_tabbar_t *tabbar, int from_index, int to_index) {
 }
 
 /// @brief Consume the independent reorder edge without clearing its index payload.
+/// @param tabbar Tab bar to query.
+/// @return `true` once after one or more unreported successful reorders.
 bool vg_tabbar_was_reordered(vg_tabbar_t *tabbar) {
     if (!tabbar || tabbar->reported_reorder_version == tabbar->reorder_version)
         return false;
@@ -1427,11 +1490,15 @@ bool vg_tabbar_was_reordered(vg_tabbar_t *tabbar) {
 }
 
 /// @brief Return the source index from the latest successful reorder.
+/// @param tabbar Tab bar to inspect.
+/// @return Previous source index, or -1 for `NULL`.
 int vg_tabbar_get_reordered_from(const vg_tabbar_t *tabbar) {
     return tabbar ? tabbar->reordered_from : -1;
 }
 
 /// @brief Return the destination index from the latest successful reorder.
+/// @param tabbar Tab bar to inspect.
+/// @return Latest destination index, or -1 for `NULL`.
 int vg_tabbar_get_reordered_to(const vg_tabbar_t *tabbar) {
     return tabbar ? tabbar->reordered_to : -1;
 }

@@ -905,6 +905,13 @@ previous/next cursor with deterministic wrapping. Scene controllers own bounded
 match lists, retained TreeView selection/reveal, inspector focus, and all scene
 state; this helper cannot filter widgets or mutate documents.
 
+### `ui/scene_history.zia`
+
+Pure bounded-history trimming shared by both scene editors' undo/redo snapshot
+stacks (ADR 0190). Entry count and aggregate bytes are both bounded, oldest
+snapshots drop first, and the newest snapshot is always retained. Callers own
+the lists; the helper owns no widgets, documents, or scene state.
+
 ### `ui/scene_asset_browser.zia`
 
 Shared presentation-only project asset chooser for both scene editors. It
@@ -1279,6 +1286,7 @@ Use this practical decision table:
 | Shared project scene-component presentation | `ui/scene_component_palette.zia` |
 | Shared retained-row scene selection | `ui/scene_selection.zia` |
 | Shared scene hierarchy Find semantics | `ui/scene_hierarchy_search.zia` |
+| Shared scene undo-history byte/entry bounds | `ui/scene_history.zia` |
 | 2D visual scene authoring | `ui/scene_editor_2d.zia` |
 | 2D scene-wide property presentation | `ui/scene_property_inspector_2d.zia` |
 | 2D precision layout rules | `ui/scene_layout_2d.zia` |

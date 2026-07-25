@@ -1,4 +1,13 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements shallow completeness classification for Zia and BASIC REPL input.
+/// @details Zia classification balances braces, parentheses, and brackets while
+///          respecting strings, escapes, and line comments. BASIC classification
+///          strips comments, splits colon-separated statements outside strings,
+///          and tracks recognized block-opening and block-closing keywords.
+///          Both classifiers identify empty submissions and dot-prefixed meta
+///          commands without compiling source.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -30,7 +39,9 @@ namespace zanna::repl {
 // Helpers shared by Zia and BASIC classifiers
 // ---------------------------------------------------------------------------
 
-/// @brief Check if all characters in the string are whitespace.
+/// @brief Determine whether a string contains only whitespace.
+/// @param input String to inspect.
+/// @return `true` for empty input or when every byte is classified as whitespace.
 static bool isAllWhitespace(const std::string &input) {
     for (char c : input) {
         if (!std::isspace(static_cast<unsigned char>(c)))
@@ -39,7 +50,9 @@ static bool isAllWhitespace(const std::string &input) {
     return true;
 }
 
-/// @brief Find the first non-whitespace character position.
+/// @brief Locate the first non-whitespace byte.
+/// @param input String to scan.
+/// @return Byte offset of the first non-space, or `input.size()`.
 static size_t findFirstNonSpace(const std::string &input) {
     size_t pos = 0;
     while (pos < input.size() && std::isspace(static_cast<unsigned char>(input[pos])))
@@ -47,7 +60,13 @@ static size_t findFirstNonSpace(const std::string &input) {
     return pos;
 }
 
-/// @brief Case-insensitive comparison of a substring.
+/// @brief Match a BASIC keyword at a byte offset.
+/// @details Comparison is case-insensitive and requires end-of-input or a
+///          whitespace, opening-parenthesis, or colon boundary afterward.
+/// @param line Source line to inspect.
+/// @param pos Candidate keyword offset.
+/// @param kw Null-terminated ASCII keyword.
+/// @return `true` when spelling and trailing boundary match.
 static bool matchKeywordCI(const std::string &line, size_t pos, const char *kw) {
     size_t kwLen = std::strlen(kw);
     if (pos + kwLen > line.size())
@@ -169,7 +188,8 @@ static bool basicLineEndsInsideString(const std::string &line) {
 ///          block openers and closers but does not parse expressions. Segments
 ///          that do not affect block structure leave @p blockDepth unchanged.
 /// @param statement A single BASIC statement, with comments already removed.
-/// @param blockDepth Mutable block-depth counter.
+/// @param[in,out] blockDepth Mutable block-depth counter; unmatched closing
+///                statements may make it negative and are treated as complete.
 static void applyBasicStatementDepth(std::string statement, int &blockDepth) {
     trimRight(statement);
     size_t pos = findFirstNonSpace(statement);
@@ -241,6 +261,13 @@ static void applyBasicStatementDepth(std::string statement, int &blockDepth) {
 // Zia classifier (bracket depth)
 // ---------------------------------------------------------------------------
 
+/// @brief Classify a Zia REPL submission by lexical delimiter balance.
+/// @details Dot-prefixed input is a meta command. Delimiters inside string
+///          literals and `//` line comments are ignored, and backslash escapes
+///          prevent a quote from closing a string.
+/// @param input Accumulated Zia submission.
+/// @return `Empty`, `MetaCommand`, `Incomplete` for an open string or positive
+///         delimiter depth, otherwise `Complete`.
 InputKind ReplInputClassifier::classify(const std::string &input) {
     if (isAllWhitespace(input))
         return InputKind::Empty;
@@ -318,6 +345,13 @@ InputKind ReplInputClassifier::classify(const std::string &input) {
 // BASIC classifier (block keyword tracking)
 // ---------------------------------------------------------------------------
 
+/// @brief Classify a BASIC REPL submission by string and block completeness.
+/// @details Each physical line is checked for unterminated string state,
+///          stripped of apostrophe/REM comments, split at out-of-string colons,
+///          and applied to a shallow block-depth counter.
+/// @param input Accumulated BASIC submission.
+/// @return `Empty`, `MetaCommand`, `Incomplete` for an open string or positive
+///         block depth, otherwise `Complete`.
 InputKind ReplInputClassifier::classifyBasic(const std::string &input) {
     if (isAllWhitespace(input))
         return InputKind::Empty;

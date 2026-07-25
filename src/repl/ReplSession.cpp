@@ -1,4 +1,17 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements the language-neutral REPL session lifecycle and main loop.
+/// @details A session owns one language adapter, terminal line editor, and
+///          meta-command registry. It accumulates multiline input until the
+///          adapter reports completeness, dispatches meta commands before
+///          compilation, presents typed results and diagnostics, and loads/saves
+///          per-language history around the session lifetime.
+///
+///          Interactive mode provides prompts, editing, cancellation, and
+///          double-interrupt exit behavior. Piped mode reads standard input
+///          directly and reports an incomplete trailing submission with a
+///          nonzero exit status.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -29,6 +42,12 @@
 
 namespace zanna::repl {
 
+/// @brief Construct a REPL session around a language adapter.
+/// @details Ownership of @p adapter transfers to the session. Default meta
+///          commands and adapter-backed completion are registered, then
+///          per-language persistent history is loaded when a home directory is
+///          available.
+/// @param adapter Non-null language adapter with session state.
 ReplSession::ReplSession(std::unique_ptr<ReplAdapter> adapter) : adapter_(std::move(adapter)) {
     registerDefaultCommands();
 
@@ -44,6 +63,11 @@ ReplSession::ReplSession(std::unique_ptr<ReplAdapter> adapter) : adapter_(std::m
         editor_.loadHistory(histPath);
 }
 
+/// @brief Resolve the per-language persistent history path.
+/// @details `HOME` is used normally and `USERPROFILE` is a Windows fallback.
+///          The filename includes `languageName()` to isolate adapter histories.
+/// @return `$HOME/.zanna/repl_history_<language>`, or an empty path when no
+///         supported home-directory environment variable is set.
 std::filesystem::path ReplSession::historyFilePath() const {
     const char *home = std::getenv("HOME");
 #ifdef _WIN32
@@ -60,6 +84,11 @@ std::filesystem::path ReplSession::historyFilePath() const {
     return dir / filename;
 }
 
+/// @brief Populate the built-in meta-command registry.
+/// @details Registers help/exit aliases, adapter state queries, type and IL
+///          inspection, timed evaluation, source loading, and explicit history
+///          saving. Handlers either capture this session or use the session
+///          reference supplied by dispatch.
 void ReplSession::registerDefaultCommands() {
     metaCmds_.registerCommand(
         "help",
@@ -216,6 +245,7 @@ void ReplSession::registerDefaultCommands() {
                               });
 }
 
+/// @brief Print the interactive REPL banner and command hints.
 void ReplSession::printBanner() {
     std::cout << colors::bold() << "Zanna " << adapter_->languageName() << " REPL"
               << colors::reset() << " v" << ZANNA_VERSION_STR << "\n";
@@ -223,6 +253,8 @@ void ReplSession::printBanner() {
               << colors::prompt() << ".quit" << colors::reset() << " to exit.\n\n";
 }
 
+/// @brief Build the colored primary prompt for the active language.
+/// @return Prompt bytes including ANSI style/reset sequences when enabled.
 std::string ReplSession::makePrompt() const {
     std::string p;
     p += colors::prompt();
@@ -232,6 +264,8 @@ std::string ReplSession::makePrompt() const {
     return p;
 }
 
+/// @brief Build the colored multiline continuation prompt.
+/// @return Prompt bytes including ANSI style/reset sequences when enabled.
 std::string ReplSession::makeContinuationPrompt() const {
     std::string p;
     p += colors::contPrompt();
@@ -240,6 +274,15 @@ std::string ReplSession::makeContinuationPrompt() const {
     return p;
 }
 
+/// @brief Load and sequentially evaluate submissions from a source file.
+/// @details Physical lines are accumulated according to adapter classification.
+///          Empty fragments are skipped, meta commands are dispatched, and
+///          complete language fragments are evaluated in the current session.
+///          Processing stops at the first evaluation failure or incomplete
+///          trailing fragment.
+/// @param path Source file path.
+/// @return `true` when the file opens and every accumulated submission
+///         succeeds; otherwise `false` after printing a diagnostic.
 bool ReplSession::loadFile(const std::string &path) {
     std::ifstream file(path);
     if (!file.is_open()) {
@@ -291,10 +334,18 @@ bool ReplSession::loadFile(const std::string &path) {
     return true;
 }
 
+/// @brief Request termination after the current loop action completes.
 void ReplSession::requestExit() {
     running_ = false;
 }
 
+/// @brief Run the REPL until EOF, exit command, or confirmed interrupt.
+/// @details Terminal availability selects interactive line editing or piped
+///          input. Complete submissions are added to history and evaluated;
+///          result type chooses display color. On exit, persistent history is
+///          saved when a home path exists.
+/// @return Zero for normal completion, or one when piped input ends with an
+///         incomplete submission.
 int ReplSession::run() {
     const bool interactive = editor_.isActive();
     int exitCode = 0;

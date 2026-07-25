@@ -1,4 +1,12 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements an unboxed append-only-stack/list surface for i64 values.
+/// @details Logical length and reserved capacity live in the shared array heap
+///          header. Push writes in place while capacity remains and otherwise
+///          allocates a doubled backing array, copies elements, releases the old
+///          handle, and rebinds the caller's pointer. Pop and peek trap on an
+///          empty list and never shrink capacity.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.

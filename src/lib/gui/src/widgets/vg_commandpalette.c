@@ -4,28 +4,25 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: lib/gui/src/widgets/vg_commandpalette.c
-// Purpose: Fuzzy-search command palette overlay widget. Maintains a master
-//          commands[] array and a filtered[] view that is rebuilt on every
-//          query change. Activated via show/toggle and dismissed via Escape
-//          or command execution.
-// Key invariants:
-//   - filtered[] is rebuilt from scratch on every query change; it is a view
-//     into commands[], not a copy (pointers only).
-//   - filtered_count <= command_count always; filtered_capacity grows separately.
-//   - selected_index is reset to 0 (or -1 when empty) after each filter pass.
-//   - first_visible_index is clamped to the filtered results; keyboard and
-//     wheel navigation keep the selected row within the visible window.
-//   - Logical palette metrics follow UI scale and clamp to the live viewport.
-//   - is_visible and base.visible are kept in sync; both are cleared on hide.
-// Ownership/Lifetime:
-//   - commands[] are heap-allocated inside add_command and freed in destroy.
-//   - filtered[] holds borrowed pointers into commands[]; never freed individually.
-// Links: lib/gui/include/vg_ide_widgets.h,
-//        lib/gui/include/vg_widget.h,
-//        lib/gui/include/vg_theme.h,
-//        lib/gui/include/vg_event.h
+///
+/// @file vg_commandpalette.c
+/// @brief Implements a scalable, fuzzy-search command-palette overlay.
+///
+/// @details The widget owns a master array of commands and rebuilds a separate
+/// filtered pointer view whenever its query changes. The filtered view borrows
+/// command pointers and never owns individual commands. Built-in matching is
+/// UTF-8-aware with ASCII case folding, while client-filtered mode preserves
+/// insertion order for application-ranked results.
+///
+/// Selection and the first visible row remain clamped to the current filtered
+/// results and viewport capacity. Logical dimensions are scaled through the
+/// active theme and constrained to the viewport. `is_visible` and the base
+/// widget's visibility flag are updated together.
+///
+/// @see vg_ide_widgets.h
+/// @see vg_widget.h
+/// @see vg_theme.h
+/// @see vg_event.h
 //
 //===----------------------------------------------------------------------===//
 #include "../../../graphics/include/vgfx.h"
@@ -64,19 +61,26 @@ static vg_widget_vtable_t g_commandpalette_vtable = {.destroy = commandpalette_d
                                                      .can_focus = NULL,
                                                      .on_focus = NULL};
 
-/// @brief Return the current logical-to-framebuffer UI scale.
-/// @return Positive theme scale, or one when no valid scale is active.
+/// @brief Returns the current logical-to-framebuffer UI scale.
+///
+/// @return Positive theme scale, or `1.0` when no valid scale is active.
 static float commandpalette_ui_scale(void) {
     vg_theme_t *theme = vg_theme_get_current();
     return theme && theme->ui_scale > 0.0f ? theme->ui_scale : 1.0f;
 }
 
-/// @brief Return the physical search-row height for the active UI scale.
+/// @brief Returns the physical search-row height for the active UI scale.
+///
+/// @return Scaled search-row height in framebuffer units.
 static float commandpalette_search_height(void) {
     return COMMANDPALETTE_SEARCH_HEIGHT * commandpalette_ui_scale();
 }
 
-/// @brief Return the physical result-row height for the active UI scale.
+/// @brief Returns the physical result-row height for the active UI scale.
+///
+/// @param palette Palette whose logical item height is scaled.
+/// @return Positive row height in framebuffer units, with `1.0` as the minimum
+///         and null-palette fallback.
 static float commandpalette_item_height(const vg_commandpalette_t *palette) {
     if (!palette)
         return 1.0f;
@@ -84,10 +88,14 @@ static float commandpalette_item_height(const vg_commandpalette_t *palette) {
     return height > 0.0f ? height : 1.0f;
 }
 
-/// @brief Return how many rows fit in the palette's current arranged height.
-/// @details Before first layout, fall back to the configured maximum so keyboard
-///          state remains well-defined. Once arranged, viewport-constrained row
-///          capacity drives paint, hit testing, scrolling, and selection reveal.
+/// @brief Returns the number of result rows that fit in the arranged palette.
+///
+/// @details Before first layout, the configured maximum keeps keyboard state
+/// well-defined. Once arranged, viewport-constrained capacity drives painting,
+/// hit testing, scrolling, and selection reveal.
+///
+/// @param palette Palette whose arranged height and row limit are inspected.
+/// @return Non-negative visible-row capacity.
 static int commandpalette_visible_capacity(const vg_commandpalette_t *palette) {
     if (!palette || palette->max_visible == 0)
         return 0;
@@ -109,10 +117,15 @@ static int commandpalette_visible_capacity(const vg_commandpalette_t *palette) {
 // Fuzzy Matching
 //=============================================================================
 
-/// @brief Decode the next UTF-8 codepoint at @p *cursor, advancing it past
-///        the consumed bytes. Returns 0 at end of string, U+FFFD on a
-///        malformed/overlong/surrogate sequence (advancing one byte so the
-///        fuzzy matcher always makes forward progress).
+/// @brief Decodes and consumes the next UTF-8 code point.
+///
+/// @details Valid sequences advance @p cursor by their encoded length.
+/// Malformed, overlong, surrogate, and out-of-range sequences produce U+FFFD;
+/// malformed prefixes consume at least one byte so matching always progresses.
+///
+/// @param[in,out] cursor Address of the current UTF-8 byte pointer.
+/// @return Decoded Unicode scalar, zero at the string terminator, or U+FFFD for
+///         an invalid sequence.
 static uint32_t commandpalette_decode_utf8(const char **cursor) {
     const unsigned char *s = (const unsigned char *)*cursor;
     if (!s || !*s)
@@ -143,22 +156,34 @@ static uint32_t commandpalette_decode_utf8(const char **cursor) {
     return 0xFFFD;
 }
 
-/// @brief ASCII case-fold a codepoint (A-Z → a-z) for case-insensitive
-///        fuzzy matching; non-ASCII passes through unchanged.
+/// @brief Applies ASCII case folding for case-insensitive matching.
+///
+/// @param cp Unicode code point to fold.
+/// @return Lowercase ASCII equivalent for `A` through `Z`; otherwise @p cp.
 static uint32_t commandpalette_fold_codepoint(uint32_t cp) {
     if (cp >= 'A' && cp <= 'Z')
         return cp + ('a' - 'A');
     return cp;
 }
 
-/// @brief True if @p cp starts a new word (NUL, space, '_' or '-'); used to
-///        award the fuzzy matcher a bonus for word-initial character hits.
+/// @brief Tests whether a code point delimits words for fuzzy-match bonuses.
+///
+/// @param cp Previous code point, or zero at the start of the candidate.
+/// @return `true` for zero, space, underscore, or hyphen; otherwise `false`.
 static bool commandpalette_is_word_boundary(uint32_t cp) {
     return cp == 0 || cp == ' ' || cp == '_' || cp == '-';
 }
 
-/// @brief Compute a fuzzy-match score for pattern against text; returns 0 (no match) or a positive
-/// score (higher = better).
+/// @brief Computes a fuzzy subsequence-match score for a pattern and candidate.
+///
+/// @details Matching decodes UTF-8, folds ASCII case, and rewards consecutive
+/// and word-initial matches. A shorter candidate receives a small specificity
+/// bonus. Every pattern code point must be found in order.
+///
+/// @param pattern UTF-8 search pattern.
+/// @param text UTF-8 candidate label.
+/// @return Positive score for a complete match, with larger values preferred;
+///         zero for null inputs or an incomplete match.
 static int fuzzy_match_score(const char *pattern, const char *text) {
     if (!pattern || !text)
         return 0;
@@ -217,7 +242,14 @@ static int fuzzy_match_score(const char *pattern, const char *text) {
     return score;
 }
 
-/// @brief Rebuild filtered[] from commands[] using current_query, reset selection to the top.
+/// @brief Rebuilds the filtered command view from the current query.
+///
+/// @details Disabled commands are omitted. Built-in mode includes fuzzy
+/// matches, while client-filtered mode includes enabled commands in insertion
+/// order. The pointer array grows geometrically, selection is reset or
+/// preserved according to mode, and scrolling returns to the first row.
+///
+/// @param palette Palette whose borrowed filtered view is rebuilt.
 static void filter_commands(vg_commandpalette_t *palette) {
     if (!palette)
         return;
@@ -276,7 +308,9 @@ static void filter_commands(vg_commandpalette_t *palette) {
     palette->base.needs_paint = true;
 }
 
-/// @brief Clamp first_visible_index so that selected_index is within the visible window.
+/// @brief Clamps scrolling so the selected result remains visible.
+///
+/// @param palette Palette whose `first_visible_index` is adjusted.
 static void commandpalette_ensure_selection_visible(vg_commandpalette_t *palette) {
     if (!palette || palette->max_visible == 0)
         return;
@@ -308,8 +342,12 @@ static void commandpalette_ensure_selection_visible(vg_commandpalette_t *palette
     }
 }
 
-/// @brief Encode a Unicode codepoint to UTF-8 in out[]; returns byte length (1-4) or 0 for invalid
-/// codepoints.
+/// @brief Encodes one Unicode scalar as UTF-8.
+///
+/// @param codepoint Unicode scalar to encode.
+/// @param[out] out Four-byte buffer that receives the encoded bytes.
+/// @return Encoded length from one through four, or zero for a surrogate or
+///         out-of-range code point.
 static size_t utf8_encode_codepoint(uint32_t codepoint, char out[4]) {
     if (codepoint >= 0xD800 && codepoint <= 0xDFFF)
         return 0;
@@ -338,7 +376,14 @@ static size_t utf8_encode_codepoint(uint32_t codepoint, char out[4]) {
     return 0;
 }
 
-/// @brief Append a single Unicode codepoint to current_query and re-run the filter pass.
+/// @brief Appends one Unicode code point to the query and refilters commands.
+///
+/// @details Control characters, invalid Unicode scalars, overflow, and
+/// allocation failure leave the query unchanged. Successful mutation advances
+/// the query generation.
+///
+/// @param palette Palette whose query is extended.
+/// @param codepoint Unicode scalar to append as UTF-8.
 static void append_query_char(vg_commandpalette_t *palette, uint32_t codepoint) {
     char encoded[4];
     size_t encoded_len = 0;
@@ -360,7 +405,12 @@ static void append_query_char(vg_commandpalette_t *palette, uint32_t codepoint) 
     filter_commands(palette);
 }
 
-/// @brief Remove the last UTF-8 character from current_query (backspace), then re-filter.
+/// @brief Removes the final UTF-8 sequence from the query and refilters commands.
+///
+/// @details Removing the final query character releases the query allocation
+/// and restores the null representation of an empty query.
+///
+/// @param palette Palette whose query receives a backspace operation.
 static void remove_query_char(vg_commandpalette_t *palette) {
     if (!palette || !palette->current_query)
         return;
@@ -380,19 +430,33 @@ static void remove_query_char(vg_commandpalette_t *palette) {
     filter_commands(palette);
 }
 
-/// @brief Return the current query text (never NULL; empty string when unset).
+/// @brief Returns the current query text.
+///
+/// @param palette Palette to inspect.
+/// @return Borrowed null-terminated query string, or an immutable empty string
+///         when the palette or stored query is null.
 const char *vg_commandpalette_get_query(vg_commandpalette_t *palette) {
     if (!palette || !palette->current_query)
         return "";
     return palette->current_query;
 }
 
-/// @brief Return the query generation counter, bumped on every query change.
+/// @brief Returns the query generation counter.
+///
+/// @param palette Palette to inspect.
+/// @return Counter incremented on every query mutation, or zero for null.
 uint64_t vg_commandpalette_get_query_generation(vg_commandpalette_t *palette) {
     return palette ? palette->query_generation : 0;
 }
 
-/// @brief Programmatically set the query text and re-run the filter pass.
+/// @brief Replaces the query text and reruns filtering.
+///
+/// @details Non-empty input is copied. Null or empty input clears the query.
+/// The generation advances even when allocation failure leaves the stored query
+/// empty.
+///
+/// @param palette Palette whose query is replaced.
+/// @param text UTF-8 query to copy; may be null to clear.
 void vg_commandpalette_set_query(vg_commandpalette_t *palette, const char *text) {
     if (!palette)
         return;
@@ -410,8 +474,13 @@ void vg_commandpalette_set_query(vg_commandpalette_t *palette, const char *text)
     filter_commands(palette);
 }
 
-/// @brief Toggle client-filtered mode: when on, the widget shows commands in
-///        insertion order and lets the application do the filtering/ranking.
+/// @brief Enables or disables application-managed filtering and ranking.
+///
+/// @details When enabled, every enabled command is shown in insertion order.
+/// Changing the mode immediately rebuilds the filtered view.
+///
+/// @param palette Palette to configure.
+/// @param enabled `true` to bypass built-in fuzzy filtering.
 void vg_commandpalette_set_client_filtered(vg_commandpalette_t *palette, bool enabled) {
     if (!palette)
         return;
@@ -423,9 +492,12 @@ void vg_commandpalette_set_client_filtered(vg_commandpalette_t *palette, bool en
 // CommandPalette Implementation
 //=============================================================================
 
-/// @brief Create and initialise a command palette widget with default VS-Code-style colours.
+/// @brief Creates an initially hidden command palette with default styling.
 ///
-/// @return Newly allocated palette (invisible, no commands), or NULL on allocation failure.
+/// @details The palette begins empty, uses a ten-row maximum, and owns a
+/// default search placeholder. It is not parented automatically.
+///
+/// @return Newly allocated palette, or null on allocation failure.
 vg_commandpalette_t *vg_commandpalette_create(void) {
     vg_commandpalette_t *palette = calloc(1, sizeof(vg_commandpalette_t));
     if (!palette)
@@ -458,7 +530,9 @@ vg_commandpalette_t *vg_commandpalette_create(void) {
     return palette;
 }
 
-/// @brief Free all heap strings inside cmd and the cmd struct itself.
+/// @brief Releases a command and all strings it owns.
+///
+/// @param cmd Command to release; may be null.
 static void free_command(vg_command_t *cmd) {
     if (!cmd)
         return;
@@ -470,7 +544,12 @@ static void free_command(vg_command_t *cmd) {
     free(cmd);
 }
 
-/// @brief vtable destroy — free all commands, the filtered view, and string fields.
+/// @brief Releases all resources owned by the command palette.
+///
+/// @details Each registered command is destroyed before the master and filtered
+/// arrays, placeholder, and current query are released.
+///
+/// @param widget Palette base widget being destroyed.
 static void commandpalette_destroy(vg_widget_t *widget) {
     vg_commandpalette_t *palette = (vg_commandpalette_t *)widget;
 
@@ -483,9 +562,9 @@ static void commandpalette_destroy(vg_widget_t *widget) {
     free(palette->current_query);
 }
 
-/// @brief Destroy the palette, freeing all commands and internal allocations.
+/// @brief Destroys the palette and all registered commands.
 ///
-/// @param palette Palette to destroy; may be NULL (no-op).
+/// @param palette Palette to destroy; may be null.
 void vg_commandpalette_destroy(vg_commandpalette_t *palette) {
     if (!palette)
         return;
@@ -493,10 +572,15 @@ void vg_commandpalette_destroy(vg_commandpalette_t *palette) {
 }
 
 /// @brief Measure a scale-aware palette that remains inside the current viewport.
+///
 /// @details Width, search height, and row height are stored in logical units.
-///          The scaled width clamps to 16-point side margins. Row capacity
-///          shrinks when needed so the palette's 15%-from-top runtime placement
-///          retains the same bottom margin.
+/// The scaled width clamps to 16-point side margins. Row capacity shrinks when
+/// needed so the palette's 15-percent-from-top runtime placement retains the
+/// same bottom margin.
+///
+/// @param widget Palette base widget whose measured dimensions are updated.
+/// @param available_width Current viewport width in framebuffer units.
+/// @param available_height Current viewport height in framebuffer units.
 static void commandpalette_measure(vg_widget_t *widget,
                                    float available_width,
                                    float available_height) {
@@ -542,8 +626,14 @@ static void commandpalette_measure(vg_widget_t *widget,
     widget->measured_height = height;
 }
 
-/// @brief vtable paint — draw the search bar (query or placeholder) and the visible filtered result
-/// rows.
+/// @brief Paints the search row and visible filtered command results.
+///
+/// @details Painting clips to the palette rectangle, restores any prior clip,
+/// highlights the selected row, and reserves trailing space for shortcuts when
+/// they fit. The placeholder uses the shortcut color when no query is present.
+///
+/// @param widget Palette base widget to render.
+/// @param canvas Destination drawing context.
 static void commandpalette_paint(vg_widget_t *widget, void *canvas) {
     vg_commandpalette_t *palette = (vg_commandpalette_t *)widget;
     vgfx_window_t win = (vgfx_window_t)canvas;
@@ -669,8 +759,16 @@ static void commandpalette_paint(vg_widget_t *widget, void *canvas) {
         vgfx_clear_clip(win);
 }
 
-/// @brief vtable handle_event — dispatch key input (typing, backspace, arrows, Enter, Escape) and
-/// mouse clicks/hover/scroll.
+/// @brief Handles query input, navigation, scrolling, and result activation.
+///
+/// @details Escape dismisses the palette, Enter executes the selection, arrow
+/// keys move selection, and Backspace or character events edit the UTF-8 query.
+/// Pointer motion selects hovered results, the wheel scrolls the visible
+/// window, and clicks execute hit rows.
+///
+/// @param widget Palette base widget receiving the event.
+/// @param event Event to inspect.
+/// @return `true` when a visible palette consumes the event; otherwise `false`.
 static bool commandpalette_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_commandpalette_t *palette = (vg_commandpalette_t *)widget;
 
@@ -783,15 +881,21 @@ static bool commandpalette_handle_event(vg_widget_t *widget, vg_event_t *event) 
     return false;
 }
 
-/// @brief Register a new command and re-filter the display if the palette is currently visible.
+/// @brief Registers a new command with the palette.
 ///
-/// @param palette   Palette to add to; may be NULL (returns NULL).
-/// @param id        Unique command identifier; required.
-/// @param label     Display text shown in the results list; required.
-/// @param shortcut  Optional keyboard shortcut string (e.g. "Ctrl+P"); may be NULL.
-/// @param action    Callback invoked when the command is executed; may be NULL.
+/// @details The identifier, label, and optional shortcut are copied into a
+/// newly owned command. The master array grows geometrically, and a visible
+/// palette is immediately refiltered. This function does not enforce identifier
+/// uniqueness.
+///
+/// @param palette Palette to update; may be null.
+/// @param id Required command identifier to copy.
+/// @param label Required display label to copy.
+/// @param shortcut Optional shortcut label to copy; may be null.
+/// @param action Callback invoked when the command executes; may be null.
 /// @param user_data Opaque pointer forwarded to action.
-/// @return          The new command struct, or NULL on allocation failure.
+/// @return Owned command record, or null for invalid arguments or allocation
+///         failure. The returned pointer remains owned by @p palette.
 vg_command_t *vg_commandpalette_add_command(vg_commandpalette_t *palette,
                                             const char *id,
                                             const char *label,
@@ -845,10 +949,14 @@ vg_command_t *vg_commandpalette_add_command(vg_commandpalette_t *palette,
     return cmd;
 }
 
-/// @brief Remove the command with the given id, shifting the commands[] array and re-filtering.
+/// @brief Removes the first registered command with a matching identifier.
 ///
-/// @param palette Palette to modify; may be NULL (no-op).
-/// @param id      String identifier of the command to remove; may be NULL (no-op).
+/// @details The command is destroyed, later master-array entries shift left,
+/// and a visible palette is refiltered. A missing identifier leaves state
+/// unchanged.
+///
+/// @param palette Palette to modify; may be null.
+/// @param id Identifier of the command to remove; may be null.
 void vg_commandpalette_remove_command(vg_commandpalette_t *palette, const char *id) {
     if (!palette || !id)
         return;
@@ -870,11 +978,11 @@ void vg_commandpalette_remove_command(vg_commandpalette_t *palette, const char *
     }
 }
 
-/// @brief Look up a registered command by its string id.
+/// @brief Looks up the first registered command with a matching identifier.
 ///
-/// @param palette Palette to search; may be NULL (returns NULL).
-/// @param id      String identifier to match; may be NULL (returns NULL).
-/// @return        Matching command pointer, or NULL if not found.
+/// @param palette Palette to search; may be null.
+/// @param id Identifier to match; may be null.
+/// @return Borrowed command pointer, or null when no match exists.
 vg_command_t *vg_commandpalette_get_command(vg_commandpalette_t *palette, const char *id) {
     if (!palette || !id)
         return NULL;
@@ -887,10 +995,13 @@ vg_command_t *vg_commandpalette_get_command(vg_commandpalette_t *palette, const 
     return NULL;
 }
 
-/// @brief Show the palette, clearing any previous query and rebuilding the filtered list from all
-/// commands.
+/// @brief Shows the palette with a cleared query and rebuilt result list.
 ///
-/// @param palette Palette to show; may be NULL (no-op).
+/// @details Both visibility flags are enabled, the query generation advances,
+/// selection and scrolling are reset by filtering, and layout plus paint are
+/// scheduled.
+///
+/// @param palette Palette to show; may be null.
 void vg_commandpalette_show(vg_commandpalette_t *palette) {
     if (!palette)
         return;
@@ -909,9 +1020,12 @@ void vg_commandpalette_show(vg_commandpalette_t *palette) {
     palette->base.needs_layout = true;
 }
 
-/// @brief Hide the palette and invoke the on_dismiss callback if set.
+/// @brief Hides the palette and invokes its dismissal callback.
 ///
-/// @param palette Palette to hide; may be NULL (no-op).
+/// @details Both palette-specific and base-widget visibility are cleared before
+/// the callback runs.
+///
+/// @param palette Palette to hide; may be null.
 void vg_commandpalette_hide(vg_commandpalette_t *palette) {
     if (!palette)
         return;
@@ -924,9 +1038,9 @@ void vg_commandpalette_hide(vg_commandpalette_t *palette) {
     }
 }
 
-/// @brief Toggle visibility — show if hidden, hide if visible.
+/// @brief Toggles palette visibility through the normal show and hide paths.
 ///
-/// @param palette Palette to toggle; may be NULL (no-op).
+/// @param palette Palette to toggle; may be null.
 void vg_commandpalette_toggle(vg_commandpalette_t *palette) {
     if (!palette)
         return;
@@ -938,9 +1052,14 @@ void vg_commandpalette_toggle(vg_commandpalette_t *palette) {
     }
 }
 
-/// @brief Execute the currently selected command, invoke on_execute, then hide the palette.
+/// @brief Executes the selected command and then hides the palette.
 ///
-/// @param palette Palette whose selection to execute; may be NULL (no-op).
+/// @details The selected command is snapshotted, including copies of its owned
+/// strings, before callbacks run. This permits callbacks to mutate or destroy
+/// command registrations safely. The command action runs first, followed by the
+/// palette execution callback and dismissal when the palette remains live.
+///
+/// @param palette Palette whose selection to execute; may be null.
 void vg_commandpalette_execute_selected(vg_commandpalette_t *palette) {
     if (!palette)
         return;
@@ -992,13 +1111,13 @@ void vg_commandpalette_execute_selected(vg_commandpalette_t *palette) {
     free(snapshot.category);
 }
 
-/// @brief Register lifecycle callbacks invoked when a command is executed or the palette is
-/// dismissed.
+/// @brief Registers command-execution and palette-dismissal callbacks.
 ///
-/// @param palette    Palette to configure; may be NULL (no-op).
-/// @param on_execute Called after executing a command, before hiding; may be NULL.
-/// @param on_dismiss Called when the palette hides (Escape or post-execute); may be NULL.
-/// @param user_data  Opaque pointer forwarded to both callbacks.
+/// @param palette Palette to configure; may be null.
+/// @param on_execute Called after a command action and before hiding; may be
+///                   null.
+/// @param on_dismiss Called after visibility is cleared; may be null.
+/// @param user_data Opaque pointer forwarded to both callbacks.
 void vg_commandpalette_set_callbacks(vg_commandpalette_t *palette,
                                      void (*on_execute)(vg_commandpalette_t *,
                                                         vg_command_t *,
@@ -1013,11 +1132,14 @@ void vg_commandpalette_set_callbacks(vg_commandpalette_t *palette,
     palette->user_data = user_data;
 }
 
-/// @brief Set the font and point size used for query text, placeholder, and result labels.
+/// @brief Sets the font and size used for all command-palette text.
 ///
-/// @param palette Palette to configure; may be NULL (no-op).
-/// @param font    Font to use for all text rendering.
-/// @param size    Point size.
+/// @details The font is borrowed and must remain valid while the palette uses
+/// it. A changed pair schedules repaint.
+///
+/// @param palette Palette to configure; may be null.
+/// @param font Borrowed font for query, placeholder, labels, and shortcuts.
+/// @param size Font size passed to text measurement and rendering.
 void vg_commandpalette_set_font(vg_commandpalette_t *palette, vg_font_t *font, float size) {
     if (!palette)
         return;
@@ -1029,10 +1151,13 @@ void vg_commandpalette_set_font(vg_commandpalette_t *palette, vg_font_t *font, f
     palette->base.needs_paint = true;
 }
 
-/// @brief Set the placeholder string shown in the search bar when the query is empty.
+/// @brief Sets the placeholder shown while the query is empty.
 ///
-/// @param palette Palette to configure; may be NULL (no-op).
-/// @param text    Placeholder string, duplicated internally; may be NULL to clear.
+/// @details The input is copied before the previous placeholder is released.
+/// Allocation failure preserves the prior value.
+///
+/// @param palette Palette to configure; may be null.
+/// @param text Placeholder string to copy; may be null to clear.
 void vg_commandpalette_set_placeholder(vg_commandpalette_t *palette, const char *text) {
     if (!palette)
         return;
@@ -1044,9 +1169,12 @@ void vg_commandpalette_set_placeholder(vg_commandpalette_t *palette, const char 
     palette->base.needs_paint = true;
 }
 
-/// @brief Free all registered commands and reset selection state, keeping allocations for reuse.
+/// @brief Clears all commands and result-selection state.
 ///
-/// @param palette Palette to clear; may be NULL (no-op).
+/// @details Individual command objects are destroyed, while the master and
+/// filtered pointer-array allocations are retained for reuse.
+///
+/// @param palette Palette to clear; may be null.
 void vg_commandpalette_clear(vg_commandpalette_t *palette) {
     if (!palette)
         return;

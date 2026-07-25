@@ -1,0 +1,71 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_history.zia
+// Purpose: Pure bounded-history trimming shared by the 2D and 3D scene
+//          editors' undo/redo snapshot stacks.
+// Key invariants:
+//   - Entry count and aggregate bytes are both bounded (ADR 0190).
+//   - Oldest snapshots drop first; the newest snapshot is always retained so
+//     the most recent edit stays undoable even for over-budget documents.
+//   - The helper mutates only the list it is handed; it owns no widgets,
+//     documents, or scene state.
+// Ownership/Lifetime:
+//   - Stateless module functions; callers own the snapshot lists.
+// Links: zannastudio/src/ui/scene_editor_2d.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia,
+//        docs/adr/0190-scene3d-text-serialization.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_history;
+
+bind Str = Zanna.String;
+
+// ============================================================================
+// MODULE: scene_history
+// PURPOSE: One trimming rule for canonical-content history stacks so a
+//          document near the editing byte limit cannot pin gigabytes of undo.
+//
+// WHERE-THIS-FITS: SceneEditor2D/SceneEditor3D append snapshots and delegate
+//          the bounds here; probes pin the rule without a display.
+//
+// TEACHING-NOTE: Bytes are recomputed per call. Stacks hold at most a few
+//          hundred entries, so clarity beats an incremental byte counter.
+// ============================================================================
+
+/// @brief Trim @p stack to at most @p maxEntries and @p maxBytes total.
+/// @details Oldest entries drop first. At least one entry is always retained
+///          regardless of byte budget so the last edit stays undoable.
+/// @param stack Snapshot list, newest last; mutated in place.
+/// @param maxEntries Maximum retained entry count (values below 1 keep 1).
+/// @param maxBytes Maximum aggregate retained bytes across all entries.
+/// @return The number of entries removed.
+expose func TrimHistory(stack: List[String],
+                        maxEntries: Integer,
+                        maxBytes: Integer) -> Integer {
+    var removed = 0;
+    var minimumEntries = 1;
+    var entryLimit = maxEntries;
+    if entryLimit < minimumEntries { entryLimit = minimumEntries; }
+    while stack.count() > entryLimit {
+        stack.removeAt(0);
+        removed = removed + 1;
+    }
+    var total = 0;
+    var index = 0;
+    while index < stack.count() {
+        total = total + Str.get_Length(stack.get(index));
+        index = index + 1;
+    }
+    while stack.count() > minimumEntries and total > maxBytes {
+        total = total - Str.get_Length(stack.get(0));
+        stack.removeAt(0);
+        removed = removed + 1;
+    }
+    return removed;
+}

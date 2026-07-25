@@ -2116,6 +2116,40 @@ static void test_scene_save_escapes_json_names() {
                 "SceneGraph.Save escapes quotes, backslashes, and newlines in node names");
 }
 
+static void test_scene_save_text_matches_file_bytes() {
+    void *scene = rt_scene3d_new();
+    void *node = rt_scene_node3d_new();
+    const char *path = "/tmp/zanna_scene_save_text_parity.vscn";
+
+    rt_scene_node3d_set_name(node, rt_const_cstr("text-parity"));
+    rt_scene_node3d_set_mesh(node, rt_mesh3d_new_box(1.0, 1.0, 1.0));
+    rt_scene_node3d_set_material(node, rt_material3d_new_color(0.2, 0.4, 0.6));
+    /* Typed metadata promotes the document to v6 so version selection is
+     * exercised identically on both endpoints (ADR 0190). */
+    rt_scene_node3d_metadata_set_int(node, rt_const_cstr("hp"), 7);
+    rt_scene3d_add(scene, node);
+
+    rt_string memory = rt_scene3d_save_text(scene);
+    EXPECT_TRUE(memory && rt_str_len(memory) > 0,
+                "SceneGraph.SaveToText returns document text");
+    EXPECT_TRUE(rt_scene3d_save(scene, rt_const_cstr(path)) == 1,
+                "SceneGraph.Save writes the SaveToText parity file");
+
+    std::string file_text;
+    EXPECT_TRUE(read_text_file(path, file_text), "SaveToText parity file can be reopened");
+    std::string memory_text(rt_string_cstr(memory), (size_t)rt_str_len(memory));
+    EXPECT_TRUE(memory_text == file_text,
+                "SceneGraph.SaveToText matches SceneGraph.Save bytes exactly (ADR 0190)");
+    EXPECT_TRUE(memory_text.find("\"version\": 6") != std::string::npos,
+                "SceneGraph.SaveToText applies the same version-selection rules as Save");
+
+    EXPECT_TRUE(rt_str_len(rt_scene3d_save_text(NULL)) == 0,
+                "SceneGraph.SaveToText returns the empty string for null scenes");
+    EXPECT_TRUE(rt_str_len(rt_scene3d_save_text(node)) == 0,
+                "SceneGraph.SaveToText returns the empty string for wrong handles");
+    std::remove(path);
+}
+
 static void test_scene_save_serializes_visibility_and_lod_metadata() {
     void *scene = rt_scene3d_new();
     void *node = rt_scene_node3d_new();
@@ -4770,6 +4804,7 @@ int main() {
     test_scene_draw_culling_uses_canvas_output_aspect();
     test_scene_prefab_reference_nodes();
     test_scene_save_escapes_json_names();
+    test_scene_save_text_matches_file_bytes();
     test_scene_save_serializes_visibility_and_lod_metadata();
     test_scene_roundtrip_loads_shared_assets();
     test_scene_roundtrip_preserves_authoring_metadata();

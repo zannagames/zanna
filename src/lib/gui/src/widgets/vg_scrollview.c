@@ -22,6 +22,12 @@
 //        docs/adr/0165-scrollview-descendant-reveal.md
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements scroll-container measurement, clipped subtree painting,
+///        scrollbar interaction, smooth scrolling, and descendant reveal.
+/// @details Child geometry remains content-relative while paint temporarily
+///          promotes coordinates to screen space. Pending reveal requests carry
+///          immutable widget IDs so deferred layout cannot act on reused handles.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
@@ -77,6 +83,8 @@ static vg_widget_vtable_t g_scrollview_vtable = {.destroy = scrollview_destroy,
 
 /// @brief Returns true if @p widget renders its own children (ScrollView or custom widget with
 /// paint_overlay), suppressing recursive subtree painting.
+/// @param widget Widget whose paint ownership policy is inspected.
+/// @return `true` when recursive traversal must stop after painting the widget.
 static bool scrollview_widget_paints_children_internally(const vg_widget_t *widget) {
     if (!widget)
         return false;
@@ -86,6 +94,9 @@ static bool scrollview_widget_paints_children_internally(const vg_widget_t *widg
 }
 
 /// @brief Calls vg_widget_measure on every visible child with the given available dimensions.
+/// @param scroll Scroll view whose direct children are measured.
+/// @param available_width Width offered to every child.
+/// @param available_height Height offered to every child.
 static void scrollview_measure_children(vg_scrollview_t *scroll,
                                         float available_width,
                                         float available_height) {
@@ -97,6 +108,9 @@ static void scrollview_measure_children(vg_scrollview_t *scroll,
 
 /// @brief Measures all children and computes the total content extent, respecting explicit
 /// overrides for each axis.
+/// @param scroll Scroll view whose content dimensions are updated.
+/// @param available_width Width offered for child measurement.
+/// @param available_height Height offered for child measurement.
 static void calculate_content_size(vg_scrollview_t *scroll,
                                    float available_width,
                                    float available_height) {
@@ -129,6 +143,10 @@ static void calculate_content_size(vg_scrollview_t *scroll,
 
 /// @brief Returns the scrollbar thumb length proportional to visible/total content, clamped to the
 /// theme minimum.
+/// @param track_size Full scrollbar track length.
+/// @param content_size Total scrollable content extent.
+/// @param viewport_size Visible content extent.
+/// @return Thumb length constrained to the track and theme minimum.
 static float scrollbar_thumb_size(float track_size, float content_size, float viewport_size) {
     if (track_size <= 0.0f || content_size <= 0.0f || viewport_size <= 0.0f)
         return track_size;
@@ -146,6 +164,11 @@ static float scrollbar_thumb_size(float track_size, float content_size, float vi
 }
 
 /// @brief Converts a scroll position to the thumb's pixel offset within its track.
+/// @param scroll_pos Current content scroll offset.
+/// @param scroll_range Maximum content scroll offset.
+/// @param track_size Full track length.
+/// @param thumb_size Thumb length.
+/// @return Pixel offset within the thumb's travel range.
 static float scrollbar_thumb_offset(float scroll_pos,
                                     float scroll_range,
                                     float track_size,
@@ -158,6 +181,11 @@ static float scrollbar_thumb_offset(float scroll_pos,
 
 /// @brief Converts a thumb drag position back to a scroll offset, clamping thumb_offset to the
 /// valid travel range.
+/// @param thumb_offset Requested pixel offset within the track.
+/// @param track_size Full track length.
+/// @param thumb_size Thumb length.
+/// @param scroll_range Maximum content scroll offset.
+/// @return Corresponding clamped content scroll offset.
 static float scrollbar_scroll_from_thumb(float thumb_offset,
                                          float track_size,
                                          float thumb_size,
@@ -174,6 +202,7 @@ static float scrollbar_scroll_from_thumb(float thumb_offset,
 
 /// @brief Clamps scroll_x and scroll_y to [0, content_size - viewport_size], zeroing axes not
 /// enabled by direction flags.
+/// @param scroll Scroll view whose offsets are normalized.
 static void clamp_scroll(vg_scrollview_t *scroll) {
     float viewport_width = 0.0f;
     float viewport_height = 0.0f;
@@ -204,6 +233,9 @@ static void clamp_scroll(vg_scrollview_t *scroll) {
 
 /// @brief Writes the usable viewport dimensions (widget size minus visible scrollbar gutters) into
 /// @p out_width and @p out_height.
+/// @param scroll Scroll view to inspect.
+/// @param out_width Optional destination for non-negative viewport width.
+/// @param out_height Optional destination for non-negative viewport height.
 static void scrollview_get_viewport_size(const vg_scrollview_t *scroll,
                                          float *out_width,
                                          float *out_height) {
@@ -234,6 +266,9 @@ static void scrollview_get_viewport_size(const vg_scrollview_t *scroll,
 
 /// @brief Delegates to calculate_content_size to update content_width/height from child extents or
 /// explicit overrides.
+/// @param scroll Scroll view to recompute.
+/// @param available_width Width offered for child measurement.
+/// @param available_height Height offered for child measurement.
 static void scrollview_recompute_content_size(vg_scrollview_t *scroll,
                                               float available_width,
                                               float available_height) {
@@ -243,6 +278,8 @@ static void scrollview_recompute_content_size(vg_scrollview_t *scroll,
 }
 
 /// @brief Arrange direct content children using the current scroll offsets.
+/// @param scroll Scroll view whose visible children are arranged.
+/// @param content_area_width Usable width excluding a vertical scrollbar.
 static void scrollview_arrange_children(vg_scrollview_t *scroll, float content_area_width) {
     if (!scroll)
         return;
@@ -272,6 +309,11 @@ static void scrollview_arrange_children(vg_scrollview_t *scroll, float content_a
 }
 
 /// @brief Validate a pending non-owning descendant pointer against liveness and ID reuse.
+/// @param scroll Scroll view expected to contain @p child.
+/// @param child Borrowed target handle.
+/// @param child_id Immutable live-widget ID captured with the handle.
+/// @return `true` when the complete parent chain remains live and reaches the
+///         scroll view.
 static bool scrollview_is_live_descendant(const vg_scrollview_t *scroll,
                                           const vg_widget_t *child,
                                           uint64_t child_id) {
@@ -289,7 +331,9 @@ static bool scrollview_is_live_descendant(const vg_scrollview_t *scroll,
 }
 
 /// @brief Resolve one validated descendant against the current content viewport.
-/// @return True when either scroll offset changed.
+/// @param scroll Scroll view whose offsets may change.
+/// @param child Live descendant to reveal.
+/// @return `true` when either scroll offset changed.
 static bool scrollview_apply_descendant_reveal(vg_scrollview_t *scroll, vg_widget_t *child) {
     float viewport_width = 0.0f;
     float viewport_height = 0.0f;
@@ -579,6 +623,10 @@ static void scrollview_paint(vg_widget_t *widget, void *canvas) {
 
 /// @brief Recursively paints @p widget and its non-overlay descendants, temporarily promoting
 /// coordinates to screen space for each paint call.
+/// @param widget Subtree root to paint.
+/// @param canvas Backend canvas supplied to paint hooks.
+/// @param parent_abs_x Parent's absolute horizontal origin.
+/// @param parent_abs_y Parent's absolute vertical origin.
 static void scrollview_render_normal_subtree(vg_widget_t *widget,
                                              void *canvas,
                                              float parent_abs_x,
@@ -612,6 +660,10 @@ static void scrollview_render_normal_subtree(vg_widget_t *widget,
 
 /// @brief Recursively invokes paint_overlay on @p widget and its descendants, allowing overlays
 /// (e.g. open dropdowns) to escape the scroll viewport clip.
+/// @param widget Subtree root whose overlays are painted.
+/// @param canvas Backend canvas supplied to overlay hooks.
+/// @param parent_abs_x Parent's absolute horizontal origin.
+/// @param parent_abs_y Parent's absolute vertical origin.
 static void scrollview_render_overlay_subtree(vg_widget_t *widget,
                                               void *canvas,
                                               float parent_abs_x,
@@ -855,6 +907,10 @@ void vg_scrollview_set_scroll(vg_scrollview_t *scroll, float x, float y) {
     scroll->base.needs_paint = true;
 }
 
+/// @brief Advance an active smooth-scroll interpolation.
+/// @param scroll Scroll view with target offsets.
+/// @param delta_ms Elapsed time in milliseconds.
+/// @return `true` while either axis still requires future animation ticks.
 bool vg_scrollview_tick(vg_scrollview_t *scroll, float delta_ms) {
     if (!scroll || !scroll->smooth_animating)
         return false;

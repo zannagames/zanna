@@ -193,6 +193,9 @@ vg_codeeditor_t *vg_codeeditor_create(vg_widget_t *parent) {
 
 /// @brief VTable destroy: frees all lines, history, custom keywords, highlight spans, gutter icons,
 /// and fold regions.
+/// @details Also releases the shared text-buffer mirror, incremental journal strings, semantic
+/// tokens, layout-prefix cache, inlay hints, and secondary cursors.
+/// @param widget Code-editor base widget being destroyed.
 static void codeeditor_destroy(vg_widget_t *widget) {
     vg_codeeditor_t *editor = (vg_codeeditor_t *)widget;
 
@@ -258,6 +261,9 @@ static void codeeditor_destroy(vg_widget_t *widget) {
 }
 
 /// @brief VTable measure: fills all available space, clamped to min_width/min_height constraints.
+/// @param widget Code-editor base widget whose measured dimensions are updated.
+/// @param available_width Parent-provided width, or a 400-pixel fallback when non-positive.
+/// @param available_height Parent-provided height, or a 300-pixel fallback when non-positive.
 static void codeeditor_measure(vg_widget_t *widget, float available_width, float available_height) {
     // Code editor fills available space
     widget->measured_width = available_width > 0 ? available_width : 400;

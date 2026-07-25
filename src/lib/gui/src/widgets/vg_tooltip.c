@@ -1,4 +1,17 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements tooltip presentation and the process-wide hover manager.
+/// @details Tooltip widgets measure and paint wrapped text in a transient,
+///          noninteractive surface. The global manager reuses one lazily
+///          allocated tooltip, tracks the hovered widget with borrowed
+///          pointers, and exposes scheduler deadlines for delayed showing,
+///          delayed hiding, and optional duration-based dismissal.
+///
+///          Widget destruction and subtree hiding must notify the manager so
+///          borrowed hover and anchor pointers cannot outlive their targets.
+///          Tooltip visibility is mirrored in both the specialized
+///          `is_visible` field and the base widget's `visible` state.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -57,7 +70,11 @@ static void tooltip_fill_round_rect(
 static void tooltip_stroke_round_rect(
     vgfx_window_t win, int32_t x, int32_t y, int32_t w, int32_t h, int32_t radius, uint32_t color);
 
-/// @brief Return true if widget is ancestor itself or any descendant by walking the parent chain.
+/// @brief Test whether a widget belongs to an ancestor's subtree.
+/// @param widget Candidate descendant; may be `NULL`.
+/// @param ancestor Candidate ancestor; may be `NULL`.
+/// @return `true` when @p widget is @p ancestor or reaches it by following
+///         parent links.
 static bool tooltip_widget_is_descendant_of(const vg_widget_t *widget,
                                             const vg_widget_t *ancestor) {
     for (const vg_widget_t *current = widget; current; current = current->parent) {
@@ -67,7 +84,11 @@ static bool tooltip_widget_is_descendant_of(const vg_widget_t *widget,
     return false;
 }
 
-/// @brief Heap-allocate a NUL-terminated copy of the first len bytes of text.
+/// @brief Duplicate an exact byte range as a null-terminated string.
+/// @param text Source buffer containing at least @p len readable bytes.
+/// @param len Number of bytes to copy, excluding the added terminator.
+/// @return Newly allocated string owned by the caller, or `NULL` on allocation
+///         failure.
 static char *tooltip_dup_range(const char *text, size_t len) {
     char *copy = (char *)malloc(len + 1);
     if (!copy)
@@ -77,8 +98,17 @@ static char *tooltip_dup_range(const char *text, size_t len) {
     return copy;
 }
 
-/// @brief Word-wrap tooltip->text to tooltip->max_width; returns line count and optionally
-/// allocates out_lines[].
+/// @brief Wrap tooltip text into measured display lines.
+/// @details Explicit newlines are honored, spaces and tabs are preferred break
+///          points, and an over-wide segment advances by at least one byte.
+///          When line storage is requested, both the pointer array and each
+///          string are heap allocated for the caller. A measurement-only call
+///          avoids retaining line allocations.
+/// @param tooltip Tooltip supplying text, font, padding, and maximum width.
+/// @param out_lines Optional destination for the allocated line array.
+/// @param out_max_width Optional destination for the widest measured line.
+/// @return Number of logical display lines; returns at least one after valid
+///         tooltip/font input and zero when required input is absent.
 static int tooltip_wrap_text(vg_tooltip_t *tooltip, char ***out_lines, float *out_max_width) {
     if (out_lines)
         *out_lines = NULL;
@@ -219,8 +249,13 @@ static int tooltip_wrap_text(vg_tooltip_t *tooltip, char ***out_lines, float *ou
     return count > 0 ? count : 1;
 }
 
-/// @brief Composite color's stored alpha channel against backdrop, returning a fully-opaque 24-bit
-/// RGB result.
+/// @brief Resolve a packed color's alpha against an opaque backdrop.
+/// @details Alpha values of zero and 255 are treated as already-resolved RGB
+///          for compatibility with theme colors; intermediate alpha values are
+///          blended over @p backdrop.
+/// @param color Packed ARGB-style value with alpha in the high byte.
+/// @param backdrop Packed RGB backdrop.
+/// @return Fully resolved 24-bit RGB color.
 static uint32_t tooltip_apply_alpha(uint32_t color, uint32_t backdrop) {
     uint8_t alpha = (uint8_t)(color >> 24);
     uint32_t rgb = color & 0x00FFFFFFu;
@@ -229,13 +264,27 @@ static uint32_t tooltip_apply_alpha(uint32_t color, uint32_t backdrop) {
     return vg_color_blend(backdrop, rgb, (float)alpha / 255.0f);
 }
 
-/// @brief Fill a rounded rectangle, falling back to a plain rect when radius is zero or too large.
+/// @brief Fill a tooltip rounded rectangle through the shared drawing core.
+/// @param win Destination graphics window.
+/// @param x Left edge in framebuffer coordinates.
+/// @param y Top edge in framebuffer coordinates.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @param radius Requested corner radius.
+/// @param color Packed fill color.
 static void tooltip_fill_round_rect(
     vgfx_window_t win, int32_t x, int32_t y, int32_t w, int32_t h, int32_t radius, uint32_t color) {
     vg_draw_round_rect_fill(win, (float)x, (float)y, (float)w, (float)h, (float)radius, color);
 }
 
-/// @brief Stroke a rounded-rectangle border via the shared anti-aliased core.
+/// @brief Stroke a one-unit tooltip rounded-rectangle border.
+/// @param win Destination graphics window.
+/// @param x Left edge in framebuffer coordinates.
+/// @param y Top edge in framebuffer coordinates.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @param radius Requested corner radius.
+/// @param color Packed border color.
 static void tooltip_stroke_round_rect(
     vgfx_window_t win, int32_t x, int32_t y, int32_t w, int32_t h, int32_t radius, uint32_t color) {
     vg_draw_round_rect_stroke(
@@ -260,8 +309,8 @@ static vg_widget_vtable_t g_tooltip_vtable = {.destroy = tooltip_destroy,
 
 static vg_tooltip_manager_t g_tooltip_manager = {0};
 
-/// @brief Return the current wall-clock time in milliseconds (monotonic on POSIX, GetTickCount64 on
-/// Windows).
+/// @brief Read the platform monotonic clock in milliseconds.
+/// @return Milliseconds from the platform-specific monotonic epoch.
 static uint64_t tooltip_now_ms(void) {
 #ifdef _WIN32
     return (uint64_t)GetTickCount64();
@@ -272,7 +321,8 @@ static uint64_t tooltip_now_ms(void) {
 #endif
 }
 
-/// @brief Return a pointer to the global tooltip manager singleton.
+/// @brief Access the process-wide tooltip manager.
+/// @return Stable pointer to the zero-initialized global manager singleton.
 vg_tooltip_manager_t *vg_tooltip_manager_get(void) {
     return &g_tooltip_manager;
 }
@@ -284,6 +334,9 @@ vg_tooltip_manager_t *vg_tooltip_manager_get(void) {
 /// @brief Create a tooltip widget with theme-derived defaults (500 ms show delay, cursor-follow
 /// mode).
 ///
+/// @details The returned widget is initially invisible and borrows the current
+///          theme's regular font. Text storage remains empty until assigned by
+///          `vg_tooltip_set_text()`.
 /// @return Newly allocated invisible tooltip, or NULL on allocation failure.
 vg_tooltip_t *vg_tooltip_create(void) {
     vg_tooltip_t *tooltip = calloc(1, sizeof(vg_tooltip_t));
@@ -317,7 +370,8 @@ vg_tooltip_t *vg_tooltip_create(void) {
     return tooltip;
 }
 
-/// @brief vtable destroy — free the text string.
+/// @brief Release tooltip-owned text during base-widget destruction.
+/// @param widget Tooltip base widget being destroyed.
 static void tooltip_destroy(vg_widget_t *widget) {
     vg_tooltip_t *tooltip = (vg_tooltip_t *)widget;
     free(tooltip->text);
@@ -325,6 +379,8 @@ static void tooltip_destroy(vg_widget_t *widget) {
 
 /// @brief Destroy the tooltip widget and free its text string.
 ///
+/// @details Destruction is delegated through the base widget so the tooltip
+///          vtable releases specialized resources.
 /// @param tooltip Tooltip to destroy; may be NULL (no-op).
 void vg_tooltip_destroy(vg_tooltip_t *tooltip) {
     if (!tooltip)
@@ -332,7 +388,13 @@ void vg_tooltip_destroy(vg_tooltip_t *tooltip) {
     vg_widget_destroy(&tooltip->base);
 }
 
-/// @brief vtable measure — compute desired size from wrapped text, font metrics, and padding.
+/// @brief Measure the tooltip from wrapped text, font metrics, and padding.
+/// @details The external available-size constraints are intentionally ignored;
+///          `max_width` supplies the text constraint. Missing text or font
+///          produces a zero-sized tooltip.
+/// @param widget Tooltip base widget receiving measured dimensions.
+/// @param available_width Parent width constraint; unused.
+/// @param available_height Parent height constraint; unused.
 static void tooltip_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_tooltip_t *tooltip = (vg_tooltip_t *)widget;
     (void)available_width;
@@ -358,7 +420,13 @@ static void tooltip_measure(vg_widget_t *widget, float available_width, float av
     widget->measured_height = line_height * (float)line_count + (float)tooltip->padding * 2.0f;
 }
 
-/// @brief vtable paint — render background, drop-shadow, border, and word-wrapped text lines.
+/// @brief Paint a visible tooltip and its wrapped text.
+/// @details Theme elevation supplies the shadow, translucent configured colors
+///          are resolved against theme backdrops, and text is clipped to the
+///          padded content rectangle. Temporary wrapped-line storage is freed
+///          before returning.
+/// @param widget Tooltip base widget to paint.
+/// @param canvas Graphics canvas represented by a `vgfx_window_t`.
 static void tooltip_paint(vg_widget_t *widget, void *canvas) {
     vg_tooltip_t *tooltip = (vg_tooltip_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -437,6 +505,8 @@ static void tooltip_paint(vg_widget_t *widget, void *canvas) {
 
 /// @brief Replace the tooltip's display text, invalidating layout.
 ///
+/// @details The input is copied before the previous allocation is released, so
+///          allocation failure leaves the existing text unchanged.
 /// @param tooltip Tooltip to modify; may be NULL (no-op).
 /// @param text    New text string, duplicated internally; may be NULL to clear.
 void vg_tooltip_set_text(vg_tooltip_t *tooltip, const char *text) {
@@ -459,7 +529,9 @@ void vg_tooltip_set_text(vg_tooltip_t *tooltip, const char *text) {
 /// @brief Show the tooltip, positioning it at (x, y) plus offset or anchored to anchor_widget.
 ///
 /// @details Runs a measure pass, computes screen position (clamped to the root widget's bounds
-///          in anchor mode), marks the tooltip visible, and stamps show_timer on first show.
+///          in anchor mode), marks the tooltip visible, and stamps `show_timer`
+///          on the transition from hidden to visible. Anchored tooltips move
+///          above their anchor when they would extend below the root.
 ///
 /// @param tooltip Tooltip to show; may be NULL (no-op).
 /// @param x       Cursor or anchor X in screen coordinates (used in follow-cursor mode).
@@ -503,6 +575,9 @@ void vg_tooltip_show_at(vg_tooltip_t *tooltip, int x, int y) {
 
 /// @brief Immediately hide the tooltip.
 ///
+/// @details Specialized and base-widget visibility flags are cleared together
+///          and a repaint is requested. Timing configuration and text remain
+///          available for reuse.
 /// @param tooltip Tooltip to hide; may be NULL (no-op).
 void vg_tooltip_hide(vg_tooltip_t *tooltip) {
     if (!tooltip)
@@ -515,6 +590,8 @@ void vg_tooltip_hide(vg_tooltip_t *tooltip) {
 
 /// @brief Set the anchor widget and switch the tooltip to VG_TOOLTIP_ANCHOR_WIDGET mode.
 ///
+/// @details The anchor is borrowed and must be cleared through tooltip-manager
+///          lifecycle notifications if its widget is hidden or destroyed.
 /// @param tooltip Tooltip to configure; may be NULL (no-op).
 /// @param anchor  Widget to anchor below; the tooltip appears at anchor's bottom-left + offset.
 void vg_tooltip_set_anchor(vg_tooltip_t *tooltip, vg_widget_t *anchor) {
@@ -527,6 +604,9 @@ void vg_tooltip_set_anchor(vg_tooltip_t *tooltip, vg_widget_t *anchor) {
 
 /// @brief Configure the show delay, hide delay, and optional auto-dismiss duration.
 ///
+/// @details Values are stored verbatim and apply to subsequent manager
+///          transitions; this function does not reschedule an already pending
+///          deadline.
 /// @param tooltip       Tooltip to configure; may be NULL (no-op).
 /// @param show_delay_ms Milliseconds to wait after hover before showing (0 = immediate).
 /// @param hide_delay_ms Milliseconds to wait after mouse-leave before hiding (0 = immediate).
@@ -549,8 +629,11 @@ void vg_tooltip_set_timing(vg_tooltip_t *tooltip,
 
 /// @brief Drive pending-show and auto-hide timers; call every frame with the current clock value.
 ///
+/// @details A due pending hover displays the shared tooltip at the most recent
+///          cursor position. For visible tooltips, an explicit leave-driven
+///          hide deadline takes precedence over duration-based dismissal.
 /// @param mgr    Manager to update; may be NULL (no-op).
-/// @param now_ms Current wall-clock time in milliseconds.
+/// @param now_ms Current monotonic time in milliseconds.
 void vg_tooltip_manager_update(vg_tooltip_manager_t *mgr, uint64_t now_ms) {
     if (!mgr)
         return;
@@ -576,6 +659,9 @@ void vg_tooltip_manager_update(vg_tooltip_manager_t *mgr, uint64_t now_ms) {
 }
 
 /// @brief Convert an absolute tooltip timestamp into a bounded relative deadline.
+/// @details Past targets are reported as immediately due, while future
+///          differences too large for the signed scheduler representation are
+///          saturated.
 /// @param now_ms Current scheduler time.
 /// @param target_ms Absolute transition time on the same clock.
 /// @return Zero when due, otherwise a positive delay saturated to INT64_MAX.
@@ -587,6 +673,8 @@ static int64_t tooltip_relative_deadline_ms(uint64_t now_ms, uint64_t target_ms)
 }
 
 /// @brief Add a bounded duration to a tooltip timestamp without unsigned wraparound.
+/// @details Overflow produces `UINT64_MAX`, preserving ordering without
+///          wrapping a deadline into the past.
 /// @param start_ms Absolute start time.
 /// @param duration_ms Relative duration.
 /// @return Saturating absolute timestamp.
@@ -596,6 +684,9 @@ static uint64_t tooltip_saturating_timestamp(uint64_t start_ms, uint32_t duratio
 }
 
 /// @brief Return the nearest pending tooltip timer without mutating the manager.
+/// @details Pending show, delayed hide, and duration expiry are considered;
+///          their absolute timestamps are converted into the scheduler's
+///          signed relative-delay convention.
 /// @param mgr Tooltip manager to inspect; NULL has no deadline.
 /// @param now_ms Current scheduler time in milliseconds.
 /// @return Milliseconds until work, zero when due, or -1 when no timer is active.
@@ -628,6 +719,8 @@ int64_t vg_tooltip_manager_next_deadline_ms(const vg_tooltip_manager_t *mgr, uin
 ///
 /// @details On widget change, hides any active tooltip and starts the show delay countdown.
 ///          On same-widget move, updates cursor position and re-shows if already visible.
+///          Text changes restart the delay while hidden or remeasure an already
+///          visible tooltip in place. The manager borrows @p widget.
 ///
 /// @param mgr    Manager to notify; may be NULL (no-op).
 /// @param widget Currently hovered widget; may be NULL (same as calling on_leave).
@@ -712,6 +805,9 @@ void vg_tooltip_manager_on_hover(vg_tooltip_manager_t *mgr, vg_widget_t *widget,
 
 /// @brief Notify the manager that the cursor has left the hovered widget, starting the hide delay.
 ///
+/// @details A visible tooltip either receives an absolute hide deadline or is
+///          hidden immediately. Pending shows are canceled and the borrowed
+///          hovered-widget pointer is cleared.
 /// @param mgr Manager to notify; may be NULL (no-op).
 void vg_tooltip_manager_on_leave(vg_tooltip_manager_t *mgr) {
     if (!mgr)
@@ -732,6 +828,9 @@ void vg_tooltip_manager_on_leave(vg_tooltip_manager_t *mgr) {
 
 /// @brief Clear dangling pointers to widget in the global manager after the widget is destroyed.
 ///
+/// @details Direct hover and anchor references are cleared, their active
+///          tooltip is hidden, and any pending show is canceled. Callers must
+///          notify before the widget storage becomes inaccessible.
 /// @param widget Widget being destroyed; may be NULL (no-op).
 void vg_tooltip_manager_widget_destroyed(vg_widget_t *widget) {
     if (!widget)
@@ -754,6 +853,9 @@ void vg_tooltip_manager_widget_destroyed(vg_widget_t *widget) {
 /// @brief Hide the active tooltip when a widget subtree containing the hovered or anchored widget
 /// is hidden.
 ///
+/// @details Parent-chain checks cover both the supplied root and any of its
+///          descendants, preventing a tooltip from remaining visible for a
+///          nonvisible subtree.
 /// @param widget Root of the subtree being hidden; may be NULL (no-op).
 void vg_tooltip_manager_widget_hidden(vg_widget_t *widget) {
     if (!widget)
@@ -776,6 +878,9 @@ void vg_tooltip_manager_widget_hidden(vg_widget_t *widget) {
 
 /// @brief Set the tooltip_text field on a widget; the global manager reads this on hover.
 ///
+/// @details Nonempty input is duplicated before existing storage is released,
+///          preserving the old tooltip on allocation failure. This setter does
+///          not itself notify or reschedule the global manager.
 /// @param widget Widget to configure; may be NULL (no-op).
 /// @param text   Tooltip string, duplicated internally; NULL or empty string clears the tooltip.
 void vg_widget_set_tooltip_text(vg_widget_t *widget, const char *text) {

@@ -333,7 +333,11 @@ Zanna Studio mounts built-in 2D and 3D scene editors for the corresponding
 scene document kinds. They retain per-document workspace state and history,
 provide hierarchy/layer and property editing, render interactive
 canvas/viewport previews, search bounded project assets, and serialize through
-the runtime scene document surface. Standard Edit commands route to the active
+the runtime scene document surface. The 3D editor's canonical text path is
+fully in-memory (ADR 0190): every accepted edit derives `Document.content`
+from `SceneGraph.SaveToText`, and document loads flow through
+`SceneAsset.LoadTextResult` with the document path naming the relative-prefab
+base directory — no staged sibling files are created. Standard Edit commands route to the active
 scene controller. Standard Find uses the shared bounded hierarchy matcher and
 `ScrollView.ScrollTo` to reveal the query or selected row without mutating scene
 data. A versioned, typed text envelope carries canonical source plus
@@ -349,7 +353,7 @@ inspector operations stay controller-side: 2D typed property set/remove uses
 `SceneNode` local values before one canonical serialization.
 
 ADR 0168 adds `Canvas3D.NewOffscreen(RenderTarget3D)` and read-only
-`IsOffscreen`. `SceneEditor3D` retains one software canvas, explicit target,
+`IsOffscreen`. `SceneEditor3D` retains one windowless canvas, explicit target,
 and orthographic camera sized to the embedded GUI image. The camera half-height
 is `viewportHeight / (2 * pixelsPerUnit)`, and its orbit matches Studio's
 marker/gizmo projection exactly. `SceneGraph.Draw` therefore supplies the
@@ -359,6 +363,18 @@ target back only when scene or camera state is dirty, then draws the editor
 grid, hierarchy links, node markers, selection, and gizmos on that copy. A
 target/readback allocation failure retains a deterministic marker fallback and
 never changes VSCN content.
+
+ADR 0191 adds `Canvas3D.NewOffscreenAccelerated(RenderTarget3D)`: the same
+windowless contract, but requesting the platform GPU backend with the standard
+software fallback and truth channel (`BackendName`, `IsBackendFallback`).
+Studio's viewport requests acceleration at startup
+(`ZANNA_STUDIO_SOFTWARE_VIEWPORT=1` opts out); probes never request it, so
+their pixels stay byte-deterministic. Camera framing always derives from the
+logical viewport, letting interactive camera/gizmo drags render into a
+reduced-resolution target that Studio upscales before drawing overlays — a
+full-resolution frame re-renders on release. Backends without headless
+context support fail construction cleanly and fall back; enabling true GPU
+offscreen contexts per backend is the recorded follow-up.
 
 ADR 0172 exposes the light component already retained and serialized by the
 native scene graph as a typed read/write `SceneNode.Light` property. The setter

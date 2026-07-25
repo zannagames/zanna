@@ -35,6 +35,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements a unified stateful iterator over runtime collections.
+///
+/// Seq, List, and Ring iterators retain their sources and dispatch indexed
+/// reads directly, while Deque, Map, Set, and Stack factories capture owning
+/// Seq snapshots. Every iterator caches its traversal length at construction.
+/// Snapshot iterators are isolated from later source mutation; structurally
+/// mutating a live source during iteration is unsupported.
+///
+/// Next and peek return retained references owned by the caller. Exhaustion is
+/// represented by NULL, so callers iterating collections that may contain NULL
+/// should use `rt_iter_has_next()` to distinguish a present null value.
+/// Iterator objects are runtime-managed and expose their retained source to GC.
+
 #include "rt_iter.h"
 
 #include "rt_collection_ids.h"
@@ -52,7 +66,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// Iterator source kind. All sources are heap-managed (rt_obj_new_i64).
+/// @brief Identifies the indexed accessor used for an iterator's source.
 typedef enum {
     ITER_SEQ,
     ITER_LIST,
@@ -60,7 +74,7 @@ typedef enum {
     ITER_SNAPSHOT ///< Backed by a captured Seq snapshot (for Deque, Map, Set, Stack)
 } iter_kind;
 
-/// Internal iterator state.
+/// @brief Internal iterator state with a retained live source or owned snapshot.
 typedef struct {
     void *vptr;
     void *source; ///< Retained reference to the original collection or snapshot Seq
@@ -71,6 +85,10 @@ typedef struct {
 
 /// @brief Checked cast of an opaque handle to the Iterator implementation.
 /// @details Traps with @p what if @p obj is NULL or not an Iterator.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used on validation failure.
+/// @return The validated iterator pointer, or NULL if a returning trap handler
+///         resumes after failed validation.
 static rt_iter_impl *as_iter(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_ITERATOR_CLASS_ID, sizeof(rt_iter_impl))) {
         rt_trap(what);
@@ -80,12 +98,14 @@ static rt_iter_impl *as_iter(void *obj, const char *what) {
 }
 
 /// @brief Drop one GC reference to a transient @p obj and free it at zero.
+/// @param obj Temporary retained runtime object, or NULL for a no-op.
 static void release_temp_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief GC finalizer: release the iterator's retained source collection.
+/// @param obj Iterator object being finalized, or NULL for a no-op.
 static void iter_finalizer(void *obj) {
     rt_iter_impl *it = obj ? as_iter(obj, "Iterator: invalid Iterator object") : NULL;
     if (it && it->source) {
@@ -98,6 +118,9 @@ static void iter_finalizer(void *obj) {
 
 /// @brief GC traversal: expose the retained source edge so iterator/source
 ///        reference cycles are visible to the cycle collector (VDOC-094).
+/// @param obj Iterator object to traverse.
+/// @param visitor Runtime callback invoked for the retained source.
+/// @param ctx Opaque visitor context forwarded unchanged.
 static void iter_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -106,7 +129,12 @@ static void iter_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
         visitor(it->source, ctx);
 }
 
-/// Create an iterator that retains source. Source MUST be a heap object.
+/// @brief Creates an iterator that retains a live indexed source.
+/// @param source Non-null runtime-managed collection.
+/// @param kind Indexed accessor to use for @p source.
+/// @param len Cached traversal length.
+/// @return New runtime-managed iterator, or NULL for a null source or after an
+///         allocation trap.
 static rt_iter_impl *make_iter(void *source, iter_kind kind, int64_t len) {
     rt_iter_impl *it;
     if (!source)
@@ -127,7 +155,12 @@ static rt_iter_impl *make_iter(void *source, iter_kind kind, int64_t len) {
     return it;
 }
 
-/// Create a snapshot iterator. Takes ownership of snapshot (does not add retain).
+/// @brief Creates an iterator that takes ownership of a Seq snapshot.
+/// @param snapshot Non-null newly created Seq whose creation reference transfers
+///        to the iterator.
+/// @param len Cached number of snapshot elements.
+/// @return New runtime-managed iterator, or NULL after releasing an unusable
+///         snapshot.
 static rt_iter_impl *make_iter_snapshot(void *snapshot, int64_t len) {
     rt_iter_impl *it;
     if (!snapshot)
@@ -162,14 +195,21 @@ static rt_iter_impl *make_iter_snapshot(void *snapshot, int64_t len) {
 // creation time.
 //=============================================================================
 
-/// @brief Build a live iterator over a Seq. Subsequent mutations of the seq are visible.
+/// @brief Build a live iterator over a Seq.
+/// @param seq Non-null Seq to retain.
+/// @return New iterator with the Seq's current length cached, or NULL.
+/// @note Element replacements are observed, but structural mutation during
+///       iteration is unsupported.
 void *rt_iter_from_seq(void *seq) {
     if (!seq)
         return NULL;
     return make_iter(seq, ITER_SEQ, rt_seq_len(seq));
 }
 
-/// @brief Build a live iterator over a List. Subsequent mutations are visible.
+/// @brief Build a live iterator over a List.
+/// @param list Non-null List to retain.
+/// @return New iterator with the List's current length cached, or NULL.
+/// @note Structural mutation during iteration is unsupported.
 void *rt_iter_from_list(void *list) {
     if (!list)
         return NULL;
@@ -177,6 +217,8 @@ void *rt_iter_from_list(void *list) {
 }
 
 /// @brief Snapshot a Deque into an iterator. Later mutations of the deque are NOT seen.
+/// @param deque Non-null Deque to snapshot in front-to-back order.
+/// @return New snapshot iterator, or NULL if snapshot construction fails.
 void *rt_iter_from_deque(void *deque) {
     void *snapshot;
     int64_t len, i;
@@ -196,7 +238,10 @@ void *rt_iter_from_deque(void *deque) {
     return make_iter_snapshot(snapshot, len);
 }
 
-/// @brief Build a live iterator over a ring buffer. Subsequent mutations are visible.
+/// @brief Build a live iterator over a Ring.
+/// @param ring Non-null Ring to retain.
+/// @return New iterator with the Ring's current length cached, or NULL.
+/// @note Structural mutation during iteration is unsupported.
 void *rt_iter_from_ring(void *ring) {
     if (!ring)
         return NULL;
@@ -204,6 +249,8 @@ void *rt_iter_from_ring(void *ring) {
 }
 
 /// @brief Snapshot the keys of a Map into an iterator (insertion order).
+/// @param map Non-null Map to snapshot.
+/// @return New snapshot iterator over retained key strings, or NULL.
 void *rt_iter_from_map_keys(void *map) {
     void *keys;
     if (!map)
@@ -215,6 +262,8 @@ void *rt_iter_from_map_keys(void *map) {
 }
 
 /// @brief Snapshot the values of a Map into an iterator (insertion order).
+/// @param map Non-null Map to snapshot.
+/// @return New snapshot iterator over retained values, or NULL.
 void *rt_iter_from_map_values(void *map) {
     void *values;
     if (!map)
@@ -227,6 +276,8 @@ void *rt_iter_from_map_values(void *map) {
 
 /// @brief Snapshot a Set into an iterator. Order is the set's internal hashing order — not
 /// guaranteed stable across versions. Mutations of the source set after iter creation are not seen.
+/// @param set Non-null Set to snapshot.
+/// @return New snapshot iterator, or NULL if snapshot construction fails.
 void *rt_iter_from_set(void *set) {
     void *items;
     if (!set)
@@ -238,6 +289,8 @@ void *rt_iter_from_set(void *set) {
 }
 
 /// @brief Snapshot a Stack into bottom-to-top iteration order without changing the source.
+/// @param stack Non-null Stack to snapshot.
+/// @return New snapshot iterator, or NULL after a size or allocation failure.
 void *rt_iter_from_stack(void *stack) {
     void *snapshot;
     void *clone;
@@ -302,6 +355,9 @@ void *rt_iter_from_stack(void *stack) {
 
 /// @brief Fetch element @p idx from the iterator's source, dispatching on
 ///        its backing collection kind (seq/list/ring/…).
+/// @param it Iterator whose source is accessed.
+/// @param idx Zero-based source index.
+/// @return Element pointer with the source accessor's native ownership.
 static void *get_element(rt_iter_impl *it, int64_t idx) {
     switch (it->kind) {
         case ITER_SEQ:
@@ -317,6 +373,8 @@ static void *get_element(rt_iter_impl *it, int64_t idx) {
 
 /// @brief Check whether the iterator has more elements.
 /// @details Returns true if the current position is before the end.
+/// @param iter Iterator handle, or NULL.
+/// @return 1 when another cached position remains; otherwise 0.
 int8_t rt_iter_has_next(void *iter) {
     rt_iter_impl *it;
     if (!iter)
@@ -327,6 +385,9 @@ int8_t rt_iter_has_next(void *iter) {
 
 /// @brief Return the current element and advance the cursor. Returns NULL when exhausted.
 /// Pair with `_has_next` to drive while-loop iteration.
+/// @param iter Iterator handle, or NULL.
+/// @return Current element as a retained caller-owned reference, or NULL when
+///         exhausted. The cursor advances by one on success.
 void *rt_iter_next(void *iter) {
     rt_iter_impl *it;
     void *elem;
@@ -343,6 +404,9 @@ void *rt_iter_next(void *iter) {
 }
 
 /// @brief Look at the current element without advancing the cursor.
+/// @param iter Iterator handle, or NULL.
+/// @return Current element as a retained caller-owned reference, or NULL when
+///         exhausted.
 void *rt_iter_peek(void *iter) {
     rt_iter_impl *it;
     void *elem;
@@ -358,6 +422,7 @@ void *rt_iter_peek(void *iter) {
 }
 
 /// @brief Reset the iterator to the beginning of the collection.
+/// @param iter Iterator handle, or NULL for a no-op.
 void rt_iter_reset(void *iter) {
     if (!iter)
         return;
@@ -374,6 +439,8 @@ int64_t rt_iter_index(void *iter) {
 }
 
 /// @brief Return the total number of elements in the iterable collection.
+/// @param iter Iterator handle, or NULL.
+/// @return Length cached when the iterator was created, or zero for NULL.
 int64_t rt_iter_count(void *iter) {
     if (!iter)
         return 0;
@@ -381,6 +448,9 @@ int64_t rt_iter_count(void *iter) {
 }
 
 /// @brief Drain the remaining iterator elements into a fresh Seq. Advances the cursor to end.
+/// @param iter Iterator handle, or NULL.
+/// @return A new owning Seq containing elements from the current position to
+///         the cached end. NULL produces an empty Seq.
 void *rt_iter_to_seq(void *iter) {
     rt_iter_impl *it;
     void *seq;

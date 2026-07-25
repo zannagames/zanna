@@ -883,6 +883,11 @@ static void metal_create_shadow_resources(VGFXMetalContext *ctx,
 /// @return An opaque VGFXMetalContext* handle (cast to void*), or NULL if no Metal device or native
 ///   view is available.
 static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
+    /* Headless contexts (ADR 0191 accelerated offscreen) are not implemented
+     * yet: the presentation layer requires a native view. Fail cleanly so the
+     * caller's software fallback engages instead of dereferencing NULL. */
+    if (!win)
+        return NULL;
     @autoreleasepool {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         if (!device) {

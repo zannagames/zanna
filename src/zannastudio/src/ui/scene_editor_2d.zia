@@ -14,7 +14,9 @@
 //     canonical JSON, so normal save/session/recovery paths remain authoritative.
 //   - One paint or object-drag gesture creates one gap-free history snapshot.
 //   - Compact windows show canvas or inspector at full width, never two slivers.
-//   - Raster work is bounded even for malformed or resource-limit-sized maps.
+//   - Raster work is viewport-windowed: only visible cells rasterize, 100%
+//     zoom is the authored tile resolution, wheel zoom anchors at the
+//     pointer, and every cell of every scene stays scroll-reachable.
 //   - Layer images resolve through bounded preview caches; broken references
 //     never invalidate or rewrite authored scene JSON.
 //   - Multi-object property, layout, nudge, and selection commands commit once
@@ -75,6 +77,7 @@ bind "scene_component_authoring_controller";
 bind "scene_component_palette";
 bind "scene_component_schema";
 bind "scene_hierarchy_search";
+bind "scene_history";
 bind "scene_layout_2d";
 bind "scene_camera_lighting_2d";
 bind "scene_property_inspector_2d";
@@ -120,12 +123,16 @@ final MODE_PICKER: Integer = 6;
 final DEFAULT_SCENE_WIDTH: Integer = 32;
 final DEFAULT_SCENE_HEIGHT: Integer = 18;
 final DEFAULT_TILE_SIZE: Integer = 32;
-final BASE_DISPLAY_CELL: Integer = 16;
-final MIN_ZOOM_PERCENT: Integer = 25;
+final MIN_ZOOM_PERCENT: Integer = 10;
 final MAX_ZOOM_PERCENT: Integer = 1600;
-final MAX_RENDER_DIMENSION: Integer = 2048;
-final MAX_RENDER_CELLS_PER_AXIS: Integer = 256;
+// Guard for one rendered window, not a scene-reachability cap: the canvas
+// rasterizes only the visible viewport window, so every cell of every scene
+// stays reachable at every zoom (window size is bounded by the display).
+final MAX_RENDER_DIMENSION: Integer = 8192;
+final MAX_SELECTED_CELL: Integer = 1000000;
+final MAX_NEW_SCENE_CELLS: Integer = 256;
 final MAX_2D_SCENE_HISTORY: Integer = 100;
+final MAX_2D_HISTORY_BYTES: Integer = 64000000;
 final MAX_INSPECTOR_PROPERTIES: Integer = 512;
 final MAX_OBJECT_TREE_ROWS: Integer = 4096;
 final MAX_OBJECT_HIERARCHY_DEPTH: Integer = 256;
@@ -179,9 +186,10 @@ func AbsInt2D(value: Integer) -> Integer {
 ///          without constructing a native GUI.
 expose func FitZoomPercent(sceneWidth: Integer,
                            sceneHeight: Integer,
+                           tileSize: Integer,
                            viewportWidth: Integer,
                            viewportHeight: Integer) -> Integer {
-    if sceneWidth <= 0 or sceneHeight <= 0
+    if sceneWidth <= 0 or sceneHeight <= 0 or tileSize <= 0
        or viewportWidth <= 0 or viewportHeight <= 0 {
         return 100;
     }
@@ -190,7 +198,7 @@ expose func FitZoomPercent(sceneWidth: Integer,
     var cell = cellX;
     if cellY < cell { cell = cellY; }
     if cell < 1 { cell = 1; }
-    return ClampInt(cell * 100 / BASE_DISPLAY_CELL,
+    return ClampInt(cell * 100 / tileSize,
                     MIN_ZOOM_PERCENT,
                     MAX_ZOOM_PERCENT);
 }
@@ -226,6 +234,8 @@ class SceneEditor2D {
     expose GUI.Button zoomOutButton;
     expose GUI.Button zoomInButton;
     expose GUI.Button fitButton;
+    expose GUI.Button actualSizeButton;
+    expose GUI.Button gridButton;
     expose GUI.Button inspectorButton;
     expose GUI.Label toolbarStatus;
     expose GUI.Label viewStatusLabel;
@@ -316,6 +326,9 @@ class SceneEditor2D {
     expose Integer displayCellSize;
     expose Integer renderedColumns;
     expose Integer renderedRows;
+    expose Integer viewOriginX;
+    expose Integer viewOriginY;
+    expose Boolean showGrid;
     expose Integer revision;
     expose Boolean compactLayout;
     expose Boolean inspectorRequestedVisible;
@@ -350,6 +363,8 @@ class SceneEditor2D {
     hide Boolean canvasMarqueeToggle;
     hide Integer lastCanvasViewportWidth;
     hide Integer lastCanvasViewportHeight;
+    hide Integer centerPadX;
+    hide Integer centerPadY;
     hide Boolean restoreScrollPending;
     hide Number pendingCanvasScrollX;
     hide Number pendingCanvasScrollY;
@@ -390,6 +405,8 @@ class SceneEditor2D {
         zoomOutButton = null;
         zoomInButton = null;
         fitButton = null;
+        actualSizeButton = null;
+        gridButton = null;
         inspectorButton = null;
         toolbarStatus = null;
         viewStatusLabel = null;
@@ -479,9 +496,12 @@ class SceneEditor2D {
         tileRectangleStartY = -1;
         tileRectangleCurrentX = -1;
         tileRectangleCurrentY = -1;
-        displayCellSize = BASE_DISPLAY_CELL;
+        displayCellSize = DEFAULT_TILE_SIZE;
         renderedColumns = 0;
         renderedRows = 0;
+        viewOriginX = 0;
+        viewOriginY = 0;
+        showGrid = true;
         revision = 0;
         compactLayout = false;
         inspectorRequestedVisible = true;
@@ -524,6 +544,8 @@ class SceneEditor2D {
         canvasMarqueeToggle = false;
         lastCanvasViewportWidth = 0;
         lastCanvasViewportHeight = 0;
+        centerPadX = 0;
+        centerPadY = 0;
         restoreScrollPending = false;
         pendingCanvasScrollX = 0.0;
         pendingCanvasScrollY = 0.0;
@@ -613,6 +635,11 @@ class SceneEditor2D {
         zoomInButton.SetTooltip("Zoom in");
         fitButton = GUI.Button.New(viewToolbar, "Fit");
         fitButton.SetTooltip("Fit the complete scene in the current viewport");
+        actualSizeButton = GUI.Button.New(viewToolbar, "1:1");
+        actualSizeButton.SetTooltip(
+            "Show artwork at its native tile resolution (100% zoom)");
+        gridButton = GUI.Button.New(viewToolbar, "Grid: on");
+        gridButton.SetTooltip("Toggle the tile grid overlay");
         inspectorButton = GUI.Button.New(viewToolbar, "Hide Inspector");
         inspectorButton.SetStyle(2);
         inspectorButton.SetTooltip(
@@ -633,9 +660,12 @@ class SceneEditor2D {
 
         canvasScroll = GUI.ScrollView.New(bodySplit.First);
         canvasScroll.SetFlex(1.0);
+        // The stage carries the full-scene logical extent for the scrollbars
+        // while the image renders only the visible window. Start alignment
+        // lets per-frame image margins pin the window under the viewport.
         canvasStage = GUI.VBox.New();
-        canvasStage.SetAlign(GUI.Align.Center);
-        canvasStage.SetJustify(GUI.Justify.Center);
+        canvasStage.SetAlign(GUI.Align.Start);
+        canvasStage.SetJustify(GUI.Justify.Start);
         canvasScroll.AddChild(canvasStage);
         canvasImage = GUI.Image.New(canvasStage);
         canvasImage.SetScaleMode(0);
@@ -646,7 +676,8 @@ class SceneEditor2D {
             "Paint or erase freehand, drag Rectangle, click Fill or Pick; "
             + "Escape cancels captured tile gestures. In Select mode click or "
             + "drag a box, Shift adds, Control/Command toggles, and object "
-            + "drags move the selection. Wheel zooms and middle-drag pans.");
+            + "drags move the selection. The wheel zooms around the pointer "
+            + "and middle-drag pans.");
 
         inspectorScroll = GUI.ScrollView.New(bodySplit.Second);
         inspectorScroll.SetFlex(1.0);
@@ -1003,16 +1034,12 @@ class SceneEditor2D {
         if runSceneButton.WasClicked() { runSceneRequested = true; }
         PumpPreviewClock();
         if objectButton.WasClicked() { SetMode(MODE_OBJECT); }
-        if zoomOutButton.WasClicked() {
-            zoomPercent = ClampInt(zoomPercent - 25,
-                                   MIN_ZOOM_PERCENT,
-                                   MAX_ZOOM_PERCENT);
-            renderDirty = true;
-        }
-        if zoomInButton.WasClicked() {
-            zoomPercent = ClampInt(zoomPercent + 25,
-                                   MIN_ZOOM_PERCENT,
-                                   MAX_ZOOM_PERCENT);
+        if zoomOutButton.WasClicked() { ZoomAtWindowCenter(-1); }
+        if zoomInButton.WasClicked() { ZoomAtWindowCenter(1); }
+        if actualSizeButton.WasClicked() { ZoomToPercentAtWindowCenter(100); }
+        if gridButton.WasClicked() {
+            showGrid = showGrid == false;
+            RefreshGridButton();
             renderDirty = true;
         }
         if fitButton.WasClicked() {
@@ -1186,6 +1213,7 @@ class SceneEditor2D {
         state.inspectorRequestedVisible = inspectorRequestedVisible;
         state.compactInspectorShown = compactInspectorShown;
         state.previewActive = previewActive;
+        state.showGrid = showGrid;
         state.undoStack = undoStack;
         state.redoStack = redoStack;
         state.cleanSerialized = cleanSerialized;
@@ -1212,6 +1240,8 @@ class SceneEditor2D {
             pendingInspectorScrollY = 0.0;
             inspectorRequestedVisible = true;
             compactInspectorShown = false;
+            showGrid = true;
+            RefreshGridButton();
             restoreScrollPending = true;
             fitPending = true;
             UpdateModeButtons();
@@ -1229,9 +1259,9 @@ class SceneEditor2D {
         selectedSceneProperty = ClampInt(
             state.selectedSceneProperty, -1, MAX_INSPECTOR_PROPERTIES - 1);
         selectedCellX = ClampInt(
-            state.selectedCellX, -1, MAX_RENDER_CELLS_PER_AXIS - 1);
+            state.selectedCellX, -1, MAX_SELECTED_CELL);
         selectedCellY = ClampInt(
-            state.selectedCellY, -1, MAX_RENDER_CELLS_PER_AXIS - 1);
+            state.selectedCellY, -1, MAX_SELECTED_CELL);
         if tileSpinner != null {
             tileSpinner.SetValue(ClampInt(state.tileId, 0, 1000000));
         }
@@ -1248,7 +1278,9 @@ class SceneEditor2D {
         inspectorRequestedVisible = state.inspectorRequestedVisible;
         compactInspectorShown = state.compactInspectorShown;
         previewActive = state.previewActive;
+        showGrid = state.showGrid;
         RefreshPreviewButton();
+        RefreshGridButton();
         restoreScrollPending = true;
         fitPending = false;
         UpdateModeButtons();
@@ -3524,17 +3556,17 @@ class SceneEditor2D {
                 lineColor = Color.RGB(104, 220, 255);
             }
             var fromX = scene.ObjectX(routeIndex) * displayCellSize
-                / scene.TileWidth + displayCellSize / 2;
+                / scene.TileWidth + displayCellSize / 2 - viewOriginX;
             var fromY = scene.ObjectY(routeIndex) * displayCellSize
-                / scene.TileHeight + displayCellSize / 2;
+                / scene.TileHeight + displayCellSize / 2 - viewOriginY;
             var drawn = 0;
             var childIndex = 0;
             while childIndex < scene.ObjectCount() and drawn < 256 {
                 if scene.ObjectParent(childIndex) == routeIndex {
                     var toX = scene.ObjectX(childIndex) * displayCellSize
-                        / scene.TileWidth + displayCellSize / 2;
+                        / scene.TileWidth + displayCellSize / 2 - viewOriginX;
                     var toY = scene.ObjectY(childIndex) * displayCellSize
-                        / scene.TileHeight + displayCellSize / 2;
+                        / scene.TileHeight + displayCellSize / 2 - viewOriginY;
                     framePixels.DrawLine(fromX, fromY, toX, toY, lineColor);
                     fromX = toX;
                     fromY = toY;
@@ -3862,9 +3894,9 @@ class SceneEditor2D {
             return;
         }
         var centerX = scene.GetInt("playerStartX", 0) * displayCellSize
-            / scene.TileWidth;
+            / scene.TileWidth - viewOriginX;
         var centerY = scene.GetInt("playerStartY", 0) * displayCellSize
-            / scene.TileHeight;
+            / scene.TileHeight - viewOriginY;
         var halfWidth = scene.CameraGetInt("deadzoneWidth", 0)
             * displayCellSize / scene.TileWidth / 2;
         var halfHeight = scene.CameraGetInt("deadzoneHeight", 0)
@@ -3886,20 +3918,20 @@ class SceneEditor2D {
            or scene.CameraFieldKind("maxY") != "int" {
             return;
         }
-        var canvasWidth = renderedColumns * displayCellSize;
-        var canvasHeight = renderedRows * displayCellSize;
+        var contentWidth = scene.Width * displayCellSize;
+        var contentHeight = scene.Height * displayCellSize;
         var x0 = ClampInt(
             scene.CameraGetInt("minX", 0) * displayCellSize / scene.TileWidth,
-            0, canvasWidth);
+            0, contentWidth) - viewOriginX;
         var y0 = ClampInt(
             scene.CameraGetInt("minY", 0) * displayCellSize / scene.TileHeight,
-            0, canvasHeight);
+            0, contentHeight) - viewOriginY;
         var x1 = ClampInt(
             scene.CameraGetInt("maxX", 0) * displayCellSize / scene.TileWidth,
-            0, canvasWidth);
+            0, contentWidth) - viewOriginX;
         var y1 = ClampInt(
             scene.CameraGetInt("maxY", 0) * displayCellSize / scene.TileHeight,
-            0, canvasHeight);
+            0, contentHeight) - viewOriginY;
         if x1 <= x0 or y1 <= y0 { return; }
         framePixels.DrawFrame(
             x0, y0, x1 - x0 + 1, y1 - y0 + 1, Color.RGB(233, 140, 220));
@@ -4376,8 +4408,8 @@ class SceneEditor2D {
     expose func ReplaceScene(width: Integer,
                              height: Integer,
                              tileSize: Integer) -> Boolean {
-        var nextWidth = ClampInt(width, 1, MAX_RENDER_CELLS_PER_AXIS);
-        var nextHeight = ClampInt(height, 1, MAX_RENDER_CELLS_PER_AXIS);
+        var nextWidth = ClampInt(width, 1, MAX_NEW_SCENE_CELLS);
+        var nextHeight = ClampInt(height, 1, MAX_NEW_SCENE_CELLS);
         var nextTileSize = ClampInt(tileSize, 1, 512);
         scene = SceneDocument.New(nextWidth, nextHeight,
                                   nextTileSize, nextTileSize);
@@ -4579,11 +4611,15 @@ class SceneEditor2D {
         return true;
     }
 
-    /// @brief Append one bounded canonical history snapshot.
+    /// @brief Append one bounded canonical scene-JSON history snapshot.
+    /// @details Entry count and aggregate bytes are both bounded (ADR 0190):
+    ///          oldest snapshots drop first, and the newest snapshot is
+    ///          always retained so the last edit stays undoable.
     hide func PushHistory(stack: List[String], content: String) {
         if content == "" { return; }
         stack.add(content);
-        if stack.count() > MAX_2D_SCENE_HISTORY { stack.removeAt(0); }
+        scene_history.TrimHistory(
+            stack, MAX_2D_SCENE_HISTORY, MAX_2D_HISTORY_BYTES);
     }
 
     hide func SetMode(nextMode: Integer) {
@@ -4647,6 +4683,8 @@ class SceneEditor2D {
         zoomOutButton.SetEnabled(enabled);
         zoomInButton.SetEnabled(enabled);
         fitButton.SetEnabled(enabled);
+        actualSizeButton.SetEnabled(enabled);
+        gridButton.SetEnabled(enabled);
         addLayerButton.SetEnabled(enabled);
         removeLayerButton.SetEnabled(enabled);
         layerUpButton.SetEnabled(enabled);
@@ -6279,30 +6317,35 @@ class SceneEditor2D {
             return false;
         }
 
-        var wheel = Input.Mouse.WheelYFloat();
-        if wheel > 0.0 {
-            zoomPercent = ClampInt(zoomPercent + 25,
-                                   MIN_ZOOM_PERCENT,
-                                   MAX_ZOOM_PERCENT);
-            fitPending = false;
-            renderDirty = true;
-        } else if wheel < 0.0 {
-            zoomPercent = ClampInt(zoomPercent - 25,
-                                   MIN_ZOOM_PERCENT,
-                                   MAX_ZOOM_PERCENT);
-            fitPending = false;
-            renderDirty = true;
-        }
-
         var relativeX = PhysicalPointerToUi(Input.Mouse.X())
             - canvasImage.GetScreenX();
         var relativeY = PhysicalPointerToUi(Input.Mouse.Y())
             - canvasImage.GetScreenY();
         if displayCellSize <= 0 { return false; }
-        var cellX = Convert.NumToInt(relativeX) / displayCellSize;
-        var cellY = Convert.NumToInt(relativeY) / displayCellSize;
+
+        var wheel = Input.Mouse.WheelYFloat();
+        if wheel > 0.0 or wheel < 0.0 {
+            // The image's left/top edge sits exactly at content pixel
+            // (viewOriginX, viewOriginY), and at (centerPadX, centerPadY)
+            // inside the viewport, so both anchor forms derive directly.
+            var direction = 1;
+            if wheel < 0.0 { direction = -1; }
+            ZoomStepAnchored(
+                direction,
+                relativeX + viewOriginX,
+                relativeY + viewOriginY,
+                relativeX + centerPadX,
+                relativeY + centerPadY);
+            return false;
+        }
+
+        var contentX = Convert.NumToInt(relativeX) + viewOriginX;
+        var contentY = Convert.NumToInt(relativeY) + viewOriginY;
+        if contentX < 0 or contentY < 0 { return false; }
+        var cellX = contentX / displayCellSize;
+        var cellY = contentY / displayCellSize;
         if cellX < 0 or cellY < 0
-           or cellX >= renderedColumns or cellY >= renderedRows {
+           or cellX >= scene.Width or cellY >= scene.Height {
             return false;
         }
 
@@ -6664,12 +6707,128 @@ class SceneEditor2D {
             canvasScroll.GetLogicalHeight() - 24.0);
         if width <= 0 or height <= 0 { return false; }
         zoomPercent = FitZoomPercent(
-            scene.Width, scene.Height, width, height);
+            scene.Width, scene.Height, SceneTilePixelSize(),
+            width, height);
         SetLogicalScroll(canvasScroll, 0.0, 0.0);
         return true;
     }
 
-    /// @brief Re-render when the viewport changes so centering stays accurate.
+    /// @brief The authored tile edge in pixels that 100% zoom reproduces.
+    hide func SceneTilePixelSize() -> Integer {
+        if scene != null and scene.TileWidth > 0 { return scene.TileWidth; }
+        return DEFAULT_TILE_SIZE;
+    }
+
+    /// @brief Rendered cell edge in pixels for the current zoom.
+    /// @details 100% zoom shows artwork at native tile resolution; the cell
+    ///          never collapses below one pixel.
+    hide func DisplayCellForZoom() -> Integer {
+        var cell = SceneTilePixelSize() * zoomPercent / 100;
+        if cell < 1 { cell = 1; }
+        return cell;
+    }
+
+    /// @brief Set zoom while keeping one content point fixed in the viewport.
+    /// @details @p anchorContentX/Y are content pixels at the CURRENT zoom;
+    ///          @p anchorViewX/Y are the same point's viewport offsets. The
+    ///          scroll target keeps that world point under the same viewport
+    ///          position after the cell size changes; the ScrollView clamps.
+    hide func ZoomToPercentAnchored(nextPercent: Integer,
+                                    anchorContentX: Number,
+                                    anchorContentY: Number,
+                                    anchorViewX: Number,
+                                    anchorViewY: Number) {
+        var clamped = ClampInt(
+            nextPercent, MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
+        if clamped == zoomPercent { return; }
+        var previousCell = displayCellSize;
+        if previousCell < 1 { previousCell = 1; }
+        var anchorCellX = anchorContentX / previousCell;
+        var anchorCellY = anchorContentY / previousCell;
+        zoomPercent = clamped;
+        fitPending = false;
+        renderDirty = true;
+        var nextCell = DisplayCellForZoom();
+        if scene != null and canvasStage != null {
+            // Publish the new content extent before anchoring the scroll so
+            // the ScrollView cannot clamp against the previous zoom's bounds.
+            var contentWidth = scene.Width * nextCell + 1;
+            var contentHeight = scene.Height * nextCell + 1;
+            var stageWidth = contentWidth;
+            var stageHeight = contentHeight;
+            if lastCanvasViewportWidth > stageWidth {
+                stageWidth = lastCanvasViewportWidth;
+            }
+            if lastCanvasViewportHeight > stageHeight {
+                stageHeight = lastCanvasViewportHeight;
+            }
+            canvasStage.SetSize(stageWidth, stageHeight);
+            SetLogicalContentSize(canvasScroll, stageWidth, stageHeight);
+        }
+        SetLogicalScroll(
+            canvasScroll,
+            anchorCellX * nextCell - anchorViewX,
+            anchorCellY * nextCell - anchorViewY);
+    }
+
+    /// @brief One multiplicative zoom step (~1.25x) anchored at a point.
+    hide func ZoomStepAnchored(direction: Integer,
+                               anchorContentX: Number,
+                               anchorContentY: Number,
+                               anchorViewX: Number,
+                               anchorViewY: Number) {
+        var next = zoomPercent * 5 / 4;
+        if direction < 0 { next = zoomPercent * 4 / 5; }
+        if next == zoomPercent { next = zoomPercent + direction; }
+        ZoomToPercentAnchored(
+            next, anchorContentX, anchorContentY, anchorViewX, anchorViewY);
+    }
+
+    /// @brief Zoom one step keeping the rendered window's center fixed.
+    hide func ZoomAtWindowCenter(direction: Integer) {
+        var halfWidth = renderedColumns * displayCellSize / 2.0;
+        var halfHeight = renderedRows * displayCellSize / 2.0;
+        ZoomStepAnchored(
+            direction,
+            viewOriginX + halfWidth,
+            viewOriginY + halfHeight,
+            centerPadX + halfWidth,
+            centerPadY + halfHeight);
+    }
+
+    /// @brief Public zoom control anchored at the rendered window's center.
+    /// @details Wheel zoom anchors at the pointer through the same shared
+    ///          helper; this surface serves toolbar, commands, and probes.
+    expose func SetZoomPercent(nextPercent: Integer) {
+        ZoomToPercentAtWindowCenter(nextPercent);
+    }
+
+    /// @brief Jump to an exact zoom keeping the window's center fixed.
+    hide func ZoomToPercentAtWindowCenter(nextPercent: Integer) {
+        var halfWidth = renderedColumns * displayCellSize / 2.0;
+        var halfHeight = renderedRows * displayCellSize / 2.0;
+        ZoomToPercentAnchored(
+            nextPercent,
+            viewOriginX + halfWidth,
+            viewOriginY + halfHeight,
+            centerPadX + halfWidth,
+            centerPadY + halfHeight);
+    }
+
+    /// @brief Reflect the grid-overlay toggle on its toolbar button.
+    hide func RefreshGridButton() {
+        if gridButton == null { return; }
+        if showGrid {
+            gridButton.SetText("Grid: on");
+        } else {
+            gridButton.SetText("Grid");
+        }
+    }
+
+    /// @brief Re-render when the viewport or scroll offset changes.
+    /// @details The image holds only the visible window, so unlike the old
+    ///          full-scene buffer, every scroll movement (scrollbar, wheel
+    ///          pan, restored session offset) must re-rasterize the window.
     hide func UpdateCanvasViewportSize() {
         if canvasScroll == null { return; }
         var width = Convert.NumToInt(canvasScroll.GetLogicalWidth());
@@ -6679,6 +6838,13 @@ class SceneEditor2D {
             lastCanvasViewportWidth = width;
             lastCanvasViewportHeight = height;
             renderDirty = true;
+        }
+        if scene != null {
+            var scrollX = Convert.NumToInt(LogicalScrollX(canvasScroll));
+            var scrollY = Convert.NumToInt(LogicalScrollY(canvasScroll));
+            if scrollX != viewOriginX or scrollY != viewOriginY {
+                renderDirty = true;
+            }
         }
     }
 
@@ -6749,58 +6915,107 @@ class SceneEditor2D {
             if lastCanvasViewportHeight > emptyStageHeight {
                 emptyStageHeight = lastCanvasViewportHeight;
             }
+            centerPadX = (emptyStageWidth - 640) / 2;
+            centerPadY = (emptyStageHeight - 360) / 2;
+            if centerPadX < 0 { centerPadX = 0; }
+            if centerPadY < 0 { centerPadY = 0; }
+            canvasImage.SetMarginEdges(centerPadX, centerPadY, 0.0, 0.0);
             canvasStage.SetSize(emptyStageWidth, emptyStageHeight);
             SetLogicalContentSize(
                 canvasScroll, emptyStageWidth, emptyStageHeight);
             renderedColumns = 0;
             renderedRows = 0;
+            viewOriginX = 0;
+            viewOriginY = 0;
             viewStatusLabel.SetText("");
             return;
         }
 
-        displayCellSize = BASE_DISPLAY_CELL * zoomPercent / 100;
-        if displayCellSize < 1 { displayCellSize = 1; }
-        renderedColumns = scene.Width;
-        renderedRows = scene.Height;
-        if renderedColumns > MAX_RENDER_CELLS_PER_AXIS {
-            renderedColumns = MAX_RENDER_CELLS_PER_AXIS;
-        }
-        if renderedRows > MAX_RENDER_CELLS_PER_AXIS {
-            renderedRows = MAX_RENDER_CELLS_PER_AXIS;
-        }
-        var maxColumns = MAX_RENDER_DIMENSION / displayCellSize;
-        var maxRows = MAX_RENDER_DIMENSION / displayCellSize;
-        if renderedColumns > maxColumns { renderedColumns = maxColumns; }
-        if renderedRows > maxRows { renderedRows = maxRows; }
-        if renderedColumns < 1 { renderedColumns = 1; }
-        if renderedRows < 1 { renderedRows = 1; }
+        // Windowed rendering: the stage advertises the complete scene extent
+        // to the scrollbars while only the visible window rasterizes, so every
+        // cell of every scene stays reachable at every zoom.
+        displayCellSize = DisplayCellForZoom();
+        var sceneColumns = scene.Width;
+        var sceneRows = scene.Height;
+        if sceneColumns < 1 { sceneColumns = 1; }
+        if sceneRows < 1 { sceneRows = 1; }
+        var contentWidth = sceneColumns * displayCellSize + 1;
+        var contentHeight = sceneRows * displayCellSize + 1;
 
-        var pixelWidth = renderedColumns * displayCellSize + 1;
-        var pixelHeight = renderedRows * displayCellSize + 1;
-        framePixels = Pixels.New(pixelWidth, pixelHeight);
+        var viewportWidth = lastCanvasViewportWidth;
+        var viewportHeight = lastCanvasViewportHeight;
+        if viewportWidth <= 0 { viewportWidth = 640; }
+        if viewportHeight <= 0 { viewportHeight = 360; }
+
+        var stageWidth = contentWidth;
+        var stageHeight = contentHeight;
+        if viewportWidth > stageWidth { stageWidth = viewportWidth; }
+        if viewportHeight > stageHeight { stageHeight = viewportHeight; }
+        canvasStage.SetSize(stageWidth, stageHeight);
+        SetLogicalContentSize(canvasScroll, stageWidth, stageHeight);
+
+        var windowWidth = contentWidth;
+        if windowWidth > viewportWidth { windowWidth = viewportWidth; }
+        if windowWidth > MAX_RENDER_DIMENSION {
+            windowWidth = MAX_RENDER_DIMENSION;
+        }
+        var windowHeight = contentHeight;
+        if windowHeight > viewportHeight { windowHeight = viewportHeight; }
+        if windowHeight > MAX_RENDER_DIMENSION {
+            windowHeight = MAX_RENDER_DIMENSION;
+        }
+        if windowWidth < 1 { windowWidth = 1; }
+        if windowHeight < 1 { windowHeight = 1; }
+
+        centerPadX = (viewportWidth - contentWidth) / 2;
+        centerPadY = (viewportHeight - contentHeight) / 2;
+        if centerPadX < 0 { centerPadX = 0; }
+        if centerPadY < 0 { centerPadY = 0; }
+
+        viewOriginX = Convert.NumToInt(LogicalScrollX(canvasScroll));
+        viewOriginY = Convert.NumToInt(LogicalScrollY(canvasScroll));
+        var maxOriginX = contentWidth - windowWidth;
+        var maxOriginY = contentHeight - windowHeight;
+        if maxOriginX < 0 { maxOriginX = 0; }
+        if maxOriginY < 0 { maxOriginY = 0; }
+        viewOriginX = ClampInt(viewOriginX, 0, maxOriginX);
+        viewOriginY = ClampInt(viewOriginY, 0, maxOriginY);
+
+        var firstColumn = viewOriginX / displayCellSize;
+        var firstRow = viewOriginY / displayCellSize;
+        var lastColumn = (viewOriginX + windowWidth - 1) / displayCellSize;
+        var lastRow = (viewOriginY + windowHeight - 1) / displayCellSize;
+        if lastColumn > sceneColumns - 1 { lastColumn = sceneColumns - 1; }
+        if lastRow > sceneRows - 1 { lastRow = sceneRows - 1; }
+        renderedColumns = lastColumn - firstColumn + 1;
+        renderedRows = lastRow - firstRow + 1;
+
+        framePixels = Pixels.New(windowWidth, windowHeight);
         framePixels.FillColor(Color.RGB(24, 28, 36));
 
         var layer = 0;
         while layer < scene.LayerCount() {
             if scene.LayerVisible(layer) {
-                var y = 0;
-                while y < renderedRows {
-                    var x = 0;
-                    while x < renderedColumns {
+                var y = firstRow;
+                while y <= lastRow {
+                    var x = firstColumn;
+                    while x <= lastColumn {
                         var tile = PreviewResolvedTile(
                             scene.GetTile(layer, x, y));
                         if tile > 0 {
+                            var drawX = x * displayCellSize - viewOriginX;
+                            var drawY = y * displayCellSize - viewOriginY;
                             var drewAsset = tilesets.DrawTile(
                                 framePixels,
                                 layer,
                                 tile,
-                                x * displayCellSize,
-                                y * displayCellSize,
+                                drawX,
+                                drawY,
                                 displayCellSize);
                             if drewAsset == false {
                                 framePixels.DrawBox(
-                                    x * displayCellSize + 1,
-                                    y * displayCellSize + 1,
+                                    drawX + 1,
+                                    drawY + 1,
                                     displayCellSize - 1,
                                     displayCellSize - 1,
                                     TilePreviewColor(tile, layer));
@@ -6814,31 +7029,43 @@ class SceneEditor2D {
             layer = layer + 1;
         }
 
-        var gridColor = Color.RGB(54, 61, 73);
-        var x = 0;
-        while x <= renderedColumns {
-            framePixels.DrawLine(x * displayCellSize, 0,
-                                 x * displayCellSize, pixelHeight - 1,
-                                 gridColor);
-            x = x + 1;
-        }
-        var y = 0;
-        while y <= renderedRows {
-            framePixels.DrawLine(0, y * displayCellSize,
-                                 pixelWidth - 1, y * displayCellSize,
-                                 gridColor);
-            y = y + 1;
+        if showGrid {
+            var gridColor = Color.RGB(54, 61, 73);
+            var x = firstColumn;
+            while x <= lastColumn + 1 {
+                var lineX = x * displayCellSize - viewOriginX;
+                framePixels.DrawLine(lineX, 0,
+                                     lineX, windowHeight - 1,
+                                     gridColor);
+                x = x + 1;
+            }
+            var y = firstRow;
+            while y <= lastRow + 1 {
+                var lineY = y * displayCellSize - viewOriginY;
+                framePixels.DrawLine(0, lineY,
+                                     windowWidth - 1, lineY,
+                                     gridColor);
+                y = y + 1;
+            }
         }
 
         DrawCameraBoundsOverlay();
         DrawPreviewDeadzoneOverlay();
         DrawRoutePolylines();
+        var overlayMargin = displayCellSize * 2 + 32;
         var objectIndex = 0;
         while objectIndex < scene.ObjectCount() {
             var objectX = scene.ObjectX(objectIndex) * displayCellSize
-                / scene.TileWidth;
+                / scene.TileWidth - viewOriginX;
             var objectY = scene.ObjectY(objectIndex) * displayCellSize
-                / scene.TileHeight;
+                / scene.TileHeight - viewOriginY;
+            if objectX < 0 - overlayMargin
+               or objectY < 0 - overlayMargin
+               or objectX > windowWidth + overlayMargin
+               or objectY > windowHeight + overlayMargin {
+                objectIndex = objectIndex + 1;
+                continue;
+            }
             var objectColor = Color.RGB(255, 190, 72);
             if scene_selection.Contains(selectedObjects, objectIndex) {
                 objectColor = Color.RGB(104, 220, 255);
@@ -6869,13 +7096,14 @@ class SceneEditor2D {
         }
 
         if selectedCellX >= 0 and selectedCellY >= 0
-           and selectedCellX < renderedColumns
-           and selectedCellY < renderedRows {
-            framePixels.DrawFrame(selectedCellX * displayCellSize,
-                                  selectedCellY * displayCellSize,
-                                  displayCellSize + 1,
-                                  displayCellSize + 1,
-                                  Color.RGB(255, 255, 255));
+           and selectedCellX < sceneColumns
+           and selectedCellY < sceneRows {
+            framePixels.DrawFrame(
+                selectedCellX * displayCellSize - viewOriginX,
+                selectedCellY * displayCellSize - viewOriginY,
+                displayCellSize + 1,
+                displayCellSize + 1,
+                Color.RGB(255, 255, 255));
         }
 
         if tileRectangleActive
@@ -6896,8 +7124,8 @@ class SceneEditor2D {
                 maximumTileY = tileRectangleStartY;
             }
             framePixels.DrawFrame(
-                minimumTileX * displayCellSize,
-                minimumTileY * displayCellSize,
+                minimumTileX * displayCellSize - viewOriginX,
+                minimumTileY * displayCellSize - viewOriginY,
                 (maximumTileX - minimumTileX + 1)
                     * displayCellSize + 1,
                 (maximumTileY - minimumTileY + 1)
@@ -6923,31 +7151,22 @@ class SceneEditor2D {
                 maximumY = canvasMarqueeStartY;
             }
             framePixels.DrawFrame(
-                minimumX * displayCellSize,
-                minimumY * displayCellSize,
+                minimumX * displayCellSize - viewOriginX,
+                minimumY * displayCellSize - viewOriginY,
                 (maximumX - minimumX + 1) * displayCellSize + 1,
                 (maximumY - minimumY + 1) * displayCellSize + 1,
                 CANVAS_MARQUEE_COLOR);
         }
 
-        canvasImage.SetPixels(framePixels, pixelWidth, pixelHeight);
-        canvasImage.SetSize(pixelWidth, pixelHeight);
-        var stageWidth = pixelWidth;
-        var stageHeight = pixelHeight;
-        if lastCanvasViewportWidth > stageWidth {
-            stageWidth = lastCanvasViewportWidth;
-        }
-        if lastCanvasViewportHeight > stageHeight {
-            stageHeight = lastCanvasViewportHeight;
-        }
-        canvasStage.SetSize(stageWidth, stageHeight);
-        SetLogicalContentSize(canvasScroll, stageWidth, stageHeight);
-        var clipped = renderedColumns < scene.Width or renderedRows < scene.Height;
+        canvasImage.SetPixels(framePixels, windowWidth, windowHeight);
+        canvasImage.SetSize(windowWidth, windowHeight);
+        // Pin the rendered window under the viewport: the ScrollView places
+        // the image at (margin - scroll), so a margin equal to the clamped
+        // scroll origin keeps window pixels exactly aligned with content
+        // coordinates; the pad centers small scenes.
+        canvasImage.SetMarginEdges(
+            viewOriginX + centerPadX, viewOriginY + centerPadY, 0.0, 0.0);
         var suffix = "";
-        if clipped {
-            suffix = "  |  preview clipped to "
-                + renderedColumns + "x" + renderedRows;
-        }
         if tilesets.cacheSaturated {
             suffix = suffix + "  |  tileset preview cache capped";
         }

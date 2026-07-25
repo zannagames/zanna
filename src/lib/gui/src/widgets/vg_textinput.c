@@ -23,6 +23,12 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements UTF-8 text editing, grapheme-safe navigation, selection,
+///        undo/redo, scrolling, password display, and IME composition.
+/// @details Committed positions are codepoint indices and are snapped through
+///          grapheme helpers for user-visible navigation. Composition remains
+///          separate from committed text and undo history until explicit commit.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
@@ -80,6 +86,10 @@ static vg_widget_vtable_t g_textinput_vtable = {.destroy = textinput_destroy,
 
 /// @brief Grows input->text to hold at least @p needed bytes, doubling from
 /// TEXTINPUT_INITIAL_CAPACITY.
+/// @param input Text input owning the mutable buffer.
+/// @param needed Minimum byte capacity including any terminator required by the caller.
+/// @return `true` when capacity is sufficient; `false` with the old buffer intact
+///         on overflow or allocation failure.
 static bool ensure_capacity(vg_textinput_t *input, size_t needed) {
     if (needed <= input->text_capacity)
         return true;
@@ -103,6 +113,8 @@ static bool ensure_capacity(vg_textinput_t *input, size_t needed) {
 /// @brief True if a key event should produce literal text input — i.e. it
 ///        carries no command modifier (Super/Ctrl) that would make it a
 ///        shortcut rather than a character.
+/// @param event Character event whose modifier state is inspected.
+/// @return `true` when modifier policy permits insertion.
 static bool textinput_key_char_allows_text(const vg_event_t *event) {
     if (!event)
         return false;
@@ -121,6 +133,11 @@ static bool textinput_key_char_allows_text(const vg_event_t *event) {
     return true;
 }
 
+/// @brief Validate a Unicode scalar value for direct text insertion.
+/// @details Rejects C0/C1 controls, surrogates, private-use ranges, and values
+///          beyond the Unicode scalar limit.
+/// @param cp Candidate Unicode codepoint.
+/// @return `true` when the value is accepted as ordinary text.
 static bool textinput_codepoint_is_text(uint32_t cp) {
     if (cp < 0x20 || cp == 0x7F || cp > 0x10FFFF)
         return false;
@@ -135,6 +152,8 @@ static bool textinput_codepoint_is_text(uint32_t cp) {
 }
 
 /// @brief Returns the number of UTF-8 codepoints in the input's text buffer.
+/// @param input Text input to inspect.
+/// @return Cached committed codepoint count, or zero for `NULL`.
 static size_t textinput_char_count(const vg_textinput_t *input) {
     return input ? input->text_char_count : 0;
 }
@@ -917,6 +936,8 @@ vg_textinput_t *vg_textinput_create(vg_widget_t *parent) {
 
 /// @brief VTable destroy: frees the text buffer, placeholder string, and all undo ring-buffer
 /// snapshots.
+/// @details Also disables platform text input and releases active composition storage.
+/// @param widget Text-input widget base being destroyed.
 static void textinput_destroy(vg_widget_t *widget) {
     vg_textinput_t *input = (vg_textinput_t *)widget;
 
@@ -941,6 +962,10 @@ static void textinput_destroy(vg_widget_t *widget) {
 }
 
 /// @brief VTable measure: sizes to theme height (single-line) or line_height×lines+12 (multiline).
+/// @param widget Text-input widget base to measure.
+/// @param available_width Width offered by the parent.
+/// @param available_height Height offered by the parent; constraints and content
+///                         determine the result.
 static void textinput_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_textinput_t *input = (vg_textinput_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();

@@ -29,6 +29,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the runtime playlist object and crossfade-aware navigation.
+/// @details Playlists own a sequence of retained track-path strings, optionally
+///          maintain a Fisher-Yates permutation, and retain at most one current
+///          Music wrapper outside crossfade state. Track mutations preserve the
+///          logical current item where possible, while play/advance paths skip
+///          unloadable entries within a bounded number of attempts.
+
 #include "rt_playlist.h"
 #include "rt_audio.h"
 #include "rt_internal.h"
@@ -66,6 +74,10 @@ typedef struct {
 // Helper Functions
 //=============================================================================
 
+/// @brief Validate and cast an opaque runtime object to playlist storage.
+/// @param obj Opaque object to examine.
+/// @return Mutable playlist implementation, or NULL when the class identifier
+///         or allocation size does not match.
 static playlist_impl *as_playlist(void *obj) {
     if (!rt_obj_is_instance(obj, RT_PLAYLIST_CLASS_ID, sizeof(playlist_impl)))
         return NULL;
@@ -355,6 +367,7 @@ static void playlist_select_position(playlist_impl *pl,
 ///          shuffle-order sequence and the track-list sequence, and
 ///          NULLs the slots. Called by the runtime once the playlist's
 ///          refcount hits zero (C-1 incident-marker in the source).
+/// @param obj Runtime-managed Playlist object.
 static void playlist_finalize(void *obj) {
     playlist_impl *pl = as_playlist(obj);
     if (!pl)
@@ -376,6 +389,10 @@ static void playlist_finalize(void *obj) {
 }
 
 /// @brief Create a new playlist with shuffle, repeat, crossfade, and auto-advance support.
+/// @details Initializes an owning track sequence, neutral volume, no repeat,
+///          sequential ordering, and no selected track. Allocation failure
+///          raises the runtime trap and returns NULL.
+/// @return Caller-owned runtime Playlist object, or NULL on allocation failure.
 void *rt_playlist_new(void) {
     playlist_impl *pl =
         (playlist_impl *)rt_obj_new_i64(RT_PLAYLIST_CLASS_ID, (int64_t)sizeof(playlist_impl));

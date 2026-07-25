@@ -1,4 +1,12 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares the C ABI for reference-counted runtime arrays of i32 values.
+/// @details Public handles address contiguous elements after an internal heap
+///          header. Checked accessors trap on invalid indices, fast and inline
+///          accessors require dominating compiler proof, and resize accepts a
+///          pointer-to-handle because successful growth or copy-on-write may
+///          replace the payload address.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -116,8 +124,10 @@ static inline void rt_arr_i32_set_unchecked(int32_t *arr, size_t idx, int32_t va
     arr[idx] = value;
 }
 
-/// @brief Resize an array to @p new_len elements with copy-on-resize semantics.
-/// @param a_inout Address of the array payload pointer (may point to NULL).
+/// @brief Resize an array under copy-on-write ownership semantics.
+/// @details Shared storage is copied before mutation; unique storage is updated
+///          in place when capacity suffices or may be reallocated when growing.
+/// @param[in,out] a_inout Address of the array payload pointer (may point to NULL).
 /// @param new_len Requested logical length.
 /// @return 0 on success, -1 on allocation failure; pointer may be rebound on success.
 int rt_arr_i32_resize(int32_t **a_inout, size_t new_len);

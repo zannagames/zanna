@@ -1,4 +1,18 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements the Zia language adapter for interactive REPL sessions.
+/// @details The adapter rebuilds a complete synthetic module around each
+///          submission, preserving binds, type/function definitions, and typed
+///          module-global declarations between calls. Candidate state changes
+///          are compile-checked and rolled back on failure. Evaluation then
+///          verifies IL, lowers to a fresh bytecode module, executes a fresh VM,
+///          and captures runtime output.
+///
+///          Expressions and `.type` requests are probed through ordered
+///          formatter wrappers. Completion builds the same synthetic module and
+///          translates the editor byte offset into compiler line/column
+///          coordinates before supplementing engine results with session names.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -46,14 +60,22 @@ namespace zanna::repl {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// @brief Skip leading whitespace and return the trimmed view start offset.
+/// @brief Advance a byte offset past contiguous whitespace.
+/// @param s String to scan.
+/// @param pos Initial byte offset.
+/// @return First non-whitespace offset at or after @p pos, or `s.size()`.
 static size_t skipWhitespace(const std::string &s, size_t pos = 0) {
     while (pos < s.size() && std::isspace(static_cast<unsigned char>(s[pos])))
         ++pos;
     return pos;
 }
 
-/// @brief Check if a string starts with a keyword followed by space or end.
+/// @brief Match a case-sensitive Zia keyword at a byte offset.
+/// @param s Source string to inspect.
+/// @param offset Candidate keyword offset.
+/// @param kw Null-terminated keyword.
+/// @return `true` when spelling matches and the following byte is whitespace,
+///         `(`, `{`, or end-of-input.
 static bool startsWithKeyword(const std::string &s, size_t offset, const char *kw) {
     size_t kwLen = std::strlen(kw);
     if (s.size() - offset < kwLen)
@@ -143,7 +165,9 @@ static size_t findTopLevelAssignmentOperator(const std::string &input) {
     return std::string::npos;
 }
 
-/// @brief Auto-append semicolon if input doesn't end with ; or }
+/// @brief Append a statement terminator when source does not already end one.
+/// @param src Destination synthetic source to extend.
+/// @param input Fragment whose last non-space byte controls insertion.
 static void appendAutoSemicolon(std::string &src, const std::string &input) {
     size_t lastNonSpace = input.find_last_not_of(" \t\r\n");
     if (lastNonSpace != std::string::npos && input[lastNonSpace] != ';' &&
@@ -171,16 +195,22 @@ static std::string defaultExprForZiaType(const std::string &type) {
 // Construction / Reset
 // ---------------------------------------------------------------------------
 
+/// @brief Construct a Zia adapter with the default runtime binds.
 ZiaReplAdapter::ZiaReplAdapter() {
     bindStatements_.push_back("bind Zanna.Terminal");
     bindStatements_.push_back("bind Zanna.Text.Fmt as Fmt");
     bindStatements_.push_back("bind Zanna.Core.Object as Obj");
 }
 
+/// @brief Return the language identifier exposed by this adapter.
+/// @return Static view containing `"zia"`.
 std::string_view ZiaReplAdapter::languageName() const {
     return "zia";
 }
 
+/// @brief Clear session state and restore the default runtime binds.
+/// @details User binds, definitions, persistent variables, and global type
+///          metadata are discarded together.
 void ZiaReplAdapter::reset() {
     bindStatements_.clear();
     definedFunctions_.clear();
@@ -197,6 +227,10 @@ void ZiaReplAdapter::reset() {
 // Persistent variable management
 // ---------------------------------------------------------------------------
 
+/// @brief Find mutable persistent-variable metadata by exact Zia name.
+/// @param name Case-sensitive variable name.
+/// @return Pointer into adapter-owned vector storage, or `nullptr`; vector
+///         reallocation and reset invalidate the pointer.
 PersistentVar *ZiaReplAdapter::findPersistentVar(const std::string &name) {
     for (auto &pv : persistentVars_)
         if (pv.name == name)
@@ -204,6 +238,9 @@ PersistentVar *ZiaReplAdapter::findPersistentVar(const std::string &name) {
     return nullptr;
 }
 
+/// @brief Find persistent-variable metadata by exact Zia name.
+/// @param name Case-sensitive variable name.
+/// @return Read-only pointer into adapter-owned storage, or `nullptr`.
 const PersistentVar *ZiaReplAdapter::findPersistentVar(const std::string &name) const {
     for (const auto &pv : persistentVars_)
         if (pv.name == name)
@@ -215,27 +252,45 @@ const PersistentVar *ZiaReplAdapter::findPersistentVar(const std::string &name) 
 // Input classification
 // ---------------------------------------------------------------------------
 
+/// @brief Detect a top-level bind statement.
+/// @param input Zia source fragment.
+/// @return `true` when the leading keyword is `bind`.
 bool ZiaReplAdapter::isBind(const std::string &input) const {
     size_t start = skipWhitespace(input);
     return startsWithKeyword(input, start, "bind");
 }
 
+/// @brief Detect a top-level function definition.
+/// @param input Zia source fragment.
+/// @return `true` when the leading keyword is `func`.
 bool ZiaReplAdapter::isFuncDef(const std::string &input) const {
     size_t start = skipWhitespace(input);
     return startsWithKeyword(input, start, "func");
 }
 
+/// @brief Detect a class, struct, or interface definition.
+/// @param input Zia source fragment.
+/// @return `true` when a recognized type-definition keyword leads the input.
 bool ZiaReplAdapter::isTypeDef(const std::string &input) const {
     size_t start = skipWhitespace(input);
     return startsWithKeyword(input, start, "class") || startsWithKeyword(input, start, "struct") ||
            startsWithKeyword(input, start, "interface");
 }
 
+/// @brief Detect a top-level variable declaration.
+/// @param input Zia source fragment.
+/// @return `true` when the leading keyword is `var`.
 bool ZiaReplAdapter::isVarDecl(const std::string &input) const {
     size_t start = skipWhitespace(input);
     return startsWithKeyword(input, start, "var");
 }
 
+/// @brief Detect assignment through a known persistent root variable.
+/// @details A leading identifier must name persistent state and a top-level
+///          assignment operator must exist; member and index writes are allowed
+///          while comparison operators are excluded.
+/// @param input Zia source fragment.
+/// @return `true` when the fragment mutates a tracked persistent root.
 bool ZiaReplAdapter::isAssignment(const std::string &input) const {
     size_t pos = skipWhitespace(input);
     if (pos >= input.size() ||
@@ -255,6 +310,9 @@ bool ZiaReplAdapter::isAssignment(const std::string &input) const {
     return findPersistentVar(ident) != nullptr;
 }
 
+/// @brief Extract the leading root identifier from a known assignment.
+/// @param input Zia assignment source.
+/// @return Leading alphanumeric/underscore identifier.
 std::string ZiaReplAdapter::extractAssignTarget(const std::string &input) const {
     size_t pos = skipWhitespace(input);
     size_t idStart = pos;
@@ -264,6 +322,12 @@ std::string ZiaReplAdapter::extractAssignTarget(const std::string &input) const 
     return input.substr(idStart, pos - idStart);
 }
 
+/// @brief Heuristically determine whether input should be auto-printed.
+/// @details Empty input, known statement keywords, explicit print calls, and
+///          persistent assignments are excluded. Wrapper compilation later
+///          confirms whether the remaining input is a printable expression.
+/// @param input Zia source fragment.
+/// @return `true` when ordered expression wrappers should be attempted.
 bool ZiaReplAdapter::isLikelyExpression(const std::string &input) const {
     size_t start = skipWhitespace(input);
     if (start >= input.size())
@@ -306,6 +370,9 @@ bool ZiaReplAdapter::isLikelyExpression(const std::string &input) const {
 // Name / type extraction
 // ---------------------------------------------------------------------------
 
+/// @brief Extract a function name from a definition.
+/// @param input Zia function-definition source.
+/// @return Identifier following `func`, or an empty string on mismatch.
 std::string ZiaReplAdapter::extractFuncName(const std::string &input) const {
     size_t pos = input.find("func ");
     if (pos == std::string::npos)
@@ -319,6 +386,10 @@ std::string ZiaReplAdapter::extractFuncName(const std::string &input) const {
     return input.substr(nameStart, pos - nameStart);
 }
 
+/// @brief Extract a declared class, struct, or interface name.
+/// @param input Zia type-definition source.
+/// @return Identifier following the first recognized definition keyword, or
+///         an empty string.
 std::string ZiaReplAdapter::extractTypeName(const std::string &input) const {
     size_t pos = 0;
     if (input.find("class ") != std::string::npos)
@@ -338,6 +409,10 @@ std::string ZiaReplAdapter::extractTypeName(const std::string &input) const {
     return input.substr(nameStart, pos - nameStart);
 }
 
+/// @brief Extract variable name and declared type from a `var` declaration.
+/// @details The returned type is `"auto"` when no explicit colon type appears.
+/// @param input Zia variable-declaration source.
+/// @return Name/type pair, or two empty strings when no `var` keyword exists.
 std::pair<std::string, std::string> ZiaReplAdapter::extractVarInfo(const std::string &input) const {
     size_t pos = input.find("var ");
     if (pos == std::string::npos)
@@ -368,6 +443,12 @@ std::pair<std::string, std::string> ZiaReplAdapter::extractVarInfo(const std::st
     return {name, type};
 }
 
+/// @brief Extract and normalize a variable initializer.
+/// @details The first equals sign outside a quoted string begins the
+///          initializer. Leading whitespace and trailing whitespace/semicolons
+///          are removed.
+/// @param input Zia variable-declaration source.
+/// @return Initializer expression, or an empty string when none exists.
 std::string ZiaReplAdapter::extractVarInitializer(const std::string &input) const {
     bool inString = false;
     bool escape = false;
@@ -398,6 +479,14 @@ std::string ZiaReplAdapter::extractVarInitializer(const std::string &input) cons
     return "";
 }
 
+/// @brief Resolve a stable type for a persistent module-global variable.
+/// @details Explicit non-auto types win. `new` expressions yield their
+///          constructed qualified name, while primitive initializers are probed
+///          through `getExprType()`. Unsupported inference returns `"auto"`.
+/// @param input Original declaration retained for diagnostic/context symmetry.
+/// @param explicitType Parsed type spelling or `"auto"`.
+/// @param initializer Normalized initializer expression.
+/// @return Resolved source-level type name or `"auto"`.
 std::string ZiaReplAdapter::inferPersistentVarType(const std::string &input,
                                                    const std::string &explicitType,
                                                    const std::string &initializer) {
@@ -427,6 +516,10 @@ std::string ZiaReplAdapter::inferPersistentVarType(const std::string &input,
     return "auto";
 }
 
+/// @brief Build a typed module-global declaration for persistent storage.
+/// @param name Variable identifier.
+/// @param type Resolved non-auto type.
+/// @return `var <name>: <type>`, or empty when type is unavailable.
 std::string ZiaReplAdapter::makePersistentVarDecl(const std::string &name,
                                                   const std::string &type) const {
     if (type.empty() || type == "auto")
@@ -438,6 +531,15 @@ std::string ZiaReplAdapter::makePersistentVarDecl(const std::string &name,
 // Source building
 // ---------------------------------------------------------------------------
 
+/// @brief Assemble a complete synthetic Zia module for one operation.
+/// @details The source contains default/user binds, stored type and function
+///          definitions, persistent typed module globals, optional additional
+///          top-level source, and a `start()` function containing @p input.
+///          Statement terminators are inserted where required.
+/// @param input Current statement or wrapped expression placed in `start()`.
+/// @param extraTopLevel Optional top-level declaration used while validating a
+///        newly introduced persistent global.
+/// @return Self-contained Zia source module.
 std::string ZiaReplAdapter::buildSource(const std::string &input,
                                         const std::string &extraTopLevel) const {
     std::string src;
@@ -500,6 +602,9 @@ std::string ZiaReplAdapter::buildSource(const std::string &input,
 // Compilation helpers
 // ---------------------------------------------------------------------------
 
+/// @brief Check whether synthetic Zia source compiles and verifies.
+/// @param source Complete source module.
+/// @return `true` only when frontend compilation and IL verification succeed.
 bool ZiaReplAdapter::tryCompileOnly(const std::string &source) const {
     using namespace il::frontends::zia;
     il::support::SourceManager sm;
@@ -511,6 +616,10 @@ bool ZiaReplAdapter::tryCompileOnly(const std::string &source) const {
     return verification.hasValue();
 }
 
+/// @brief Compile and verify Zia source while collecting diagnostics.
+/// @param source Complete source module.
+/// @return Empty string on success; frontend or verifier diagnostic text on
+///         failure.
 std::string ZiaReplAdapter::compileOnlyDiagnostic(const std::string &source) const {
     using namespace il::frontends::zia;
 
@@ -529,6 +638,13 @@ std::string ZiaReplAdapter::compileOnlyDiagnostic(const std::string &source) con
     return "";
 }
 
+/// @brief Compile, verify, lower, and execute one synthetic Zia module.
+/// @details Each call owns fresh source manager, compiler result, bytecode
+///          module, and VM state. Threaded dispatch and the runtime bridge are
+///          enabled, output is captured, and traps become unsuccessful results.
+/// @param source Complete source module.
+/// @return Evaluation status, captured output, and any compile/verify/trap
+///         diagnostic.
 EvalResult ZiaReplAdapter::compileAndRun(const std::string &source) {
     using namespace il::frontends::zia;
 
@@ -581,6 +697,15 @@ EvalResult ZiaReplAdapter::compileAndRun(const std::string &source) {
 // eval() — main REPL evaluation entry point
 // ---------------------------------------------------------------------------
 
+/// @brief Evaluate one Zia REPL submission transactionally.
+/// @details Binds and named definitions are compile-checked before commitment
+///          and restored on failure. Variable declarations create typed
+///          persistent module globals only after successful initialization.
+///          Likely expressions are tried through ordered Boolean, integer,
+///          number, string, and object wrappers before bare execution.
+/// @param input Complete user submission.
+/// @return Evaluation result with captured output, inferred display type, or
+///         diagnostic/trap state.
 EvalResult ZiaReplAdapter::eval(const std::string &input) {
     using namespace il::frontends::zia;
 
@@ -833,6 +958,13 @@ EvalResult ZiaReplAdapter::eval(const std::string &input) {
 // .type meta-command
 // ---------------------------------------------------------------------------
 
+/// @brief Infer a presentation type for an expression through compile probes.
+/// @details Trailing separators are removed, then the same ordered formatter
+///          wrappers used by evaluation are compiled. A fragment that only
+///          compiles as a bare statement reports `Void`.
+/// @param expr Expression or statement source.
+/// @return `Boolean`, `Integer`, `Number`, `String`, `Object`, `Void`, or an
+///         explanatory unknown marker.
 std::string ZiaReplAdapter::getExprType(const std::string &expr) {
     // Try each type wrapper to determine the expression's type.
     // The first wrapper that compiles successfully reveals the type.
@@ -880,6 +1012,15 @@ std::string ZiaReplAdapter::getExprType(const std::string &expr) {
 // Tab completion
 // ---------------------------------------------------------------------------
 
+/// @brief Build synthetic source and compiler coordinates for completion.
+/// @details Session binds, definitions, and persistent globals precede a
+///          `start()` body containing the complete editor buffer. The cursor's
+///          byte offset is translated after the body's four-space indentation.
+/// @param input Current editor buffer.
+/// @param cursor Clamped byte offset within @p input.
+/// @param[out] line Receives the one-based synthetic source line.
+/// @param[out] col Receives the zero-based synthetic source column.
+/// @return Complete source module supplied to the completion engine.
 std::string ZiaReplAdapter::buildSourceForCompletion(const std::string &input,
                                                      size_t cursor,
                                                      int &line,
@@ -937,6 +1078,15 @@ std::string ZiaReplAdapter::buildSourceForCompletion(const std::string &input,
     return src;
 }
 
+/// @brief Produce compiler-backed and session-backed Zia completions.
+/// @details Engine insertion texts are deduplicated and expanded into complete
+///          editor-buffer replacements. Prefix-matching persistent variables and
+///          stored functions supplement symbols unavailable to the completion
+///          engine.
+/// @param input Current editor buffer.
+/// @param cursor Byte offset of the insertion point; oversized values are
+///        clamped.
+/// @return Full-buffer completion alternatives in engine/session order.
 std::vector<std::string> ZiaReplAdapter::complete(const std::string &input, size_t cursor) {
     using namespace il::frontends::zia;
 
@@ -994,6 +1144,13 @@ std::vector<std::string> ZiaReplAdapter::complete(const std::string &input, size
 // .il meta-command — show generated IL
 // ---------------------------------------------------------------------------
 
+/// @brief Compile input and serialize its generated IL module.
+/// @details Printable wrapper forms are attempted first so expressions have a
+///          valid statement context. If none compile, the cleaned input is
+///          retried as a bare statement and its diagnostics are returned on
+///          failure.
+/// @param input Expression or statement source.
+/// @return Serialized IL on success, or prefixed compilation diagnostics.
 std::string ZiaReplAdapter::getIL(const std::string &input) {
     using namespace il::frontends::zia;
 
@@ -1052,6 +1209,8 @@ std::string ZiaReplAdapter::getIL(const std::string &input) {
 // Session state queries
 // ---------------------------------------------------------------------------
 
+/// @brief Snapshot persistent variables known to the session.
+/// @return Value-owned name/type records in declaration order.
 std::vector<VarInfo> ZiaReplAdapter::listVariables() const {
     std::vector<VarInfo> vars;
     for (const auto &pv : persistentVars_) {
@@ -1060,6 +1219,10 @@ std::vector<VarInfo> ZiaReplAdapter::listVariables() const {
     return vars;
 }
 
+/// @brief Snapshot stored user function definitions.
+/// @details Display signatures span from the first opening parenthesis to the
+///          definition body and have trailing whitespace removed.
+/// @return Value-owned function metadata in map iteration order.
 std::vector<FuncInfo> ZiaReplAdapter::listFunctions() const {
     std::vector<FuncInfo> funcs;
     for (const auto &[name, src] : definedFunctions_) {
@@ -1077,6 +1240,8 @@ std::vector<FuncInfo> ZiaReplAdapter::listFunctions() const {
     return funcs;
 }
 
+/// @brief Snapshot active bind statements.
+/// @return Value-owned bind strings in registration order.
 std::vector<std::string> ZiaReplAdapter::listBinds() const {
     return bindStatements_;
 }

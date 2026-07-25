@@ -1,4 +1,16 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements the terminal-backed interactive REPL line editor.
+/// @details A private implementation owns terminal raw-mode state, decoded key
+///          input, bounded history, completion callbacks, and per-read editing
+///          state. Redraw logic accounts for ANSI prompt escapes and wrapped
+///          terminal rows, while cursor movement and deletion preserve UTF-8
+///          codepoint byte boundaries.
+///
+///          Platform adapters perform direct console reads/writes. History
+///          persistence is delegated to the structured history codec so
+///          multiline submissions round-trip as one entry.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -43,7 +55,9 @@
 
 namespace zanna::repl {
 
-/// @brief Internal implementation hiding TUI headers from the public interface.
+/// @brief Owns terminal, decoder, history, and mutable editing state.
+/// @details This private implementation keeps TUI types out of the public header
+///          and is allocated for the lifetime of `ReplLineEditor`.
 struct ReplLineEditor::Impl {
     zanna::tui::TerminalSession session;
     zanna::tui::term::InputDecoder decoder;
@@ -60,7 +74,9 @@ struct ReplLineEditor::Impl {
     std::string savedLine; // saved current line when browsing history
     size_t renderedCursorRow{0};
 
-    /// @brief Get terminal width.
+    /// @brief Query the current output-terminal viewport width.
+    /// @return Positive column count reported by the platform, or 80 when it
+    ///         cannot be determined.
     int termWidth() const {
 #if defined(__unix__) || defined(__APPLE__)
         struct winsize ws;
@@ -74,7 +90,12 @@ struct ReplLineEditor::Impl {
         return 80;
     }
 
-    /// @brief Write raw bytes to stdout.
+    /// @brief Write an exact byte range to standard output.
+    /// @details Interrupted POSIX writes are retried and partial writes advance
+    ///          through the buffer. Other platform errors stop silently because
+    ///          the editor cannot recover its terminal presentation.
+    /// @param data Byte buffer to write.
+    /// @param len Number of bytes available at @p data.
     void rawWrite(const char *data, size_t len) {
 #if defined(__unix__) || defined(__APPLE__)
         while (len > 0) {
@@ -102,7 +123,7 @@ struct ReplLineEditor::Impl {
 #endif
     }
 
-    /// @brief Write an owned string buffer to stdout.
+    /// @brief Write a borrowed string's bytes to standard output.
     /// @param s Byte string to write exactly as stored.
     void rawWrite(const std::string &s) {
         rawWrite(s.data(), s.size());
@@ -271,7 +292,9 @@ struct ReplLineEditor::Impl {
         refreshLine(prompt);
     }
 
-    /// @brief Move cursor one word left.
+    /// @brief Move the logical edit cursor to the previous space-delimited word.
+    /// @details Trailing spaces are skipped first, followed by the preceding
+    ///          run of non-space bytes.
     void wordLeft() {
         while (cursor > 0 && buf[cursor - 1] == ' ')
             --cursor;
@@ -279,7 +302,9 @@ struct ReplLineEditor::Impl {
             --cursor;
     }
 
-    /// @brief Move cursor one word right.
+    /// @brief Move the logical edit cursor to the next space-delimited word.
+    /// @details The current word is skipped first, followed by intervening
+    ///          spaces.
     void wordRight() {
         while (cursor < buf.size() && buf[cursor] != ' ')
             ++cursor;
@@ -321,26 +346,39 @@ struct ReplLineEditor::Impl {
     }
 };
 
+/// @brief Construct a terminal line editor with bounded in-memory history.
+/// @param maxHistory Maximum number of distinct recent entries to retain.
 ReplLineEditor::ReplLineEditor(size_t maxHistory) : impl_(new Impl) {
     impl_->maxHistory = maxHistory;
 }
 
+/// @brief Destroy private terminal/editor state and restore session resources.
 ReplLineEditor::~ReplLineEditor() {
     delete impl_;
 }
 
+/// @brief Test whether the underlying terminal session is active.
+/// @return `true` while terminal raw-mode/session setup remains active.
 bool ReplLineEditor::isActive() const {
     return impl_->session.active();
 }
 
+/// @brief Snapshot the editor's retained command history.
+/// @return Value-owned copy ordered from oldest to newest.
 std::vector<std::string> ReplLineEditor::getHistory() const {
     return impl_->history;
 }
 
+/// @brief Install or clear the tab-completion provider.
+/// @param cb Callback stored by value; an empty callback disables completion.
 void ReplLineEditor::setCompletionCallback(CompletionCallback cb) {
     impl_->completionCb = std::move(cb);
 }
 
+/// @brief Append a nonempty command to bounded history.
+/// @details A duplicate of the newest entry is ignored. When capacity is
+///          exceeded, the oldest entry is removed.
+/// @param entry Complete command or multiline submission to copy.
 void ReplLineEditor::addHistory(const std::string &entry) {
     if (entry.empty())
         return;
@@ -352,6 +390,17 @@ void ReplLineEditor::addHistory(const std::string &entry) {
         impl_->history.erase(impl_->history.begin());
 }
 
+/// @brief Interactively edit and read one terminal line.
+/// @details Per-read buffer/history-navigation state is reset, then decoded key
+///          events drive insertion, UTF-8-aware movement/deletion, word/line
+///          shortcuts, completion display, and history browsing. The call
+///          blocks in short polling intervals until Enter, interrupt, or EOF.
+/// @param prompt Prompt bytes to display; ANSI SGR sequences are excluded from
+///        wrap-column calculations.
+/// @param[out] line Receives the edited buffer only when `ReadResult::Line` is
+///             returned.
+/// @return `Line` after Enter, `Interrupt` after Ctrl-C, or `Eof` after input
+///         closure/Ctrl-D on an empty buffer.
 ReadResult ReplLineEditor::readLine(const std::string &prompt, std::string &line) {
     using Code = zanna::tui::term::KeyEvent::Code;
     using Mods = zanna::tui::term::KeyEvent::Mods;
@@ -590,12 +639,18 @@ ReadResult ReplLineEditor::readLine(const std::string &prompt, std::string &line
     }
 }
 
+/// @brief Replace in-memory history with entries loaded from disk.
+/// @param path Structured or legacy history file.
+/// @return Number of nonempty entries decoded before maximum-size trimming.
 size_t ReplLineEditor::loadHistory(const std::filesystem::path &path) {
     ReplHistoryLoadResult loaded = ReplHistoryCodec::load(path, impl_->maxHistory);
     impl_->history = std::move(loaded.entries);
     return loaded.decodedEntryCount;
 }
 
+/// @brief Persist current in-memory history to disk.
+/// @param path Destination history file.
+/// @return `true` when the structured history codec writes successfully.
 bool ReplLineEditor::saveHistory(const std::filesystem::path &path) const {
     return ReplHistoryCodec::save(path, impl_->history);
 }

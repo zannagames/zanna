@@ -23,6 +23,12 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements radio-button rendering, interaction, and shared
+///        mutually-exclusive selection groups.
+/// @details Groups own only their member-pointer arrays, while widgets retain
+///          their own labels and borrowed group links. Membership and selection
+///          revisions are tracked independently from one-shot change reporting.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
@@ -58,6 +64,8 @@ static vg_widget_vtable_t g_radio_vtable = {.destroy = radio_destroy,
                                             .on_focus = NULL};
 
 /// @brief VTable destroy: unregisters the button from its group (if any) and frees the label text.
+/// @details Any explicitly owned opaque user-data block is also released.
+/// @param widget Radio-button widget base being destroyed.
 static void radio_destroy(vg_widget_t *widget) {
     vg_radiobutton_t *radio = (vg_radiobutton_t *)widget;
     if (radio->group)
@@ -71,6 +79,9 @@ static void radio_destroy(vg_widget_t *widget) {
 }
 
 /// @brief VTable measure: sizes the widget to the circle diameter plus optional text extent.
+/// @param widget Radio-button widget base to measure.
+/// @param avail_w Offered width, unused before constraints.
+/// @param avail_h Offered height, unused before constraints.
 static void radio_measure(vg_widget_t *widget, float avail_w, float avail_h) {
     vg_radiobutton_t *radio = (vg_radiobutton_t *)widget;
     (void)avail_w;
@@ -94,6 +105,8 @@ static void radio_measure(vg_widget_t *widget, float avail_w, float avail_h) {
 
 /// @brief VTable paint: draws the outer border circle, inner background, optional fill dot
 /// (selected), focus ring, and label text.
+/// @param widget Arranged radio-button widget base.
+/// @param canvas Backend canvas used for vector primitives and text.
 static void radio_paint(vg_widget_t *widget, void *canvas) {
     vg_radiobutton_t *radio = (vg_radiobutton_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -128,6 +141,9 @@ static void radio_paint(vg_widget_t *widget, void *canvas) {
 
 /// @brief VTable handle_event: selects this button on click or Space key; deselection of siblings
 /// is handled inside vg_radiobutton_set_selected.
+/// @param widget Radio-button widget receiving input.
+/// @param event Click or keyboard event to interpret.
+/// @return `true` when activation selected the button.
 static bool radio_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_radiobutton_t *radio = (vg_radiobutton_t *)widget;
 
@@ -152,6 +168,8 @@ static bool radio_handle_event(vg_widget_t *widget, vg_event_t *event) {
 }
 
 /// @brief VTable can_focus: returns true when the widget is both enabled and visible.
+/// @param widget Candidate radio-button widget.
+/// @return `true` when keyboard focus is permitted.
 static bool radio_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }
@@ -192,6 +210,8 @@ static void radiogroup_note_change(vg_radiogroup_t *group, bool selection_change
 
 /// @brief Removes @p radio from @p group's button array, compacts the array, and updates
 /// selected_index accordingly.
+/// @param group Radio group that may contain the button.
+/// @param radio Button being detached.
 static void radiogroup_unregister(vg_radiogroup_t *group, vg_radiobutton_t *radio) {
     if (!group || !radio)
         return;
@@ -311,6 +331,9 @@ vg_radiobutton_t *vg_radiobutton_create(vg_widget_t *parent,
 
 /// @brief Directly updates @p radio's selected state and VG_STATE_CHECKED flag, firing on_change if
 /// @p notify is true and the state changed.
+/// @param radio Radio button to mutate.
+/// @param selected Desired selected state.
+/// @param notify `true` to invoke the change callback for a transition.
 static void radio_apply_selected(vg_radiobutton_t *radio, bool selected, bool notify) {
     if (!radio)
         return;

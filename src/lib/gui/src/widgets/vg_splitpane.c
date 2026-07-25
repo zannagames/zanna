@@ -23,6 +23,12 @@
 //        lib/gui/include/vg_event.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Implements two-panel split layout, minimum-size resolution, divider
+///        dragging and keyboard control, and collapsible sides.
+/// @details The divider position is stored as a normalized fraction while
+///          arrange resolves physical minimums. Collapse preserves one restore
+///          position across direct transitions between collapsed sides.
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_event.h"
 #include "../../include/vg_ide_widgets.h"
@@ -120,6 +126,7 @@ vg_splitpane_t *vg_splitpane_create(vg_widget_t *parent, vg_split_direction_t di
 
 /// @brief VTable destroy: releases input capture if this widget currently holds it; child cleanup
 /// is handled by the base widget.
+/// @param widget Split-pane widget base being destroyed.
 static void splitpane_destroy(vg_widget_t *widget) {
     if (vg_widget_get_input_capture() == widget)
         vg_widget_release_input_capture();
@@ -129,6 +136,9 @@ static void splitpane_destroy(vg_widget_t *widget) {
 
 /// @brief VTable measure: claims all available space and distributes it to both child panels
 /// according to split_position and minimum sizes.
+/// @param widget Split-pane widget base to measure.
+/// @param available_width Width offered by the parent.
+/// @param available_height Height offered by the parent.
 static void splitpane_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_splitpane_t *split = (vg_splitpane_t *)widget;
 
@@ -202,6 +212,11 @@ static void splitpane_measure(vg_widget_t *widget, float available_width, float 
 
 /// @brief Resolves the first panel's pixel size from @p requested_first, clamping to both minimums;
 /// distributes proportionally when space is too small to satisfy both.
+/// @param available Physical extent excluding the divider.
+/// @param requested_first Requested first-panel extent.
+/// @param min_first First-panel minimum.
+/// @param min_second Second-panel minimum.
+/// @return Resolved first-panel extent in the range zero through @p available.
 static float resolve_first_size(float available,
                                 float requested_first,
                                 float min_first,
@@ -228,6 +243,11 @@ static float resolve_first_size(float available,
 
 /// @brief VTable arrange: positions the widget and arranges both child panels side-by-side (or
 /// stacked), separated by the splitter bar.
+/// @param widget Split-pane widget base to arrange.
+/// @param x Assigned left coordinate.
+/// @param y Assigned top coordinate.
+/// @param width Assigned width.
+/// @param height Assigned height.
 static void splitpane_arrange(vg_widget_t *widget, float x, float y, float width, float height) {
     vg_splitpane_t *split = (vg_splitpane_t *)widget;
 
@@ -289,12 +309,17 @@ static void splitpane_arrange(vg_widget_t *widget, float x, float y, float width
 }
 
 /// @brief VTable can_focus: returns true when the widget is both enabled and visible.
+/// @param widget Candidate split-pane widget.
+/// @return `true` when keyboard focus is permitted.
 static bool splitpane_can_focus(vg_widget_t *widget) {
     return widget && widget->enabled && widget->visible;
 }
 
 /// @brief Nudges the split position by @p delta_pixels, recomputing the normalised fraction;
 /// returns true if the position changed.
+/// @param split Split pane to adjust.
+/// @param delta_pixels Signed first-panel size change in physical pixels.
+/// @return `true` when the normalized position changed.
 static bool splitpane_adjust_position_by_pixels(vg_splitpane_t *split, float delta_pixels) {
     if (!split)
         return false;
@@ -326,6 +351,8 @@ static bool splitpane_adjust_position_by_pixels(vg_splitpane_t *split, float del
 
 /// @brief VTable paint: draws the splitter bar background, centre line, and three grip dots in the
 /// hover/drag or default colour.
+/// @param widget Arranged split-pane widget base to paint.
+/// @param canvas Backend canvas used for divider primitives.
 static void splitpane_paint(vg_widget_t *widget, void *canvas) {
     vg_splitpane_t *split = (vg_splitpane_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -389,6 +416,9 @@ static void splitpane_paint(vg_widget_t *widget, void *canvas) {
 
 /// @brief VTable handle_event: tracks splitter hover, initiates and tracks drag, releases on
 /// mouse-up, and handles arrow/Home/End keyboard nudges.
+/// @param widget Split-pane widget receiving input.
+/// @param event Pointer or keyboard event to interpret.
+/// @return `true` when divider dragging or keyboard movement consumes the event.
 static bool splitpane_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_splitpane_t *split = (vg_splitpane_t *)widget;
 

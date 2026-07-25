@@ -1,4 +1,11 @@
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Declares the dependency-free terminal line editor used by the REPL.
+/// @details The public interface hides terminal-session and input-decoder types
+///          behind a private implementation. Construction acquires terminal
+///          editing state, destruction restores it, and history entries and
+///          completion callbacks are owned by the editor.
+///
 //
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
@@ -57,10 +64,14 @@ class ReplLineEditor {
     /// @param maxHistory Maximum number of history entries to retain.
     ReplLineEditor(size_t maxHistory = 1000);
 
+    /// @brief Destroy the editor and restore terminal session state.
     ~ReplLineEditor();
 
     // Non-copyable
+    /// @brief Disable copying because terminal-session ownership is unique.
     ReplLineEditor(const ReplLineEditor &) = delete;
+    /// @brief Disable copy assignment because terminal-session ownership is unique.
+    /// @return This declaration is deleted and cannot be invoked.
     ReplLineEditor &operator=(const ReplLineEditor &) = delete;
 
     /// @brief Read a line of input with the given prompt.
@@ -78,6 +89,7 @@ class ReplLineEditor {
     void setCompletionCallback(CompletionCallback cb);
 
     /// @brief Check if the terminal is in raw mode and usable.
+    /// @return `true` while the underlying terminal session is active.
     bool isActive() const;
 
     /// @brief Get a copy of the history entries.
@@ -85,8 +97,10 @@ class ReplLineEditor {
     std::vector<std::string> getHistory() const;
 
     /// @brief Load history from a file.
+    /// @details Existing in-memory history is replaced and decoded entries are
+    ///          trimmed to this editor's maximum retention count.
     /// @param path Path to the history file.
-    /// @return Number of entries loaded.
+    /// @return Number of entries decoded before retention trimming.
     size_t loadHistory(const std::filesystem::path &path);
 
     /// @brief Save history to a file.

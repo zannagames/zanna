@@ -128,7 +128,7 @@ func main() {
        or editor.scene.LayerCount() != 1
        or editor.renderedColumns != 32 or editor.renderedRows != 18
        or editor.framePixels == null
-       or scene_editor_2d.FitZoomPercent(3, 2, 600, 400) < 1000
+       or scene_editor_2d.FitZoomPercent(3, 2, 16, 600, 400) < 1000
        or editor.canvasStage.GetLogicalWidth()
           < editor.canvasScroll.GetLogicalWidth() - 2.0
        or editor.canvasImage.GetScreenX()
@@ -1481,6 +1481,9 @@ func main() {
         fail(shell, "tileset no-op or tile history state was not canonical");
         return;
     }
+    // The frame buffer holds only the visible window, so anchor the window at
+    // content origin before sampling cell (0,0) in window coordinates.
+    editor.canvasScroll.SetScroll(0.0, 0.0);
     editor.Pump(sceneDoc);
     shell.Render();
     editor.Pump(sceneDoc);
@@ -1494,7 +1497,14 @@ func main() {
        or Color.GetBlue(tileSample) > 40 {
         sceneDoc.filePath = previousScenePath;
         removeTempDir(tilesetDir);
-        fail(shell, "translucent tileset frame did not composite source-over");
+        fail(shell, "translucent tileset frame did not composite source-over"
+             + " sample=" + Color.GetRed(tileSample) + ","
+             + Color.GetGreen(tileSample) + "," + Color.GetBlue(tileSample)
+             + " cell=" + editor.displayCellSize
+             + " origin=" + editor.viewOriginX + "," + editor.viewOriginY
+             + " zoom=" + editor.zoomPercent
+             + " rendered=" + editor.renderedColumns + "x"
+             + editor.renderedRows);
         return;
     }
     var reloadContent = sceneDoc.content;

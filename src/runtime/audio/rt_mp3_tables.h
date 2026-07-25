@@ -12,13 +12,22 @@
 //          IMDCT window functions — all from ISO 11172-3 / ISO 13818-3.
 // Key invariants:
 //   - All tables are static const and compiled into the binary
-//   - Huffman tables are stored as {x, y, hlen} triplets for pair tables
+//   - Small Huffman tables are stored as flat binary trees whose non-negative
+//     leaves pack an (x, y) pair into one byte
 //   - This file is included only by rt_mp3.c
 // Ownership/Lifetime:
 //   - No allocations — read-only static data
 // Links: rt_mp3.c (sole includer)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines immutable ISO-derived lookup data for the Layer III decoder.
+/// @details This private header contains bitrate/sample-rate mappings,
+///          scalefactor bands, anti-alias coefficients, IMDCT windows,
+///          polyphase synthesis coefficients, and compact Huffman descriptors
+///          and trees. All objects have internal linkage, require no runtime
+///          initialization, and are consumed only by `rt_mp3.c`.
 
 #pragma once
 
@@ -67,6 +76,7 @@ static const int mp3_sfb_short_44100[13] = {4, 4, 4, 4, 6, 8, 10, 12, 14, 18, 22
 // Anti-alias butterfly coefficients (ISO 11172-3 Table B.9)
 //===----------------------------------------------------------------------===//
 
+/// @brief Cosine-side coefficients for the eight anti-alias butterflies.
 static const float mp3_cs[8] = {0.857492926f,
                                 0.881741997f,
                                 0.949628649f,
@@ -76,6 +86,7 @@ static const float mp3_cs[8] = {0.857492926f,
                                 0.999899195f,
                                 0.999993155f};
 
+/// @brief Negative sine-side coefficients for the eight anti-alias butterflies.
 static const float mp3_ca[8] = {-0.514495755f,
                                 -0.471731969f,
                                 -0.313377454f,
@@ -136,6 +147,8 @@ static const float mp3_win_short[12] = {0.130526192f,
 // Stored as 32 groups of 16 values for the subband synthesis filter
 //===----------------------------------------------------------------------===//
 
+/// @brief ISO polyphase synthesis dewindowing coefficients.
+/// @details Indexed as 32 logical groups of 16 values by the synthesis filter.
 static const float mp3_synth_d[512] = {
     0.000000000f,  -0.000015259f, -0.000015259f, -0.000015259f, -0.000015259f, -0.000015259f,
     -0.000015259f, -0.000030518f, -0.000030518f, -0.000030518f, -0.000030518f, -0.000045776f,
@@ -251,7 +264,7 @@ typedef struct {
     int16_t value; // leaf (>=0) or branch index (<0)
 } mp3_huff_node_t;
 
-// Table 1: max=1, 4 pairs (0,0)..(1,1)
+/// @brief Flat binary tree for Huffman table 1 (`max_val = 1`).
 static const mp3_huff_node_t mp3_htree_1[] = {
     {-1},   // 0: root → left=1, right=2
     {0x00}, // 1: (0,0) — code "1"
@@ -262,7 +275,7 @@ static const mp3_huff_node_t mp3_htree_1[] = {
     {0x11}, // 6: (1,1)
 };
 
-// Table 2: max=2, 9 pairs
+/// @brief Flat binary tree shared by Huffman tables 2 and 3.
 static const mp3_huff_node_t mp3_htree_2[] = {
     {-1},
     {-3},
@@ -283,7 +296,7 @@ static const mp3_huff_node_t mp3_htree_2[] = {
     {0x22}, // (2,1), (2,2)
 };
 
-// Table 5: max=3, 16 pairs
+/// @brief Flat binary tree shared by Huffman tables 5 and 6.
 static const mp3_huff_node_t mp3_htree_5[] = {
     {-1},   {0x00}, {-3},  {-5},   {-7},   {0x01}, {0x10}, {-9},   {-11},  {0x11},
     {0x02}, {0x20}, {-13}, {-15},  {0x21}, {0x12}, {-17},  {0x22}, {-19},  {-21},
@@ -294,6 +307,9 @@ static const mp3_huff_node_t mp3_htree_5[] = {
 // we use a unified decode function that combines tree-walk with the
 // max_val/linbits approach for large tables.
 
+/// @brief Per-index Huffman range, escape-bit, and explicit-tree metadata.
+/// @details Entries without a stored tree provide bounds used by the decoder's
+///          fallback bit-width approximation; reserved tables carry zeros.
 static const mp3_huff_table_info_t mp3_huff_info[32] = {
     {0, 0, 0},   // table 0: zero (no decode)
     {0, 1, 7},   // table 1

@@ -3827,6 +3827,86 @@ static void test_model3d_accepts_canonical_scene3d_extension() {
     std::remove(path);
 }
 
+/// @brief ADR 0190: VSCN text loads as a SceneAsset with no document on disk.
+static void test_model3d_load_text_result_loads_without_disk_document() {
+    void *scene = rt_scene3d_new();
+    void *node = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(node, rt_const_cstr("text-doc-node"));
+    rt_scene_node3d_set_mesh(node, rt_mesh3d_new_box(1.0, 1.0, 1.0));
+    rt_scene3d_add(scene, node);
+    rt_string text = rt_scene3d_save_text(scene);
+    EXPECT_TRUE(text && rt_str_len(text) > 0, "SaveToText produces the text fixture document");
+
+    /* Nothing exists at the virtual path — it routes extension detection only. */
+    void *ok = rt_model3d_load_text_result(
+        rt_const_cstr("/tmp/zanna_load_text_absent_dir/absent.scene3d"), text);
+    EXPECT_TRUE(ok && rt_result_is_ok(ok) == 1,
+                "SceneAsset.LoadTextResult returns Ok for canonical VSCN text");
+    if (ok && rt_result_is_ok(ok) == 1) {
+        void *model = rt_result_unwrap(ok);
+        EXPECT_TRUE(rt_model3d_get_node_count(model) == 1,
+                    "Text-loaded assets expose the authored nodes");
+        void *instance = rt_model3d_instantiate_scene(model);
+        EXPECT_TRUE(instance != nullptr, "Text-loaded assets instantiate scenes");
+        if (instance) {
+            EXPECT_TRUE(rt_scene3d_find(instance, rt_const_cstr("text-doc-node")) != nullptr,
+                        "Instantiated text-loaded scenes contain the authored node");
+        }
+    }
+
+    void *wrong_ext =
+        rt_model3d_load_text_result(rt_const_cstr("/tmp/zanna_text_doc.gltf"), text);
+    EXPECT_TRUE(wrong_ext && rt_result_is_err(wrong_ext) == 1,
+                "SceneAsset.LoadTextResult rejects non-VSCN extensions with Err, not a trap");
+
+    void *malformed = rt_model3d_load_text_result(rt_const_cstr("/tmp/zanna_text_doc.scene3d"),
+                                                  rt_const_cstr("{ not a vscn document"));
+    EXPECT_TRUE(malformed && rt_result_is_err(malformed) == 1,
+                "SceneAsset.LoadTextResult reports malformed text as Err");
+
+    void *empty = rt_model3d_load_text_result(rt_const_cstr("/tmp/zanna_text_doc.scene3d"),
+                                              rt_const_cstr(""));
+    EXPECT_TRUE(empty && rt_result_is_err(empty) == 1,
+                "SceneAsset.LoadTextResult reports empty text as Err");
+}
+
+/// @brief ADR 0190: relative prefab references resolve beside the virtual path.
+static void test_model3d_load_text_result_resolves_prefabs_beside_virtual_path() {
+    const char *referenced_path = "/tmp/zanna_text_prefab_ref.scene3d";
+    void *referenced_scene = rt_scene3d_new();
+    void *referenced_child = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(referenced_child, rt_const_cstr("grafted-child"));
+    rt_scene3d_add(referenced_scene, referenced_child);
+    EXPECT_TRUE(rt_scene3d_save(referenced_scene, rt_const_cstr(referenced_path)) == 1,
+                "Referenced prefab fixture can be written");
+
+    void *document_scene = rt_scene3d_new();
+    void *instance_node = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(instance_node, rt_const_cstr("instance-node"));
+    rt_scene3d_add(document_scene, instance_node);
+    EXPECT_TRUE(rt_scene_node3d_set_prefab_reference(
+                    instance_node, rt_const_cstr("zanna_text_prefab_ref.scene3d")) == 1,
+                "Relative prefab references author onto document nodes");
+    rt_string text = rt_scene3d_save_text(document_scene);
+    EXPECT_TRUE(text && rt_str_len(text) > 0, "Prefab documents serialize through SaveToText");
+
+    /* The referencing document never exists on disk; only the virtual path's
+     * directory matters for resolving the relative reference (ADR 0190). */
+    void *loaded = rt_model3d_load_text_result(
+        rt_const_cstr("/tmp/zanna_text_prefab_doc.scene3d"), text);
+    EXPECT_TRUE(loaded && rt_result_is_ok(loaded) == 1,
+                "Text documents with relative prefab references load");
+    if (loaded && rt_result_is_ok(loaded) == 1) {
+        void *instance = rt_model3d_instantiate_scene(rt_result_unwrap(loaded));
+        EXPECT_TRUE(instance != nullptr, "Prefab text documents instantiate scenes");
+        if (instance) {
+            EXPECT_TRUE(rt_scene3d_find(instance, rt_const_cstr("grafted-child")) != nullptr,
+                        "Prefab content grafts against the virtual path's directory");
+        }
+    }
+    std::remove(referenced_path);
+}
+
 static void test_model3d_roundtrips_vscn_assets() {
     const char *path = "/tmp/zanna_model3d_fixture.vscn";
     bool wrote_fixture = write_scene_fixture(path);
@@ -9557,6 +9637,8 @@ int main() {
     test_model3d_clamps_corrupt_counts_and_child_walks();
     test_model3d_roundtrips_vscn_assets();
     test_model3d_accepts_canonical_scene3d_extension();
+    test_model3d_load_text_result_loads_without_disk_document();
+    test_model3d_load_text_result_resolves_prefabs_beside_virtual_path();
     test_model3d_find_node_rejects_wrong_string_handles();
     test_model3d_adapts_gltf_scene_graphs();
     test_model3d_rejects_gltf_accessor_overrun_of_buffer_view();

@@ -23,6 +23,20 @@
 // Links: src/runtime/collections/rt_defaultmap.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares a string-keyed map with a configured fallback value.
+///
+/// Lookup distinguishes explicit presence from fallback behavior:
+/// `rt_defaultmap_has()` reports whether a key is stored, while
+/// `rt_defaultmap_get()` returns either that stored value or the fixed
+/// constructor default. Both stored values and the default are retained and
+/// traced by the map; getter results are borrowed pointers.
+///
+/// Key bytes are copied in full, including embedded NUL bytes, and a null
+/// string denotes the empty key. DefaultMap objects are runtime-managed opaque
+/// handles and are not safe for unsynchronized concurrent mutation.
+
 #pragma once
 
 #include "rt_string.h"
@@ -34,56 +48,59 @@ extern "C" {
 #endif
 
 /// @brief Create a new default map with a default value.
-/// @param default_value Value returned for missing keys.
-/// @return DefaultMap object.
+/// @param default_value Value returned for missing keys; may be NULL and is
+///        retained by the map.
+/// @return A new runtime-managed DefaultMap, or NULL after construction fails.
 void *rt_defaultmap_new(void *default_value);
 
 /// @brief Get the number of entries.
-/// @param map DefaultMap object.
-/// @return Number of entries.
+/// @param map DefaultMap handle, or NULL to query an empty map.
+/// @return Number of explicit mappings, or zero for NULL.
 int64_t rt_defaultmap_len(void *map);
 
 /// @brief Get value by key (returns default if missing).
-/// @param map DefaultMap object.
-/// @param key Key string.
-/// @return Value, or default if key not found.
+/// @param map DefaultMap handle, or NULL.
+/// @param key Key string; NULL denotes the empty key.
+/// @return Borrowed stored value, borrowed default when absent, or NULL for a
+///         null map.
 void *rt_defaultmap_get(void *map, rt_string key);
 
 /// @brief Set a key-value pair.
-/// @param map DefaultMap object.
-/// @param key Key string.
-/// @param value Value to store.
+/// @param map DefaultMap handle, or NULL for a no-op.
+/// @param key Key string to copy; NULL denotes the empty key.
+/// @param value Value to retain, or NULL to store an explicit null mapping.
 void rt_defaultmap_set(void *map, rt_string key, void *value);
 
 /// @brief Check if a key exists (explicitly set, not just default).
-/// @param map DefaultMap object.
-/// @param key Key string.
-/// @return 1 if explicitly set, 0 otherwise.
+/// @param map DefaultMap handle, or NULL to query an empty map.
+/// @param key Key string; NULL denotes the empty key.
+/// @return 1 if explicitly set, including to NULL; otherwise 0.
 int8_t rt_defaultmap_has(void *map, rt_string key);
 
 /// @brief Remove a key-value pair.
-/// @param map DefaultMap object.
-/// @param key Key string.
+/// @param map DefaultMap handle, or NULL for a no-op.
+/// @param key Key string; NULL denotes the empty key.
 /// @return 1 if removed, 0 if not found.
 int8_t rt_defaultmap_remove(void *map, rt_string key);
 
 /// @brief Get all keys.
-/// @param map DefaultMap object.
-/// @return Seq of key strings.
+/// @param map DefaultMap handle, or NULL to enumerate an empty map.
+/// @return New owning Seq of copied key strings in unspecified order.
 void *rt_defaultmap_keys(void *map);
 
 /// @brief Get the default value.
-/// @param map DefaultMap object.
-/// @return Default value.
+/// @param map DefaultMap handle, or NULL.
+/// @return Borrowed default value, which may be NULL.
 void *rt_defaultmap_get_default(void *map);
 
 /// @brief Clear all entries.
-/// @param map DefaultMap object.
+/// @param map DefaultMap handle, or NULL for a no-op.
+/// @note The configured default and bucket capacity are retained.
 void rt_defaultmap_clear(void *map);
 
 /// @brief Check if the map is empty.
-/// @param map DefaultMap object.
-/// @return 1 if empty, 0 otherwise.
+/// @param map DefaultMap handle, or NULL to test an empty map.
+/// @return 1 if no explicit mappings exist; otherwise 0.
 int8_t rt_defaultmap_is_empty(void *map);
 
 #ifdef __cplusplus

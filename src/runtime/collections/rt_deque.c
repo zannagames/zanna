@@ -32,6 +32,19 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements a retained-element double-ended queue as a ring buffer.
+///
+/// Logical index zero is the front element, while physical storage can wrap
+/// around the allocated array. Growth doubles capacity and linearizes live
+/// elements without changing their logical order. Pushes, pops, and peeks at
+/// either end are constant-time amortized; indexed access is constant-time.
+///
+/// Inserted runtime values are retained. Pop, peek, and get operations return
+/// retained references for the caller, including when the underlying mapping
+/// remains present. Deque objects and their elements participate in runtime GC
+/// traversal. Mutation is not safe without external synchronization.
+
 #include "rt_deque.h"
 
 #include "rt_box.h"
@@ -48,8 +61,10 @@
 // Internal Structure
 //=============================================================================
 
+/// Default number of ring-buffer slots.
 #define DEFAULT_CAPACITY 16
 
+/// @brief Internal circular-buffer state for a Deque object.
 typedef struct {
     void **data;   // Circular buffer
     int64_t cap;   // Capacity
@@ -64,12 +79,17 @@ typedef struct {
 #include "rt_trap.h"
 
 /// @brief Thin wrapper that raises a runtime trap with @p msg.
+/// @param msg Human-readable runtime trap message.
 static void trap_with_message(const char *msg) {
     rt_trap(msg);
 }
 
 /// @brief Checked cast of an opaque handle to the Deque struct;
 ///        traps with @p what if @p obj is NULL or not a Deque.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used on validation failure.
+/// @return The validated Deque pointer, or NULL if a returning trap handler
+///         resumes after failed validation.
 static Deque *as_deque(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_DEQUE_CLASS_ID, sizeof(Deque))) {
         trap_with_message(what);
@@ -79,6 +99,7 @@ static Deque *as_deque(void *obj, const char *what) {
 }
 
 /// @brief Drop one GC reference to a stored element and free it at zero.
+/// @param value Retained runtime value, or NULL for a no-op.
 static void deque_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
@@ -87,6 +108,10 @@ static void deque_release_value(void *value) {
 /// @brief Grow the ring buffer to hold at least @p required elements.
 /// @details Doubles capacity (or jumps to @p required), then linearizes the
 ///          wrapped contents so @c front becomes 0. Traps on overflow/OOM.
+/// @param d Deque whose backing array is to grow.
+/// @param required Minimum number of element slots required.
+/// @return 1 when sufficient capacity is available; otherwise 0 after a trap
+///         with the original allocation and logical order intact.
 static int ensure_capacity(Deque *d, int64_t required) {
     if (required <= d->cap)
         return 1;
@@ -131,11 +156,14 @@ static int ensure_capacity(Deque *d, int64_t required) {
 // Deque Creation
 //=============================================================================
 
+/// @brief Creates an empty Deque with the default capacity.
+/// @return A new runtime-managed Deque, or NULL after an allocation trap.
 void *rt_deque_new(void) {
     return rt_deque_with_capacity(DEFAULT_CAPACITY);
 }
 
 /// @brief GC finalizer: release every live element and free the ring buffer.
+/// @param obj Deque object being finalized.
 static void deque_finalize(void *obj) {
     Deque *d = as_deque(obj, "Deque: invalid Deque object");
     if (d && d->data) {
@@ -153,6 +181,9 @@ static void deque_finalize(void *obj) {
 }
 
 /// @brief GC traversal: visit every live element in logical (front→back) order.
+/// @param obj Deque object to traverse.
+/// @param visitor Runtime callback invoked for each retained element.
+/// @param ctx Opaque visitor context forwarded unchanged.
 static void deque_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -167,6 +198,9 @@ static void deque_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     }
 }
 
+/// @brief Creates an empty Deque with a requested initial capacity.
+/// @param cap Requested slots; values below one are normalized to one.
+/// @return A new runtime-managed Deque, or NULL after a size or allocation trap.
 void *rt_deque_with_capacity(int64_t cap) {
     if (cap < 1)
         cap = 1;
@@ -276,7 +310,7 @@ void rt_deque_push_front(void *obj, void *elem) {
 
 /// @brief Removes and returns the front element.
 /// @param obj Pointer to the Deque object. Must not be NULL.
-/// @return The removed element.
+/// @return The removed element as a retained reference owned by the caller.
 /// @note Traps if the deque is NULL or empty.
 void *rt_deque_pop_front(void *obj) {
     if (!obj) {
@@ -307,7 +341,7 @@ void *rt_deque_pop_front(void *obj) {
 
 /// @brief Returns the front element without removing it.
 /// @param obj Pointer to the Deque object. Must not be NULL.
-/// @return The front element.
+/// @return The front element as a retained reference owned by the caller.
 /// @note Traps if the deque is NULL or empty.
 void *rt_deque_peek_front(void *obj) {
     if (!obj) {
@@ -370,7 +404,7 @@ void rt_deque_push_back(void *obj, void *elem) {
 
 /// @brief Removes and returns the back element.
 /// @param obj Pointer to the Deque object. Must not be NULL.
-/// @return The removed element.
+/// @return The removed element as a retained reference owned by the caller.
 /// @note Traps if the deque is NULL or empty.
 void *rt_deque_pop_back(void *obj) {
     if (!obj) {
@@ -401,7 +435,7 @@ void *rt_deque_pop_back(void *obj) {
 
 /// @brief Returns the back element without removing it.
 /// @param obj Pointer to the Deque object. Must not be NULL.
-/// @return The back element.
+/// @return The back element as a retained reference owned by the caller.
 /// @note Traps if the deque is NULL or empty.
 void *rt_deque_peek_back(void *obj) {
     if (!obj) {
@@ -434,7 +468,7 @@ void *rt_deque_peek_back(void *obj) {
 /// @brief Returns the element at the given logical index.
 /// @param obj Pointer to the Deque object. Must not be NULL.
 /// @param idx Zero-based index. Must be in range [0, len).
-/// @return The element at the index.
+/// @return The element at the index as a retained reference owned by the caller.
 /// @note Traps if obj is NULL or idx is out of bounds.
 void *rt_deque_get(void *obj, int64_t idx) {
     if (!obj) {
@@ -517,9 +551,9 @@ void rt_deque_clear(void *obj) {
     rt_gc_mutator_exit();
 }
 
-/// @brief Checks whether the deque contains a given pointer value.
+/// @brief Checks whether the deque contains an equal runtime value.
 /// @param obj Pointer to the Deque object, or NULL.
-/// @param elem Pointer to search for (identity comparison).
+/// @param elem Value to compare with `rt_box_equal()`.
 /// @return 1 if found, 0 otherwise. Returns 0 if obj is NULL.
 /// @note O(n) linear scan.
 int8_t rt_deque_has(void *obj, void *elem) {
@@ -569,7 +603,7 @@ void rt_deque_reverse(void *obj) {
 /// @param obj Pointer to the Deque object, or NULL.
 /// @return A new Deque containing the same elements in the same order.
 ///         Returns an empty deque if obj is NULL.
-/// @note Elements are not deep-copied; both deques share the same pointers.
+/// @note Elements are not deep-copied; both deques retain the same pointers.
 void *rt_deque_clone(void *obj) {
     if (!obj)
         return rt_deque_new();
@@ -591,7 +625,8 @@ void *rt_deque_clone(void *obj) {
 
 /// @brief Pop the front element, or return NULL if empty (no trap).
 /// @param obj Opaque Deque object pointer.
-/// @return The removed element, or NULL if empty.
+/// @return The removed element as a retained caller-owned reference, or NULL
+///         if empty. A stored NULL is indistinguishable from emptiness.
 void *rt_deque_try_pop_front(void *obj) {
     if (!obj)
         return NULL;
@@ -632,7 +667,8 @@ void *rt_deque_try_pop_front_option(void *obj) {
 
 /// @brief Pop the back element, or return NULL if empty (no trap).
 /// @param obj Opaque Deque object pointer.
-/// @return The removed element, or NULL if empty.
+/// @return The removed element as a retained caller-owned reference, or NULL
+///         if empty. A stored NULL is indistinguishable from emptiness.
 void *rt_deque_try_pop_back(void *obj) {
     if (!obj)
         return NULL;

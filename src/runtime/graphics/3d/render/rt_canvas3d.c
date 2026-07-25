@@ -1701,7 +1701,8 @@ static void *canvas3d_new_impl(rt_string title,
                                int64_t w,
                                int64_t h,
                                int32_t fullscreen,
-                               rt_rendertarget3d *offscreen_target) {
+                               rt_rendertarget3d *offscreen_target,
+                               int32_t offscreen_prefer_gpu) {
     vgfx_framebuffer_t fb;
     const int32_t offscreen = offscreen_target != NULL;
 
@@ -1779,9 +1780,13 @@ static void *canvas3d_new_impl(rt_string title,
     c->framebuffer_width = offscreen ? 0 : initial_framebuffer_width;
     c->framebuffer_height = offscreen ? 0 : initial_framebuffer_height;
 
-    /* Offscreen canvases deliberately use the deterministic software backend. Windowed canvases
-     * retain platform-default selection with software fallback. */
-    c->backend = offscreen ? &vgfx3d_software_backend : vgfx3d_select_backend();
+    /* Offscreen canvases default to the deterministic software backend so
+     * probes, bakes, and goldens stay byte-reproducible. The accelerated
+     * offscreen constructor (ADR 0191) opts into the platform backend with
+     * the same software fallback windowed canvases use; backends that cannot
+     * create a headless context fail create_ctx and fall back truthfully. */
+    c->backend = (offscreen && !offscreen_prefer_gpu) ? &vgfx3d_software_backend
+                                                      : vgfx3d_select_backend();
     c->backend_requested_name = (c->backend && c->backend->name) ? c->backend->name : "unknown";
     c->backend_fallback = 0;
     c->backend_fallback_reason = CANVAS3D_FALLBACK_REASON_NONE;
@@ -1967,7 +1972,7 @@ static void *canvas3d_new_impl(rt_string title,
 /// @brief Create a new 3D rendering canvas (window + backend context).
 /// @details See canvas3d_new_impl — this is the windowed entry point.
 void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h) {
-    return canvas3d_new_impl(title, w, h, 0, NULL);
+    return canvas3d_new_impl(title, w, h, 0, NULL, 0);
 }
 
 /// @brief Create a fullscreen 3D canvas at desktop resolution.
@@ -1975,14 +1980,11 @@ void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h) {
 ///          requested dimensions come from the primary display. Toggle back
 ///          to windowed at runtime via SetFullscreen/ToggleFullscreen.
 void *rt_canvas3d_new_fullscreen(rt_string title) {
-    return canvas3d_new_impl(title, 0, 0, 1, NULL);
+    return canvas3d_new_impl(title, 0, 0, 1, NULL, 0);
 }
 
-/// @brief Create a deterministic windowless renderer bound to an explicit RenderTarget3D.
-/// @details The software backend accepts a NULL platform window and writes directly into the
-///          retained target. No global input canvas, resize callback, or presentation state is
-///          installed. The caller can replace the target later with SetRenderTarget.
-void *rt_canvas3d_new_offscreen(void *target) {
+/// @brief Shared validation and construction for both windowless constructors.
+static void *canvas3d_new_offscreen_impl(void *target, int32_t prefer_gpu) {
     rt_rendertarget3d *rtd =
         (rt_rendertarget3d *)rt_g3d_checked_or_null(target, RT_G3D_RENDERTARGET3D_CLASS_ID);
     if (!rtd || !rtd->target || !vgfx3d_rendertarget_valid_pixels(rtd->target, NULL)) {
@@ -1994,8 +1996,26 @@ void *rt_canvas3d_new_offscreen(void *target) {
         rt_trap("Canvas3D.NewOffscreen: render-target buffer allocation failed");
         return NULL;
     }
-    return canvas3d_new_impl(
-        NULL, (int64_t)rtd->target->width, (int64_t)rtd->target->height, 0, rtd);
+    return canvas3d_new_impl(NULL, (int64_t)rtd->target->width, (int64_t)rtd->target->height, 0,
+                             rtd, prefer_gpu);
+}
+
+/// @brief Create a deterministic windowless renderer bound to an explicit RenderTarget3D.
+/// @details The software backend accepts a NULL platform window and writes directly into the
+///          retained target. No global input canvas, resize callback, or presentation state is
+///          installed. The caller can replace the target later with SetRenderTarget.
+void *rt_canvas3d_new_offscreen(void *target) {
+    return canvas3d_new_offscreen_impl(target, 0);
+}
+
+/// @brief Create a windowless renderer that requests the platform GPU backend (ADR 0191).
+/// @details Selection and fallback mirror windowed canvases: when the platform backend cannot
+///          create a headless context, construction falls back to the deterministic software
+///          backend and reports it through IsBackendFallback/BackendName. Output is NOT
+///          promised to be byte-identical to the software constructor; determinism-sensitive
+///          callers (probes, bakes, goldens) must keep using NewOffscreen.
+void *rt_canvas3d_new_offscreen_accelerated(void *target) {
+    return canvas3d_new_offscreen_impl(target, 1);
 }
 
 /// @brief Report whether a Canvas3D was created without a platform window.

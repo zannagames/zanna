@@ -16,9 +16,8 @@
 //   - Growth doubles the word array (or allocates the minimum required); newly
 //     added words are zero-filled.
 //   - Bit index `i` lives in words[i/64] at bit position i%64.
-//   - Set operations (AND, OR, XOR) require both operands to have the same
-//     bit_count. And/Or/Xor accept unequal lengths (missing bits read as 0)
-//     and, like Not, return a NEW bitset — no operand is modified.
+//   - AND/OR/XOR accept unequal lengths (missing bits read as 0) and, like
+//     NOT, return a new bitset without modifying either operand.
 //   - Popcount uses __builtin_popcountll on GCC/Clang; falls back to a portable
 //     Hamming-weight algorithm on other compilers.
 //   - Not thread-safe; external synchronization required for concurrent access.
@@ -30,6 +29,19 @@
 // Links: src/runtime/collections/rt_bitset.h (public API)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements the runtime's dynamically growing BitSet collection.
+///
+/// Logical bits are packed into 64-bit words with bit index zero stored in the
+/// least-significant bit of the first word. The logical bit count is distinct
+/// from allocated word capacity: growth may reserve extra zeroed words, but
+/// whole-set operations expose only logical bits. Setting or toggling beyond
+/// the logical end extends it; reads and clears outside it do not.
+///
+/// Binary operations allocate independent results sized to the longer
+/// operand, treating absent high bits as zero. Handles are runtime-managed and
+/// validated against `RT_BITSET_CLASS_ID`. Mutation is unsynchronized.
 
 #include "rt_bitset.h"
 
@@ -62,6 +74,10 @@ typedef struct rt_bitset_impl {
 
 /// @brief Checked cast of an opaque handle to the BitSet implementation.
 /// @details Traps with the @p what message if @p obj is NULL or not a BitSet.
+/// @param obj Opaque runtime object handle to validate.
+/// @param what Trap message used on validation failure.
+/// @return The validated implementation pointer, or NULL if a returning trap
+///         handler resumes after failed validation.
 static rt_bitset_impl *as_bitset(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_BITSET_CLASS_ID, sizeof(rt_bitset_impl))) {
         rt_trap(what);
@@ -70,7 +86,9 @@ static rt_bitset_impl *as_bitset(void *obj, const char *what) {
     return (rt_bitset_impl *)obj;
 }
 
-/// Popcount for a 64-bit word.
+/// @brief Counts set bits in one 64-bit word.
+/// @param x Word whose population is counted.
+/// @return Number of one bits in @p x, in the range `[0, 64]`.
 static int popcount64(uint64_t x) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_popcountll(x);
@@ -83,7 +101,11 @@ static int popcount64(uint64_t x) {
 #endif
 }
 
-/// Grow the bitset to accommodate at least `min_bits` bits.
+/// @brief Grows the bitset to expose at least @p min_bits logical bits.
+/// @param bs BitSet implementation to grow.
+/// @param min_bits Required logical bit count.
+/// @return 1 after satisfying the request, or 0 after an overflow or
+///         allocation trap with the original storage and logical size intact.
 static int bitset_grow(rt_bitset_impl *bs, size_t min_bits) {
     if (min_bits > SIZE_MAX - (BITS_PER_WORD - 1)) {
         rt_trap("BitSet: bit capacity overflow");
@@ -128,6 +150,8 @@ static int bitset_grow(rt_bitset_impl *bs, size_t min_bits) {
 /// @details word_count tracks the ALLOCATED capacity (growth doubles), which
 ///          can exceed the logical size; every whole-set walk must use this
 ///          bound so spare capacity words stay invisible.
+/// @param bs BitSet whose logical extent is measured.
+/// @return Ceiling of the logical bit count divided by 64.
 static size_t bitset_logical_words(const rt_bitset_impl *bs) {
     return WORDS_FOR_BITS(bs->bit_count);
 }
@@ -137,6 +161,7 @@ static size_t bitset_logical_words(const rt_bitset_impl *bs) {
 // ---------------------------------------------------------------------------
 
 /// @brief GC finalizer: free the BitSet's backing word array.
+/// @param obj BitSet object being finalized, or NULL for a no-op.
 static void rt_bitset_finalize(void *obj) {
     if (!obj)
         return;
@@ -151,6 +176,11 @@ static void rt_bitset_finalize(void *obj) {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// @brief Creates a zero-filled BitSet with a requested logical length.
+/// @param nbits Initial logical bit count; zero selects 64 bits and a negative
+///        value raises a runtime trap.
+/// @return A new runtime-managed BitSet, or NULL after a size or allocation
+///         failure.
 void *rt_bitset_new(int64_t nbits) {
     if (nbits < 0) {
         rt_trap("BitSet: negative length");
@@ -189,6 +219,9 @@ void *rt_bitset_new(int64_t nbits) {
 }
 
 /// @brief Total bit capacity (the highest valid index + 1). Grows automatically on `_set`.
+/// @param obj BitSet handle, or NULL to query a zero-length set.
+/// @return Logical bit count, or zero when @p obj is NULL.
+/// @note Invalid non-null handles raise a runtime trap.
 int64_t rt_bitset_len(void *obj) {
     if (!obj)
         return 0;
@@ -196,6 +229,9 @@ int64_t rt_bitset_len(void *obj) {
 }
 
 /// @brief Population count: number of bits set to 1 across the entire bitset.
+/// @param obj BitSet handle, or NULL to count an empty set.
+/// @param what Trap message used for an invalid non-null handle.
+/// @return Number of set logical bits, or zero when @p obj is NULL.
 static int64_t bitset_popcount(void *obj, const char *what) {
     if (!obj)
         return 0;
@@ -207,16 +243,25 @@ static int64_t bitset_popcount(void *obj, const char *what) {
     return total;
 }
 
+/// @brief Returns the number of set logical bits.
+/// @param obj BitSet handle, or NULL to count an empty set.
+/// @return Population count, or zero when @p obj is NULL.
 int64_t rt_bitset_count(void *obj) {
     return bitset_popcount(obj, "BitSet.Count: invalid BitSet object");
 }
 
 /// @brief Returns 1 if every bit is 0 (popcount == 0). O(n/64).
+/// @param obj BitSet handle, or NULL to test an empty set.
+/// @return 1 when no logical bit is set; otherwise 0.
 int8_t rt_bitset_is_empty(void *obj) {
     return bitset_popcount(obj, "BitSet.IsEmpty: invalid BitSet object") == 0;
 }
 
 /// @brief Read the bit at `idx`. Returns 0 for out-of-range indices (no growth on read).
+/// @param obj BitSet handle, or NULL to read an empty set.
+/// @param idx Zero-based bit index.
+/// @return 1 if the indexed bit is set; otherwise 0. Negative and
+///         out-of-range indices return 0.
 int8_t rt_bitset_get(void *obj, int64_t idx) {
     if (!obj || idx < 0)
         return 0;
@@ -230,6 +275,10 @@ int8_t rt_bitset_get(void *obj, int64_t idx) {
 
 /// @brief Set the bit at `idx` to 1. Auto-grows the underlying word array if `idx` is past
 /// the current bit_count.
+/// @param obj BitSet handle, or NULL for a no-op.
+/// @param idx Non-negative zero-based bit index; negative indices are ignored.
+/// @note Growth overflow and allocation failure raise a runtime trap without
+///       changing the logical bit count.
 void rt_bitset_set(void *obj, int64_t idx) {
     if (!obj || idx < 0)
         return;
@@ -243,6 +292,9 @@ void rt_bitset_set(void *obj, int64_t idx) {
 }
 
 /// @brief Set the bit at `idx` to 0. Out-of-range indices are no-ops (no growth).
+/// @param obj BitSet handle, or NULL for a no-op.
+/// @param idx Zero-based bit index; negative and out-of-range values are
+///        ignored.
 void rt_bitset_clear(void *obj, int64_t idx) {
     if (!obj || idx < 0)
         return;
@@ -255,6 +307,8 @@ void rt_bitset_clear(void *obj, int64_t idx) {
 }
 
 /// @brief Flip the bit at `idx`. Auto-grows like `_set`.
+/// @param obj BitSet handle, or NULL for a no-op.
+/// @param idx Non-negative zero-based bit index; negative indices are ignored.
 void rt_bitset_toggle(void *obj, int64_t idx) {
     if (!obj || idx < 0)
         return;
@@ -269,6 +323,7 @@ void rt_bitset_toggle(void *obj, int64_t idx) {
 
 /// @brief Set every bit to 1 (within the current bit_count). Excess bits in the trailing word
 /// are masked off so popcount remains exact.
+/// @param obj BitSet handle, or NULL for a no-op.
 void rt_bitset_set_all(void *obj) {
     if (!obj)
         return;
@@ -285,6 +340,7 @@ void rt_bitset_set_all(void *obj) {
 }
 
 /// @brief Clear every bit to 0. O(n/64) memset; capacity is preserved.
+/// @param obj BitSet handle, or NULL for a no-op.
 void rt_bitset_clear_all(void *obj) {
     if (!obj)
         return;
@@ -296,6 +352,10 @@ void rt_bitset_clear_all(void *obj) {
 
 /// @brief Bitwise AND of two bitsets — returns a fresh bitset where bit i is `a[i] & b[i]`.
 /// Result size is `max(|a|, |b|)`; missing bits in either operand are treated as 0.
+/// @param a First BitSet handle.
+/// @param b Second BitSet handle.
+/// @return A new independent result, or a new empty 64-bit BitSet if either
+///         operand is NULL. Allocation failure returns NULL.
 void *rt_bitset_and(void *a, void *b) {
     if (!a || !b)
         return rt_bitset_new(64);
@@ -322,6 +382,10 @@ void *rt_bitset_and(void *a, void *b) {
 }
 
 /// @brief Bitwise OR of two bitsets — bit i = `a[i] | b[i]`. Result extends to the longer set.
+/// @param a First BitSet handle.
+/// @param b Second BitSet handle.
+/// @return A new independent result, or a new empty 64-bit BitSet if either
+///         operand is NULL. Allocation failure returns NULL.
 void *rt_bitset_or(void *a, void *b) {
     if (!a || !b)
         return rt_bitset_new(64);
@@ -353,6 +417,10 @@ void *rt_bitset_or(void *a, void *b) {
 }
 
 /// @brief Bitwise XOR of two bitsets — bit i = `a[i] ^ b[i]`. Useful for symmetric difference.
+/// @param a First BitSet handle.
+/// @param b Second BitSet handle.
+/// @return A new independent result, or a new empty 64-bit BitSet if either
+///         operand is NULL. Allocation failure returns NULL.
 void *rt_bitset_xor(void *a, void *b) {
     if (!a || !b)
         return rt_bitset_new(64);
@@ -385,6 +453,9 @@ void *rt_bitset_xor(void *a, void *b) {
 
 /// @brief Bitwise complement of `obj`. Result has the same bit_count; trailing word is masked
 /// so excess bits past `bit_count` stay 0.
+/// @param obj Source BitSet handle.
+/// @return A new independent complement, or a new empty 64-bit BitSet when
+///         @p obj is NULL. Allocation failure returns NULL.
 void *rt_bitset_not(void *obj) {
     if (!obj)
         return rt_bitset_new(64);
@@ -411,6 +482,9 @@ void *rt_bitset_not(void *obj) {
 /// @brief Render the bitset as a binary string, MSB-first, leading zeros suppressed (always
 /// at least one digit). Empty/null bitsets produce "0". Useful for debug printing or
 /// hash-friendly serialization.
+/// @param obj BitSet handle, or NULL to render an empty set.
+/// @return A newly created binary string. Temporary-buffer allocation failure
+///         falls back to a newly created `"0"` string.
 rt_string rt_bitset_to_string(void *obj) {
     if (!obj)
         return rt_string_from_bytes("0", 1);
