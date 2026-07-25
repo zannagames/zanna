@@ -143,7 +143,7 @@ function(zanna_add_tools_tests)
         zanna_add_test_labels(macos_toolchain_installer_smoke installer tools requires_macos requires_privileged_install slow)
     endif ()
 
-    if (UNIX AND NOT APPLE)
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         zanna_add_ctest(linux_headless_graphics_smoke
                 ${CMAKE_COMMAND}
                 -DCMAKE_BIN=${CMAKE_COMMAND}
@@ -164,7 +164,7 @@ function(zanna_add_tools_tests)
                 -P ${_ZANNA_TOOLS_DIR}/LinuxToolchainDebInstallerSmoke.cmake)
         set_tests_properties(linux_toolchain_deb_installer_smoke PROPERTIES
                 RUN_SERIAL TRUE
-                TIMEOUT 420
+                TIMEOUT 900
                 SKIP_REGULAR_EXPRESSION "Skipping Linux installer smoke")
         zanna_add_test_labels(linux_toolchain_deb_installer_smoke installer tools requires_linux requires_linux_deb requires_privileged_install slow)
 
@@ -177,7 +177,7 @@ function(zanna_add_tools_tests)
                 -P ${_ZANNA_TOOLS_DIR}/LinuxToolchainRpmInstallerSmoke.cmake)
         set_tests_properties(linux_toolchain_rpm_installer_smoke PROPERTIES
                 RUN_SERIAL TRUE
-                TIMEOUT 540
+                TIMEOUT 900
                 SKIP_REGULAR_EXPRESSION "Skipping Linux installer smoke")
         zanna_add_test_labels(linux_toolchain_rpm_installer_smoke installer tools requires_linux requires_linux_rpm requires_privileged_install slow)
 

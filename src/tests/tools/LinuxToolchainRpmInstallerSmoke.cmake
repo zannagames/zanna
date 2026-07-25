@@ -8,7 +8,7 @@ endforeach ()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ToolchainInstallerSmokeHelpers.cmake")
 
-if (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if (NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     message(STATUS "Skipping Linux installer smoke; host is not Linux")
     return()
 endif ()
@@ -110,7 +110,8 @@ endforeach ()
 zanna_installer_smoke_require_listing_paths("${_list_out}" "RPM installer smoke" ${_required_listing_paths})
 
 if (NOT DEFINED ENV{ZANNA_RUN_LINUX_INSTALLER_SMOKE} OR NOT "$ENV{ZANNA_RUN_LINUX_INSTALLER_SMOKE}" STREQUAL "1")
-    message(STATUS "Skipping Linux installer smoke; set ZANNA_RUN_LINUX_INSTALLER_SMOKE=1 to install the .rpm")
+    message(STATUS
+            "Linux RPM artifact smoke passed; set ZANNA_RUN_LINUX_INSTALLER_SMOKE=1 to add the privileged install lifecycle")
     return()
 endif ()
 

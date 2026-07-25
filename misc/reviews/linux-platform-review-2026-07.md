@@ -179,9 +179,68 @@ Status meanings:
     signs and non-digits but accepts an arbitrarily long digit string; parse and
     reject values outside the supported epoch range before passing them to RPM.
 50. **Resolved — make unknown Linux-import diagnostics deterministic.**
-    `planLinuxImports()` validates an `unordered_set` directly, so multiple
-    unknown imports can report different first errors across library/hash
-    implementations. Sort names before validation and test the chosen order.
+   `planLinuxImports()` validates an `unordered_set` directly, so multiple
+   unknown imports can report different first errors across library/hash
+   implementations. Sort names before validation and test the chosen order.
+
+## Post-review packaging verification
+
+51. **Resolved — execute Linux package smoke tests on Linux.** Script-mode CMake
+    does not populate the target-side `CMAKE_SYSTEM_NAME` variable, so the DEB
+    and RPM smoke scripts incorrectly reported every Linux host as non-Linux
+    and returned before generating an artifact. Use
+    `CMAKE_HOST_SYSTEM_NAME` for the runtime host check.
+52. **Resolved — register Linux packaging tests only for Linux targets.**
+    Replace the broader `UNIX AND NOT APPLE` registration predicate with the
+    exact `CMAKE_SYSTEM_NAME STREQUAL "Linux"` capability used by the tests.
+    This prevents another Unix target from acquiring Linux-only package tests
+    and labels.
+53. **Resolved — keep clean Linux package staging compilable.** Once the DEB
+    smoke reached its package-staging build, it exposed
+    `rt_scene_editor.cpp`'s reliance on a transitive standard-library include
+    for `std::array`. Include `<array>` directly so clean Linux builds do not
+    depend on implementation-specific header inclusion.
+54. **Resolved — give Linux package staging a realistic test budget.** The DEB
+    and RPM smoke tests invoke `install-package --build-dir`, which may need to
+    complete a broad warning-as-error rebuild before staging. The former
+    420/540-second limits were below an observed AArch64 rebuild time. Use a
+    shared 900-second ceiling while retaining serial execution.
+55. **Resolved — validate actual toolchain dependencies.** The DEB smoke tried
+    to infer whether X11 was unconditional by searching `dpkg-deb -I` metadata
+    for internal payload library names, which that command never prints. The
+    shipped toolchain includes Studio, graphics, and audio, so assert its X11
+    and ALSA dependencies explicitly; focused builder tests retain conditional
+    dependency coverage for synthetic manifests.
+56. **Resolved — tolerate portable `dpkg-deb` listing paths.** Depending on the
+    dpkg version, `dpkg-deb -c` prints archive members as either `usr/...` or
+    `./usr/...`. Match required payload suffixes without requiring the optional
+    dot prefix so a valid package is not rejected by host tool formatting.
+57. **Resolved — report artifact smoke success as a CTest pass.** The normal,
+    unprivileged DEB/RPM paths build, verify, and inspect complete artifacts,
+    then optionally continue into a root-only install/upgrade/removal
+    lifecycle. Do not trigger CTest's skip regex after artifact validation
+    merely because the opt-in privileged extension was not requested.
+58. **Resolved — classify the duplicated standalone asset adapter.** The
+    Xenoscape Scenes sound generator contains the same single Windows/POSIX
+    directory-creation boundary as the original standalone generator. Record
+    that exact probe in the migration baseline so strict lint continues to
+    reject any additional raw host checks elsewhere.
+
+### Post-review verification record
+
+- Clean warning-as-error AArch64 Linux build: passed.
+- Full default CTest run: 1,936 of 1,936 tests passed; the audio-unavailable
+  capability test was correctly skipped on the audio-enabled build.
+- Linux DEB toolchain artifact generation, internal verification, dependency
+  inspection, and payload inspection: passed.
+- Linux self-extracting toolchain bundle generation and execution smoke:
+  passed.
+- Standalone application DEB, RPM-policy, and AppImage-style bundle unit
+  coverage in `test_packaging`: passed.
+- RPM toolchain artifact smoke: capability-skipped because this host does not
+  provide `rpmbuild`/`rpm`.
+- Strict platform-policy lint, runtime-surface audit, cross-platform smoke, and
+  scripted non-privileged install: passed.
 
 ## Required final verification
 
