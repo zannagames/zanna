@@ -32,10 +32,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements the retained widget base, tree ownership, layout, painting, and interaction.
+/// @details The module maintains live-handle identity, parent/sibling invariants, recursive
+/// lifecycle, semantic revisions, accessibility metadata, visual overflow, input capture,
+/// per-root runtime snapshots, hit testing, focus traversal, and modal-root state.
+
 // Forward declaration to avoid pulling the entire IDE-widgets header into the
 // widget core. Defined in vg_tooltip.c — clears tooltip-manager pointers when
 // a widget is destroyed (fixes dangling-pointer dereference).
+/// @brief Remove tooltip-manager references to a widget before it is destroyed.
+/// @param widget Widget leaving the live registry.
 extern void vg_tooltip_manager_widget_destroyed(vg_widget_t *widget);
+
+/// @brief Remove tooltip-manager references to a widget when it becomes hidden.
+/// @param widget Widget whose visible subtree is no longer interactive.
 extern void vg_tooltip_manager_widget_hidden(vg_widget_t *widget);
 
 //=============================================================================
@@ -2334,6 +2345,8 @@ vg_widget_t *vg_widget_get_input_capture(void) {
 // scrolling or send it flying.
 static float g_wheel_speed = 1.0f;
 
+/// @brief Set the global scrolling sensitivity multiplier.
+/// @param speed Requested multiplier, clamped to the inclusive range 0.1 through 8.0.
 void vg_set_wheel_speed(float speed) {
     if (speed < 0.1f)
         speed = 0.1f;
@@ -2342,6 +2355,8 @@ void vg_set_wheel_speed(float speed) {
     g_wheel_speed = speed;
 }
 
+/// @brief Return the global scrolling sensitivity multiplier.
+/// @return Current clamped wheel-speed multiplier.
 float vg_get_wheel_speed(void) {
     return g_wheel_speed;
 }

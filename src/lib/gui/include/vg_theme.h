@@ -27,6 +27,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/// @file
+/// @brief Declares global GUI themes, visual design tokens, and packed-color helpers.
+/// @details Themes combine semantic colors, borrowed fonts, typography, spacing, widget
+/// dimensions, radii, elevation, gradients, focus treatment, and motion timing. Built-in themes
+/// have static lifetime, while custom themes are copied and caller-owned.
+
 #ifdef __cplusplus
 extern "C" {
 #endif

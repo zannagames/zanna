@@ -19,8 +19,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements detachable code-editor document-state bundles.
+/// @details Buffer swaps move owned line, history, selection, fold, token, and scroll storage
+/// between a widget and a heap-allocated shell without copying document content. View-only caches
+/// and overlays remain widget-local and are invalidated whenever the attached document changes.
+
 // The document-state fields shared between vg_codeeditor_t and
 // vg_editor_buffer_t. Keep in sync with the vg_editor_buffer_t declaration.
+/// @brief Enumerate fields transferred between an editor and a detachable document buffer.
+/// @param X Field-operation macro invoked once per transferred member.
 #define EDBUF_FIELDS(X)                                                                             \
     X(lines) X(line_count) X(line_capacity) X(document_buffer) X(history) X(cursor_line)            \
         X(cursor_col) X(selection) X(has_selection) X(scroll_x) X(scroll_y) X(extra_cursors)        \
@@ -30,7 +38,11 @@
                         X(highlight_span_count) X(highlight_span_cap) X(highlight_spans_sorted)     \
                             X(modified) X(revision) X(highlight_generation) X(typing_clock_ms)
 
-/// @brief Move the editor's document state into @p buf, leaving the editor empty.
+/// @brief Move an editor's document state into a detachable buffer.
+/// @details After field transfer, all editor-owned pointer/count groups are cleared so the widget
+/// remains safe to destroy or populate with another buffer.
+/// @param buf Empty destination buffer that assumes ownership of the document state.
+/// @param ed Source editor left as an empty document shell.
 static void editor_buffer_capture(vg_editor_buffer_t *buf, vg_codeeditor_t *ed) {
 #define CAP(f) buf->f = ed->f;
     EDBUF_FIELDS(CAP)
@@ -56,7 +68,11 @@ static void editor_buffer_capture(vg_editor_buffer_t *buf, vg_codeeditor_t *ed) 
     ed->highlight_span_cap = 0;
 }
 
-/// @brief Move @p buf's document state into the editor; @p buf keeps no ownership.
+/// @brief Move a detachable buffer's document state into an editor.
+/// @details Transferred owned pointers are cleared from @p buf, leaving only a shell that may be
+/// freed without releasing the restored document.
+/// @param ed Empty destination editor that assumes ownership of the document state.
+/// @param buf Source buffer relinquishing all transferred storage.
 static void editor_buffer_restore(vg_codeeditor_t *ed, vg_editor_buffer_t *buf) {
 #define RES(f) ed->f = buf->f;
     EDBUF_FIELDS(RES)
@@ -70,6 +86,11 @@ static void editor_buffer_restore(vg_codeeditor_t *ed, vg_editor_buffer_t *buf) 
     buf->highlight_spans = NULL;
 }
 
+/// @brief Create a detachable document buffer initialized from text.
+/// @details A temporary editor constructs the complete line/history/document-buffer state, which
+/// is then moved into the returned bundle. NULL or empty input creates one empty line.
+/// @param text NUL-terminated UTF-8 document copied into the buffer, or NULL for empty content.
+/// @return Newly allocated buffer owned by the caller, or NULL on allocation failure.
 vg_editor_buffer_t *vg_editor_buffer_create(const char *text) {
     vg_codeeditor_t *tmp = vg_codeeditor_create(NULL);
     if (!tmp)
@@ -86,6 +107,9 @@ vg_editor_buffer_t *vg_editor_buffer_create(const char *text) {
     return buf;
 }
 
+/// @brief Destroy a detached document buffer and all state it owns.
+/// @param buf Buffer returned by @ref vg_editor_buffer_create or
+/// @ref vg_codeeditor_swap_buffer; NULL is ignored.
 void vg_editor_buffer_destroy(vg_editor_buffer_t *buf) {
     if (!buf)
         return;
@@ -103,6 +127,15 @@ void vg_editor_buffer_destroy(vg_editor_buffer_t *buf) {
     free(buf);
 }
 
+/// @brief Replace the document attached to an editor by moving in a detached buffer.
+/// @details The function consumes and frees the @p incoming shell after moving its document state
+/// into @p editor. The previous document is returned in a new detachable buffer. Document-specific
+/// overlays and derived caches are cleared, transient interactions are reset, and the incremental
+/// journal is marked for a required full synchronization.
+/// @param editor Editor whose attached document is replaced.
+/// @param incoming Buffer whose contents move into @p editor; consumed on success.
+/// @return Caller-owned buffer containing the previous document, or NULL for invalid input or
+/// allocation failure. On failure, @p incoming remains owned by the caller.
 vg_editor_buffer_t *vg_codeeditor_swap_buffer(vg_codeeditor_t *editor,
                                               vg_editor_buffer_t *incoming) {
     if (!editor || !incoming)
@@ -154,6 +187,10 @@ vg_editor_buffer_t *vg_codeeditor_swap_buffer(vg_codeeditor_t *editor,
     return prev;
 }
 
+/// @brief Return a detached buffer's complete document text.
+/// @details Line contents are joined with newline separators into a new NUL-terminated allocation.
+/// @param buf Detached document buffer to read.
+/// @return Caller-owned text, or NULL for invalid input or allocation failure.
 char *vg_editor_buffer_get_text(vg_editor_buffer_t *buf) {
     if (!buf)
         return NULL;
@@ -176,15 +213,23 @@ char *vg_editor_buffer_get_text(vg_editor_buffer_t *buf) {
     return out;
 }
 
+/// @brief Return whether a detached document has unsaved modifications.
+/// @param buf Buffer to inspect.
+/// @return Stored modified flag, or `false` when @p buf is NULL.
 bool vg_editor_buffer_is_modified(const vg_editor_buffer_t *buf) {
     return buf ? buf->modified : false;
 }
 
+/// @brief Mark a detached document as unmodified.
+/// @param buf Buffer to update; NULL is ignored.
 void vg_editor_buffer_clear_modified(vg_editor_buffer_t *buf) {
     if (buf)
         buf->modified = false;
 }
 
+/// @brief Return a detached document's monotonic content revision.
+/// @param buf Buffer to inspect.
+/// @return Stored revision, or zero when @p buf is NULL.
 uint64_t vg_editor_buffer_get_revision(const vg_editor_buffer_t *buf) {
     return buf ? buf->revision : 0;
 }

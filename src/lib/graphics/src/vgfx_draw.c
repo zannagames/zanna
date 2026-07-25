@@ -8,9 +8,9 @@
 // ZannaGFX Drawing Primitives
 //
 // Implements classical raster graphics algorithms for drawing lines, circles,
-// and rectangles.  All primitives use integer-only arithmetic for deterministic,
-// portable behavior.  Clipping is performed at the pixel level to handle
-// partially visible shapes gracefully.
+// and rectangles. Core raster loops use integer arithmetic for deterministic,
+// portable behavior; bounded line clipping computes intersections before the
+// integer Bresenham walk. Clipping handles partially visible shapes gracefully.
 //
 // Algorithms Implemented:
 //   - Bresenham's Line Algorithm (1965): Integer-only line rasterization
@@ -26,8 +26,10 @@
 /// @file
 /// @brief Drawing primitive implementations using classical raster algorithms.
 /// @details Provides Bresenham line drawing, midpoint circle rendering, and
-///          rectangle operations.  All algorithms use integer-only arithmetic
-///          and perform per-pixel bounds checking.
+///          rectangle operations. Rasterization uses widened integer arithmetic;
+///          a bounded Cohen-Sutherland-style preclip computes line intersections
+///          before the integer pixel walk. Every primitive honors the effective
+///          framebuffer and compositor clip.
 
 #include "vgfx.h"
 #include "vgfx_internal.h"
@@ -35,10 +37,16 @@
 #include <stdlib.h> /* abs */
 #include <string.h>
 
+/// @brief Compute the magnitude of a widened int32-coordinate delta.
+/// @param value Difference derived from two signed-32 coordinates.
+/// @return Nonnegative magnitude, which is representable for that input domain.
 static int64_t vgfx_abs_i64(int64_t value) {
     return value < 0 ? -value : value;
 }
 
+/// @brief Saturate a widened coordinate to the signed-32 drawing domain.
+/// @param value Candidate coordinate.
+/// @return @p value clamped to INT32_MIN through INT32_MAX.
 static int32_t clamp_i64_to_i32(int64_t value) {
     if (value > INT32_MAX)
         return INT32_MAX;
@@ -47,6 +55,13 @@ static int32_t clamp_i64_to_i32(int64_t value) {
     return (int32_t)value;
 }
 
+/// @brief Resolve the nonempty intersection of framebuffer and active clip bounds.
+/// @param win Window whose physical drawing region is queried.
+/// @param min_x Receives inclusive left bound.
+/// @param min_y Receives inclusive top bound.
+/// @param max_x Receives exclusive right bound.
+/// @param max_y Receives exclusive bottom bound.
+/// @return 1 when a drawable region exists; otherwise 0.
 static int get_effective_clip_bounds(
     const struct vgfx_window *win, int64_t *min_x, int64_t *min_y, int64_t *max_x, int64_t *max_y) {
     if (!win || !min_x || !min_y || !max_x || !max_y || win->width <= 0 || win->height <= 0)
@@ -96,6 +111,14 @@ static int get_effective_clip_bounds(
 /// @details Uses int64 arithmetic so large coordinates and radii cannot
 ///          overflow while computing the bounding box. Extremely large radii
 ///          are rejected to avoid unbounded midpoint loops.
+/// @param cx Circle center X coordinate.
+/// @param cy Circle center Y coordinate.
+/// @param radius Nonnegative candidate radius.
+/// @param min_x Inclusive clip left edge.
+/// @param min_y Inclusive clip top edge.
+/// @param max_x Exclusive clip right edge.
+/// @param max_y Exclusive clip bottom edge.
+/// @return 1 when the circle bounding box intersects the clip; otherwise 0.
 static int circle_intersects_clip_bounds(int32_t cx,
                                          int32_t cy,
                                          int32_t radius,
@@ -113,6 +136,8 @@ static int circle_intersects_clip_bounds(int32_t cx,
     return right >= min_x && bottom >= min_y && left < max_x && top < max_y;
 }
 
+/// @brief Canonicalize a window to an explicitly enabled empty clip.
+/// @param win Valid window whose future drawing is suppressed.
 static void set_empty_clip(struct vgfx_window *win) {
     win->clip_x = 0;
     win->clip_y = 0;
@@ -393,6 +418,14 @@ enum {
     CLIP_BOTTOM = 8,
 };
 
+/// @brief Classify a point against inclusive line-clipping bounds.
+/// @param x Point X coordinate.
+/// @param y Point Y coordinate.
+/// @param min_x Inclusive left edge.
+/// @param min_y Inclusive top edge.
+/// @param max_x Inclusive right edge.
+/// @param max_y Inclusive bottom edge.
+/// @return Bitwise combination of CLIP_LEFT, CLIP_RIGHT, CLIP_TOP, and CLIP_BOTTOM.
 static int line_outcode(
     int64_t x, int64_t y, int64_t min_x, int64_t min_y, int64_t max_x, int64_t max_y) {
     int code = 0;
@@ -407,10 +440,25 @@ static int line_outcode(
     return code;
 }
 
+/// @brief Round a finite clipping intersection to the nearest integer coordinate.
+/// @param value Finite value within the signed-64 coordinate working range.
+/// @return Nearest integer, with half values rounded away from zero.
 static int64_t round_double_to_i64(double value) {
     return (int64_t)(value >= 0.0 ? value + 0.5 : value - 0.5);
 }
 
+/// @brief Clip a segment to a nonempty rectangle before rasterization.
+/// @details Uses iterative outcodes and double-precision edge intersections,
+///          writing inclusive endpoint coordinates suitable for Bresenham.
+/// @param x0 In/out first endpoint X.
+/// @param y0 In/out first endpoint Y.
+/// @param x1 In/out second endpoint X.
+/// @param y1 In/out second endpoint Y.
+/// @param min_x Inclusive left bound.
+/// @param min_y Inclusive top bound.
+/// @param max_exclusive_x Exclusive right bound.
+/// @param max_exclusive_y Exclusive bottom bound.
+/// @return 1 when a visible segment remains; 0 when fully outside.
 static int clip_line_to_bounds(int64_t *x0,
                                int64_t *y0,
                                int64_t *x1,
@@ -484,30 +532,11 @@ static int clip_line_to_bounds(int64_t *x0,
 //            digital display of circular arcs". Communications of the ACM.
 //===----------------------------------------------------------------------===//
 
-/// @brief Draw a circle outline using the midpoint circle algorithm.
-/// @details Integer-only circle rasterization with 8-way symmetry.  Computes
-///          one octant (first 45 degrees) and reflects it to draw the entire
-///          circle.  The decision parameter determines whether to step
-///          horizontally or diagonally based on whether the midpoint between
-///          candidate pixels is inside or outside the ideal circle.
-///
-///          Key properties:
-///            - No floating point: uses only int32_t arithmetic
-///            - Exploits 8-way symmetry: 8 pixels plotted per iteration
-///            - Decision parameter uses only addition and subtraction
-///            - Radius 0 draws a single point at the center
-///            - Negative radius is rejected (no pixels drawn)
-///
-/// @param cx     Center X coordinate
-/// @param cy     Center Y coordinate
-/// @param radius Circle radius in pixels (must be >= 0)
-/// @param plot   Callback function invoked for each pixel (x, y)
-/// @param ctx    Opaque context passed to plot callback
-///
-/// @pre  plot != NULL
-/// @pre  radius >= 0
-/// @post plot() called for all pixels on the circle perimeter (if radius > 0)
-/// @post plot() called once at (cx, cy) if radius == 0
+/// @brief Invoke a pixel callback only when widened coordinates fit its signed-32 ABI.
+/// @param x Candidate X coordinate.
+/// @param y Candidate Y coordinate.
+/// @param plot Pixel callback.
+/// @param ctx Opaque callback state.
 static void plot_checked_i64(int64_t x,
                              int64_t y,
                              void (*plot)(int32_t x, int32_t y, void *ctx),
@@ -517,6 +546,12 @@ static void plot_checked_i64(int64_t x,
     plot((int32_t)x, (int32_t)y, ctx);
 }
 
+/// @brief Clamp a widened horizontal span to the callback's signed-32 ABI.
+/// @param x0 First candidate endpoint.
+/// @param x1 Second candidate endpoint.
+/// @param y Candidate row.
+/// @param hline Horizontal-span callback.
+/// @param ctx Opaque callback state.
 static void hline_checked_i64(int64_t x0,
                               int64_t x1,
                               int64_t y,
@@ -538,6 +573,15 @@ static void hline_checked_i64(int64_t x0,
     hline((int32_t)x0, (int32_t)x1, (int32_t)y, ctx);
 }
 
+/// @brief Draw a circle outline using the midpoint circle algorithm.
+/// @details Computes one octant with a widened integer decision parameter and
+///          reflects each point through eight-way symmetry. Radius zero emits
+///          the center once; a negative radius emits nothing.
+/// @param cx Center X coordinate.
+/// @param cy Center Y coordinate.
+/// @param radius Circle radius in pixels.
+/// @param plot Callback invoked for each representable perimeter pixel.
+/// @param ctx Opaque callback state.
 static void midpoint_circle(int32_t cx,
                             int32_t cy,
                             int32_t radius,
@@ -1064,6 +1108,12 @@ int vgfx_get_clip(
 /// @details See the public declaration for the contract. The requested rectangle is first
 ///          canonicalized by the ordinary clip implementation so coordinate scaling and window
 ///          clipping remain identical. A pre-existing clip is then intersected into the ceiling.
+/// @param window Window whose drawing state is constrained.
+/// @param x Requested limit left edge in drawing coordinates.
+/// @param y Requested limit top edge in drawing coordinates.
+/// @param w Requested limit width.
+/// @param h Requested limit height.
+/// @return 1 when the non-nesting scope was established; otherwise 0.
 int vgfx_push_clip_limit(vgfx_window_t window, int32_t x, int32_t y, int32_t w, int32_t h) {
     struct vgfx_window *win = (struct vgfx_window *)window;
     if (!win || win->clip_limit_enabled)
@@ -1092,6 +1142,7 @@ int vgfx_push_clip_limit(vgfx_window_t window, int32_t x, int32_t y, int32_t w, 
 }
 
 /// @brief Restore the exact clip captured by @ref vgfx_push_clip_limit.
+/// @param window Window whose active limit scope ends; NULL is ignored.
 void vgfx_pop_clip_limit(vgfx_window_t window) {
     struct vgfx_window *win = (struct vgfx_window *)window;
     if (!win || !win->clip_limit_enabled)

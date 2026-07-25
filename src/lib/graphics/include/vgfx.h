@@ -164,6 +164,7 @@ typedef struct {
 /// @details When a log callback is installed via vgfx_set_log_callback, the
 ///          library forwards human-readable diagnostic messages to the client
 ///          for display or capture. The callback must be thread-safe.
+/// @param msg Borrowed NUL-terminated diagnostic string valid only for the call.
 typedef void (*vgfx_log_fn)(const char *msg);
 
 //===----------------------------------------------------------------------===//
@@ -434,13 +435,15 @@ typedef enum {
 /// @brief Retrieve the last error message.
 /// @details Returns a descriptive error string for the most recent failure in
 ///          the current thread.  The string is stored in thread-local storage
-///          and remains valid until the next API call or thread termination.
+///          and remains valid until another error replaces it, it is explicitly
+///          cleared, or the thread terminates.
 /// @return Error message string, or NULL if no error has occurred.
 const char *vgfx_get_last_error(void);
 
 /// @brief Retrieve the last error code.
 /// @details Returns the thread-local error code set by the most recent failure
 ///          in the current thread, or VGFX_ERR_NONE if no error is pending.
+/// @return Pending error category for the calling thread.
 vgfx_error_t vgfx_last_error_code(void);
 
 /// @brief Clear the last error state.
@@ -515,12 +518,16 @@ int vgfx_wait_events(vgfx_window_t window, int32_t timeout_ms);
 
 /// @brief Enable or disable native text input for the focused editor in a window.
 /// @details Disabling cancels any active native preedit. This does not affect raw key events.
+/// @param window Window whose native text-input session is updated.
+/// @param enabled 1 to enable native text input or 0 to disable it.
 /// @return 1 when accepted; zero for an invalid window or invalid enabled value.
 int vgfx_set_text_input_enabled(vgfx_window_t window, int32_t enabled);
 
 /// @brief Publish surrounding text, selection, content purpose, and caret geometry to the IME.
 /// @details Backends without an explicit surrounding-text protocol safely ignore this state while
 ///          retaining their existing native text behavior.
+/// @param window Window whose active input method receives the state.
+/// @param state Borrowed text-input context consumed during the call.
 /// @return 1 when the state is valid and accepted, otherwise zero.
 int vgfx_set_text_input_state(vgfx_window_t window, const vgfx_text_input_state_t *state);
 
@@ -538,9 +545,11 @@ int vgfx_get_size(vgfx_window_t window, int32_t *out_width, int32_t *out_height)
 /// @brief Set the global default FPS for subsequently-created windows.
 /// @details Positive values are clamped to the supported range. Negative
 ///          values mean unlimited FPS. Passing 0 restores an unlimited default.
+/// @param fps New process-wide default frame-rate cap.
 void vgfx_set_default_fps(int32_t fps);
 
 /// @brief Get the global default FPS used when create params specify fps == 0.
+/// @return Current process-wide default; a negative value denotes unlimited pacing.
 int32_t vgfx_get_default_fps(void);
 
 /// @brief Set the target frame rate for the window.
@@ -559,6 +568,7 @@ void vgfx_set_fps(vgfx_window_t window, int32_t fps);
 int32_t vgfx_get_fps(vgfx_window_t window);
 
 /// @brief Get the duration of the most recent vgfx_update() call in ms.
+/// @param window Window whose last measured update duration is requested.
 /// @return Last frame duration in milliseconds, or -1 if window is NULL.
 int32_t vgfx_frame_time_ms(vgfx_window_t window);
 
@@ -599,20 +609,25 @@ void vgfx_set_fullscreen(vgfx_window_t window, int fullscreen);
 int vgfx_is_fullscreen(vgfx_window_t window);
 
 /// @brief Minimize (iconify) the window.
+/// @param window Window to minimize; NULL is ignored.
 void vgfx_minimize(vgfx_window_t window);
 
 /// @brief Maximize (zoom) the window.
+/// @param window Window to maximize; NULL is ignored.
 void vgfx_maximize(vgfx_window_t window);
 
 /// @brief Restore the window from minimized or maximized state.
+/// @param window Window to restore; NULL is ignored.
 void vgfx_restore(vgfx_window_t window);
 
 /// @brief Check if the window is currently minimized.
-/// @return 1 if minimized, 0 otherwise
+/// @param window Window to inspect.
+/// @return 1 if minimized, 0 otherwise or for NULL.
 int32_t vgfx_is_minimized(vgfx_window_t window);
 
 /// @brief Check if the window is currently maximized.
-/// @return 1 if maximized, 0 otherwise
+/// @param window Window to inspect.
+/// @return 1 if maximized, 0 otherwise or for NULL.
 int32_t vgfx_is_maximized(vgfx_window_t window);
 
 /// @brief Get the window's current screen position.
@@ -628,6 +643,7 @@ void vgfx_get_position(vgfx_window_t window, int32_t *out_x, int32_t *out_y);
 void vgfx_set_position(vgfx_window_t window, int32_t x, int32_t y);
 
 /// @brief Bring the window to the front and give it keyboard focus.
+/// @param window Window to focus; NULL is ignored.
 void vgfx_focus(vgfx_window_t window);
 
 /// @brief Request foreground application activation for the window.
@@ -639,7 +655,8 @@ void vgfx_focus(vgfx_window_t window);
 void vgfx_request_foreground(vgfx_window_t window);
 
 /// @brief Check if the window currently has keyboard focus.
-/// @return 1 if focused, 0 otherwise
+/// @param window Window to inspect.
+/// @return 1 if focused, 0 otherwise or for NULL.
 int32_t vgfx_is_focused(vgfx_window_t window);
 
 /// @brief Control whether clicking the close button closes the window.
@@ -770,6 +787,8 @@ void *vgfx_get_native_view(vgfx_window_t window);
 /// @brief Tell vgfx that a GPU backend owns display for this window.
 /// @details When set, vgfx_platform_present skips the software framebuffer blit
 ///          so the GPU backend's presented content is not overwritten.
+/// @param window Window whose presentation ownership changes.
+/// @param enabled Non-zero when a GPU presenter owns the surface; zero restores software blits.
 void vgfx_set_gpu_present(vgfx_window_t window, int32_t enabled);
 
 /// @brief Get the platform-specific native display/connection handle.
@@ -821,6 +840,7 @@ void vgfx_set_native_msg_hook(vgfx_window_t window, vgfx_native_msg_hook_t hook,
 int vgfx_get_native_handles(vgfx_window_t window, vgfx_native_handles_t *out_handles);
 
 /// @brief Query native capabilities for one live window.
+/// @param window Window whose selected backend is queried.
 /// @return A bitwise OR of `VGFX_CAP_*`, or zero for an invalid/headless window.
 vgfx_window_capabilities_t vgfx_get_window_capabilities(vgfx_window_t window);
 
@@ -1061,6 +1081,7 @@ void vgfx_get_display_size(int32_t *out_w, int32_t *out_h);
 int32_t vgfx_set_relative_mouse(vgfx_window_t window, int32_t enabled);
 
 /// @brief Query whether native raw deltas are currently being delivered.
+/// @param window Window whose relative-input state is queried.
 /// @return 1 when relative mode is enabled AND the platform is native, else 0
 int32_t vgfx_relative_mouse_native(vgfx_window_t window);
 
@@ -1089,7 +1110,8 @@ void vgfx_show_cursor(void);
 ///          vgfx_poll_event() in normal FIFO order and is subject to the queue's usual
 ///          overflow and state-repair policy. This is intended for deterministic test
 ///          automation and embedders; it does not update platform input state directly.
-///          `VGFX_EVENT_NONE` and values outside the public event enumeration are rejected.
+///          Injection accepts KEY_DOWN through FILE_DROP; NONE, touch lifecycle
+///          events, and values outside that range are rejected.
 /// @param window Window whose event queue receives the copied event.
 /// @param event Complete caller-owned event value; no pointer within it is retained.
 /// @return 1 when the event was queued, otherwise 0 for invalid input, a destroying
@@ -1151,7 +1173,7 @@ int32_t vgfx_close_requested(vgfx_window_t window);
 
 /// @brief Construct a color from RGB components.
 /// @details Packs 8-bit red, green, and blue components into a 24-bit color
-///          value: 0x00RRGGBB.  Components are clamped to [0, 255].
+///          value: 0x00RRGGBB without allocation or color-space conversion.
 /// @param r Red component (0-255)
 /// @param g Green component (0-255)
 /// @param b Blue component (0-255)

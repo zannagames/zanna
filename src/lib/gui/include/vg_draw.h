@@ -33,6 +33,13 @@
 #include "vgfx.h"
 #include <stdint.h>
 
+/// @file
+/// @brief Declares the GUI toolkit's deterministic anti-aliased 2D primitives.
+/// @details All geometry is expressed in framebuffer pixels and all colors are 24-bit RGB.
+/// Implementations use integer/fixed-point coverage calculations so identical inputs produce
+/// bit-identical rounded rectangles, circles, lines, shadows, gradients, and highlights across
+/// supported platforms.
+
 #ifdef __cplusplus
 extern "C" {
 #endif

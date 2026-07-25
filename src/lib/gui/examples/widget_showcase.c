@@ -23,10 +23,17 @@
 #include "vg_widgets.h"
 #include "vgfx.h"
 
+/// @file
+/// @brief Presents a comprehensive interactive showcase of ZannaGUI widgets.
+/// @details The example manually renders form inputs, selection controls, sliders, progress,
+/// and action widgets while demonstrating hover, focus, dragging, text selection, callbacks,
+/// and a small download-progress animation.
+
 //=============================================================================
 // Demo State
 //=============================================================================
 
+/// @brief Window resources, widget references, and interaction state for the showcase.
 typedef struct {
     vgfx_window_t window;
     vg_font_t *font;
@@ -79,6 +86,12 @@ static showcase_state_t g_state;
 //=============================================================================
 
 // Calculate cursor position from x-coordinate relative to text input
+/// @brief Estimate a text cursor index from a horizontal widget-relative coordinate.
+/// @details The showcase uses a fixed-width approximation consistent with its manual input
+/// renderer and clamps the resulting index to the stored text length.
+/// @param input Text input whose font size and content define the mapping.
+/// @param rel_x Horizontal coordinate relative to the widget's left edge.
+/// @return Clamped byte-oriented cursor index.
 static size_t calc_cursor_from_x(vg_textinput_t *input, float rel_x) {
     if (!input || !input->text || input->text_len == 0)
         return 0;
@@ -103,6 +116,10 @@ static size_t calc_cursor_from_x(vg_textinput_t *input, float rel_x) {
 // Callbacks
 //=============================================================================
 
+/// @brief Update the volume label from a slider value.
+/// @param slider Slider that originated the callback.
+/// @param value New percentage value.
+/// @param data Callback context, unused by this demo.
 static void on_volume_change(vg_widget_t *slider, float value, void *data) {
     (void)slider;
     (void)data;
@@ -111,6 +128,10 @@ static void on_volume_change(vg_widget_t *slider, float value, void *data) {
     vg_label_set_text(g_state.volume_label, buf);
 }
 
+/// @brief Update the brightness label from a slider value.
+/// @param slider Slider that originated the callback.
+/// @param value New percentage value.
+/// @param data Callback context, unused by this demo.
 static void on_brightness_change(vg_widget_t *slider, float value, void *data) {
     (void)slider;
     (void)data;
@@ -119,6 +140,11 @@ static void on_brightness_change(vg_widget_t *slider, float value, void *data) {
     vg_label_set_text(g_state.brightness_label, buf);
 }
 
+/// @brief Publish the newly selected country in the status label.
+/// @param dropdown Dropdown that originated the callback.
+/// @param index Zero-based selected item index.
+/// @param text Selected item text, or NULL when no item is selected.
+/// @param data Callback context, unused by this demo.
 static void on_country_change(vg_widget_t *dropdown, int index, const char *text, void *data) {
     (void)dropdown;
     (void)index;
@@ -128,6 +154,9 @@ static void on_country_change(vg_widget_t *dropdown, int index, const char *text
     vg_label_set_text(g_state.status_label, buf);
 }
 
+/// @brief Reset and begin the simulated download animation.
+/// @param btn Button that originated the callback.
+/// @param data Callback context, unused by this demo.
 static void on_start_download(vg_widget_t *btn, void *data) {
     (void)btn;
     (void)data;
@@ -136,6 +165,9 @@ static void on_start_download(vg_widget_t *btn, void *data) {
     vg_label_set_text(g_state.status_label, "Download started...");
 }
 
+/// @brief Stop and reset the simulated download animation.
+/// @param btn Button that originated the callback.
+/// @param data Callback context, unused by this demo.
 static void on_cancel_download(vg_widget_t *btn, void *data) {
     (void)btn;
     (void)data;
@@ -145,6 +177,9 @@ static void on_cancel_download(vg_widget_t *btn, void *data) {
     vg_label_set_text(g_state.status_label, "Download cancelled");
 }
 
+/// @brief Summarize the name and email fields in the status label.
+/// @param btn Button that originated the callback.
+/// @param data Callback context, unused by this demo.
 static void on_submit(vg_widget_t *btn, void *data) {
     (void)btn;
     (void)data;
@@ -159,6 +194,10 @@ static void on_submit(vg_widget_t *btn, void *data) {
     vg_label_set_text(g_state.status_label, buf);
 }
 
+/// @brief Publish the newsletter checkbox state in the status label.
+/// @param cb Checkbox that originated the callback.
+/// @param checked Current checkbox state.
+/// @param data Callback context, unused by this demo.
 static void on_newsletter_toggle(vg_widget_t *cb, bool checked, void *data) {
     (void)cb;
     (void)data;
@@ -170,15 +209,32 @@ static void on_newsletter_toggle(vg_widget_t *cb, bool checked, void *data) {
 // Widget Rendering Helpers
 //=============================================================================
 
+/// @brief Fill an integer rectangle after discarding the packed color's alpha byte.
+/// @param window Target graphics window.
+/// @param x Left edge.
+/// @param y Top edge.
+/// @param w Width.
+/// @param h Height.
+/// @param color Packed ARGB color.
 static void draw_rect(vgfx_window_t window, int x, int y, int w, int h, uint32_t color) {
     vgfx_fill_rect(window, x, y, w, h, color & 0x00FFFFFF);
 }
 
+/// @brief Stroke an integer rectangle after discarding the packed color's alpha byte.
+/// @param window Target graphics window.
+/// @param x Left edge.
+/// @param y Top edge.
+/// @param w Width.
+/// @param h Height.
+/// @param color Packed ARGB color.
 static void draw_rect_outline(vgfx_window_t window, int x, int y, int w, int h, uint32_t color) {
     vgfx_rect(window, x, y, w, h, color & 0x00FFFFFF);
 }
 
 // Label rendering
+/// @brief Render a visible label using its explicit or current-theme text color.
+/// @param window Target graphics window.
+/// @param label Label to render; null or hidden labels are ignored.
 static void render_label(vgfx_window_t window, vg_label_t *label) {
     if (!label || !label->base.visible)
         return;
@@ -193,6 +249,9 @@ static void render_label(vgfx_window_t window, vg_label_t *label) {
 }
 
 // Button rendering
+/// @brief Render a button according to its style and hover/pressed state.
+/// @param window Target graphics window.
+/// @param button Button to render; null or hidden buttons are ignored.
 static void render_button(vgfx_window_t window, vg_button_t *button) {
     if (!button || !button->base.visible)
         return;
@@ -227,6 +286,9 @@ static void render_button(vgfx_window_t window, vg_button_t *button) {
 }
 
 // TextInput rendering
+/// @brief Render a text input with placeholder, password masking, selection, and caret.
+/// @param window Target graphics window.
+/// @param input Text input to render; null or hidden inputs are ignored.
 static void render_textinput(vgfx_window_t window, vg_textinput_t *input) {
     if (!input || !input->base.visible)
         return;
@@ -306,6 +368,9 @@ static void render_textinput(vgfx_window_t window, vg_textinput_t *input) {
 }
 
 // Checkbox rendering
+/// @brief Render a checkbox, hover border, checked mark, and label.
+/// @param window Target graphics window.
+/// @param cb Checkbox to render; null or hidden widgets are ignored.
 static void render_checkbox(vgfx_window_t window, vg_checkbox_t *cb) {
     if (!cb || !cb->base.visible)
         return;
@@ -339,6 +404,9 @@ static void render_checkbox(vgfx_window_t window, vg_checkbox_t *cb) {
 }
 
 // RadioButton rendering
+/// @brief Render a radio button circle, selection dot, and label.
+/// @param window Target graphics window.
+/// @param rb Radio button to render; null or hidden widgets are ignored.
 static void render_radio(vgfx_window_t window, vg_radiobutton_t *rb) {
     if (!rb || !rb->base.visible)
         return;
@@ -369,6 +437,9 @@ static void render_radio(vgfx_window_t window, vg_radiobutton_t *rb) {
 }
 
 // Slider rendering
+/// @brief Render a horizontal slider track, fill, and hover-sensitive thumb.
+/// @param window Target graphics window.
+/// @param sl Slider to render; null or hidden sliders are ignored.
 static void render_slider(vgfx_window_t window, vg_slider_t *sl) {
     if (!sl || !sl->base.visible)
         return;
@@ -395,6 +466,9 @@ static void render_slider(vgfx_window_t window, vg_slider_t *sl) {
 }
 
 // ProgressBar rendering
+/// @brief Render a progress track, fractional fill, border, and optional percentage.
+/// @param window Target graphics window.
+/// @param pb Progress bar to render; null or hidden bars are ignored.
 static void render_progressbar(vgfx_window_t window, vg_progressbar_t *pb) {
     if (!pb || !pb->base.visible)
         return;
@@ -418,6 +492,9 @@ static void render_progressbar(vgfx_window_t window, vg_progressbar_t *pb) {
 }
 
 // Dropdown rendering
+/// @brief Render a dropdown field and its open, hover-highlighted item list.
+/// @param window Target graphics window.
+/// @param dd Dropdown to render; null or hidden widgets are ignored.
 static void render_dropdown(vgfx_window_t window, vg_dropdown_t *dd) {
     if (!dd || !dd->base.visible)
         return;
@@ -469,6 +546,9 @@ static void render_dropdown(vgfx_window_t window, vg_dropdown_t *dd) {
 }
 
 // ListBox rendering
+/// @brief Render the visible listbox items with selected and hovered backgrounds.
+/// @param window Target graphics window.
+/// @param lb Listbox to render; null or hidden widgets are ignored.
 static void render_listbox(vgfx_window_t window, vg_listbox_t *lb) {
     if (!lb || !lb->base.visible)
         return;
@@ -497,6 +577,9 @@ static void render_listbox(vgfx_window_t window, vg_listbox_t *lb) {
 }
 
 // Spinner rendering
+/// @brief Render a numeric spinner's value field, increment buttons, and arrows.
+/// @param window Target graphics window.
+/// @param sp Spinner to render; null or hidden widgets are ignored.
 static void render_spinner(vgfx_window_t window, vg_spinner_t *sp) {
     if (!sp || !sp->base.visible)
         return;
@@ -550,6 +633,14 @@ static void render_spinner(vgfx_window_t window, vg_spinner_t *sp) {
 // Section Drawing
 //=============================================================================
 
+/// @brief Draw a bordered showcase section with title and separator.
+/// @param window Target graphics window.
+/// @param font Optional font for the section title.
+/// @param title Optional section title.
+/// @param x Left edge.
+/// @param y Top edge.
+/// @param w Section width.
+/// @param h Section height.
 static void draw_section(
     vgfx_window_t window, vg_font_t *font, const char *title, int x, int y, int w, int h) {
     vg_theme_t *theme = vg_theme_get_current();
@@ -566,6 +657,8 @@ static void draw_section(
 // Main Render
 //=============================================================================
 
+/// @brief Draw one complete frame of the categorized widget showcase.
+/// @param state Initialized showcase state containing all widget values.
 static void render_showcase(showcase_state_t *state) {
     vgfx_window_t window = state->window;
     vg_theme_t *theme = vg_theme_get_current();
@@ -674,6 +767,11 @@ static void render_showcase(showcase_state_t *state) {
 // Event Handling
 //=============================================================================
 
+/// @brief Drain native events and update every interactive showcase control.
+/// @details The handler maintains hover and press state, dropdown/list selections, slider
+/// dragging, text focus and selection, printable editing, and spinner keyboard adjustment.
+/// Close or Escape stops the main loop.
+/// @param state Mutable initialized showcase state.
 static void handle_events(showcase_state_t *state) {
     vgfx_event_t pe;
 
@@ -691,6 +789,7 @@ static void handle_events(showcase_state_t *state) {
         vgfx_mouse_pos(state->window, &mx, &my);
 
 // Simple hover detection helper
+/// @brief Update one widget's hovered flag from the current mouse coordinates.
 #define CHECK_HOVER(widget)                                                                        \
     do {                                                                                           \
         float bx, by, bw, bh;                                                                      \
@@ -967,6 +1066,8 @@ static void handle_events(showcase_state_t *state) {
 // Animation Update
 //=============================================================================
 
+/// @brief Advance the simulated download and synchronize the progress widget.
+/// @param state Mutable showcase state containing animation progress and status text.
 static void update_animation(showcase_state_t *state) {
     if (state->downloading) {
         state->progress_value += 0.005f;
@@ -983,6 +1084,11 @@ static void update_animation(showcase_state_t *state) {
 // Initialization
 //=============================================================================
 
+/// @brief Create the window, load a fallback font, and configure every showcase widget.
+/// @details The function assigns fixed demonstration geometry and initial values for inputs,
+/// selection controls, sliders, progress, and action widgets.
+/// @param state Zero-initialized destination state.
+/// @return True when the graphics window and showcase state are ready; otherwise false.
 static bool init_showcase(showcase_state_t *state) {
     vgfx_window_params_t params = vgfx_window_params_default();
     params.width = 800;
@@ -1199,6 +1305,10 @@ static bool init_showcase(showcase_state_t *state) {
 // Main
 //=============================================================================
 
+/// @brief Run the interactive widget showcase until close or Escape.
+/// @param argc Process argument count; currently ignored.
+/// @param argv Process argument vector; currently ignored.
+/// @return Zero after normal completion, or one when initialization fails.
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;

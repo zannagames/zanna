@@ -24,6 +24,16 @@
 #include <stdio.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements atomic runtime loading of the Wayland client ABI.
+/// @details The loader resolves both callable entry points and exported protocol-interface
+/// descriptors. It deliberately copies function addresses through `memcpy` so the dynamic
+/// loader's object pointers are transferred without a direct object-to-function cast.
+
+/// @brief Write a stable backend-unavailable diagnostic into a caller buffer.
+/// @param error Destination buffer, or NULL when no diagnostic is requested.
+/// @param error_size Capacity of @p error in bytes, including its terminator.
+/// @param detail Loader-specific explanation, or NULL for the generic fallback.
 static void vgfx_wayland_loader_error(char *error, uint32_t error_size, const char *detail) {
     if (!error || error_size == 0)
         return;
@@ -33,6 +43,7 @@ static void vgfx_wayland_loader_error(char *error, uint32_t error_size, const ch
                    detail ? detail : "unknown loader error");
 }
 
+/// @copydoc vgfx_wayland_loader_close
 void vgfx_wayland_loader_close(vgfx_wayland_client_api_t *api) {
     if (!api)
         return;
@@ -41,6 +52,7 @@ void vgfx_wayland_loader_close(vgfx_wayland_client_api_t *api) {
     memset(api, 0, sizeof(*api));
 }
 
+/// @copydoc vgfx_wayland_loader_open
 int vgfx_wayland_loader_open(vgfx_wayland_client_api_t *api,
                              const char *library_name,
                              char *error,
@@ -69,6 +81,9 @@ int vgfx_wayland_loader_open(vgfx_wayland_client_api_t *api,
         return 0;
     }
 
+/// @brief Resolve one required callable entry point into the dispatch table.
+/// @details Failure records the missing symbol and transfers control to the common atomic
+/// cleanup path. `memcpy` preserves the function-pointer representation accepted by the ABI.
 #define VGFX_WL_LOAD_FIELD(field, symbol)                                                          \
     do {                                                                                            \
         void *address = dlsym(api->library, symbol);                                                \
@@ -79,6 +94,9 @@ int vgfx_wayland_loader_open(vgfx_wayland_client_api_t *api,
         memcpy(&api->field, &address, sizeof(address));                                             \
     } while (0)
 
+/// @brief Resolve one required exported protocol-interface descriptor.
+/// @details Failure records the missing symbol and transfers control to the common atomic
+/// cleanup path.
 #define VGFX_WL_LOAD_INTERFACE(field, symbol)                                                       \
     do {                                                                                            \
         api->field = (const struct wl_interface *)dlsym(api->library, symbol);                       \

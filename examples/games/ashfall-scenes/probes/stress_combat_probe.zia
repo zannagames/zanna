@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: examples/games/ashfall/probes/stress_combat_probe.zia
+// File: examples/games/ashfall-scenes/probes/stress_combat_probe.zia
 // Purpose: Gate sustained Ashfall combat against broadphase and navigation
 //          work amplification over roughly one thousand fixed simulation ticks.
 // Key invariants:
@@ -15,7 +15,7 @@
 // Ownership/Lifetime:
 //   - The probe owns one transient Game and its baked navigation mesh.
 //   - Game owns all spawned combat and runtime objects through process exit.
-// Links: examples/games/ashfall/ai/ai_core.zia, examples/games/ashfall/game.zia
+// Links: examples/games/ashfall-scenes/ai/ai_core.zia, examples/games/ashfall-scenes/game.zia
 //
 //===----------------------------------------------------------------------===//
 module stress_combat_probe;

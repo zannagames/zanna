@@ -43,6 +43,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Assembles the code-editor implementation from ordered private fragments.
+/// @details The fragments intentionally share one translation unit so their static helpers,
+/// forward declarations, vtable, and public definitions retain monolithic visibility and ordering.
+/// The include sequence is therefore part of the implementation contract.
+
 // clang-format off
 #include "vg_codeeditor_core.inc"
 #include "vg_codeeditor_history.inc"

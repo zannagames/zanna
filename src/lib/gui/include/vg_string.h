@@ -23,6 +23,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Declares small standard-C string helpers used by GUI implementation files.
+/// @details The header avoids platform-specific allocation routines while keeping ownership
+/// explicit: every successful duplicate is an independent heap allocation returned to the caller.
+
 #ifdef __cplusplus
 extern "C" {
 #endif

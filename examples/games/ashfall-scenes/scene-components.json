@@ -1,0 +1,227 @@
+{
+  "version": 2,
+  "components": [
+    {
+      "name": "enemy-spawn",
+      "label": "Enemy Spawn",
+      "target": "3d-node",
+      "description": "One campaign enemy placement (af.kind=spawn nodes).",
+      "fields": [
+        {
+          "key": "spawn.archetype",
+          "type": "enum",
+          "choices": [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5"
+          ],
+          "default": "0"
+        },
+        {
+          "key": "spawn.wave",
+          "type": "int",
+          "default": 0
+        },
+        {
+          "key": "spawn.routeX",
+          "type": "float",
+          "default": 99999.0
+        },
+        {
+          "key": "spawn.routeZ",
+          "type": "float",
+          "default": 99999.0
+        }
+      ]
+    },
+    {
+      "name": "pickup",
+      "label": "Pickup",
+      "target": "3d-node",
+      "description": "Health/ammo/collectible pickup marker.",
+      "fields": [
+        {
+          "key": "pickup.kind",
+          "type": "int",
+          "default": 0
+        },
+        {
+          "key": "pickup.amount",
+          "type": "float",
+          "default": 25.0
+        }
+      ]
+    },
+    {
+      "name": "prop",
+      "label": "Prop",
+      "target": "3d-node",
+      "description": "Instanced dressing prop (crate, barrel, console...).",
+      "fields": [
+        {
+          "key": "prop.kind",
+          "type": "int",
+          "default": 0
+        },
+        {
+          "key": "prop.yaw",
+          "type": "float",
+          "default": 0.0
+        },
+        {
+          "key": "prop.scale",
+          "type": "float",
+          "default": 1.0
+        }
+      ]
+    },
+    {
+      "name": "cover",
+      "label": "AI Cover Hint",
+      "target": "3d-node",
+      "description": "Preferred firing pocket with a facing vector.",
+      "fields": [
+        {
+          "key": "cover.faceX",
+          "type": "float",
+          "default": 0.0
+        },
+        {
+          "key": "cover.faceZ",
+          "type": "float",
+          "default": -1.0
+        }
+      ]
+    },
+    {
+      "name": "flank",
+      "label": "Flank Pocket",
+      "target": "3d-node",
+      "description": "Authored side pocket for repositioning enemies.",
+      "fields": [
+        {
+          "key": "af.kind",
+          "type": "string",
+          "default": "flank"
+        }
+      ]
+    },
+    {
+      "name": "route",
+      "label": "Route Marker",
+      "target": "3d-node",
+      "description": "Player-guidance marker (0=route 1=objective 2=exit 3=safe).",
+      "fields": [
+        {
+          "key": "routeMarker.kind",
+          "type": "enum",
+          "choices": [
+            "0",
+            "1",
+            "2",
+            "3"
+          ],
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "name": "landmark",
+      "label": "Landmark",
+      "target": "3d-node",
+      "description": "Readable identity anchor (0=hero 1=exit 2=objective 3=hazard).",
+      "fields": [
+        {
+          "key": "landmark.kind",
+          "type": "enum",
+          "choices": [
+            "0",
+            "1",
+            "2",
+            "3"
+          ],
+          "default": "0"
+        }
+      ]
+    },
+    {
+      "name": "beat",
+      "label": "Encounter Beat",
+      "target": "3d-node",
+      "description": "Authored flow beat (0=reveal 1=ambush 2=holdout 3=boss).",
+      "fields": [
+        {
+          "key": "beat.kind",
+          "type": "enum",
+          "choices": [
+            "0",
+            "1",
+            "2",
+            "3"
+          ],
+          "default": "0"
+        },
+        {
+          "key": "beat.wave",
+          "type": "int",
+          "default": 0
+        }
+      ]
+    },
+    {
+      "name": "gate",
+      "label": "Objective Gate",
+      "target": "3d-node",
+      "description": "Physical blocker opened by an objective index.",
+      "fields": [
+        {
+          "key": "gate.unlock",
+          "type": "int",
+          "default": 0
+        }
+      ]
+    },
+    {
+      "name": "collider",
+      "label": "Box Collider",
+      "target": "3d-node",
+      "description": "ADR 0185 collider convention for colliding geometry.",
+      "fields": [
+        {
+          "key": "collider.kind",
+          "type": "enum",
+          "choices": [
+            "box",
+            "sphere",
+            "capsule",
+            "mesh-bounds"
+          ],
+          "default": "box"
+        },
+        {
+          "key": "collider.halfX",
+          "type": "float",
+          "default": 0.5
+        },
+        {
+          "key": "collider.halfY",
+          "type": "float",
+          "default": 0.5
+        },
+        {
+          "key": "collider.halfZ",
+          "type": "float",
+          "default": 0.5
+        },
+        {
+          "key": "collider.trigger",
+          "type": "bool",
+          "default": false
+        }
+      ]
+    }
+  ]
+}

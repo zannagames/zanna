@@ -18,6 +18,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Native Wayland windowing and software-presentation backend.
+/// @details Composes the dynamically loaded Wayland connection, xdg-shell,
+///          input, scale, data-device, cursor, activation, relative-pointer,
+///          text-input, client-decoration, and shared-memory presenter modules
+///          into the ZannaGFX platform interface without Wayland link-time
+///          dependencies.
+
 #define _POSIX_C_SOURCE 200809L
 
 #include "vgfx_internal.h"
@@ -39,6 +47,10 @@
 #include <string.h>
 #include <time.h>
 
+/// @brief Aggregate state owned by one Wayland-backed ZannaGFX window.
+/// @details Owns every protocol submodule and caches the last public state
+///          reported to the core so configure/focus/close changes generate
+///          events exactly once.
 typedef struct vgfx_wayland_platform {
     vgfx_wayland_connection_t connection;
     vgfx_wayland_activation_t activation;
@@ -68,6 +80,7 @@ typedef struct vgfx_wayland_platform {
 static vgfx_wayland_data_t *g_vgfx_wayland_active_data;
 static vgfx_wayland_cursor_t *g_vgfx_wayland_active_cursor;
 
+/// @copydoc vgfx_platform_aligned_alloc
 void *vgfx_platform_aligned_alloc(size_t alignment, size_t size) {
     if (size == 0)
         return NULL;
@@ -77,10 +90,12 @@ void *vgfx_platform_aligned_alloc(size_t alignment, size_t size) {
     return posix_memalign(&result, alignment, size) == 0 ? result : NULL;
 }
 
+/// @copydoc vgfx_platform_aligned_free
 void vgfx_platform_aligned_free(void *ptr) {
     free(ptr);
 }
 
+/// @copydoc vgfx_platform_now_ms
 int64_t vgfx_platform_now_ms(void) {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
@@ -88,6 +103,7 @@ int64_t vgfx_platform_now_ms(void) {
     return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
+/// @copydoc vgfx_platform_sleep_ms
 void vgfx_platform_sleep_ms(int32_t ms) {
     if (ms <= 0)
         return;
@@ -96,10 +112,16 @@ void vgfx_platform_sleep_ms(int32_t ms) {
     }
 }
 
+/// @copydoc vgfx_platform_yield
 void vgfx_platform_yield(void) {
     (void)sched_yield();
 }
 
+/// @brief Read the initial Wayland display scale from `GDK_SCALE`.
+/// @details Accepts a complete finite numeric value in [1, 8] and otherwise
+///          falls back to 1.0.  Per-window compositor scale updates later flow
+///          through the scale protocol module.
+/// @return Initial physical-pixels-per-logical-unit scale.
 float vgfx_platform_get_display_scale(void) {
     const char *text = getenv("GDK_SCALE");
     if (!text || !text[0])
@@ -109,16 +131,31 @@ float vgfx_platform_get_display_scale(void) {
     return end != text && *end == '\0' && scale >= 1.0f && scale <= 8.0f ? scale : 1.0f;
 }
 
+/// @brief Report that no global logical display extent is available before connection.
+/// @param out_w Ignored width output.
+/// @param out_h Ignored height output.
+/// @return Always 0; Wayland monitor geometry is window/output scoped.
 int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
     (void)out_w;
     (void)out_h;
     return 0;
 }
 
+/// @brief Publish a Wayland platform failure through the shared error channel.
+/// @param message Descriptive message, or NULL for a generic fallback.
 static void vgfx_wayland_set_error(const char *message) {
     vgfx_internal_set_error(VGFX_ERR_PLATFORM, message ? message : "Wayland backend failed");
 }
 
+/// @brief Dispatch pending Wayland traffic with a bounded connection wait.
+/// @details Follows the prepare-read/flush/poll/read protocol, drains already
+///          queued callbacks, handles a blocked outgoing flush with POLLOUT,
+///          retries interrupted polls, and always cancels prepared reads when
+///          no incoming data is consumed.
+/// @param platform Initialized window platform state.
+/// @param timeout_ms Poll timeout; negative waits indefinitely.
+/// @return 0 on connection/protocol failure, 1 for a clean timeout/no new
+///         callback, or 2 when callbacks were dispatched.
 static int vgfx_wayland_dispatch_available(vgfx_wayland_platform_t *platform, int32_t timeout_ms) {
     if (!platform || !platform->connection.display)
         return 0;
@@ -164,6 +201,14 @@ static int vgfx_wayland_dispatch_available(vgfx_wayland_platform_t *platform, in
     return result >= 0 ? (dispatched ? 2 : 1) : 0;
 }
 
+/// @brief Reconcile compositor state with core framebuffer and public events.
+/// @details Resolves configured/requested logical size and scale, safely rounds
+///          physical dimensions, recreates CSD and shared-memory presentation
+///          storage on change, emits resize/focus/close transitions once, and
+///          clears sticky input when activation is lost.
+/// @param win Window whose aggregate Wayland state should be synchronized.
+/// @return 1 when synchronization succeeded, otherwise 0 with an error set
+///         where appropriate.
 static int vgfx_wayland_sync_state(struct vgfx_window *win) {
     vgfx_wayland_platform_t *platform = (vgfx_wayland_platform_t *)win->platform_data;
     if (!platform)
@@ -244,6 +289,7 @@ static int vgfx_wayland_sync_state(struct vgfx_window *win) {
     return 1;
 }
 
+/// @copydoc vgfx_platform_init_window
 int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_t *params) {
     if (!win || !params)
         return 0;
@@ -314,6 +360,7 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
     return 1;
 }
 
+/// @copydoc vgfx_platform_destroy_window
 void vgfx_platform_destroy_window(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -337,6 +384,7 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
     win->platform_data = NULL;
 }
 
+/// @copydoc vgfx_platform_wait_events
 int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     if (!win || !win->platform_data)
         return 0;
@@ -351,6 +399,7 @@ int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     return dispatched == 2 || repeated > 0;
 }
 
+/// @copydoc vgfx_platform_process_events
 int vgfx_platform_process_events(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -362,6 +411,7 @@ int vgfx_platform_process_events(struct vgfx_window *win) {
     return vgfx_wayland_sync_state(win);
 }
 
+/// @copydoc vgfx_platform_present
 int vgfx_platform_present(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -372,6 +422,7 @@ int vgfx_platform_present(struct vgfx_window *win) {
     return vgfx_wayland_shm_present(&platform->presenter, win->pixels, size);
 }
 
+/// @copydoc vgfx_platform_set_title
 void vgfx_platform_set_title(struct vgfx_window *win, const char *title) {
     if (!win || !win->platform_data)
         return;
@@ -386,6 +437,7 @@ void vgfx_platform_set_title(struct vgfx_window *win, const char *title) {
         safe);
 }
 
+/// @copydoc vgfx_platform_set_fullscreen
 int vgfx_platform_set_fullscreen(struct vgfx_window *win, int fullscreen) {
     if (!win || !win->platform_data)
         return 0;
@@ -414,12 +466,14 @@ int vgfx_platform_set_fullscreen(struct vgfx_window *win, int fullscreen) {
                : 0;
 }
 
+/// @copydoc vgfx_platform_is_fullscreen
 int vgfx_platform_is_fullscreen(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
     return ((vgfx_wayland_platform_t *)win->platform_data)->shell.fullscreen;
 }
 
+/// @copydoc vgfx_platform_minimize
 void vgfx_platform_minimize(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -433,6 +487,7 @@ void vgfx_platform_minimize(struct vgfx_window *win) {
     platform->minimized = 1;
 }
 
+/// @copydoc vgfx_platform_maximize
 void vgfx_platform_maximize(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -445,6 +500,7 @@ void vgfx_platform_maximize(struct vgfx_window *win) {
         0);
 }
 
+/// @copydoc vgfx_platform_restore
 void vgfx_platform_restore(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -458,17 +514,22 @@ void vgfx_platform_restore(struct vgfx_window *win) {
     platform->minimized = 0;
 }
 
+/// @copydoc vgfx_platform_is_minimized
 int32_t vgfx_platform_is_minimized(struct vgfx_window *win) {
     return win && win->platform_data ? ((vgfx_wayland_platform_t *)win->platform_data)->minimized
                                      : 0;
 }
 
+/// @copydoc vgfx_platform_is_maximized
 int32_t vgfx_platform_is_maximized(struct vgfx_window *win) {
     return win && win->platform_data
                ? ((vgfx_wayland_platform_t *)win->platform_data)->shell.maximized
                : 0;
 }
 
+/// @copydoc vgfx_platform_get_position
+/// @details Wayland deliberately does not expose global window coordinates, so
+///          valid outputs receive zero.
 void vgfx_platform_get_position(struct vgfx_window *win, int32_t *out_x, int32_t *out_y) {
     (void)win;
     if (out_x)
@@ -477,33 +538,40 @@ void vgfx_platform_get_position(struct vgfx_window *win, int32_t *out_x, int32_t
         *out_y = 0;
 }
 
+/// @copydoc vgfx_platform_set_position
+/// @details Wayland clients cannot choose global toplevel positions; this is a no-op.
 void vgfx_platform_set_position(struct vgfx_window *win, int32_t x, int32_t y) {
     (void)win;
     (void)x;
     (void)y;
 }
 
+/// @copydoc vgfx_platform_focus
 void vgfx_platform_focus(struct vgfx_window *win) {
     if (win && win->platform_data)
         (void)vgfx_wayland_activation_request(
             &((vgfx_wayland_platform_t *)win->platform_data)->activation);
 }
 
+/// @copydoc vgfx_platform_request_foreground
 void vgfx_platform_request_foreground(struct vgfx_window *win) {
     vgfx_platform_focus(win);
 }
 
+/// @copydoc vgfx_platform_is_focused
 int32_t vgfx_platform_is_focused(struct vgfx_window *win) {
     return win && win->platform_data
                ? ((vgfx_wayland_platform_t *)win->platform_data)->shell.activated
                : 0;
 }
 
+/// @copydoc vgfx_platform_set_prevent_close
 void vgfx_platform_set_prevent_close(struct vgfx_window *win, int32_t prevent) {
     if (win)
         win->prevent_close = prevent ? 1 : 0;
 }
 
+/// @copydoc vgfx_platform_set_cursor
 void vgfx_platform_set_cursor(struct vgfx_window *win, int32_t cursor_type) {
     if (win && win->platform_data) {
         vgfx_wayland_platform_t *platform = (vgfx_wayland_platform_t *)win->platform_data;
@@ -512,6 +580,7 @@ void vgfx_platform_set_cursor(struct vgfx_window *win, int32_t cursor_type) {
     }
 }
 
+/// @copydoc vgfx_platform_set_cursor_visible
 void vgfx_platform_set_cursor_visible(struct vgfx_window *win, int32_t visible) {
     if (win && win->platform_data) {
         vgfx_wayland_platform_t *platform = (vgfx_wayland_platform_t *)win->platform_data;
@@ -520,18 +589,21 @@ void vgfx_platform_set_cursor_visible(struct vgfx_window *win, int32_t visible) 
     }
 }
 
+/// @copydoc vgfx_platform_hide_cursor
 void vgfx_platform_hide_cursor(void) {
     if (g_vgfx_wayland_active_cursor)
         vgfx_wayland_cursor_set(
             g_vgfx_wayland_active_cursor, g_vgfx_wayland_active_cursor->type, 0);
 }
 
+/// @copydoc vgfx_platform_show_cursor
 void vgfx_platform_show_cursor(void) {
     if (g_vgfx_wayland_active_cursor)
         vgfx_wayland_cursor_set(
             g_vgfx_wayland_active_cursor, g_vgfx_wayland_active_cursor->type, 1);
 }
 
+/// @copydoc vgfx_platform_get_monitor_size
 void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int32_t *out_h) {
     if (win && win->platform_data) {
         vgfx_wayland_platform_t *platform = (vgfx_wayland_platform_t *)win->platform_data;
@@ -544,6 +616,9 @@ void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int
         *out_h = win ? win->height : VGFX_DEFAULT_HEIGHT;
 }
 
+/// @copydoc vgfx_platform_set_window_size
+/// @details Wayland expresses a client resize by committing content at the new
+///          logical extent; the next compositor configure remains authoritative.
 void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h) {
     if (!win || !win->platform_data || w <= 0 || h <= 0)
         return;
@@ -563,6 +638,7 @@ void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h
     (void)vgfx_wayland_sync_state(win);
 }
 
+/// @copydoc vgfx_platform_set_window_min_size
 void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32_t h) {
     if (!win || !win->platform_data || w <= 0 || h <= 0)
         return;
@@ -586,34 +662,41 @@ void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32
     (void)platform->connection.api.display_flush(platform->connection.display);
 }
 
+/// @copydoc vgfx_clipboard_has_format
 int vgfx_clipboard_has_format(vgfx_clipboard_format_t format) {
     return format == VGFX_CLIPBOARD_TEXT && vgfx_wayland_data_has_text(g_vgfx_wayland_active_data);
 }
 
+/// @copydoc vgfx_clipboard_get_text
 char *vgfx_clipboard_get_text(void) {
     return vgfx_wayland_data_get_text(g_vgfx_wayland_active_data);
 }
 
+/// @copydoc vgfx_clipboard_set_text
 void vgfx_clipboard_set_text(const char *text) {
     (void)vgfx_wayland_data_set_text(g_vgfx_wayland_active_data, text);
 }
 
+/// @copydoc vgfx_clipboard_clear
 void vgfx_clipboard_clear(void) {
     vgfx_clipboard_set_text(NULL);
 }
 
+/// @copydoc vgfx_get_native_view
 void *vgfx_get_native_view(vgfx_window_t window) {
     if (!window || !window->platform_data)
         return NULL;
     return ((vgfx_wayland_platform_t *)window->platform_data)->shell.surface;
 }
 
+/// @copydoc vgfx_get_native_display
 void *vgfx_get_native_display(vgfx_window_t window) {
     if (!window || !window->platform_data)
         return NULL;
     return ((vgfx_wayland_platform_t *)window->platform_data)->connection.display;
 }
 
+/// @copydoc vgfx_get_native_handles
 int vgfx_get_native_handles(vgfx_window_t window, vgfx_native_handles_t *out_handles) {
     if (!window || !window->platform_data || !out_handles)
         return 0;
@@ -625,6 +708,7 @@ int vgfx_get_native_handles(vgfx_window_t window, vgfx_native_handles_t *out_han
     return 1;
 }
 
+/// @copydoc vgfx_get_window_capabilities
 vgfx_window_capabilities_t vgfx_get_window_capabilities(vgfx_window_t window) {
     if (!window || !window->platform_data)
         return 0;
@@ -650,12 +734,20 @@ vgfx_window_capabilities_t vgfx_get_window_capabilities(vgfx_window_t window) {
     return result;
 }
 
+/// @brief Accept a cursor-warp request as an unsupported Wayland no-op.
+/// @param window Ignored target window.
+/// @param x Ignored logical X coordinate.
+/// @param y Ignored logical Y coordinate.
 void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
     (void)window;
     (void)x;
     (void)y;
 }
 
+/// @brief Toggle the Wayland relative-pointer and pointer-constraint session.
+/// @param win Window whose relative mode should change.
+/// @param enabled Non-zero to enable, zero to disable.
+/// @return 1 when the protocol transition succeeded, otherwise 0.
 int vgfx_platform_set_relative_mouse(struct vgfx_window *win, int enabled) {
     if (!win || !win->platform_data)
         return 0;
@@ -663,6 +755,7 @@ int vgfx_platform_set_relative_mouse(struct vgfx_window *win, int enabled) {
     return vgfx_wayland_relative_set_enabled(&platform->relative, enabled);
 }
 
+/// @copydoc vgfx_platform_set_text_input_enabled
 int vgfx_platform_set_text_input_enabled(struct vgfx_window *win, int32_t enabled) {
     if (!win || !win->platform_data)
         return 0;
@@ -670,6 +763,7 @@ int vgfx_platform_set_text_input_enabled(struct vgfx_window *win, int32_t enable
     return vgfx_wayland_text_input_set_enabled(&platform->text_input, enabled);
 }
 
+/// @copydoc vgfx_platform_set_text_input_state
 int vgfx_platform_set_text_input_state(struct vgfx_window *win,
                                        const vgfx_text_input_state_t *state) {
     if (!win || !win->platform_data)

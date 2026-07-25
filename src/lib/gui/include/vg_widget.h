@@ -36,6 +36,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/// @file
+/// @brief Declares the retained widget base, hierarchy, lifecycle, layout, paint, and focus API.
+/// @details Every concrete control embeds this base as its first member. The API manages
+/// single-parent trees, owned metadata and implementation state, recursive destruction,
+/// two-pass sizing, hit testing, invalidation, input capture, focus traversal, and modal roots.
+
 #ifdef __cplusplus
 extern "C" {
 #endif

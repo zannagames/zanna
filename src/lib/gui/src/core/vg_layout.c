@@ -24,6 +24,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements retained VBox, HBox, Flex, Grid, and Dock layout algorithms.
+/// @details Each container participates in the widget measure/arrange protocol, normalizes
+/// invalid dimensions, applies margins and constraints, and supports manually positioned
+/// children. Checked Grid and Dock mutations preserve prior metadata on validation or allocation
+/// failure.
+
 //=============================================================================
 // Layout-specific vtables
 //=============================================================================
@@ -89,6 +96,10 @@ static float layout_nonnegative(float value) {
     return (isfinite(value) && value > 0.0f) ? value : 0.0f;
 }
 
+/// @brief Measure one child after clamping available dimensions to finite non-negative values.
+/// @param child Child widget to measure.
+/// @param available_width Parent-provided available width.
+/// @param available_height Parent-provided available height.
 static void layout_measure_child(vg_widget_t *child,
                                  float available_width,
                                  float available_height) {
@@ -96,6 +107,8 @@ static void layout_measure_child(vg_widget_t *child,
         child, layout_nonnegative(available_width), layout_nonnegative(available_height));
 }
 
+/// @brief Arrange a manually positioned child at its stored origin and measured size.
+/// @param child Manual child to arrange; NULL is ignored.
 static void layout_arrange_manual_child(vg_widget_t *child) {
     if (!child)
         return;

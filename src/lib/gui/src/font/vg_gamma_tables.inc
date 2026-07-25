@@ -18,6 +18,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Supplies integer lookup tables for gamma-correct glyph compositing.
+/// @details This implementation fragment is included only by the canvas integration unit. Keeping
+/// the precomputed IEC 61966-2-1 transfer values in source makes the hot blending loop free of
+/// floating-point exponentiation and gives every supported platform identical results.
+
+/// @brief Map each eight-bit sRGB channel value to linear light scaled to `[0, 32768]`.
 static const uint16_t k_vg_srgb_to_linear[256] = {
     0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99, 110,
     120, 132, 144, 157, 170, 184, 198, 213, 229, 246, 263, 281,
@@ -43,6 +50,8 @@ static const uint16_t k_vg_srgb_to_linear[256] = {
     31898, 32186, 32476, 32768,
 };
 
+/// @brief Map 12-bit table indices derived from 15-bit linear-light values back to eight-bit sRGB.
+/// @details Callers right-shift a clamped `[0, 32767]` linear value by three before indexing.
 static const uint8_t k_vg_linear_to_srgb[4096] = {
     0, 1, 2, 3, 4, 4, 5, 6, 7, 8, 8, 9, 10, 11, 12, 12,
     13, 14, 14, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21,

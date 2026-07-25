@@ -28,30 +28,60 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+/// @file
+/// @brief Implements bounded double-buffered `wl_shm` framebuffer presentation.
+
+/// @brief Core shared-memory and surface protocol constants used by the presenter.
 enum {
+    /// @brief Opcode for `wl_shm.create_pool`.
     VGFX_WL_SHM_CREATE_POOL = 0,
+
+    /// @brief Opcode for `wl_shm_pool.create_buffer`.
     VGFX_WL_SHM_POOL_CREATE_BUFFER = 0,
+
+    /// @brief Opcode for `wl_shm_pool.destroy`.
     VGFX_WL_SHM_POOL_DESTROY = 1,
+
+    /// @brief Opcode for `wl_buffer.destroy`.
     VGFX_WL_BUFFER_DESTROY = 0,
+
+    /// @brief Core protocol numeric value for XRGB8888.
     VGFX_WL_SHM_FORMAT_XRGB8888 = 1,
+
+    /// @brief Opcode for version-4 `wl_surface.damage_buffer`.
     VGFX_WL_SURFACE_DAMAGE_BUFFER = 9,
 };
 
+/// @brief ABI callback table for `wl_buffer` events.
 typedef struct vgfx_wl_buffer_listener {
+    /// @brief Report that the compositor no longer reads a submitted buffer.
     void (*release)(void *data, struct wl_proxy *buffer);
 } vgfx_wl_buffer_listener_t;
 
+/// @brief ABI callback table for `wl_callback` completion events.
 typedef struct vgfx_wl_callback_listener {
+    /// @brief Report completion of a requested surface frame.
     void (*done)(void *data, struct wl_proxy *callback, uint32_t callback_data);
 } vgfx_wl_callback_listener_t;
 
+/// @brief Attempt to copy and commit the currently queued source frame.
+/// @param presenter Presenter whose queue and buffer slots are inspected.
+/// @return 1 when the queue remains valid or a frame was committed; 0 on frame-callback
+/// setup or non-retryable display-flush failure.
 static int vgfx_wayland_shm_drain(vgfx_wayland_shm_presenter_t *presenter);
 
+/// @brief Write a stable shared-memory setup diagnostic into a caller buffer.
+/// @param error Destination buffer, or NULL.
+/// @param size Capacity of @p error in bytes, including its terminator.
+/// @param detail Specific non-null failure description.
 static void vgfx_wayland_shm_error(char *error, uint32_t size, const char *detail) {
     if (error && size > 0)
         (void)snprintf(error, (size_t)size, "Wayland shared-memory setup failed: %s", detail);
 }
 
+/// @brief Mark a presentation slot reusable and retry any queued frame.
+/// @param data Registered @ref vgfx_wayland_shm_slot_t callback context.
+/// @param buffer Buffer proxy released by the compositor.
 static void vgfx_wayland_buffer_release(void *data, struct wl_proxy *buffer) {
     (void)buffer;
     vgfx_wayland_shm_slot_t *slot = (vgfx_wayland_shm_slot_t *)data;
@@ -65,6 +95,10 @@ static const vgfx_wl_buffer_listener_t g_vgfx_wayland_buffer_listener = {
     .release = vgfx_wayland_buffer_release,
 };
 
+/// @brief Retire a completed frame callback and attempt the next queued frame.
+/// @param data Registered @ref vgfx_wayland_shm_presenter_t callback context.
+/// @param callback One-shot callback proxy that completed.
+/// @param callback_data Compositor presentation timestamp, unused by this presenter.
 static void vgfx_wayland_frame_done(void *data,
                                     struct wl_proxy *callback,
                                     uint32_t callback_data) {
@@ -82,6 +116,11 @@ static const vgfx_wl_callback_listener_t g_vgfx_wayland_frame_listener = {
     .done = vgfx_wayland_frame_done,
 };
 
+/// @brief Create an unlinked, close-on-exec temporary file of an exact size.
+/// @details The file is unlinked immediately after creation so its storage is reclaimed when
+/// the last descriptor or mapping is released.
+/// @param size Required positive file size in bytes.
+/// @return Open file descriptor on success, otherwise -1.
 static int vgfx_wayland_create_anonymous_file(size_t size) {
     if (size == 0 || size > (size_t)INT64_MAX)
         return -1;
@@ -99,11 +138,19 @@ static int vgfx_wayland_create_anonymous_file(size_t size) {
     return fd;
 }
 
+/// @brief Query the negotiated protocol version of a presenter-owned proxy.
+/// @param presenter Presenter whose shell supplies the dispatch entry point.
+/// @param proxy Non-null protocol proxy.
+/// @return Version negotiated for @p proxy.
 static uint32_t vgfx_wayland_shm_proxy_version(vgfx_wayland_shm_presenter_t *presenter,
                                                struct wl_proxy *proxy) {
     return presenter->shell->connection->api.proxy_get_version(proxy);
 }
 
+/// @brief Marshal a protocol destructor for a presenter-owned proxy.
+/// @param presenter Presenter providing the connection and proxy version.
+/// @param proxy Owned proxy to destroy, or NULL.
+/// @param opcode Destructor request opcode appropriate for @p proxy.
 static void vgfx_wayland_shm_destroy(vgfx_wayland_shm_presenter_t *presenter,
                                      struct wl_proxy *proxy,
                                      uint32_t opcode) {
@@ -117,6 +164,7 @@ static void vgfx_wayland_shm_destroy(vgfx_wayland_shm_presenter_t *presenter,
         VGFX_WL_MARSHAL_FLAG_DESTROY);
 }
 
+/// @copydoc vgfx_wayland_shm_close
 void vgfx_wayland_shm_close(vgfx_wayland_shm_presenter_t *presenter) {
     if (!presenter)
         return;
@@ -133,6 +181,7 @@ void vgfx_wayland_shm_close(vgfx_wayland_shm_presenter_t *presenter) {
     memset(presenter, 0, sizeof(*presenter));
 }
 
+/// @copydoc vgfx_wayland_shm_open
 int vgfx_wayland_shm_open(vgfx_wayland_shm_presenter_t *presenter,
                           vgfx_wayland_shell_t *shell,
                           int32_t width,
@@ -143,6 +192,7 @@ int vgfx_wayland_shm_open(vgfx_wayland_shm_presenter_t *presenter,
         presenter, shell, shell ? shell->surface : NULL, width, height, error, error_size);
 }
 
+/// @copydoc vgfx_wayland_shm_open_surface
 int vgfx_wayland_shm_open_surface(vgfx_wayland_shm_presenter_t *presenter,
                                   vgfx_wayland_shell_t *shell,
                                   struct wl_surface *surface,
@@ -229,6 +279,13 @@ int vgfx_wayland_shm_open_surface(vgfx_wayland_shm_presenter_t *presenter,
     return 1;
 }
 
+/// @brief Copy and commit a queued frame when cadence and buffer availability permit.
+/// @details At most one frame callback is outstanding. The selected free slot receives an
+/// RGBA-to-XRGB byte conversion before it is attached, damaged, and committed. A busy slot is
+/// not reused until its release callback runs.
+/// @param presenter Presenter whose pending frame should be drained.
+/// @return 1 when no fatal presentation error occurs, including when work remains queued;
+/// otherwise 0.
 static int vgfx_wayland_shm_drain(vgfx_wayland_shm_presenter_t *presenter) {
     if (!presenter || !presenter->shell || !presenter->queued || presenter->frame_callback)
         return 1;
@@ -303,6 +360,7 @@ static int vgfx_wayland_shm_drain(vgfx_wayland_shm_presenter_t *presenter) {
     return 1;
 }
 
+/// @copydoc vgfx_wayland_shm_present
 int vgfx_wayland_shm_present(vgfx_wayland_shm_presenter_t *presenter,
                              const uint8_t *rgba,
                              size_t rgba_size) {

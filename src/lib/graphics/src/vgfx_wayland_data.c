@@ -13,6 +13,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Bounded nonblocking Wayland clipboard and DND implementation.
+
 #define _POSIX_C_SOURCE 200809L
 
 #include "vgfx_wayland_data.h"
@@ -48,12 +51,14 @@ static const char *const VGFX_MIME_UTF8 = "text/plain;charset=utf-8";
 static const char *const VGFX_MIME_TEXT = "text/plain";
 static const char *const VGFX_MIME_URI = "text/uri-list";
 
+/// @brief Local ABI for wl_data_offer listener callbacks.
 typedef struct {
     void (*offer)(void *, struct wl_proxy *, const char *);
     void (*source_actions)(void *, struct wl_proxy *, uint32_t);
     void (*action)(void *, struct wl_proxy *, uint32_t);
 } vgfx_wl_data_offer_listener_t;
 
+/// @brief Local ABI for wl_data_source listener callbacks.
 typedef struct {
     void (*target)(void *, struct wl_proxy *, const char *);
     void (*send)(void *, struct wl_proxy *, const char *, int32_t);
@@ -63,6 +68,7 @@ typedef struct {
     void (*action)(void *, struct wl_proxy *, uint32_t);
 } vgfx_wl_data_source_listener_t;
 
+/// @brief Local ABI for wl_data_device listener callbacks.
 typedef struct {
     void (*data_offer)(void *, struct wl_proxy *, struct wl_proxy *);
     void (*enter)(void *, struct wl_proxy *, uint32_t, struct wl_proxy *, wl_fixed_t, wl_fixed_t,
@@ -73,11 +79,17 @@ typedef struct {
     void (*selection)(void *, struct wl_proxy *, struct wl_proxy *);
 } vgfx_wl_data_device_listener_t;
 
+/// @brief Put a transfer descriptor into nonblocking mode.
+/// @param fd Open descriptor to update.
+/// @return 1 when both fcntl operations succeed, otherwise 0.
 static int vgfx_data_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     return flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
 }
 
+/// @brief Find the first unused slot in the fixed transfer pool.
+/// @param data Data-device state containing initialized transfer slots.
+/// @return Borrowed free slot, or NULL when all eight are active.
 static vgfx_wayland_transfer_t *vgfx_data_transfer(vgfx_wayland_data_t *data) {
     for (size_t i = 0; i < sizeof(data->transfers) / sizeof(data->transfers[0]); ++i)
         if (data->transfers[i].fd < 0)
@@ -85,6 +97,10 @@ static vgfx_wayland_transfer_t *vgfx_data_transfer(vgfx_wayland_data_t *data) {
     return NULL;
 }
 
+/// @brief Find an owned offer by protocol proxy identity.
+/// @param data Data-device state whose offer list should be searched.
+/// @param proxy wl_data_offer proxy to match.
+/// @return Borrowed offer record, or NULL.
 static vgfx_wayland_offer_t *vgfx_data_find_offer(vgfx_wayland_data_t *data,
                                                   struct wl_proxy *proxy) {
     for (vgfx_wayland_offer_t *offer = data->offers; offer; offer = offer->next)
@@ -93,6 +109,11 @@ static vgfx_wayland_offer_t *vgfx_data_find_offer(vgfx_wayland_data_t *data,
     return NULL;
 }
 
+/// @brief Unlink, destroy, and free an owned data offer.
+/// @details Clears selection/drag role pointers that reference the offer before
+///          issuing its destructor request.
+/// @param data Owning data-device state.
+/// @param offer Offer to destroy; invalid input is ignored.
 static void vgfx_data_destroy_offer(vgfx_wayland_data_t *data, vgfx_wayland_offer_t *offer) {
     if (!data || !offer)
         return;
@@ -115,6 +136,9 @@ static void vgfx_data_destroy_offer(vgfx_wayland_data_t *data, vgfx_wayland_offe
     free(offer);
 }
 
+/// @brief Choose the preferred textual MIME type advertised by an offer.
+/// @param offer Offer to inspect.
+/// @return UTF-8 MIME first, plain text second, or NULL.
 static const char *vgfx_data_text_mime(const vgfx_wayland_offer_t *offer) {
     if (!offer)
         return NULL;
@@ -123,6 +147,15 @@ static const char *vgfx_data_text_mime(const vgfx_wayland_offer_t *offer) {
     return offer->text_plain ? VGFX_MIME_TEXT : NULL;
 }
 
+/// @brief Start a compositor-to-client offer transfer through a pipe.
+/// @details Reserves a transfer slot, makes the read end nonblocking, sends the
+///          write end with wl_data_offer.receive, closes the local write copy,
+///          marks URI-list mode, and flushes the display.
+/// @param data Data-device state owning the transfer.
+/// @param offer Offer to receive.
+/// @param mime Selected MIME string.
+/// @param uri_list Non-zero when completion should emit file-drop events.
+/// @return 1 when the receive request was started, otherwise 0.
 static int vgfx_data_receive(vgfx_wayland_data_t *data,
                              vgfx_wayland_offer_t *offer,
                              const char *mime,
@@ -151,6 +184,9 @@ static int vgfx_data_receive(vgfx_wayland_data_t *data,
     return 1;
 }
 
+/// @brief Convert one hexadecimal digit to an integer.
+/// @param c Candidate ASCII byte.
+/// @return Value in [0, 15], or -1 for a non-hex digit.
 static int vgfx_hex(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -158,6 +194,12 @@ static int vgfx_hex(char c) {
     return -1;
 }
 
+/// @brief Parse a completed `text/uri-list` transfer into file-drop events.
+/// @details Splits CR/LF records, ignores comments/non-local authorities,
+///          decodes valid percent escapes while rejecting NUL, enforces the
+///          fixed public path capacity, and counts overflowed paths.
+/// @param data Data-device state whose window receives events.
+/// @param text Mutable NUL-terminated URI-list payload.
 static void vgfx_data_emit_uris(vgfx_wayland_data_t *data, char *text) {
     char *line = text;
     while (line && *line) {
@@ -205,6 +247,12 @@ static void vgfx_data_emit_uris(vgfx_wayland_data_t *data, char *text) {
     }
 }
 
+/// @brief Complete one transfer and apply its payload ownership rules.
+/// @details Closes the descriptor, terminates inbound bytes, emits URI drops
+///          when appropriate, and fully resets outbound/URI slots.  Inbound
+///          clipboard text remains in the slot for synchronous retrieval.
+/// @param data Owning data-device state.
+/// @param transfer Transfer to finish.
 static void vgfx_data_finish_transfer(vgfx_wayland_data_t *data,
                                       vgfx_wayland_transfer_t *transfer) {
     if (transfer->fd >= 0)
@@ -222,6 +270,10 @@ static void vgfx_data_finish_transfer(vgfx_wayland_data_t *data,
     }
 }
 
+/// @brief Mark a transfer failed, publish an error, and finalize it.
+/// @param data Owning data-device state.
+/// @param transfer Transfer to fail.
+/// @param message Stable platform error message.
 static void vgfx_data_fail_transfer(vgfx_wayland_data_t *data,
                                     vgfx_wayland_transfer_t *transfer,
                                     const char *message) {
@@ -230,6 +282,7 @@ static void vgfx_data_fail_transfer(vgfx_wayland_data_t *data,
     vgfx_data_finish_transfer(data, transfer);
 }
 
+/// @copydoc vgfx_wayland_data_tick
 void vgfx_wayland_data_tick(vgfx_wayland_data_t *data) {
     if (!data)
         return;
@@ -292,6 +345,10 @@ void vgfx_wayland_data_tick(vgfx_wayland_data_t *data) {
     }
 }
 
+/// @brief Record one MIME type advertised by a data offer.
+/// @param opaque Borrowed data-device listener context.
+/// @param proxy Offer proxy advertising the MIME.
+/// @param mime Borrowed MIME string.
 static void vgfx_offer_mime(void *opaque, struct wl_proxy *proxy, const char *mime) {
     vgfx_wayland_data_t *data = opaque;
     vgfx_wayland_offer_t *offer = vgfx_data_find_offer(data, proxy);
@@ -303,11 +360,21 @@ static void vgfx_offer_mime(void *opaque, struct wl_proxy *proxy, const char *mi
     else if (strcmp(mime, VGFX_MIME_URI) == 0)
         offer->uri_list = 1;
 }
+
+/// @brief Ignore source-action capability advertisements not needed for copy-only DND.
+/// @param d Unused listener context.
+/// @param p Unused offer proxy.
+/// @param a Unused source-action mask.
 static void vgfx_offer_source_actions(void *d, struct wl_proxy *p, uint32_t a) {
     (void)d;
     (void)p;
     (void)a;
 }
+
+/// @brief Record the compositor-selected DND action for an offer.
+/// @param opaque Borrowed data-device listener context.
+/// @param proxy Offer proxy whose action changed.
+/// @param action Selected action mask.
 static void vgfx_offer_action(void *opaque, struct wl_proxy *proxy, uint32_t action) {
     vgfx_wayland_data_t *data = opaque;
     vgfx_wayland_offer_t *offer = vgfx_data_find_offer(data, proxy);
@@ -317,7 +384,19 @@ static void vgfx_offer_action(void *opaque, struct wl_proxy *proxy, uint32_t act
 static const vgfx_wl_data_offer_listener_t g_offer_listener = {
     vgfx_offer_mime, vgfx_offer_source_actions, vgfx_offer_action};
 
+/// @brief Ignore target notifications for the fixed text-only clipboard source.
+/// @param d Unused listener context.
+/// @param p Unused source proxy.
+/// @param m Unused selected MIME.
 static void vgfx_source_target(void *d, struct wl_proxy *p, const char *m) { (void)d; (void)p; (void)m; }
+
+/// @brief Begin a nonblocking client-to-consumer clipboard transfer.
+/// @details Validates the local 8 MiB bound, reserves a transfer slot, copies
+///          current text, and adopts the compositor-provided descriptor.
+/// @param opaque Borrowed data-device listener context.
+/// @param proxy Source proxy requesting data; unused.
+/// @param mime Requested MIME; both advertised text types share the UTF-8 bytes.
+/// @param fd Owned transfer descriptor, closed on rejection or completion.
 static void vgfx_source_send(void *opaque, struct wl_proxy *proxy, const char *mime, int32_t fd) {
     (void)proxy; (void)mime;
     vgfx_wayland_data_t *data = opaque;
@@ -335,6 +414,10 @@ static void vgfx_source_send(void *opaque, struct wl_proxy *proxy, const char *m
     transfer->outbound = 1;
     transfer->size = strlen(transfer->bytes);
 }
+
+/// @brief Handle compositor cancellation of the active clipboard source.
+/// @param opaque Borrowed data-device listener context.
+/// @param proxy Cancelled source proxy to destroy.
 static void vgfx_source_cancelled(void *opaque, struct wl_proxy *proxy) {
     vgfx_wayland_data_t *data = opaque;
     if (data && data->source == proxy) {
@@ -343,12 +426,25 @@ static void vgfx_source_cancelled(void *opaque, struct wl_proxy *proxy) {
     }
     if (data && proxy) data->connection->api.proxy_destroy(proxy);
 }
+
+/// @brief Ignore a source lifecycle callback that carries no required state.
+/// @param d Unused listener context.
+/// @param p Unused source proxy.
 static void vgfx_source_empty(void *d, struct wl_proxy *p) { (void)d; (void)p; }
+
+/// @brief Ignore a source DND-action callback for clipboard-only sources.
+/// @param d Unused listener context.
+/// @param p Unused source proxy.
+/// @param a Unused action value.
 static void vgfx_source_action(void *d, struct wl_proxy *p, uint32_t a) { (void)d; (void)p; (void)a; }
 static const vgfx_wl_data_source_listener_t g_source_listener = {
     vgfx_source_target, vgfx_source_send, vgfx_source_cancelled,
     vgfx_source_empty, vgfx_source_empty, vgfx_source_action};
 
+/// @brief Adopt a newly announced wl_data_offer and install its listener.
+/// @param opaque Borrowed data-device listener context.
+/// @param device Data device announcing the offer; unused.
+/// @param proxy Newly owned offer proxy.
 static void vgfx_device_offer(void *opaque, struct wl_proxy *device, struct wl_proxy *proxy) {
     (void)device;
     vgfx_wayland_data_t *data = opaque;
@@ -360,6 +456,18 @@ static void vgfx_device_offer(void *opaque, struct wl_proxy *device, struct wl_p
     data->connection->api.proxy_add_listener(
         proxy, (void (**)(void))(void *)&g_offer_listener, data);
 }
+
+/// @brief Begin a drag entering the application surface.
+/// @details Associates the announced offer, records logical position, advertises
+///          copy-only support on protocol version 3+, and accepts URI-list data
+///          using the triggering seat serial.
+/// @param opaque Borrowed data-device listener context.
+/// @param device Data device delivering the event; unused.
+/// @param serial Seat serial authorizing acceptance.
+/// @param surface Entered surface.
+/// @param x Wayland fixed-point X coordinate.
+/// @param y Wayland fixed-point Y coordinate.
+/// @param proxy Offer proxy associated with the drag.
 static void vgfx_device_enter(void *opaque, struct wl_proxy *device, uint32_t serial,
                               struct wl_proxy *surface, wl_fixed_t x, wl_fixed_t y,
                               struct wl_proxy *proxy) {
@@ -386,17 +494,32 @@ static void vgfx_device_enter(void *opaque, struct wl_proxy *device, uint32_t se
             version, 0, serial, mime);
     }
 }
+
+/// @brief End the current drag and destroy its offer.
+/// @param opaque Borrowed data-device listener context.
+/// @param device Data device delivering the event; unused.
 static void vgfx_device_leave(void *opaque, struct wl_proxy *device) {
     (void)device;
     vgfx_wayland_data_t *data = opaque;
     if (data && data->drag) vgfx_data_destroy_offer(data, data->drag);
 }
+
+/// @brief Update the latest logical drag position.
+/// @param opaque Borrowed data-device listener context.
+/// @param device Data device delivering the event; unused.
+/// @param time Native timestamp; unused.
+/// @param x Wayland fixed-point X coordinate.
+/// @param y Wayland fixed-point Y coordinate.
 static void vgfx_device_motion(void *opaque, struct wl_proxy *device, uint32_t time,
                                wl_fixed_t x, wl_fixed_t y) {
     (void)device; (void)time;
     vgfx_wayland_data_t *data = opaque;
     if (data) { data->drag_x = vgfx_wayland_fixed_to_pixel(x); data->drag_y = vgfx_wayland_fixed_to_pixel(y); }
 }
+
+/// @brief Receive a dropped URI list and finish an accepted copy action.
+/// @param opaque Borrowed data-device listener context.
+/// @param device Data device delivering the event; unused.
 static void vgfx_device_drop(void *opaque, struct wl_proxy *device) {
     (void)device;
     vgfx_wayland_data_t *data = opaque;
@@ -409,6 +532,13 @@ static void vgfx_device_drop(void *opaque, struct wl_proxy *device) {
                 data->connection->api.proxy_get_version(data->drag->proxy), 0);
     }
 }
+
+/// @brief Replace the external clipboard selection offer.
+/// @details Clears local ownership when a new external offer exists and
+///          destroys the prior selection unless it is still the active drag.
+/// @param opaque Borrowed data-device listener context.
+/// @param device Data device delivering the event; unused.
+/// @param proxy New selection offer proxy, or NULL.
 static void vgfx_device_selection(void *opaque, struct wl_proxy *device, struct wl_proxy *proxy) {
     (void)device;
     vgfx_wayland_data_t *data = opaque;
@@ -422,6 +552,7 @@ static const vgfx_wl_data_device_listener_t g_device_listener = {
     vgfx_device_offer, vgfx_device_enter, vgfx_device_leave,
     vgfx_device_motion, vgfx_device_drop, vgfx_device_selection};
 
+/// @copydoc vgfx_wayland_data_open
 int vgfx_wayland_data_open(vgfx_wayland_data_t *data,
                            vgfx_wayland_connection_t *connection,
                            vgfx_wayland_input_t *input,
@@ -442,6 +573,7 @@ int vgfx_wayland_data_open(vgfx_wayland_data_t *data,
         (void (**)(void))(void *)&g_device_listener, data) == 0;
 }
 
+/// @copydoc vgfx_wayland_data_close
 void vgfx_wayland_data_close(vgfx_wayland_data_t *data) {
     if (!data)
         return;
@@ -467,12 +599,14 @@ void vgfx_wayland_data_close(vgfx_wayland_data_t *data) {
     memset(data, 0, sizeof(*data));
 }
 
+/// @copydoc vgfx_wayland_data_has_text
 int vgfx_wayland_data_has_text(const vgfx_wayland_data_t *data) {
     return data && (((data->owns_selection || data->pending_selection) && data->local_text &&
                      data->local_text[0]) ||
                     vgfx_data_text_mime(data->selection));
 }
 
+/// @copydoc vgfx_wayland_data_get_text
 char *vgfx_wayland_data_get_text(vgfx_wayland_data_t *data) {
     if (!data) return NULL;
     if ((data->owns_selection || data->pending_selection) && data->local_text)
@@ -513,6 +647,7 @@ char *vgfx_wayland_data_get_text(vgfx_wayland_data_t *data) {
     return result;
 }
 
+/// @copydoc vgfx_wayland_data_set_text
 int vgfx_wayland_data_set_text(vgfx_wayland_data_t *data, const char *text) {
     if (!data) return 0;
     if (text && strnlen(text, VGFX_WAYLAND_TRANSFER_LIMIT + 1u) > VGFX_WAYLAND_TRANSFER_LIMIT) {

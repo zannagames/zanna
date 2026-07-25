@@ -13,6 +13,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implementation of the xdg-activation-v1 token handshake.
+
 #include "vgfx_wayland_activation.h"
 
 #include <string.h>
@@ -27,16 +30,20 @@ enum {
     XDG_TOKEN_DESTROY = 4,
 };
 
+/// @brief Listener ABI for an xdg activation-token completion callback.
 typedef struct {
     void (*done)(void *, struct xdg_activation_token_v1 *, const char *token);
 } vgfx_activation_token_listener_t;
 
+/// @copydoc vgfx_wayland_activation_serial
 uint32_t vgfx_wayland_activation_serial(const vgfx_wayland_input_t *input) {
     if (!input)
         return 0;
     return input->keyboard_serial ? input->keyboard_serial : input->pointer_serial;
 }
 
+/// @brief Destroy and clear the currently owned activation-token proxy.
+/// @param activation Activation state whose token should be released.
 static void vgfx_activation_destroy_token(vgfx_wayland_activation_t *activation) {
     if (!activation || !activation->token || !activation->connection)
         return;
@@ -49,6 +56,13 @@ static void vgfx_activation_destroy_token(vgfx_wayland_activation_t *activation)
     activation->token = NULL;
 }
 
+/// @brief Submit a compositor-issued token and finish its request lifecycle.
+/// @details Activates the configured surface when a non-empty token and all
+///          borrowed dependencies remain valid, increments the completion
+///          counter, and destroys the one-shot token proxy in every case.
+/// @param data Borrowed `vgfx_wayland_activation_t` listener context.
+/// @param token_proxy Token proxy that produced the callback.
+/// @param token Borrowed compositor-issued token string.
 static void vgfx_activation_done(void *data,
                                  struct xdg_activation_token_v1 *token_proxy,
                                  const char *token) {
@@ -74,6 +88,7 @@ static const vgfx_activation_token_listener_t g_activation_listener = {
     .done = vgfx_activation_done,
 };
 
+/// @copydoc vgfx_wayland_activation_init
 void vgfx_wayland_activation_init(vgfx_wayland_activation_t *activation,
                                   vgfx_wayland_connection_t *connection,
                                   vgfx_wayland_input_t *input,
@@ -88,6 +103,7 @@ void vgfx_wayland_activation_init(vgfx_wayland_activation_t *activation,
     activation->app_id = app_id && app_id[0] ? app_id : "org.zanna.app";
 }
 
+/// @copydoc vgfx_wayland_activation_close
 void vgfx_wayland_activation_close(vgfx_wayland_activation_t *activation) {
     if (!activation)
         return;
@@ -95,6 +111,7 @@ void vgfx_wayland_activation_close(vgfx_wayland_activation_t *activation) {
     memset(activation, 0, sizeof(*activation));
 }
 
+/// @copydoc vgfx_wayland_activation_request
 int vgfx_wayland_activation_request(vgfx_wayland_activation_t *activation) {
     if (!activation || !activation->connection || !activation->input || activation->token ||
         !activation->connection->activation_v1 || !activation->surface)

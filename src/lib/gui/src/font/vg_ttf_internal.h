@@ -33,6 +33,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/// @file
+/// @brief Defines the private TrueType parser, rasterizer, and glyph-cache interface.
+/// @details This header supplies the concrete opaque-font representation shared by the font
+/// implementation units, parsed table records, endian-safe scalar readers, table tags, and
+/// ownership-bearing declarations for decoded outlines and cached bitmaps.
+
 //=============================================================================
 // TTF Table Directory
 //=============================================================================
@@ -158,11 +164,10 @@ typedef struct ttf_kern_pair {
 ///
 /// @details The cache uses a hash map with separate chaining for collision
 ///          resolution. Each entry stores a composite 64-bit key formed by
-///          packing the IEEE 754 bit representation of the font size into the
-///          upper 32 bits and the Unicode codepoint into the lower 32 bits.
-///          This ensures that the same codepoint at different pixel sizes
-///          occupies separate cache slots. The @c next pointer forms a singly-
-///          linked list of entries that hash to the same bucket.
+///          packing a 1/64-pixel quantized size into the upper 32 bits and the
+///          Unicode codepoint into the lower 32 bits. This separates practical
+///          raster sizes while coalescing insignificant floating-point noise.
+///          The @c next pointer forms a singly-linked collision chain.
 typedef struct vg_cache_entry {
     uint64_t key; ///< Composite key: (size_bits << 32) | codepoint, where size_bits is the IEEE 754
                   ///< representation of the float size.
@@ -194,8 +199,8 @@ typedef struct vg_cache_entry {
 ///        for glyph bitmap data before triggering eviction.
 ///
 /// @details When bitmap memory usage exceeds this threshold (32 MB), the
-///          cache is cleared to reclaim memory. This prevents unbounded growth
-///          when rendering many distinct size/codepoint combinations.
+///          cache evicts least-recently-used entries in bounded batches. This
+///          prevents unbounded growth while retaining frequently used glyphs.
 #define VG_CACHE_MAX_MEMORY (32 * 1024 * 1024) // 32MB
 
 /// @brief Hash-map-based glyph cache for storing rasterised glyph bitmaps.
@@ -204,8 +209,9 @@ typedef struct vg_cache_entry {
 ///          (linked lists per bucket). It tracks both the number of stored
 ///          entries and the total memory consumed by glyph bitmaps to enforce
 ///          the VG_CACHE_MAX_MEMORY limit. When the limit is exceeded, the
-///          entire cache is flushed. The cache is owned by its parent vg_font
-///          and is destroyed when the font is destroyed.
+///          oldest quarter of entries is evicted and pressure checks repeat as
+///          needed. The cache is owned by its parent vg_font and is destroyed
+///          when the font is destroyed.
 typedef struct vg_glyph_cache {
     vg_cache_entry_t **buckets; ///< Array of bucket head pointers (each bucket is a singly-linked
                                 ///< list of cache entries).
@@ -723,4 +729,5 @@ struct vg_glyph *vg_rasterize_glyph(struct vg_font *font, uint16_t glyph_id, flo
 
 /// @brief Resolve the GSUB liga/calt lookup indices for a freshly parsed font.
 /// @details No-op when the font has no GSUB table or no matching features.
+/// @param font Parsed font whose owned lookup-index list should be initialized.
 void vg_gsub_init(struct vg_font *font);

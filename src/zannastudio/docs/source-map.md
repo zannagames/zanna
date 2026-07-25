@@ -991,6 +991,36 @@ cached 128-pixel canonical map thumbnail, and truthful group-action enablement,
 while `SceneEditor3D` retains selection, mutation, rollback, and history
 ownership.
 
+### `ui/scene_camera_3d.zia`
+
+Clone-safe Camera3D drafts: normalization inside the runtime's sanitized clip
+envelope, reconstruction, and equality for the camera inspector (ADR 0184).
+
+### `ui/scene_camera_inspector_3d.zia`
+
+Presentation-only camera component inspector with projection-aware fields,
+Look Through, and the preview-inset toggle.
+
+### `ui/scene_collider_3d.zia`
+
+The ADR 0185 collider metadata vocabulary: kind tokens, kind-aware
+dimensions, normalized drafts, and node read/write/remove helpers.
+
+### `ui/scene_collider_inspector_3d.zia`
+
+Presentation-only collider convention inspector with kind-aware rows.
+
+### `ui/scene_bake_3d.zia`
+
+Bake settings (`bake.*`), probe-grid (`probes.*`), and environment (`env.*`)
+metadata conventions plus shared-mesh preflight scanning and world-space
+light staging for the LightBaker3D workflow (ADR 0188).
+
+### `services/material_library_3d.zia`
+
+Fail-closed load and atomic conflict-guarded persistence of the per-root
+`materials.scene3d` project material library (ADR 0189).
+
 ### `ui/scene_light_3d.zia`
 
 Document-independent normalized authoring state for all seven `Light3D` types.
@@ -1262,6 +1292,12 @@ Use this practical decision table:
 | 3D material common/mixed inspector presentation | `ui/scene_material_inspector_3d.zia` |
 | 3D normalized light reconstruction/no-op rules | `ui/scene_light_3d.zia` |
 | 3D mixed-value light inspector presentation | `ui/scene_light_inspector_3d.zia` |
+| 3D camera component drafts (clip-envelope normalization) | `ui/scene_camera_3d.zia` |
+| 3D camera inspector, look-through, preview intents | `ui/scene_camera_inspector_3d.zia` |
+| 3D collider metadata convention (ADR 0185) | `ui/scene_collider_3d.zia` |
+| 3D collider inspector presentation | `ui/scene_collider_inspector_3d.zia` |
+| 3D bake/probe/environment conventions (ADR 0188) | `ui/scene_bake_3d.zia` |
+| Project material library storage (ADR 0189) | `services/material_library_3d.zia` |
 | Terminal PTY wrapper | `terminal/terminal_session.zia` |
 | Terminal UI behavior | `terminal/terminal_controller.zia` |
 | Git command execution | `scm/scm_git.zia` |

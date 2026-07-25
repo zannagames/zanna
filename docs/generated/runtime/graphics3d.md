@@ -585,6 +585,8 @@ Constructor: `Zanna.Graphics3D.SceneNode.New`
 | <a id="zanna-graphics3d-scenenode-parent"></a>`Parent` | `obj<Zanna.Graphics3D.SceneNode>` | read-only |
 | <a id="zanna-graphics3d-scenenode-visible"></a>`Visible` | `i1` | read/write |
 | <a id="zanna-graphics3d-scenenode-name"></a>`Name` | `str` | read/write |
+| <a id="zanna-graphics3d-scenenode-prefabpath"></a>`PrefabPath` | `str` | read-only |
+| <a id="zanna-graphics3d-scenenode-isinstancecontent"></a>`IsInstanceContent` | `i1` | read-only |
 | <a id="zanna-graphics3d-scenenode-mesh"></a>`Mesh` | `obj<Zanna.Graphics3D.Mesh3D>` | read/write |
 | <a id="zanna-graphics3d-scenenode-material"></a>`Material` | `obj<Zanna.Graphics3D.Material3D>` | read/write |
 | <a id="zanna-graphics3d-scenenode-light"></a>`Light` | `obj<Zanna.Graphics3D.Light3D>` | read/write |
@@ -601,6 +603,8 @@ Constructor: `Zanna.Graphics3D.SceneNode.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
+| <a id="zanna-graphics3d-scenenode-setprefabreference"></a>`SetPrefabReference` | `i1(str)` | `Zanna.Graphics3D.SceneNode.SetPrefabReference` |
+| <a id="zanna-graphics3d-scenenode-clearprefabreference"></a>`ClearPrefabReference` | `i1()` | `Zanna.Graphics3D.SceneNode.ClearPrefabReference` |
 | <a id="zanna-graphics3d-scenenode-setposition"></a>`SetPosition` | `void(f64,f64,f64)` | `Zanna.Graphics3D.SceneNode.SetPosition` |
 | <a id="zanna-graphics3d-scenenode-setscale"></a>`SetScale` | `void(f64,f64,f64)` | `Zanna.Graphics3D.SceneNode.SetScale` |
 | <a id="zanna-graphics3d-scenenode-settransform"></a>`SetTransform` | `void(f64,f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `Zanna.Graphics3D.SceneNode.SetTransform` |
@@ -2788,6 +2792,10 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-scenenode-get-visible"></a>`Zanna.Graphics3D.SceneNode.get_Visible` | `i1(obj)` | `rt_scene_node3d_get_visible` |
 | <a id="zanna-graphics3d-scenenode-set-name"></a>`Zanna.Graphics3D.SceneNode.set_Name` | `void(obj,str)` | `rt_scene_node3d_set_name` |
 | <a id="zanna-graphics3d-scenenode-get-name"></a>`Zanna.Graphics3D.SceneNode.get_Name` | `str(obj)` | `rt_scene_node3d_get_name` |
+| <a id="zanna-graphics3d-scenenode-get-prefabpath"></a>`Zanna.Graphics3D.SceneNode.get_PrefabPath` | `str(obj)` | `rt_scene_node3d_get_prefab_path` |
+| <a id="zanna-graphics3d-scenenode-get-isinstancecontent"></a>`Zanna.Graphics3D.SceneNode.get_IsInstanceContent` | `i1(obj)` | `rt_scene_node3d_get_is_instance_content` |
+| `Zanna.Graphics3D.SceneNode.SetPrefabReference` | `i1(obj,str)` | `rt_scene_node3d_set_prefab_reference` |
+| `Zanna.Graphics3D.SceneNode.ClearPrefabReference` | `i1(obj)` | `rt_scene_node3d_clear_prefab_reference` |
 | `Zanna.Graphics3D.SceneNode.MetadataKeys` | `obj<Zanna.Collections.Seq>(obj)` | `rt_scene_node3d_metadata_keys` |
 | `Zanna.Graphics3D.SceneNode.MetadataKind` | `str(obj,str)` | `rt_scene_node3d_metadata_kind` |
 | `Zanna.Graphics3D.SceneNode.MetadataHas` | `i1(obj,str)` | `rt_scene_node3d_metadata_has` |

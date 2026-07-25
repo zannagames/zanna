@@ -1,0 +1,952 @@
+{
+  "format": "vscn",
+  "version": 2,
+  "textures": [
+  ],
+  "cubemaps": [
+  ],
+  "materials": [
+    {"diffuse": [0.41999999999999998, 0.35999999999999999, 0.31, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.40000000000000002, 0.34000000000000002, 0.29999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.71999999999999997, 0.47999999999999998, 0.17999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.38, 0.32000000000000001, 0.28000000000000003, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.41999999999999998, 0.35999999999999999, 0.29999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.38640000000000002, 0.33119999999999999, 0.27600000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.35699999999999998, 0.30599999999999999, 0.255, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.44, 0.38, 0.32000000000000001, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.40000000000000002, 0.34000000000000002, 0.29999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.38, 0.33000000000000002, 0.28999999999999998, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.92000000000000004, 0.62, 0.17999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [1, 0.71999999999999997, 0.23999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [1, 0.78000000000000003, 0.29999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.94999999999999996, 0.68000000000000005, 0.22, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.29999999999999999, 0.85999999999999999, 1, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.94999999999999996, 0.69999999999999996, 0.22, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.34999999999999998, 0.29999999999999999, 0.27000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.45000000000000001, 0.71999999999999997, 1, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.29999999999999999, 0.31, 0.34000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.34000000000000002, 0.34999999999999998, 0.39000000000000001, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.22, 0.23000000000000001, 0.26000000000000001, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.28000000000000003, 0.29999999999999999, 0.34999999999999998, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.32000000000000001, 0.33000000000000002, 0.35999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.55000000000000004, 0.71999999999999997, 0.94999999999999996, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.35999999999999999, 0.34000000000000002, 0.35999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.34000000000000002, 0.32000000000000001, 0.34000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.38, 0.35999999999999999, 0.38, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.94999999999999996, 0.68000000000000005, 0.12, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.29999999999999999, 0.28000000000000003, 0.29999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.52000000000000002, 0.53000000000000003, 0.56999999999999995, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.47999999999999998, 0.48999999999999999, 0.54000000000000004, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.41999999999999998, 0.46000000000000002, 0.52000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.44, 0.46999999999999997, 0.52000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.66000000000000003, 0.81999999999999995, 1, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.44, 0.46999999999999997, 0.52000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.44, 0.45000000000000001, 0.5, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.29999999999999999, 0.34000000000000002, 0.32000000000000001, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.5, 0.62, 0.55000000000000004, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.22, 0.26000000000000001, 0.25, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.41999999999999998, 0.55000000000000004, 0.47999999999999998, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.38640000000000002, 0.50600000000000012, 0.44159999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.35699999999999998, 0.46750000000000003, 0.40799999999999997, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.38, 0.38, 0.41999999999999998, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.35999999999999999, 0.34999999999999998, 0.38, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.40000000000000002, 0.40000000000000002, 0.44, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.36800000000000005, 0.36800000000000005, 0.40479999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.34000000000000002, 0.34000000000000002, 0.374, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.35999999999999999, 0.35999999999999999, 0.40000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.34000000000000002, 0.34000000000000002, 0.38, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.40000000000000002, 0.40999999999999998, 0.46000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.34000000000000002, 0.26000000000000001, 0.20000000000000001, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.35999999999999999, 0.28000000000000003, 0.22, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.33119999999999999, 0.25760000000000005, 0.2024, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.30599999999999999, 0.23800000000000002, 0.187, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.20000000000000001, 0.14999999999999999, 0.12, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.80000000000000004, 0.69999999999999996, 0.20000000000000001, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.5, 0.53000000000000003, 0.59999999999999998, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.46000000000000002, 0.48999999999999999, 0.56000000000000005, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.47999999999999998, 0.51000000000000001, 0.57999999999999996, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.44159999999999999, 0.46920000000000001, 0.53359999999999996, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.40799999999999997, 0.4335, 0.49299999999999994, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.23999999999999999, 0.29999999999999999, 0.34000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.26000000000000001, 0.32000000000000001, 0.38, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.20000000000000001, 0.25, 0.28000000000000003, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.40000000000000002, 0.37, 0.33000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.41999999999999998, 0.39000000000000001, 0.34999999999999998, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.29999999999999999, 0.28000000000000003, 0.26000000000000001, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]}
+  ],
+  "meshes": [
+  ],
+  "nodes": [
+    {
+      "name": "Surface 3 #1",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 0
+    }
+,    {
+      "name": "Surface 3 #2",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 1
+    }
+,    {
+      "name": "Surface 7 #3",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 2
+    }
+,    {
+      "name": "Surface 3 #4",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 3
+    }
+,    {
+      "name": "Surface 3 #5",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 4
+    }
+,    {
+      "name": "Surface 3 #6",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 5
+    }
+,    {
+      "name": "Surface 3 #7",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 6
+    }
+,    {
+      "name": "Surface 2 #8",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 7
+    }
+,    {
+      "name": "Surface 2 #9",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 8
+    }
+,    {
+      "name": "Surface 2 #10",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 9
+    }
+,    {
+      "name": "Surface 7 #11",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 10
+    }
+,    {
+      "name": "Surface 7 #12",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 11
+    }
+,    {
+      "name": "Surface 7 #13",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 12
+    }
+,    {
+      "name": "Surface 7 #14",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 13
+    }
+,    {
+      "name": "Surface 7 #15",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 14
+    }
+,    {
+      "name": "Surface 7 #16",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 15
+    }
+,    {
+      "name": "Surface 2 #17",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 16
+    }
+,    {
+      "name": "Surface 7 #18",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 17
+    }
+,    {
+      "name": "Surface 4 #19",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 18
+    }
+,    {
+      "name": "Surface 1 #20",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 19
+    }
+,    {
+      "name": "Surface 1 #21",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 20
+    }
+,    {
+      "name": "Surface 1 #22",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 21
+    }
+,    {
+      "name": "Surface 1 #23",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 22
+    }
+,    {
+      "name": "Surface 7 #24",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 23
+    }
+,    {
+      "name": "Surface 5 #25",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 24
+    }
+,    {
+      "name": "Surface 1 #26",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 25
+    }
+,    {
+      "name": "Surface 1 #27",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 26
+    }
+,    {
+      "name": "Surface 6 #28",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 27
+    }
+,    {
+      "name": "Surface 2 #29",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 28
+    }
+,    {
+      "name": "Surface 4 #30",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 29
+    }
+,    {
+      "name": "Surface 4 #31",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 30
+    }
+,    {
+      "name": "Surface 5 #32",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 31
+    }
+,    {
+      "name": "Surface 5 #33",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 32
+    }
+,    {
+      "name": "Surface 7 #34",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 33
+    }
+,    {
+      "name": "Surface 4 #35",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 34
+    }
+,    {
+      "name": "Surface 4 #36",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 35
+    }
+,    {
+      "name": "Surface 3 #37",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 36
+    }
+,    {
+      "name": "Surface 9 #38",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 37
+    }
+,    {
+      "name": "Surface 3 #39",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 38
+    }
+,    {
+      "name": "Surface 9 #40",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 39
+    }
+,    {
+      "name": "Surface 9 #41",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 40
+    }
+,    {
+      "name": "Surface 9 #42",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 41
+    }
+,    {
+      "name": "Surface 4 #43",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 42
+    }
+,    {
+      "name": "Surface 3 #44",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 43
+    }
+,    {
+      "name": "Surface 4 #45",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 44
+    }
+,    {
+      "name": "Surface 4 #46",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 45
+    }
+,    {
+      "name": "Surface 4 #47",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 46
+    }
+,    {
+      "name": "Surface 4 #48",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 47
+    }
+,    {
+      "name": "Surface 4 #49",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 48
+    }
+,    {
+      "name": "Surface 4 #50",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 49
+    }
+,    {
+      "name": "Surface 1 #51",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 50
+    }
+,    {
+      "name": "Surface 1 #52",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 51
+    }
+,    {
+      "name": "Surface 1 #53",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 52
+    }
+,    {
+      "name": "Surface 1 #54",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 53
+    }
+,    {
+      "name": "Surface 1 #55",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 54
+    }
+,    {
+      "name": "Surface 6 #56",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 55
+    }
+,    {
+      "name": "Surface 4 #57",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 56
+    }
+,    {
+      "name": "Surface 4 #58",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 57
+    }
+,    {
+      "name": "Surface 4 #59",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 58
+    }
+,    {
+      "name": "Surface 4 #60",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 59
+    }
+,    {
+      "name": "Surface 4 #61",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 60
+    }
+,    {
+      "name": "Surface 1 #62",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 61
+    }
+,    {
+      "name": "Surface 1 #63",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 62
+    }
+,    {
+      "name": "Surface 1 #64",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 63
+    }
+,    {
+      "name": "Surface 1 #65",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 64
+    }
+,    {
+      "name": "Surface 1 #66",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 65
+    }
+,    {
+      "name": "Surface 1 #67",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": true,
+      "mesh": -1,
+      "material": 66
+    }
+  ]
+}

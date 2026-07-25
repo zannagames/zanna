@@ -16,6 +16,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Interactive ZannaGFX primitive-drawing example.
+/// @details Demonstrates parameterized window creation, a fixed set of raster
+///          primitives, frame pacing, close/key/resize event handling, display
+///          presentation, and explicit window teardown.
+
 /*
  * ZannaGFX Example: Basic Drawing
  * Demonstrates window creation, drawing primitives, and event handling
@@ -24,9 +30,12 @@
 #include <stdio.h>
 #include <vgfx.h>
 
-/// What: Entry point for the Basic Drawing example.
-/// Why:  Demonstrates ZannaGFX window lifecycle and primitive rendering.
-/// How:  Creates a window, draws shapes, and processes events until exit.
+/// @brief Run the basic drawing example until close, Escape, or update failure.
+/// @details Creates one resizable 640-by-480 window, draws a static collection
+///          of rectangles, circles, and diagonals into its framebuffer, then
+///          presents frames while draining the event queue. The owned window is
+///          destroyed before the successful/interactive path returns.
+/// @return 1 when window creation fails; otherwise 0 after the loop terminates.
 int main(void) {
     printf("ZannaGFX v%d.%d.%d - Basic Drawing Example\n",
            VGFX_VERSION_MAJOR,

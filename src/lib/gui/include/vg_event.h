@@ -24,6 +24,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/// @file
+/// @brief Declares GUI event values, key and modifier codes, translation, and dispatch.
+/// @details Events are self-contained values that can be routed through a widget tree. Mouse
+/// dispatch performs hit testing, keyboard dispatch targets focus, and unhandled events bubble
+/// through live ancestors while per-root interaction state remains isolated.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -32,6 +38,7 @@ extern "C" {
 // Forward Declarations
 //=============================================================================
 
+/// @brief Opaque widget type used as an event target and dispatch root.
 typedef struct vg_widget vg_widget_t;
 
 //=============================================================================

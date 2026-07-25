@@ -28,6 +28,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements deterministic fixed-point vector-icon rasterization and caching.
+/// @details Compact commands on a 96-unit design grid are flattened into Q16 polygon edges,
+/// filled with four vertical sub-samples and analytic horizontal coverage, and cached as
+/// tint-independent role masks in a bounded least-recently-used table.
+
 //=============================================================================
 // Path command encoding (design grid: 0..96 units, square)
 //=============================================================================
@@ -48,10 +54,18 @@ enum {
 
 #define IV_ROLE_COUNT 4
 
+/// @brief One compact design-grid vector-path command.
 typedef struct vg_iv_cmd {
+    /// @brief Operation selected from the `IV_*` command constants.
     uint8_t op;
+
+    /// @brief Color role selected when @ref op starts a subpath.
     uint8_t role;
+
+    /// @brief Command endpoint in design-grid units.
     int16_t x, y;
+
+    /// @brief Quadratic control point in design-grid units.
     int16_t cx, cy;
 } vg_iv_cmd_t;
 
@@ -293,8 +307,12 @@ static const vg_iv_cmd_t k_iv_zanna_mark[] = {
 #undef Q
 #undef E
 
+/// @brief Stable registry entry mapping one public name to its path commands.
 typedef struct vg_iv_entry {
+    /// @brief Process-lifetime kebab-case icon name.
     const char *name;
+
+    /// @brief Process-lifetime terminated path-command array.
     const vg_iv_cmd_t *cmds;
 } vg_iv_entry_t;
 
@@ -370,6 +388,12 @@ typedef struct vg_iv_edge {
 } vg_iv_edge_t;
 
 /// @brief Append one polygon edge, splitting orientation so y0 < y1.
+/// @param edges Fixed-capacity destination edge array.
+/// @param edge_count Mutable number of initialized edges.
+/// @param ax First endpoint x coordinate in Q16 pixels.
+/// @param ay First endpoint y coordinate in Q16 pixels.
+/// @param bx Second endpoint x coordinate in Q16 pixels.
+/// @param by Second endpoint y coordinate in Q16 pixels.
 static void iv_add_edge(vg_iv_edge_t *edges,
                         int32_t *edge_count,
                         int32_t ax,
@@ -393,6 +417,10 @@ static void iv_add_edge(vg_iv_edge_t *edges,
 }
 
 /// @brief Accumulate analytic horizontal coverage for one sub-scanline span.
+/// @param row Per-pixel coverage accumulators for one output row.
+/// @param size_px Row width and icon edge length in pixels.
+/// @param xa Span start in Q16 pixel coordinates.
+/// @param xb Exclusive span end in Q16 pixel coordinates.
 static void iv_cover_span(uint16_t *row, int32_t size_px, int32_t xa, int32_t xb) {
     if (xa < 0)
         xa = 0;
@@ -415,6 +443,11 @@ static void iv_cover_span(uint16_t *row, int32_t size_px, int32_t xa, int32_t xb
 }
 
 /// @brief Rasterize one role's subpaths into an owned coverage mask.
+/// @details Quadratic curves use a fixed eight-segment subdivision. Even-odd crossing pairs
+/// contribute four vertical samples per output row, each with analytic horizontal coverage.
+/// @param cmds Terminated command list for one registered icon.
+/// @param size_px Positive square output size.
+/// @param role Color role whose subpaths should be included.
 /// @return Newly allocated size_px*size_px mask, or NULL on allocation failure.
 static uint8_t *iv_rasterize_role(const vg_iv_cmd_t *cmds, int32_t size_px, uint8_t role) {
     // Flatten the role's subpaths into edges (Q16 pixel coordinates).
@@ -514,6 +547,9 @@ static uint8_t *iv_rasterize_role(const vg_iv_cmd_t *cmds, int32_t size_px, uint
 }
 
 /// @brief Return whether an icon uses a color role at all.
+/// @param cmds Terminated command list to inspect.
+/// @param role Color role to find on a move command.
+/// @return 1 when at least one subpath uses @p role, otherwise 0.
 static int32_t iv_uses_role(const vg_iv_cmd_t *cmds, uint8_t role) {
     for (const vg_iv_cmd_t *cmd = cmds; cmd->op != IV_END; ++cmd) {
         if (cmd->op == IV_MOVE && cmd->role == role)
@@ -538,6 +574,7 @@ static vg_iv_cache_entry_t g_iv_cache[IV_CACHE_CAPACITY];
 static uint64_t g_iv_cache_tick;
 static int32_t g_iv_cache_initialized;
 
+/// @brief Lazily mark every static cache slot as unused.
 static void iv_cache_init(void) {
     if (g_iv_cache_initialized)
         return;
@@ -546,6 +583,8 @@ static void iv_cache_init(void) {
     g_iv_cache_initialized = 1;
 }
 
+/// @brief Release every role mask owned by one entry and mark the slot unused.
+/// @param entry Cache entry to clear.
 static void iv_cache_entry_free(vg_iv_cache_entry_t *entry) {
     for (int32_t role = 0; role < IV_ROLE_COUNT; ++role) {
         free(entry->masks[role]);
@@ -555,6 +594,11 @@ static void iv_cache_entry_free(vg_iv_cache_entry_t *entry) {
 }
 
 /// @brief Find or build the cache entry for (icon, size).
+/// @details A miss evicts the least-recently-used occupied entry, rasterizes every role present
+/// in the icon, and returns the slot even when an individual role allocation fails.
+/// @param icon_id Valid registry index.
+/// @param size_px Positive requested icon edge length.
+/// @return Borrowed cache entry whose lifetime extends until a later eviction or cache clear.
 static vg_iv_cache_entry_t *iv_cache_get(int32_t icon_id, int32_t size_px) {
     iv_cache_init();
     vg_iv_cache_entry_t *victim = &g_iv_cache[0];
@@ -587,6 +631,7 @@ static vg_iv_cache_entry_t *iv_cache_get(int32_t icon_id, int32_t size_px) {
 // Public API
 //=============================================================================
 
+/// @copydoc vg_icon_vector_find
 int32_t vg_icon_vector_find(const char *name) {
     if (!name || !*name)
         return VG_ICON_VECTOR_INVALID;
@@ -597,22 +642,26 @@ int32_t vg_icon_vector_find(const char *name) {
     return VG_ICON_VECTOR_INVALID;
 }
 
+/// @copydoc vg_icon_vector_name
 const char *vg_icon_vector_name(int32_t icon_id) {
     if (icon_id < 0 || icon_id >= IV_ICON_COUNT)
         return NULL;
     return k_iv_registry[icon_id].name;
 }
 
+/// @copydoc vg_icon_vector_count
 int32_t vg_icon_vector_count(void) {
     return IV_ICON_COUNT;
 }
 
+/// @copydoc vg_icon_vector_cache_clear
 void vg_icon_vector_cache_clear(void) {
     iv_cache_init();
     for (int32_t i = 0; i < IV_CACHE_CAPACITY; ++i)
         iv_cache_entry_free(&g_iv_cache[i]);
 }
 
+/// @copydoc vg_icon_vector_draw
 void vg_icon_vector_draw(vgfx_window_t win,
                          int32_t icon_id,
                          int32_t x,

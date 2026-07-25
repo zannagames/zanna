@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: examples/games/ashfall/game.zia
+// File: examples/games/ashfall-scenes/game.zia
 // Purpose: Own and orchestrate Ashfall's state, simulation, presentation, and
 //          fixed-timestep interactive loop.
 // Key invariants:
@@ -14,7 +14,7 @@
 // Ownership/Lifetime:
 //   - Game owns every gameplay subsystem and its World3D graph.
 //   - The interactive loop destroys World3D exactly once before returning.
-// Links: examples/games/ashfall/main.zia, examples/games/ashfall/config.zia
+// Links: examples/games/ashfall-scenes/main.zia, examples/games/ashfall-scenes/config.zia
 //
 //===----------------------------------------------------------------------===//
 module game;

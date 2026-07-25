@@ -21,6 +21,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Linux ALSA playback backend for ZannaAUD.
+/// @details Configures an exact nonblocking stereo PCM stream and owns the
+///          dedicated render/write thread. ALSA handle operations are
+///          serialized across playback, pause, recovery, and shutdown, while
+///          backend counters expose partial writes, waits, xruns, recoveries,
+///          and terminal failures.
+
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -68,6 +76,10 @@ static void alsa_pcm_unlock(vaud_linux_data *plat) {
         pthread_mutex_unlock(&plat->pcm_mutex);
 }
 
+/// @brief Prepare an ALSA stream and publish any failure through ZannaAUD diagnostics.
+/// @param ctx Context whose backend counters and error state are updated.
+/// @param plat Linux state containing the locked PCM handle.
+/// @return 1 when the stream was prepared; otherwise 0.
 static int alsa_prepare_checked(vaud_context_t ctx, vaud_linux_data *plat) {
     int result = snd_pcm_prepare(plat->pcm);
     if (result < 0) {
@@ -78,6 +90,10 @@ static int alsa_prepare_checked(vaud_context_t ctx, vaud_linux_data *plat) {
     return 1;
 }
 
+/// @brief Stop queued ALSA playback and publish any failure through diagnostics.
+/// @param ctx Context whose backend counters and error state are updated.
+/// @param plat Linux state containing the locked PCM handle.
+/// @return 1 when queued frames were dropped; otherwise 0.
 static int alsa_drop_checked(vaud_context_t ctx, vaud_linux_data *plat) {
     int result = snd_pcm_drop(plat->pcm);
     if (result < 0) {
@@ -231,9 +247,12 @@ static int alsa_write_all(vaud_context_t ctx,
 // Audio Thread
 //===----------------------------------------------------------------------===//
 
-/// @brief Audio thread function - continuously mixes and outputs audio.
-/// @param arg Pointer to our audio context.
-/// @return NULL (never returns until shutdown).
+/// @brief Continuously mix bounded periods and drain them to the ALSA device.
+/// @details Sleeps on the pause condition, terminates on synchronization or
+///          unrecoverable PCM failure, and never performs allocation after
+///          startup.
+/// @param arg Pointer to the owning audio context.
+/// @return Always NULL after shutdown, initialization failure, or backend failure.
 static void *audio_thread_func(void *arg) {
     vaud_context_t ctx = (vaud_context_t)arg;
     vaud_linux_data *plat = (vaud_linux_data *)ctx->platform_data;
@@ -288,6 +307,7 @@ static void *audio_thread_func(void *arg) {
 // Platform Interface Implementation
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_platform_init
 int vaud_platform_init(vaud_context_t ctx) {
     if (!ctx)
         return 0;
@@ -400,6 +420,7 @@ int vaud_platform_init(vaud_context_t ctx) {
     return 1;
 }
 
+/// @copydoc vaud_platform_shutdown
 void vaud_platform_shutdown(vaud_context_t ctx) {
     if (!ctx || !ctx->platform_data)
         return;
@@ -438,6 +459,7 @@ void vaud_platform_shutdown(vaud_context_t ctx) {
     ctx->platform_data = NULL;
 }
 
+/// @copydoc vaud_platform_pause
 void vaud_platform_pause(vaud_context_t ctx) {
     if (!ctx || !ctx->platform_data)
         return;
@@ -463,6 +485,7 @@ void vaud_platform_pause(vaud_context_t ctx) {
     alsa_pcm_unlock(plat);
 }
 
+/// @copydoc vaud_platform_resume
 void vaud_platform_resume(vaud_context_t ctx) {
     if (!ctx || !ctx->platform_data)
         return;
@@ -492,6 +515,7 @@ void vaud_platform_resume(vaud_context_t ctx) {
 // Timing
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_platform_now_ms
 int64_t vaud_platform_now_ms(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)

@@ -263,6 +263,11 @@ static void vgfx_free_retired_framebuffers(struct vgfx_window *win) {
     }
 }
 
+/// @brief Compute storage required for a tightly packed RGBA framebuffer.
+/// @param width Positive physical width in pixels.
+/// @param height Positive physical height in pixels.
+/// @param out_size Receives `width * height * 4` on success.
+/// @return 1 when the byte count is representable in size_t; otherwise 0.
 static int framebuffer_size_bytes(int32_t width, int32_t height, size_t *out_size) {
     if (!out_size || width <= 0 || height <= 0)
         return 0;
@@ -277,6 +282,7 @@ static int framebuffer_size_bytes(int32_t width, int32_t height, size_t *out_siz
     return 1;
 }
 
+/// @copydoc vgfx_internal_resize_framebuffer
 int vgfx_internal_resize_framebuffer(struct vgfx_window *win, int32_t width, int32_t height) {
     if (!win || width <= 0 || height <= 0) {
         vgfx_internal_set_error(VGFX_ERR_INVALID_PARAM, "Invalid framebuffer resize dimensions");
@@ -333,6 +339,7 @@ int vgfx_internal_resize_framebuffer(struct vgfx_window *win, int32_t width, int
     return 1;
 }
 
+/// @copydoc vgfx_internal_clear_input_state
 void vgfx_internal_clear_input_state(struct vgfx_window *win) {
     if (!win)
         return;
@@ -342,6 +349,7 @@ void vgfx_internal_clear_input_state(struct vgfx_window *win) {
     vgfx_internal_event_unlock(win);
 }
 
+/// @copydoc vgfx_internal_set_key_state
 void vgfx_internal_set_key_state(struct vgfx_window *win, int32_t key, int32_t down) {
     if (!win || key <= (int32_t)VGFX_KEY_UNKNOWN || key >= 512)
         return;
@@ -350,6 +358,7 @@ void vgfx_internal_set_key_state(struct vgfx_window *win, int32_t key, int32_t d
     vgfx_internal_event_unlock(win);
 }
 
+/// @copydoc vgfx_internal_set_mouse_button_state
 void vgfx_internal_set_mouse_button_state(struct vgfx_window *win, int32_t button, int32_t down) {
     if (!win || button < 0 || button >= 8)
         return;
@@ -358,6 +367,7 @@ void vgfx_internal_set_mouse_button_state(struct vgfx_window *win, int32_t butto
     vgfx_internal_event_unlock(win);
 }
 
+/// @copydoc vgfx_internal_set_mouse_position
 void vgfx_internal_set_mouse_position(struct vgfx_window *win, int32_t x, int32_t y) {
     if (!win)
         return;
@@ -367,6 +377,7 @@ void vgfx_internal_set_mouse_position(struct vgfx_window *win, int32_t x, int32_
     vgfx_internal_event_unlock(win);
 }
 
+/// @copydoc vgfx_internal_add_relative_delta
 void vgfx_internal_add_relative_delta(struct vgfx_window *win, double dx, double dy) {
     if (!win)
         return;
@@ -376,6 +387,7 @@ void vgfx_internal_add_relative_delta(struct vgfx_window *win, double dx, double
     vgfx_internal_event_unlock(win);
 }
 
+/// @copydoc vgfx_internal_set_close_requested
 void vgfx_internal_set_close_requested(struct vgfx_window *win, int32_t requested) {
     if (!win)
         return;
@@ -384,6 +396,7 @@ void vgfx_internal_set_close_requested(struct vgfx_window *win, int32_t requeste
     vgfx_internal_event_unlock(win);
 }
 
+/// @copydoc vgfx_internal_set_focus_state
 void vgfx_internal_set_focus_state(struct vgfx_window *win, int32_t focused) {
     if (!win)
         return;
@@ -392,6 +405,7 @@ void vgfx_internal_set_focus_state(struct vgfx_window *win, int32_t focused) {
     vgfx_internal_event_unlock(win);
 }
 
+/// @copydoc vgfx_internal_set_prevent_close
 void vgfx_internal_set_prevent_close(struct vgfx_window *win, int32_t prevent) {
     if (!win)
         return;
@@ -411,6 +425,17 @@ void vgfx_internal_set_prevent_close(struct vgfx_window *win, int32_t prevent) {
 /// @details See the internal header for the full ownership and index-unit contract. When the
 ///          native UTF-8 payload exceeds inline capacity, the copied prefix ends before the first
 ///          codepoint that would cross the bound and the event exposes `truncated = 1`.
+/// @param event Destination event initialized from scratch.
+/// @param type Composition lifecycle discriminator.
+/// @param time_ms Native event timestamp in milliseconds.
+/// @param text UTF-8 payload, or NULL only when @p text_length is zero.
+/// @param text_length Payload length in bytes.
+/// @param selection_start Preedit selection start in Unicode codepoints.
+/// @param selection_length Preedit selection length in Unicode codepoints.
+/// @param replacement_start Committed-text replacement start or -1 sentinel.
+/// @param replacement_length Replacement codepoint count or -1 with the sentinel start.
+/// @param modifiers Active VGFX_MOD_* mask.
+/// @return 1 when a supported event was initialized; otherwise 0.
 int vgfx_internal_init_composition_event(vgfx_event_t *event,
                                          vgfx_event_type_t type,
                                          int64_t time_ms,
@@ -643,6 +668,7 @@ int vgfx_internal_enqueue_event(struct vgfx_window *win, const vgfx_event_t *eve
     return 1;
 }
 
+/// @copydoc vgfx_internal_enqueue_coalesced_event
 int vgfx_internal_enqueue_coalesced_event(struct vgfx_window *win, const vgfx_event_t *event) {
     if (!win || !event)
         return 0;
@@ -686,6 +712,7 @@ int vgfx_internal_enqueue_coalesced_event(struct vgfx_window *win, const vgfx_ev
     return 1;
 }
 
+/// @copydoc vgfx_internal_note_event_overflow
 void vgfx_internal_note_event_overflow(struct vgfx_window *win) {
     if (!win)
         return;
@@ -787,7 +814,7 @@ const char *vgfx_version_string(void) {
 /// @brief Get the last error message (thread-local).
 /// @details Returns the error message set by the most recent error in this
 ///          thread.  The returned pointer is valid until the next error or
-///          until vgfx_clear_last_error() is called.
+///          until vgfx_clear_error() is called.
 ///
 /// @return Error message string, or NULL if no error has occurred
 const char *vgfx_get_last_error(void) {
@@ -795,7 +822,7 @@ const char *vgfx_get_last_error(void) {
 }
 
 /// @brief Clear the thread-local error state.
-/// @details Resets error code to VGFX_OK and error message to NULL.
+/// @details Resets the code to VGFX_ERR_NONE and the message to NULL.
 ///
 /// @post vgfx_get_last_error() returns NULL
 /// @post vgfx_last_error_code() returns VGFX_ERR_NONE
@@ -813,9 +840,9 @@ vgfx_error_t vgfx_last_error_code(void) {
 }
 
 /// @brief Set a user-provided logging callback for error messages.
-/// @details The callback is invoked whenever an error occurs (in addition to
-///          stderr printing).  Useful for integrating ZannaGFX errors with
-///          application logging systems.
+/// @details The callback is invoked whenever an error occurs. Optional stderr
+///          mirroring remains independently controlled by ZANNA_GFX_STDERR.
+///          Useful for integrating ZannaGFX errors with application logging.
 ///
 /// @param fn Logging callback function (or NULL to disable)
 ///
@@ -912,6 +939,9 @@ void vgfx_set_title(vgfx_window_t window, const char *title) {
 ///          calling the callback from windowDidResize: keeps the window painted
 ///          during the drag.  On other platforms the callback is stored but
 ///          never invoked from platform code (resize events arrive via poll).
+/// @param window Window whose resize callback is replaced.
+/// @param callback Callback receiving userdata and new physical dimensions, or NULL to clear it.
+/// @param userdata Opaque callback state retained without ownership.
 void vgfx_set_resize_callback(vgfx_window_t window,
                               void (*callback)(void *userdata, int32_t w, int32_t h),
                               void *userdata) {
@@ -945,33 +975,39 @@ int vgfx_is_fullscreen(vgfx_window_t window) {
     return vgfx_platform_is_fullscreen(window);
 }
 
+/// @copydoc vgfx_minimize
 void vgfx_minimize(vgfx_window_t window) {
     if (window)
         vgfx_platform_minimize(window);
 }
 
+/// @copydoc vgfx_maximize
 void vgfx_maximize(vgfx_window_t window) {
     if (window)
         vgfx_platform_maximize(window);
 }
 
+/// @copydoc vgfx_restore
 void vgfx_restore(vgfx_window_t window) {
     if (window)
         vgfx_platform_restore(window);
 }
 
+/// @copydoc vgfx_is_minimized
 int32_t vgfx_is_minimized(vgfx_window_t window) {
     if (!window)
         return 0;
     return vgfx_platform_is_minimized(window);
 }
 
+/// @copydoc vgfx_is_maximized
 int32_t vgfx_is_maximized(vgfx_window_t window) {
     if (!window)
         return 0;
     return vgfx_platform_is_maximized(window);
 }
 
+/// @copydoc vgfx_get_position
 void vgfx_get_position(vgfx_window_t window, int32_t *out_x, int32_t *out_y) {
     if (!window) {
         if (out_x)
@@ -983,46 +1019,55 @@ void vgfx_get_position(vgfx_window_t window, int32_t *out_x, int32_t *out_y) {
     vgfx_platform_get_position(window, out_x, out_y);
 }
 
+/// @copydoc vgfx_set_position
 void vgfx_set_position(vgfx_window_t window, int32_t x, int32_t y) {
     if (window)
         vgfx_platform_set_position(window, x, y);
 }
 
+/// @copydoc vgfx_focus
 void vgfx_focus(vgfx_window_t window) {
     if (window)
         vgfx_platform_focus(window);
 }
 
+/// @copydoc vgfx_request_foreground
 void vgfx_request_foreground(vgfx_window_t window) {
     if (window)
         vgfx_platform_request_foreground(window);
 }
 
+/// @copydoc vgfx_is_focused
 int32_t vgfx_is_focused(vgfx_window_t window) {
     if (!window)
         return 0;
     return vgfx_platform_is_focused(window);
 }
 
+/// @copydoc vgfx_set_prevent_close
 void vgfx_set_prevent_close(vgfx_window_t window, int32_t prevent) {
     if (window)
         vgfx_platform_set_prevent_close(window, prevent);
 }
 
+/// @copydoc vgfx_set_cursor
 void vgfx_set_cursor(vgfx_window_t window, int32_t cursor_type) {
     if (window)
         vgfx_platform_set_cursor(window, cursor_type);
 }
 
+/// @copydoc vgfx_set_cursor_visible
 void vgfx_set_cursor_visible(vgfx_window_t window, int32_t visible) {
     if (window)
         vgfx_platform_set_cursor_visible(window, visible);
 }
 
+/// @copydoc vgfx_get_monitor_size
 void vgfx_get_monitor_size(vgfx_window_t window, int32_t *out_w, int32_t *out_h) {
     vgfx_platform_get_monitor_size(window, out_w, out_h);
 }
 
+/// @copydoc vgfx_set_window_size
 void vgfx_set_window_size(vgfx_window_t window, int32_t w, int32_t h) {
     if (window && w > 0 && h > 0) {
         if (w < window->min_width)
@@ -1033,6 +1078,7 @@ void vgfx_set_window_size(vgfx_window_t window, int32_t w, int32_t h) {
     }
 }
 
+/// @copydoc vgfx_set_window_min_size
 void vgfx_set_window_min_size(vgfx_window_t window, int32_t w, int32_t h) {
     if (!window)
         return;
@@ -1054,12 +1100,8 @@ void vgfx_set_window_min_size(vgfx_window_t window, int32_t w, int32_t h) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Create a window parameter structure with default values.
-/// @details Fills in defaults from VGFX_DEFAULT_* macros:
-///            - width:     VGFX_DEFAULT_WIDTH (640)
-///            - height:    VGFX_DEFAULT_HEIGHT (480)
-///            - title:     VGFX_DEFAULT_TITLE ("ZannaGFX")
-///            - fps:       VGFX_DEFAULT_FPS (60)
-///            - resizable: 0 (false)
+/// @details Fills width, height, title, and FPS from the corresponding
+///          VGFX_DEFAULT_* macros and disables resizable/fullscreen creation.
 ///
 /// @return Window parameters initialized with defaults
 vgfx_window_params_t vgfx_window_params_default(void) {
@@ -1073,6 +1115,7 @@ vgfx_window_params_t vgfx_window_params_default(void) {
     return params;
 }
 
+/// @copydoc vgfx_get_display_size
 void vgfx_get_display_size(int32_t *out_w, int32_t *out_h) {
     extern int vgfx_platform_get_display_logical_size(int32_t *w, int32_t *h);
     int32_t w = 0;
@@ -1378,6 +1421,7 @@ int32_t vgfx_frame_time_ms(vgfx_window_t window) {
     return (int32_t)frame_time;
 }
 
+/// @copydoc vgfx_pump_events
 int32_t vgfx_pump_events(vgfx_window_t window) {
     if (!window)
         return 0;
@@ -1388,6 +1432,7 @@ int32_t vgfx_pump_events(vgfx_window_t window) {
     return 1;
 }
 
+/// @copydoc vgfx_wait_events
 int32_t vgfx_wait_events(vgfx_window_t window, int32_t timeout_ms) {
     if (!window)
         return 0;
@@ -1400,12 +1445,14 @@ int32_t vgfx_wait_events(vgfx_window_t window, int32_t timeout_ms) {
     return vgfx_platform_wait_events(window, timeout_ms);
 }
 
+/// @copydoc vgfx_set_text_input_enabled
 int vgfx_set_text_input_enabled(vgfx_window_t window, int32_t enabled) {
     if (!window || (enabled != 0 && enabled != 1))
         return 0;
     return vgfx_platform_set_text_input_enabled(window, enabled);
 }
 
+/// @copydoc vgfx_set_text_input_state
 int vgfx_set_text_input_state(vgfx_window_t window, const vgfx_text_input_state_t *state) {
     if (!window || !state || state->cursor_byte < 0 || state->anchor_byte < 0 ||
         state->cursor_width < 0 || state->cursor_height < 0 ||
@@ -1417,8 +1464,9 @@ int vgfx_set_text_input_state(vgfx_window_t window, const vgfx_text_input_state_
     return vgfx_platform_set_text_input_state(window, state);
 }
 
-/// @brief Get the window's dimensions.
-/// @details Retrieves the width and height of the window's framebuffer.
+/// @brief Get the window's public coordinate-space dimensions.
+/// @details Returns logical extents when coordinate scaling is enabled and
+///          physical framebuffer extents otherwise.
 ///
 /// @param window Window handle
 /// @param width  Pointer to store width (may be NULL)
@@ -1442,6 +1490,8 @@ int32_t vgfx_get_size(vgfx_window_t window, int32_t *width, int32_t *height) {
 /// @details Returns the current ratio stored in win->scale_factor. On a 2×
 ///          macOS Retina display this is 2.0; on 96 DPI it is 1.0. Backends
 ///          may refresh this value when the window moves between displays.
+/// @param window Window to inspect; NULL returns unity.
+/// @return Sanitized physical-pixels-per-logical-point ratio.
 float vgfx_window_get_scale(vgfx_window_t window) {
     struct vgfx_window *win = (struct vgfx_window *)window;
     if (!win)
@@ -1449,6 +1499,7 @@ float vgfx_window_get_scale(vgfx_window_t window) {
     return vgfx_internal_sanitize_scale(win->scale_factor);
 }
 
+/// @copydoc vgfx_set_coord_scale
 void vgfx_set_coord_scale(vgfx_window_t window, float scale) {
     struct vgfx_window *win = (struct vgfx_window *)window;
     if (!win)
@@ -1457,12 +1508,16 @@ void vgfx_set_coord_scale(vgfx_window_t window, float scale) {
 }
 
 /// @brief Get the physical pixel width of the window framebuffer.
+/// @param window Window to inspect.
+/// @return Physical pixel width, or zero for NULL.
 int32_t vgfx_window_get_width(vgfx_window_t window) {
     struct vgfx_window *win = (struct vgfx_window *)window;
     return win ? win->width : 0;
 }
 
 /// @brief Get the physical pixel height of the window framebuffer.
+/// @param window Window to inspect.
+/// @return Physical pixel height, or zero for NULL.
 int32_t vgfx_window_get_height(vgfx_window_t window) {
     struct vgfx_window *win = (struct vgfx_window *)window;
     return win ? win->height : 0;
@@ -1476,8 +1531,9 @@ int32_t vgfx_window_get_height(vgfx_window_t window) {
 /// @details The queue owns a value copy, so stack-authored events and inline text payloads
 ///          remain valid after this call returns. Routing through the internal synchronized
 ///          enqueue operation preserves native ordering, overflow accounting, and release-event
-///          protection. A NONE or out-of-range discriminator is never a dispatchable event and
-///          is rejected before the queue is touched.
+///          protection. Caller injection currently accepts the contiguous public range from
+///          KEY_DOWN through FILE_DROP; NONE, touch events, and out-of-range discriminators are
+///          rejected before the queue is touched.
 /// @param window Window whose synchronized event queue receives the value.
 /// @param event Caller-owned event to copy.
 /// @return 1 on successful enqueue, otherwise 0.
@@ -1556,6 +1612,7 @@ int32_t vgfx_flush_events(vgfx_window_t window) {
     return dropped;
 }
 
+/// @copydoc vgfx_clear_events
 void vgfx_clear_events(vgfx_window_t window) {
     (void)vgfx_flush_events(window);
 }
@@ -1581,6 +1638,7 @@ int32_t vgfx_event_overflow_count(vgfx_window_t window) {
     return count;
 }
 
+/// @copydoc vgfx_close_requested
 int32_t vgfx_close_requested(vgfx_window_t window) {
     if (!window)
         return 0;
@@ -1645,6 +1703,12 @@ void vgfx_pset(vgfx_window_t window, int32_t x, int32_t y, vgfx_color_t color) {
     window->pixels[offset + 3] = 0xFF;                 /* A (fully opaque) */
 }
 
+/// @brief Alpha-blend one scaled logical pixel block into the framebuffer.
+/// @param window Destination window.
+/// @param px Physical left coordinate.
+/// @param py Physical top coordinate.
+/// @param sz Physical width and height of the square block.
+/// @param color Source color encoded as 0xAARRGGBB.
 static void vgfx_pset_alpha_block(
     vgfx_window_t window, int32_t px, int32_t py, int32_t sz, uint32_t color) {
     uint8_t src_a = (uint8_t)((color >> 24) & 0xFF);
@@ -1679,6 +1743,7 @@ static void vgfx_pset_alpha_block(
     }
 }
 
+/// @copydoc vgfx_pset_alpha
 void vgfx_pset_alpha(vgfx_window_t window, int32_t x, int32_t y, uint32_t color) {
     if (!window)
         return;
@@ -1761,8 +1826,8 @@ int32_t vgfx_point(vgfx_window_t window, int32_t x, int32_t y, vgfx_color_t *out
 }
 
 /// @brief Clear the entire framebuffer to a solid color.
-/// @details Sets all pixels to the specified color with alpha=0xFF.  Fast
-///          operation that writes directly to the framebuffer.
+/// @details Sets the active clip, or the entire framebuffer when unclipped, to
+///          the specified color with alpha=0xFF.
 ///
 /// @param window Window handle
 /// @param color  RGB color (format: 0x00RRGGBB)
@@ -1815,14 +1880,19 @@ void vgfx_cls(vgfx_window_t window, vgfx_color_t color) {
 //===----------------------------------------------------------------------===//
 
 /* Forward declarations for drawing primitives (implemented in vgfx_draw.c) */
+/// @copydoc vgfx_draw_line
 void vgfx_draw_line(
     vgfx_window_t window, int32_t x1, int32_t y1, int32_t x2, int32_t y2, vgfx_color_t color);
+/// @copydoc vgfx_draw_rect
 void vgfx_draw_rect(
     vgfx_window_t window, int32_t x, int32_t y, int32_t w, int32_t h, vgfx_color_t color);
+/// @copydoc vgfx_draw_fill_rect
 void vgfx_draw_fill_rect(
     vgfx_window_t window, int32_t x, int32_t y, int32_t w, int32_t h, vgfx_color_t color);
+/// @copydoc vgfx_draw_circle
 void vgfx_draw_circle(
     vgfx_window_t window, int32_t cx, int32_t cy, int32_t radius, vgfx_color_t color);
+/// @copydoc vgfx_draw_fill_circle
 void vgfx_draw_fill_circle(
     vgfx_window_t window, int32_t cx, int32_t cy, int32_t radius, vgfx_color_t color);
 
@@ -2052,6 +2122,7 @@ int32_t vgfx_mouse_button(vgfx_window_t window, vgfx_mouse_button_t button) {
     return down;
 }
 
+/// @copydoc vgfx_warp_cursor
 void vgfx_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
     if (!window)
         return;
@@ -2063,6 +2134,7 @@ void vgfx_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
     vgfx_platform_warp_cursor(window, x, y);
 }
 
+/// @copydoc vgfx_set_relative_mouse
 int32_t vgfx_set_relative_mouse(vgfx_window_t window, int32_t enabled) {
     if (!window)
         return 0;
@@ -2079,6 +2151,7 @@ int32_t vgfx_set_relative_mouse(vgfx_window_t window, int32_t enabled) {
     return native ? 1 : 0;
 }
 
+/// @copydoc vgfx_relative_mouse_native
 int32_t vgfx_relative_mouse_native(vgfx_window_t window) {
     if (!window)
         return 0;
@@ -2088,6 +2161,7 @@ int32_t vgfx_relative_mouse_native(vgfx_window_t window) {
     return native;
 }
 
+/// @copydoc vgfx_get_relative_deltas
 void vgfx_get_relative_deltas(vgfx_window_t window, double *out_dx, double *out_dy) {
     double dx = 0.0;
     double dy = 0.0;
@@ -2105,11 +2179,13 @@ void vgfx_get_relative_deltas(vgfx_window_t window, double *out_dx, double *out_
         *out_dy = dy;
 }
 
+/// @copydoc vgfx_hide_cursor
 void vgfx_hide_cursor(void) {
     extern void vgfx_platform_hide_cursor(void);
     vgfx_platform_hide_cursor();
 }
 
+/// @copydoc vgfx_show_cursor
 void vgfx_show_cursor(void) {
     extern void vgfx_platform_show_cursor(void);
     vgfx_platform_show_cursor();
@@ -2148,11 +2224,13 @@ int32_t vgfx_get_framebuffer(vgfx_window_t window, vgfx_framebuffer_t *out_info)
     return 1;
 }
 
+/// @copydoc vgfx_set_gpu_present
 void vgfx_set_gpu_present(vgfx_window_t window, int32_t enabled) {
     if (window)
         window->skip_software_present = enabled ? 1 : 0;
 }
 
+/// @copydoc vgfx_set_native_msg_hook
 void vgfx_set_native_msg_hook(vgfx_window_t window, vgfx_native_msg_hook_t hook, void *user) {
     if (!window)
         return;

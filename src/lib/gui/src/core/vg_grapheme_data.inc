@@ -27,6 +27,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Supplies generated Unicode 17 property ranges to the grapheme scanner.
+/// @details Each immutable inclusive range maps Unicode scalars to the compact property values
+/// consumed by `vg_grapheme.c`. Tables are sorted and disjoint so binary lookup can fail closed
+/// to the zero-valued default property.
+
 static const vg_grapheme_property_range_t g_grapheme_gcb_ranges[] = {
     {0x000000u, 0x000009u, VG_GRAPHEME_GCB_CONTROL},
     {0x00000Au, 0x00000Au, VG_GRAPHEME_GCB_LF},

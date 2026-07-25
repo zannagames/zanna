@@ -38,6 +38,12 @@
 #define VG_WIDGETS_H
 
 #include "vg_font.h"
+
+/// @file
+/// @brief Declares the standard concrete control library built on @ref vg_widget_t.
+/// @details The API covers text, buttons, editing, toggles, scrolling, lists, selection,
+/// numeric controls, images, and color tools. Constructors return typed structs whose embedded
+/// base participates in the retained widget tree, and string setters copy their input.
 #include "vg_layout.h"
 #include "vg_widget.h"
 

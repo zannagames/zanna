@@ -98,6 +98,9 @@ static void delete_text_range_internal(
 static void codeeditor_adjust_hidden_cursors(vg_codeeditor_t *editor);
 static int codeeditor_prev_byte_boundary(const vg_codeeditor_t *editor, int line, int byte_col);
 
+/// @brief Saturating-add an amount to a performance counter.
+/// @param counter Counter to update; NULL is ignored.
+/// @param amount Unsigned increment.
 static void codeeditor_perf_add(uint64_t *counter, uint64_t amount) {
     if (!counter)
         return;
@@ -108,6 +111,8 @@ static void codeeditor_perf_add(uint64_t *counter, uint64_t amount) {
     }
 }
 
+/// @brief Advance the layout-cache generation and mark cached rows invalid.
+/// @param editor Editor whose content-derived layout cache is invalidated.
 static void codeeditor_bump_layout_generation(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -116,6 +121,8 @@ static void codeeditor_bump_layout_generation(vg_codeeditor_t *editor) {
     editor->layout_cache_valid = false;
 }
 
+/// @brief Recompute the summary flag indicating whether any fold is closed.
+/// @param editor Editor whose fold-region array is inspected.
 static void codeeditor_refresh_fold_summary(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -128,10 +135,17 @@ static void codeeditor_refresh_fold_summary(vg_codeeditor_t *editor) {
     }
 }
 
+/// @brief Return whether the editor currently hides any source lines behind folds.
+/// @param editor Editor to inspect.
+/// @return Cached folded-line summary, or `false` when @p editor is NULL.
 static bool codeeditor_has_hidden_lines(const vg_codeeditor_t *editor) {
     return editor ? editor->has_folded_lines : false;
 }
 
+/// @brief Clamp a source-line index to the editor's valid line range.
+/// @param editor Editor defining the valid range.
+/// @param line Candidate zero-based line index.
+/// @return Clamped index, or zero for an invalid or empty editor.
 static int codeeditor_clamp_line_index(const vg_codeeditor_t *editor, int line) {
     if (!editor || editor->line_count <= 0)
         return 0;
@@ -159,6 +173,10 @@ static vg_widget_vtable_t g_codeeditor_vtable = {.destroy = codeeditor_destroy,
 //=============================================================================
 
 /// @brief Grows @p *lines to hold at least @p needed entries, doubling capacity; zeros new slots.
+/// @param[in,out] lines Pointer to the potentially reallocated line array.
+/// @param[in,out] capacity Current capacity updated on successful growth.
+/// @param needed Minimum required entry count.
+/// @return `true` when the requested capacity is available.
 static bool ensure_line_array_capacity(vg_code_line_t **lines, int *capacity, int needed) {
     if (!lines || !capacity || needed < 0)
         return false;
@@ -192,6 +210,9 @@ static bool ensure_line_array_capacity(vg_code_line_t **lines, int *capacity, in
 
 /// @brief Ensures editor->lines can hold at least @p needed entries, delegating to
 /// ensure_line_array_capacity.
+/// @param editor Editor whose line array may grow.
+/// @param needed Minimum required line capacity.
+/// @return `true` when the requested capacity is available.
 static bool ensure_line_capacity(vg_codeeditor_t *editor, int needed) {
     if (!editor)
         return false;
@@ -199,6 +220,7 @@ static bool ensure_line_capacity(vg_codeeditor_t *editor, int needed) {
 }
 
 /// @brief Advance the editor content revision, keeping zero reserved for invalid handles.
+/// @param editor Editor whose revision advances; NULL is ignored.
 static void codeeditor_bump_revision(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -206,6 +228,8 @@ static void codeeditor_bump_revision(vg_codeeditor_t *editor) {
 }
 
 /// @brief The revision codeeditor_bump_revision() will produce on its next call.
+/// @param editor Editor whose next revision is predicted.
+/// @return Next nonzero revision, or one for a NULL editor.
 static uint64_t codeeditor_pending_revision(const vg_codeeditor_t *editor) {
     if (!editor)
         return 1;
@@ -213,6 +237,7 @@ static uint64_t codeeditor_pending_revision(const vg_codeeditor_t *editor) {
 }
 
 /// @brief Drop all retained sync deltas, freeing their replacement text.
+/// @param editor Editor whose journal storage is cleared.
 static void codeeditor_journal_reset(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -229,6 +254,7 @@ static void codeeditor_journal_reset(vg_codeeditor_t *editor) {
 /// @brief Signal that a mutation could not be captured as a delta, so the next
 ///        language-service pull must full-sync. Retained deltas are dropped
 ///        because they now precede a gap and cannot be applied incrementally.
+/// @param editor Editor whose journal is invalidated.
 static void codeeditor_journal_mark_overflow(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -238,6 +264,13 @@ static void codeeditor_journal_mark_overflow(vg_codeeditor_t *editor) {
 
 /// @brief Append one forward content delta (pre-edit range [start..end) replaced
 ///        by @p text) at @p revision. A full ring or OOM marks overflow instead.
+/// @param editor Editor whose incremental journal receives the delta.
+/// @param start_line First line of the replaced pre-edit range.
+/// @param start_col First byte column of the replaced pre-edit range.
+/// @param end_line Final line of the replaced pre-edit range.
+/// @param end_col Exclusive final byte column of the replaced pre-edit range.
+/// @param text Replacement text copied into the journal; NULL denotes an empty replacement.
+/// @param revision Content revision produced by the mutation.
 static void codeeditor_journal_push(vg_codeeditor_t *editor,
                                     int start_line,
                                     int start_col,
@@ -274,6 +307,7 @@ static void codeeditor_journal_push(vg_codeeditor_t *editor,
 }
 
 /// @brief Advance the syntax-cache generation after a language/theme/global-state change.
+/// @param editor Editor whose syntax generation advances.
 static void codeeditor_bump_highlight_generation(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -282,6 +316,8 @@ static void codeeditor_bump_highlight_generation(vg_codeeditor_t *editor) {
 }
 
 /// @brief Mark one line's cached syntax colors and language state stale.
+/// @param editor Editor containing the line.
+/// @param line Zero-based line index to invalidate.
 static void codeeditor_invalidate_line_highlight(vg_codeeditor_t *editor, int line) {
     if (!editor || line < 0 || line >= editor->line_count)
         return;
@@ -290,6 +326,7 @@ static void codeeditor_invalidate_line_highlight(vg_codeeditor_t *editor, int li
 }
 
 /// @brief Mark all syntax colors and cached language states stale without touching text revision.
+/// @param editor Editor whose complete syntax cache is invalidated.
 static void codeeditor_invalidate_all_highlights(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -301,6 +338,8 @@ static void codeeditor_invalidate_all_highlights(vg_codeeditor_t *editor) {
 }
 
 /// @brief Heuristic for edits that can change downstream lexical state.
+/// @param text Inserted or deleted text to inspect.
+/// @return `true` when the text contains a newline or block-comment delimiter byte.
 static bool codeeditor_text_may_affect_multiline_syntax(const char *text) {
     if (!text)
         return false;
@@ -311,6 +350,10 @@ static bool codeeditor_text_may_affect_multiline_syntax(const char *text) {
     return false;
 }
 
+/// @brief Compare highlight spans in document position order.
+/// @param lhs Address of the first highlight span.
+/// @param rhs Address of the second highlight span.
+/// @return A negative, zero, or positive value according to start then end coordinates.
 static int highlight_span_compare(const void *lhs, const void *rhs) {
     const struct vg_highlight_span *a = (const struct vg_highlight_span *)lhs;
     const struct vg_highlight_span *b = (const struct vg_highlight_span *)rhs;
@@ -325,12 +368,16 @@ static int highlight_span_compare(const void *lhs, const void *rhs) {
     return 0;
 }
 
+/// @brief Mark the per-line highlight-span index stale.
+/// @param editor Editor whose derived index is invalidated.
 static void codeeditor_invalidate_highlight_line_index(vg_codeeditor_t *editor) {
     if (!editor)
         return;
     editor->highlight_line_index_valid = false;
 }
 
+/// @brief Release all arrays backing the per-line highlight-span index.
+/// @param editor Editor whose index storage is freed and metadata reset.
 static void codeeditor_free_highlight_line_index(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -348,6 +395,8 @@ static void codeeditor_free_highlight_line_index(vg_codeeditor_t *editor) {
     editor->highlight_line_index_valid = false;
 }
 
+/// @brief Sort highlight spans by source range when their order is stale.
+/// @param editor Editor whose span array is sorted and line index invalidated.
 static void codeeditor_sort_highlight_spans(vg_codeeditor_t *editor) {
     if (!editor || editor->highlight_spans_sorted)
         return;
@@ -364,6 +413,12 @@ static void codeeditor_sort_highlight_spans(vg_codeeditor_t *editor) {
     codeeditor_invalidate_highlight_line_index(editor);
 }
 
+/// @brief Clamp a highlight span's line coverage to the current document.
+/// @param editor Editor defining the valid source-line range.
+/// @param span Highlight span to project onto lines.
+/// @param[out] out_start Optional destination for the first covered line.
+/// @param[out] out_end Optional destination for the final covered line.
+/// @return `true` when the span overlaps at least one document line.
 static bool codeeditor_highlight_line_range_for_span(const vg_codeeditor_t *editor,
                                                      const struct vg_highlight_span *span,
                                                      int *out_start,
@@ -389,6 +444,11 @@ static bool codeeditor_highlight_line_range_for_span(const vg_codeeditor_t *edit
     return true;
 }
 
+/// @brief Build or reuse the index mapping each source line to intersecting highlight spans.
+/// @details The compact index stores per-line offsets into a flat span-index array and is bounded
+/// by `CODEEDITOR_HIGHLIGHT_LINE_INDEX_MAX_ENTRIES` to reject pathological all-document coverage.
+/// @param editor Editor whose sorted spans and line count define the index.
+/// @return `true` when a valid index is available, otherwise `false`.
 static bool codeeditor_ensure_highlight_line_index(vg_codeeditor_t *editor) {
     if (!editor)
         return false;
@@ -480,6 +540,18 @@ static bool codeeditor_ensure_highlight_line_index(vg_codeeditor_t *editor) {
     return true;
 }
 
+/// @brief Paint underline highlights intersecting one visible line segment.
+/// @details Uses the per-line span index when available and clips range geometry to the requested
+/// wrapped segment; unwrapped positions include horizontal scrolling.
+/// @param editor Editor containing highlight spans and character metrics.
+/// @param canvas Graphics window receiving underline primitives.
+/// @param line Source line being painted.
+/// @param segment_start First byte column in the visible segment.
+/// @param segment_len Segment length in byte columns.
+/// @param content_x Left content origin.
+/// @param row_y Top of the visual row.
+/// @param scroll_x Horizontal scroll offset for unwrapped text.
+/// @param wrapped Whether segment-local wrapped coordinates are active.
 static void codeeditor_paint_highlights_for_line(vg_codeeditor_t *editor,
                                                  void *canvas,
                                                  int line,
@@ -538,6 +610,7 @@ static void codeeditor_paint_highlights_for_line(vg_codeeditor_t *editor,
     }
 }
 
+/// @brief Minimal cross-line lexical state used to exclude strings and comments.
 typedef struct codeeditor_syntax_scan_state {
     bool in_line_comment;
     bool in_block_comment;
@@ -620,6 +693,7 @@ static bool codeeditor_syntax_scan_byte(codeeditor_syntax_scan_state_t *state,
 /// @brief Reset line-comment state at a physical line boundary.
 /// @details Block comments and strings intentionally survive line boundaries;
 ///          `//` comments do not.
+/// @param state Scanner state to advance to the next physical line.
 static void codeeditor_syntax_scan_end_line(codeeditor_syntax_scan_state_t *state) {
     if (state)
         state->in_line_comment = false;
@@ -630,6 +704,10 @@ static void codeeditor_syntax_scan_end_line(codeeditor_syntax_scan_state_t *stat
 ///          using the same lightweight rules as delimiter matching. The byte at
 ///          @p col is classified from the scanner state before that byte is
 ///          consumed.
+/// @param editor Editor containing the source document.
+/// @param line Target zero-based source line.
+/// @param col Target byte column on @p line.
+/// @return `true` when the target lies outside comments and strings.
 static bool codeeditor_position_is_code_context(const vg_codeeditor_t *editor, int line, int col) {
     if (!editor || line < 0 || line >= editor->line_count)
         return false;
@@ -656,13 +734,19 @@ static bool codeeditor_position_is_code_context(const vg_codeeditor_t *editor, i
     return !state.in_line_comment && !state.in_block_comment && !state.in_string;
 }
 
+/// @brief Source coordinate retained on a delimiter-matching stack.
 typedef struct codeeditor_pair_position {
     int line;
     int col;
 } codeeditor_pair_position_t;
 
 /// @brief Append one delimiter position to a dynamically-sized stack.
-/// @return true on success, false on allocation failure.
+/// @param[in,out] stack Pointer to the potentially reallocated stack.
+/// @param[in,out] count Current entry count incremented on success.
+/// @param[in,out] cap Current capacity updated on growth.
+/// @param line Source line to append.
+/// @param col Source byte column to append.
+/// @return `true` on success, or `false` for invalid arguments or allocation failure.
 static bool codeeditor_pair_stack_push(codeeditor_pair_position_t **stack,
                                        int *count,
                                        int *cap,
@@ -690,7 +774,14 @@ static bool codeeditor_pair_stack_push(codeeditor_pair_position_t **stack,
 /// @details Scans source text in document order, ignoring comments and strings.
 ///          Openers push onto a stack and closers pop; the top of the stack at
 ///          @p line:@p col is the opener that should own an inserted closer.
-/// @return true and writes @p out_line/@p out_col when an unmatched opener exists.
+/// @param editor Editor containing the source document.
+/// @param line Insertion-point line, inclusive scan limit.
+/// @param col Insertion-point byte column, exclusive scan limit.
+/// @param opener Opening delimiter byte.
+/// @param closer Closing delimiter byte.
+/// @param[out] out_line Optional destination for the unmatched opener line.
+/// @param[out] out_col Optional destination for the unmatched opener byte column.
+/// @return `true` when an unmatched opener exists before the insertion point.
 static bool codeeditor_find_unmatched_opener_before(const vg_codeeditor_t *editor,
                                                     int line,
                                                     int col,
@@ -753,6 +844,11 @@ cleanup:
     return false;
 }
 
+/// @brief Classify a supported bracket byte and return its matching peer and scan direction.
+/// @param ch Candidate bracket byte.
+/// @param[out] out_match Optional destination for the paired delimiter.
+/// @param[out] out_direction Optional destination for `1` when scanning forward or `-1` backward.
+/// @return `true` for parentheses, brackets, or braces.
 static bool codeeditor_pair_info(char ch, char *out_match, int *out_direction) {
     char match = '\0';
     int direction = 0;
@@ -791,6 +887,12 @@ static bool codeeditor_pair_info(char ch, char *out_match, int *out_direction) {
     return true;
 }
 
+/// @brief Read one byte from a validated document coordinate.
+/// @param editor Editor containing the source line.
+/// @param line Zero-based line index.
+/// @param col Zero-based byte column.
+/// @param[out] out_ch Optional destination, cleared before validation.
+/// @return `true` when the coordinate names an existing byte.
 static bool codeeditor_byte_at(const vg_codeeditor_t *editor, int line, int col, char *out_ch) {
     if (out_ch)
         *out_ch = '\0';
@@ -804,6 +906,16 @@ static bool codeeditor_byte_at(const vg_codeeditor_t *editor, int line, int col,
     return true;
 }
 
+/// @brief Find the closer matching an opening delimiter by scanning forward.
+/// @details The scan ignores delimiters inside strings and comments and balances nested peers.
+/// @param editor Editor containing the source document.
+/// @param line Opening delimiter line.
+/// @param col Opening delimiter byte column.
+/// @param opener Opening delimiter byte.
+/// @param closer Matching closing delimiter byte.
+/// @param[out] out_line Optional destination for the peer line.
+/// @param[out] out_col Optional destination for the peer byte column.
+/// @return `true` when a balanced closer is found.
 static bool codeeditor_find_matching_pair_forward(const vg_codeeditor_t *editor,
                                                   int line,
                                                   int col,
@@ -851,6 +963,17 @@ static bool codeeditor_find_matching_pair_forward(const vg_codeeditor_t *editor,
     return false;
 }
 
+/// @brief Find the opener matching a closing delimiter by scanning through the target.
+/// @details Code-context openers are stacked and ordinary closers pop the stack; the stack top at
+/// the target closer is its peer.
+/// @param editor Editor containing the source document.
+/// @param line Closing delimiter line.
+/// @param col Closing delimiter byte column.
+/// @param closer Closing delimiter byte.
+/// @param opener Matching opening delimiter byte.
+/// @param[out] out_line Optional destination for the peer line.
+/// @param[out] out_col Optional destination for the peer byte column.
+/// @return `true` when a balanced opener is found.
 static bool codeeditor_find_matching_pair_backward(const vg_codeeditor_t *editor,
                                                    int line,
                                                    int col,
@@ -907,6 +1030,10 @@ cleanup:
     return found;
 }
 
+/// @brief Refresh the delimiter-pair match cached for the current cursor and revision.
+/// @details The byte at the cursor, or the previous UTF-8 boundary, is classified as a bracket and
+/// matched in the appropriate direction. Cache metadata is updated even when no pair exists.
+/// @param editor Editor whose pair cache is refreshed.
 static void codeeditor_update_pair_match_cache(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -958,6 +1085,16 @@ static void codeeditor_update_pair_match_cache(vg_codeeditor_t *editor) {
     editor->pair_peer_col = peer_col;
 }
 
+/// @brief Draw one delimiter-highlight cell in a visible text segment.
+/// @param editor Editor supplying character and line dimensions.
+/// @param canvas Graphics window receiving fill and border primitives.
+/// @param col Delimiter byte column.
+/// @param segment_start First byte column of a wrapped segment.
+/// @param segment_len Wrapped segment length.
+/// @param content_x Left content origin.
+/// @param row_y Top of the visual row.
+/// @param scroll_x Horizontal offset for unwrapped text.
+/// @param wrapped Whether segment-local wrapped coordinates are active.
 static void codeeditor_draw_pair_cell(vg_codeeditor_t *editor,
                                       void *canvas,
                                       int col,
@@ -991,6 +1128,16 @@ static void codeeditor_draw_pair_cell(vg_codeeditor_t *editor,
               CODEEDITOR_PAIR_HIGHLIGHT_BORDER);
 }
 
+/// @brief Paint cached delimiter peers that intersect one visible line segment.
+/// @param editor Editor containing cursor and pair-match state.
+/// @param canvas Graphics window receiving pair cells.
+/// @param line Source line being painted.
+/// @param segment_start First byte column of the segment.
+/// @param segment_len Segment byte length.
+/// @param content_x Left content origin.
+/// @param row_y Top of the visual row.
+/// @param scroll_x Horizontal offset for unwrapped text.
+/// @param wrapped Whether segment-local wrapped coordinates are active.
 static void codeeditor_paint_pair_highlight_for_segment(vg_codeeditor_t *editor,
                                                         void *canvas,
                                                         int line,
@@ -1031,6 +1178,9 @@ static void codeeditor_paint_pair_highlight_for_segment(vg_codeeditor_t *editor,
 
 /// @brief Grows @p line->text to hold at least @p needed bytes, doubling from
 /// INITIAL_TEXT_CAPACITY.
+/// @param line Line whose owned text allocation may grow.
+/// @param needed Required byte capacity including any terminator budget.
+/// @return `true` when the requested capacity is available.
 static bool ensure_text_capacity(vg_code_line_t *line, size_t needed) {
     if (needed <= line->capacity)
         return true;
@@ -1053,6 +1203,10 @@ static bool ensure_text_capacity(vg_code_line_t *line, size_t needed) {
     return true;
 }
 
+/// @brief Return a line's byte length as a bounded signed integer.
+/// @param editor Editor containing the line.
+/// @param line Zero-based line index.
+/// @return Byte length saturated at `INT_MAX`, or zero for invalid input.
 static int codeeditor_line_length_i32(const vg_codeeditor_t *editor, int line) {
     if (!editor || line < 0 || line >= editor->line_count)
         return 0;
@@ -1061,6 +1215,10 @@ static int codeeditor_line_length_i32(const vg_codeeditor_t *editor, int line) {
 
 /// @brief Allocates and copies @p len bytes from @p text into @p line, zero-initializing all other
 /// fields.
+/// @param line Destination line object.
+/// @param text Source bytes, required when @p len is nonzero.
+/// @param len Number of bytes to copy.
+/// @return `true` when the line is initialized.
 static bool init_line_text(vg_code_line_t *line, const char *text, size_t len) {
     if (!line || len > SIZE_MAX - 1 || len > (size_t)INT_MAX)
         return false;
@@ -1079,6 +1237,8 @@ static bool init_line_text(vg_code_line_t *line, const char *text, size_t len) {
 
 /// @brief Allocates a minimal empty text buffer for @p line if it has none; no-op if text already
 /// exists.
+/// @param line Line that must acquire valid NUL-terminated storage.
+/// @return `true` when storage exists.
 static bool ensure_line_text_exists(vg_code_line_t *line) {
     if (!line)
         return false;
@@ -1095,6 +1255,7 @@ static bool ensure_line_text_exists(vg_code_line_t *line) {
 }
 
 /// @brief Frees the text and colors buffers of @p line and zeroes its length/capacity fields.
+/// @param line Line to clear; NULL is ignored.
 static void free_line(vg_code_line_t *line) {
     if (!line)
         return;
@@ -1112,6 +1273,8 @@ static void free_line(vg_code_line_t *line) {
 }
 
 /// @brief Calls free_line on each of the @p count entries in @p lines, then frees the array itself.
+/// @param lines Owned line array; NULL is ignored.
+/// @param count Number of initialized entries to release.
 static void free_line_array(vg_code_line_t *lines, int count) {
     if (!lines)
         return;
@@ -1122,6 +1285,8 @@ static void free_line_array(vg_code_line_t *lines, int count) {
 
 /// @brief Returns the byte length of the well-formed UTF-8 sequence starting at @p p (1–4), or 0 on
 /// error.
+/// @param p Pointer into a NUL-terminated byte string.
+/// @return Valid sequence length from one through four, or zero at termination or malformed input.
 static size_t codeeditor_utf8_span(const char *p) {
     if (!p || *p == '\0')
         return 0;
@@ -1161,6 +1326,10 @@ static size_t codeeditor_utf8_span(const char *p) {
 }
 
 /// @brief Convert an internal byte column to a UTF-8 codepoint column.
+/// @param editor Editor containing the source line.
+/// @param line Zero-based line index.
+/// @param byte_col Byte offset to convert, clamped to the line length.
+/// @return Number of decoded code points preceding the byte position.
 static int codeeditor_byte_col_to_char_col(const vg_codeeditor_t *editor, int line, int byte_col) {
     if (!editor || line < 0 || line >= editor->line_count)
         return 0;
@@ -1185,6 +1354,10 @@ static int codeeditor_byte_col_to_char_col(const vg_codeeditor_t *editor, int li
 }
 
 /// @brief Convert a public UTF-8 codepoint column to the corresponding internal byte column.
+/// @param editor Editor containing the source line.
+/// @param line Zero-based line index.
+/// @param char_col Code-point column to convert.
+/// @return Corresponding byte offset, clamped to the line and `INT_MAX`.
 static int codeeditor_char_col_to_byte_col(const vg_codeeditor_t *editor, int line, int char_col) {
     if (!editor || line < 0 || line >= editor->line_count || char_col <= 0)
         return 0;
@@ -1202,6 +1375,10 @@ static int codeeditor_char_col_to_byte_col(const vg_codeeditor_t *editor, int li
 }
 
 /// @brief Return the start byte of the UTF-8 codepoint immediately before @p byte_col.
+/// @param editor Editor containing the source line.
+/// @param line Zero-based line index.
+/// @param byte_col Byte position to step backward from.
+/// @return Previous code-point boundary, or zero for invalid input.
 static int codeeditor_prev_byte_boundary(const vg_codeeditor_t *editor, int line, int byte_col) {
     if (!editor || line < 0 || line >= editor->line_count || byte_col <= 0)
         return 0;
@@ -1222,6 +1399,10 @@ static int codeeditor_prev_byte_boundary(const vg_codeeditor_t *editor, int line
 }
 
 /// @brief Return the byte offset immediately after the UTF-8 codepoint at or after @p byte_col.
+/// @param editor Editor containing the source line.
+/// @param line Zero-based line index.
+/// @param byte_col Byte position to step forward from.
+/// @return Next code-point boundary, clamped to the line length.
 static int codeeditor_next_byte_boundary(const vg_codeeditor_t *editor, int line, int byte_col) {
     if (!editor || line < 0 || line >= editor->line_count)
         return 0;
@@ -1244,6 +1425,7 @@ static int codeeditor_next_byte_boundary(const vg_codeeditor_t *editor, int line
 }
 
 /// @brief Frees the highlight_spans array and resets its count and capacity to zero.
+/// @param editor Editor whose highlight annotations and derived index are cleared.
 static void codeeditor_clear_highlight_spans(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -1255,6 +1437,8 @@ static void codeeditor_clear_highlight_spans(vg_codeeditor_t *editor) {
     codeeditor_free_highlight_line_index(editor);
 }
 
+/// @brief Release every copied inlay-hint string and the hint array.
+/// @param editor Editor whose inlay-hint storage and counters are reset.
 static void codeeditor_free_inlay_hint_storage(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -1267,6 +1451,10 @@ static void codeeditor_free_inlay_hint_storage(vg_codeeditor_t *editor) {
     editor->inlay_hints_sorted = true;
 }
 
+/// @brief Compare inlay hints by source line then byte column.
+/// @param a Address of the first inlay hint.
+/// @param b Address of the second inlay hint.
+/// @return A negative, zero, or positive value in document position order.
 static int codeeditor_compare_inlay_hints(const void *a, const void *b) {
     const struct vg_inlay_hint *lhs = (const struct vg_inlay_hint *)a;
     const struct vg_inlay_hint *rhs = (const struct vg_inlay_hint *)b;
@@ -1277,6 +1465,8 @@ static int codeeditor_compare_inlay_hints(const void *a, const void *b) {
     return 0;
 }
 
+/// @brief Sort inlay hints in document order when their order is stale.
+/// @param editor Editor whose hint array may be sorted in place.
 static void codeeditor_sort_inlay_hints(vg_codeeditor_t *editor) {
     if (!editor || editor->inlay_hints_sorted)
         return;
@@ -1289,6 +1479,10 @@ static void codeeditor_sort_inlay_hints(vg_codeeditor_t *editor) {
     editor->inlay_hints_sorted = true;
 }
 
+/// @brief Find the first sorted inlay hint assigned to a source line.
+/// @param editor Editor containing sorted hints.
+/// @param line Zero-based source line.
+/// @return Hint-array index, or `-1` when the line has no hint.
 static int codeeditor_first_inlay_hint_for_line(const vg_codeeditor_t *editor, int line) {
     if (!editor || !editor->inlay_hints || editor->inlay_hint_count <= 0)
         return -1;
@@ -1369,6 +1563,8 @@ static int codeeditor_first_semantic_token_for_line(const vg_codeeditor_t *edito
 
 /// @brief Ensures the colors buffer for @p line_idx is sized, then invokes the syntax highlighter
 /// callback.
+/// @param editor Editor containing the line and syntax callback.
+/// @param line_idx Zero-based line index to highlight.
 static void highlight_line(vg_codeeditor_t *editor, size_t line_idx) {
     if (!editor->syntax_highlighter || line_idx >= (size_t)editor->line_count)
         return;
@@ -1429,6 +1625,15 @@ static void highlight_line(vg_codeeditor_t *editor, size_t line_idx) {
 ///          byte ranges, so the editor must copy each colored run before
 ///          drawing it. A 4 KiB stack scratch keeps ordinary long code lines out
 ///          of the heap path; only unusually large single-color runs allocate.
+/// @param canvas Graphics window receiving the text.
+/// @param font Font used for rendering.
+/// @param font_size Font size in pixels.
+/// @param x Baseline origin x coordinate.
+/// @param y Baseline origin y coordinate.
+/// @param text Complete source line.
+/// @param start First byte to copy.
+/// @param len Number of bytes to draw.
+/// @param color Packed foreground color.
 static void codeeditor_draw_text_slice(void *canvas,
                                        vg_font_t *font,
                                        float font_size,
@@ -1458,6 +1663,18 @@ static void codeeditor_draw_text_slice(void *canvas,
 
 /// @brief Draws text[start..start+len] in color runs derived from @p colors[], falling back to @p
 /// fallback_color.
+/// @param canvas Graphics window receiving the text.
+/// @param font Font used for rendering.
+/// @param font_size Font size in pixels.
+/// @param origin_x Left origin of the requested slice.
+/// @param y Text baseline.
+/// @param text Complete source line.
+/// @param colors Per-byte foreground colors.
+/// @param colors_capacity Number of readable entries in @p colors.
+/// @param start First source byte in the slice.
+/// @param len Number of source bytes in the slice.
+/// @param char_width Fixed horizontal byte-cell advance.
+/// @param fallback_color Color used beyond @p colors_capacity.
 static void codeeditor_draw_colored_slice(void *canvas,
                                           vg_font_t *font,
                                           float font_size,
@@ -1505,6 +1722,8 @@ static void codeeditor_draw_colored_slice(void *canvas,
 
 /// @brief Computes the minimum gutter width needed to display the widest line-number string plus 20
 /// px padding.
+/// @param editor Editor whose line count and font determine the width.
+/// @return Required line-number gutter width, or zero when line numbers are hidden.
 static float codeeditor_auto_line_number_gutter_width(const vg_codeeditor_t *editor) {
     if (!editor || !editor->show_line_numbers)
         return 0.0f;
@@ -1521,6 +1740,8 @@ static float codeeditor_auto_line_number_gutter_width(const vg_codeeditor_t *edi
 
 /// @brief Returns the fold-marker gutter width (one line_height wide, clamped to
 /// CODEEDITOR_FOLD_GUTTER_MIN_WIDTH).
+/// @param editor Editor whose fold-gutter visibility and line height are inspected.
+/// @return Fold-gutter width, or zero when disabled.
 static float codeeditor_fold_gutter_width(const vg_codeeditor_t *editor) {
     if (!editor || !editor->show_fold_gutter)
         return 0.0f;
@@ -1531,6 +1752,8 @@ static float codeeditor_fold_gutter_width(const vg_codeeditor_t *editor) {
 
 /// @brief Returns the effective line-number gutter width, honouring line_number_width_override when
 /// set.
+/// @param editor Editor whose line-number settings are inspected.
+/// @return Override width in character cells, automatic width, or zero when disabled.
 static float codeeditor_line_number_gutter_width(const vg_codeeditor_t *editor) {
     if (!editor || !editor->show_line_numbers)
         return 0.0f;
@@ -1541,6 +1764,9 @@ static float codeeditor_line_number_gutter_width(const vg_codeeditor_t *editor) 
 
 /// @brief Returns a const pointer to the fold region whose start_line equals @p line, or NULL if
 /// none.
+/// @param editor Editor containing fold regions.
+/// @param line Candidate fold-start line.
+/// @return Borrowed matching region, or NULL.
 static const struct vg_fold_region *codeeditor_fold_region_starting_at(
     const vg_codeeditor_t *editor, int line) {
     if (!editor)
@@ -1554,6 +1780,9 @@ static const struct vg_fold_region *codeeditor_fold_region_starting_at(
 
 /// @brief Returns a mutable pointer to the fold region whose start_line equals @p line, or NULL if
 /// none.
+/// @param editor Editor containing fold regions.
+/// @param line Candidate fold-start line.
+/// @return Borrowed mutable matching region, or NULL.
 static struct vg_fold_region *codeeditor_fold_region_starting_at_mut(vg_codeeditor_t *editor,
                                                                      int line) {
     if (!editor)
@@ -1566,6 +1795,9 @@ static struct vg_fold_region *codeeditor_fold_region_starting_at_mut(vg_codeedit
 }
 
 /// @brief Returns true if @p line falls inside a currently folded region (i.e., it is not visible).
+/// @param editor Editor containing fold regions.
+/// @param line Source line to test.
+/// @return `true` when a folded region hides @p line.
 static bool codeeditor_line_is_hidden(const vg_codeeditor_t *editor, int line) {
     if (!editor)
         return false;
@@ -1579,6 +1811,9 @@ static bool codeeditor_line_is_hidden(const vg_codeeditor_t *editor, int line) {
 
 /// @brief Returns the nearest visible line at or above @p line, snapping hidden lines to their
 /// fold's start_line.
+/// @param editor Editor containing fold regions.
+/// @param line Candidate line, clamped to the document.
+/// @return Visible line or owning folded-region anchor.
 static int codeeditor_visible_anchor_line(const vg_codeeditor_t *editor, int line) {
     if (!editor || editor->line_count <= 0)
         return 0;
@@ -1605,6 +1840,9 @@ static int codeeditor_visible_anchor_line(const vg_codeeditor_t *editor, int lin
 
 /// @brief Returns the index of the next visible (non-hidden) line after @p line, or line_count if
 /// none.
+/// @param editor Editor containing fold regions.
+/// @param line Current source line.
+/// @return Next visible line, `line_count` after the document, or `-1` for invalid input.
 static int codeeditor_next_visible_line(const vg_codeeditor_t *editor, int line) {
     if (!editor || editor->line_count <= 0)
         return -1;
@@ -1630,6 +1868,9 @@ static int codeeditor_next_visible_line(const vg_codeeditor_t *editor, int line)
 }
 
 /// @brief Returns the index of the previous visible line before @p line, or -1 if none exists.
+/// @param editor Editor containing fold regions.
+/// @param line Current source line.
+/// @return Previous visible line or `-1`.
 VG_UNUSED static int codeeditor_prev_visible_line(const vg_codeeditor_t *editor, int line) {
     if (!editor || editor->line_count <= 0)
         return -1;
@@ -1651,6 +1892,7 @@ VG_UNUSED static int codeeditor_prev_visible_line(const vg_codeeditor_t *editor,
 }
 
 /// @brief Recomputes editor->gutter_width as the sum of the line-number and fold-gutter widths.
+/// @param editor Editor whose gutter metric is updated.
 static void update_gutter_width(vg_codeeditor_t *editor) {
     if (!editor) {
         return;
@@ -1661,6 +1903,9 @@ static void update_gutter_width(vg_codeeditor_t *editor) {
 
 /// @brief Returns the number of characters that fit per wrap row given @p content_width; 0 if
 /// word_wrap is off.
+/// @param editor Editor supplying wrap mode and fixed character width.
+/// @param content_width Available text width in pixels.
+/// @return Character cells per row, at least one when wrapping, or zero when disabled.
 static int codeeditor_chars_per_row(const vg_codeeditor_t *editor, float content_width) {
     if (!editor || !editor->word_wrap || editor->char_width <= 0.0f)
         return 0;
@@ -1758,6 +2003,10 @@ static size_t codeeditor_line_display_columns(const vg_code_line_t *line) {
 
 /// @brief Returns the number of wrapped rows needed to display @p line given @p content_width
 /// (minimum 1).
+/// @param editor Editor supplying text and wrap metrics.
+/// @param line Zero-based source line.
+/// @param content_width Available text width in pixels.
+/// @return Required wrapped rows, saturated at `INT_MAX`.
 static int codeeditor_wrapped_rows_for_line(const vg_codeeditor_t *editor,
                                             int line,
                                             float content_width) {
@@ -1775,6 +2024,10 @@ static int codeeditor_wrapped_rows_for_line(const vg_codeeditor_t *editor,
 
 /// @brief Returns the visual row count for @p line (0 if hidden, 1 if no word-wrap, else wrapped
 /// row count).
+/// @param editor Editor supplying folds and wrap settings.
+/// @param line Zero-based source line.
+/// @param content_width Available text width in pixels.
+/// @return Zero for hidden/invalid lines, otherwise the displayed row count.
 static int codeeditor_visual_rows_for_line(const vg_codeeditor_t *editor,
                                            int line,
                                            float content_width) {
@@ -1786,6 +2039,12 @@ static int codeeditor_visual_rows_for_line(const vg_codeeditor_t *editor,
     return codeeditor_wrapped_rows_for_line(editor, line, content_width);
 }
 
+/// @brief Build or reuse prefix sums of visual rows for every source line.
+/// @details The cache key includes layout generation, rounded content width, wrap mode, and line
+/// count. Each prefix entry gives the absolute visual row at the corresponding source-line boundary.
+/// @param editor Editor whose layout cache is populated.
+/// @param content_width Available text width in pixels.
+/// @return `true` when a current cache is available.
 static bool codeeditor_layout_cache_ensure(vg_codeeditor_t *editor, float content_width) {
     if (!editor)
         return false;
@@ -1837,6 +2096,11 @@ static bool codeeditor_layout_cache_ensure(vg_codeeditor_t *editor, float conten
     return true;
 }
 
+/// @brief Return a line's visual row count through the prefix cache.
+/// @param editor Editor containing the line.
+/// @param content_width Available text width in pixels.
+/// @param line Zero-based source line.
+/// @return Cached row count, a direct fallback calculation, or zero for invalid input.
 static int codeeditor_cached_row_count_for_line(vg_codeeditor_t *editor,
                                                 float content_width,
                                                 int line) {
@@ -1847,6 +2111,10 @@ static int codeeditor_cached_row_count_for_line(vg_codeeditor_t *editor,
     return editor->layout_cache_prefix_rows[line + 1] - editor->layout_cache_prefix_rows[line];
 }
 
+/// @brief Find the final source line contributing a visible row.
+/// @param editor Editor whose fold/layout state is inspected.
+/// @param content_width Available text width in pixels.
+/// @return Last visible source-line index, or zero for an empty/invalid editor.
 static int codeeditor_last_visible_line_from_cache(vg_codeeditor_t *editor, float content_width) {
     if (!editor || editor->line_count <= 0)
         return 0;
@@ -1861,6 +2129,9 @@ static int codeeditor_last_visible_line_from_cache(vg_codeeditor_t *editor, floa
 
 /// @brief Returns the total document height in pixels for the given @p content_width (sums all
 /// visual rows).
+/// @param editor Editor whose document is measured.
+/// @param content_width Available text width in pixels.
+/// @return Total visual-row height in pixels.
 static float codeeditor_total_content_height_for_width(vg_codeeditor_t *editor,
                                                        float content_width) {
     if (!editor)
@@ -1881,6 +2152,9 @@ static float codeeditor_total_content_height_for_width(vg_codeeditor_t *editor,
 }
 
 /// @brief Computes the drawable content width without triggering document-height scans.
+/// @param editor Editor supplying gutter and wrapping settings.
+/// @param widget Widget bounds defining the viewport.
+/// @return Non-negative text-content width in pixels.
 static float codeeditor_content_draw_width(const vg_codeeditor_t *editor,
                                            const vg_widget_t *widget) {
     if (!editor || !widget)
@@ -1900,6 +2174,9 @@ static float codeeditor_content_draw_width(const vg_codeeditor_t *editor,
 
 /// @brief Returns total document height using the resolved content draw width for the given widget
 /// bounds.
+/// @param editor Editor whose document is measured.
+/// @param widget Widget bounds defining the viewport.
+/// @return Total content height in pixels.
 static float codeeditor_total_content_height(vg_codeeditor_t *editor, const vg_widget_t *widget) {
     return codeeditor_total_content_height_for_width(editor,
                                                      codeeditor_content_draw_width(editor, widget));
@@ -1907,6 +2184,9 @@ static float codeeditor_total_content_height(vg_codeeditor_t *editor, const vg_w
 
 /// @brief Returns the total count of visual rows across all lines for @p content_width (used for
 /// scroll math).
+/// @param editor Editor whose document is measured.
+/// @param content_width Available text width in pixels.
+/// @return Total displayed row count.
 static int codeeditor_total_visual_rows_for_width(vg_codeeditor_t *editor, float content_width) {
     if (!editor)
         return 0;
@@ -1934,6 +2214,9 @@ static int codeeditor_total_visual_rows_for_width(vg_codeeditor_t *editor, float
 ///
 ///        Padding is half the viewport, with a minimum of one line so single-
 ///        line viewports don't lose any scroll allowance.
+/// @param editor Editor whose content height is measured.
+/// @param widget Widget bounds defining the viewport.
+/// @return Maximum non-negative vertical scroll offset.
 static float codeeditor_max_scroll_y(vg_codeeditor_t *editor, const vg_widget_t *widget) {
     if (!editor || !widget)
         return 0.0f;
@@ -1946,6 +2229,9 @@ static float codeeditor_max_scroll_y(vg_codeeditor_t *editor, const vg_widget_t 
 
 /// @brief Visual column width of one line, expanding tabs to tab stops and
 ///        counting each UTF-8 codepoint as one column.
+/// @param ln Source line to measure.
+/// @param tab_w Tab-stop width; non-positive values use four.
+/// @return Display-column width.
 static int codeeditor_line_visual_cols(const vg_code_line_t *ln, int tab_w) {
     if (!ln || !ln->text)
         return 0;
@@ -1966,6 +2252,8 @@ static int codeeditor_line_visual_cols(const vg_code_line_t *ln, int tab_w) {
 
 /// @brief Widest line in the document, in visual columns. Cached and only
 ///        recomputed when the layout generation changes (i.e. after an edit).
+/// @param editor Editor whose lines are measured.
+/// @return Maximum visual column count.
 static int codeeditor_longest_line_cols(vg_codeeditor_t *editor) {
     if (!editor)
         return 0;
@@ -1986,6 +2274,9 @@ static int codeeditor_longest_line_cols(vg_codeeditor_t *editor) {
 
 /// @brief Maximum valid scroll_x: the widest line's pixel width (plus one column
 ///        of trailing pad) minus the visible text width. Zero in word-wrap mode.
+/// @param editor Editor supplying content and character metrics.
+/// @param widget Widget bounds defining the viewport.
+/// @return Maximum non-negative horizontal scroll offset.
 static float codeeditor_max_scroll_x(vg_codeeditor_t *editor, const vg_widget_t *widget) {
     if (!editor || !widget || editor->word_wrap || editor->char_width <= 0.0f)
         return 0.0f;
@@ -2000,6 +2291,12 @@ static float codeeditor_max_scroll_x(vg_codeeditor_t *editor, const vg_widget_t 
 
 /// @brief Decomposes (line, col) into a wrap-row index within the line and a column within that
 /// row.
+/// @param editor Editor supplying wrap and line metrics.
+/// @param content_width Available text width in pixels.
+/// @param line Source line containing the position.
+/// @param col Byte column within @p line.
+/// @param[out] out_row_index Optional destination for the line-local wrap-row index.
+/// @param[out] out_col_in_row Optional destination for the column within that row.
 static void codeeditor_visual_offset_for_position(const vg_codeeditor_t *editor,
                                                   float content_width,
                                                   int line,
@@ -2036,6 +2333,11 @@ static void codeeditor_visual_offset_for_position(const vg_codeeditor_t *editor,
 
 /// @brief Returns the absolute visual row index (across all lines) for document position (line,
 /// col).
+/// @param editor Editor supplying fold and wrap layout.
+/// @param content_width Available text width in pixels.
+/// @param line Source line of the position.
+/// @param col Byte column of the position.
+/// @return Absolute zero-based visual row.
 static int codeeditor_visual_row_for_position(vg_codeeditor_t *editor,
                                               float content_width,
                                               int line,
@@ -2071,6 +2373,11 @@ static int codeeditor_visual_row_for_position(vg_codeeditor_t *editor,
 
 /// @brief Resolves an absolute @p visual_row index to the source line and wrap-row offset within
 /// that line.
+/// @param editor Editor supplying fold and wrap layout.
+/// @param content_width Available text width in pixels.
+/// @param visual_row Absolute visual-row index, clamped to available content.
+/// @param[out] out_line Optional destination for the source line.
+/// @param[out] out_row_in_line Optional destination for the wrap row within that line.
 static void codeeditor_locate_visual_row(vg_codeeditor_t *editor,
                                          float content_width,
                                          int visual_row,
@@ -2155,12 +2462,14 @@ static void codeeditor_locate_visual_row(vg_codeeditor_t *editor,
 }
 
 /// @brief Clamps scroll_x to 0 in word-wrap mode and clamps scroll_y to [0, max_scroll_y].
+/// @param editor Editor whose scroll offsets are constrained.
+/// @param widget Widget bounds defining the available scroll range.
 static void codeeditor_clamp_scroll(vg_codeeditor_t *editor, const vg_widget_t *widget);
 
-/// @brief Advance wheel smooth-scroll easing by one frame (ADR 0137).
-/// @details Programmatic scrolls, caret reveals, and drags write scroll_x/y
-///          directly; easing only runs while a wheel gesture is in flight and
-///          cancels itself the moment it lands on the target.
+/// @brief Enable or disable ligature shaping for code-editor text.
+/// @details A changed setting invalidates painting and advances the base-widget revision.
+/// @param editor Editor to configure.
+/// @param enabled Whether supported font ligatures should be rendered.
 void vg_codeeditor_set_ligatures_enabled(vg_codeeditor_t *editor, bool enabled) {
     if (!editor || editor->ligatures_enabled == enabled)
         return;
@@ -2169,10 +2478,19 @@ void vg_codeeditor_set_ligatures_enabled(vg_codeeditor_t *editor, bool enabled) 
     vg_widget_note_revision(&editor->base);
 }
 
+/// @brief Return whether ligature shaping is enabled for an editor.
+/// @param editor Editor to inspect.
+/// @return Stored setting, or `false` when @p editor is NULL.
 bool vg_codeeditor_get_ligatures_enabled(const vg_codeeditor_t *editor) {
     return editor ? editor->ligatures_enabled : false;
 }
 
+/// @brief Advance wheel smooth-scroll easing by one frame.
+/// @details Programmatic scrolls, caret reveals, and drags write offsets directly; easing only
+/// runs while a wheel gesture is active and stops after both axes reach their targets.
+/// @param editor Editor with an active smooth-scroll gesture.
+/// @param delta_ms Elapsed frame time in milliseconds.
+/// @return `true` while either axis remains in motion.
 bool vg_codeeditor_smooth_tick(vg_codeeditor_t *editor, float delta_ms) {
     if (!editor || !editor->smooth_animating)
         return false;
@@ -2186,6 +2504,11 @@ bool vg_codeeditor_smooth_tick(vg_codeeditor_t *editor, float delta_ms) {
     return editor->smooth_animating;
 }
 
+/// @brief Clamp horizontal and vertical offsets to the current viewport and document.
+/// @details Horizontal scrolling is forced to zero under wrapping; otherwise both axes are bounded
+/// by content-derived maximums.
+/// @param editor Editor whose offsets are constrained.
+/// @param widget Widget bounds defining the viewport.
 static void codeeditor_clamp_scroll(vg_codeeditor_t *editor, const vg_widget_t *widget) {
     if (!editor || !widget)
         return;
@@ -2205,7 +2528,15 @@ static void codeeditor_clamp_scroll(vg_codeeditor_t *editor, const vg_widget_t *
         editor->scroll_y = max_scroll;
 }
 
-/// @brief Computes scrollbar thumb geometry; returns false if content fits without scrolling.
+/// @brief Compute vertical scrollbar thumb geometry in widget-local coordinates.
+/// @param editor Editor whose content and scroll offset determine the thumb.
+/// @param widget Widget bounds defining the track.
+/// @param[out] out_track_x Optional destination for the track's left edge.
+/// @param[out] out_thumb_y Optional destination for the thumb's top edge.
+/// @param[out] out_thumb_height Optional destination for the thumb height.
+/// @param[out] out_max_scroll Optional destination for the document scroll range.
+/// @param[out] out_thumb_travel Optional destination for the thumb travel range.
+/// @return `true` when content exceeds the viewport and a scrollbar is required.
 static bool codeeditor_get_scrollbar_metrics(vg_codeeditor_t *editor,
                                              const vg_widget_t *widget,
                                              float *out_track_x,
@@ -2266,6 +2597,14 @@ static bool codeeditor_get_scrollbar_metrics(vg_codeeditor_t *editor,
 ///          horizontal scrolling. The thumb travels within the content area,
 ///          which begins at gutter_width, and the track sits along the bottom
 ///          edge (widget->height - CODEEDITOR_SCROLLBAR_WIDTH).
+/// @param editor Editor whose longest line and horizontal offset determine the thumb.
+/// @param widget Widget bounds defining the track.
+/// @param[out] out_track_y Optional destination for the track's top edge.
+/// @param[out] out_thumb_x Optional destination for the thumb's left edge.
+/// @param[out] out_thumb_width Optional destination for the thumb width.
+/// @param[out] out_max_scroll Optional destination for the content scroll range.
+/// @param[out] out_thumb_travel Optional destination for the thumb travel range.
+/// @return `true` when unwrapped content exceeds the viewport width.
 static bool codeeditor_get_hscrollbar_metrics(vg_codeeditor_t *editor,
                                               const vg_widget_t *widget,
                                               float *out_track_y,
@@ -2327,6 +2666,12 @@ static bool codeeditor_get_hscrollbar_metrics(vg_codeeditor_t *editor,
 }
 
 /// @brief Converts a local-space click point (local_x, local_y) to a document (line, col) position.
+/// @param editor Editor supplying scroll, wrap, fold, and character metrics.
+/// @param widget Widget bounds defining the viewport.
+/// @param local_x Pointer x coordinate relative to the widget.
+/// @param local_y Pointer y coordinate relative to the widget.
+/// @param[out] out_line Optional destination for the resolved source line.
+/// @param[out] out_col Optional destination for the resolved byte column.
 static void codeeditor_local_point_to_position(vg_codeeditor_t *editor,
                                                const vg_widget_t *widget,
                                                float local_x,
@@ -2384,6 +2729,9 @@ static void codeeditor_local_point_to_position(vg_codeeditor_t *editor,
 
 /// @brief Moves the cursor up or down by @p visual_rows visual rows, preserving the column position
 /// within a wrap row.
+/// @param editor Editor whose primary cursor is moved.
+/// @param widget Widget bounds defining wrap width.
+/// @param visual_rows Signed visual-row displacement.
 static void codeeditor_move_cursor_vertical(vg_codeeditor_t *editor,
                                             const vg_widget_t *widget,
                                             int visual_rows) {
@@ -2423,6 +2771,7 @@ static void codeeditor_move_cursor_vertical(vg_codeeditor_t *editor,
 }
 
 /// @brief Adjusts scroll_y so the cursor's visual row is within the visible viewport.
+/// @param editor Editor whose viewport should reveal its primary cursor.
 static void ensure_cursor_visible(vg_codeeditor_t *editor) {
     if (!editor)
         return;

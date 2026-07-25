@@ -26,6 +26,13 @@
 //        lib/gui/include/vg_ide_widgets_panels.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Provides one compatibility include for the complete IDE widget API.
+/// @details Including this header exposes shared IDE types plus dialog, editor, panel, tree,
+/// and general UI widgets. Applications with narrower needs may include the corresponding
+/// component header directly.
+
 #ifndef VG_IDE_WIDGETS_H
 #define VG_IDE_WIDGETS_H
 

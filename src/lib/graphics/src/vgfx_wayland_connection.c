@@ -17,6 +17,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Wayland dynamic connection and registry-discovery implementation.
+
 #include "vgfx_wayland_connection.h"
 
 #include <stdio.h>
@@ -24,6 +27,7 @@
 
 enum { WL_DISPLAY_GET_REGISTRY = 1 };
 
+/// @brief Local ABI for Wayland registry add/remove listener callbacks.
 typedef struct vgfx_wl_registry_listener {
     void (*global)(void *data,
                    struct wl_registry *registry,
@@ -33,6 +37,10 @@ typedef struct vgfx_wl_registry_listener {
     void (*global_remove)(void *data, struct wl_registry *registry, uint32_t name);
 } vgfx_wl_registry_listener_t;
 
+/// @brief Format a stable Wayland connection failure diagnostic.
+/// @param error Destination buffer, or NULL.
+/// @param size Destination capacity including the terminator.
+/// @param detail Failure-specific detail, or NULL for a generic phrase.
 static void vgfx_wayland_connection_error(char *error, uint32_t size, const char *detail) {
     if (!error || size == 0)
         return;
@@ -42,6 +50,15 @@ static void vgfx_wayland_connection_error(char *error, uint32_t size, const char
                    detail ? detail : "unknown connection error");
 }
 
+/// @brief Inventory one advertised registry global.
+/// @details Records known singleton name/version pairs and capability bits,
+///          appends up to sixteen output entries, and then notifies the borrowed
+///          observer while the interface string remains valid.
+/// @param data Borrowed `vgfx_wayland_connection_t` listener context.
+/// @param registry Registry that delivered the event; unused.
+/// @param name Numeric global name.
+/// @param interface Borrowed interface name valid during this callback.
+/// @param version Advertised protocol version.
 static void vgfx_wayland_registry_global(void *data,
                                          struct wl_registry *registry,
                                          uint32_t name,
@@ -113,6 +130,12 @@ static void vgfx_wayland_registry_global(void *data,
             connection->global_observer_data, name, interface, version);
 }
 
+/// @brief Remove a departed output from the bounded registry inventory.
+/// @details Uses swap removal and forwards every removal name to the borrowed
+///          observer so subsystem-owned non-output globals can react as needed.
+/// @param data Borrowed `vgfx_wayland_connection_t` listener context.
+/// @param registry Registry that delivered the event; unused.
+/// @param name Numeric global name that disappeared.
 static void vgfx_wayland_registry_global_remove(void *data,
                                                 struct wl_registry *registry,
                                                 uint32_t name) {
@@ -137,6 +160,10 @@ static const vgfx_wl_registry_listener_t g_vgfx_wayland_registry_listener = {
     .global_remove = vgfx_wayland_registry_global_remove,
 };
 
+/// @brief Answer an xdg-shell compositor ping.
+/// @param data Borrowed connection listener context.
+/// @param xdg_wm_base Shell manager that issued the ping.
+/// @param serial Serial to return in the pong request.
 static void vgfx_wayland_xdg_ping(void *data,
                                   struct xdg_wm_base *xdg_wm_base,
                                   uint32_t serial) {
@@ -149,6 +176,7 @@ static const vgfx_xdg_wm_base_listener_t g_vgfx_wayland_xdg_listener = {
     .ping = vgfx_wayland_xdg_ping,
 };
 
+/// @copydoc vgfx_wayland_connection_close
 void vgfx_wayland_connection_close(vgfx_wayland_connection_t *connection) {
     if (!connection)
         return;
@@ -188,6 +216,7 @@ void vgfx_wayland_connection_close(vgfx_wayland_connection_t *connection) {
     memset(connection, 0, sizeof(*connection));
 }
 
+/// @copydoc vgfx_wayland_connection_open
 int vgfx_wayland_connection_open(vgfx_wayland_connection_t *connection,
                                  const char *display_name,
                                  const char *library_name,

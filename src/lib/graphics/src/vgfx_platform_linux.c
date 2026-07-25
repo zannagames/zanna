@@ -57,10 +57,19 @@
 #define VGFX_X11_CLIPBOARD_MAX_BYTES (16u * 1024u * 1024u)
 #define VGFX_X11_CLIPBOARD_WAIT_MS 1000
 
+/// @brief Opaque GLX framebuffer-configuration handle used by the runtime loader.
+/// @details Declared locally to avoid a build-time dependency on GLX headers.
 typedef void *GLXFBConfig;
 
 static pthread_mutex_t g_x11_global_mu = PTHREAD_MUTEX_INITIALIZER;
 
+/// @brief Interpret a ZannaGFX environment variable as a Boolean opt-in flag.
+/// @details Missing and empty values are disabled.  The common textual false
+///          spellings `0`, `false`, and `off` are also disabled, case-insensitively
+///          for the variants explicitly recognized here; every other non-empty
+///          value enables the option.
+/// @param name Environment-variable name to inspect.
+/// @return 1 when the variable requests the option, otherwise 0.
 static int vgfx_x11_env_flag_enabled(const char *name) {
     const char *value = getenv(name);
     if (!value || value[0] == '\0')
@@ -69,10 +78,16 @@ static int vgfx_x11_env_flag_enabled(const char *name) {
            strcmp(value, "off") != 0 && strcmp(value, "OFF") != 0;
 }
 
+/// @brief Check whether newly created X11 windows should remain unmapped.
+/// @return 1 when `ZANNA_GFX_HIDE_WINDOWS` is enabled, otherwise 0.
 static int vgfx_x11_hide_windows(void) {
     return vgfx_x11_env_flag_enabled("ZANNA_GFX_HIDE_WINDOWS");
 }
 
+/// @brief Check whether creation should avoid activating the new X11 window.
+/// @details Hidden windows necessarily avoid activation; otherwise the result
+///          follows `ZANNA_GFX_NO_ACTIVATE`.
+/// @return 1 when activation should be suppressed, otherwise 0.
 static int vgfx_x11_no_activate_on_create(void) {
     return vgfx_x11_env_flag_enabled("ZANNA_GFX_NO_ACTIVATE") || vgfx_x11_hide_windows();
 }
@@ -190,10 +205,21 @@ typedef struct {
     struct vgfx_window *next_window;  ///< Intrusive list of live X11 windows
 } vgfx_x11_data;
 
+/// @brief Runtime-resolved signature of `glXChooseFBConfig`.
+/// @param dpy Open X11 display.
+/// @param screen X11 screen number.
+/// @param attrib_list None-terminated GLX attribute/value list.
+/// @param nelements Receives the number of returned configurations.
+/// @return Xlib-allocated configuration array, or NULL.
 typedef GLXFBConfig *(*vgfx_glx_choose_fb_config_fn)(Display *dpy,
                                                      int screen,
                                                      const int *attrib_list,
                                                      int *nelements);
+
+/// @brief Runtime-resolved signature of `glXGetVisualFromFBConfig`.
+/// @param dpy Open X11 display.
+/// @param config Candidate GLX framebuffer configuration.
+/// @return Xlib-allocated matching visual information, or NULL.
 typedef XVisualInfo *(*vgfx_glx_get_visual_from_fb_config_fn)(Display *dpy, GLXFBConfig config);
 
 static void *g_vgfx_glx_libgl_handle = NULL;
@@ -201,6 +227,10 @@ static vgfx_glx_choose_fb_config_fn g_vgfx_glx_choose_fb_config = NULL;
 static vgfx_glx_get_visual_from_fb_config_fn g_vgfx_glx_get_visual_from_fb_config = NULL;
 static pthread_once_t g_vgfx_glx_once = PTHREAD_ONCE_INIT;
 
+/// @brief Load libGL and resolve the optional GLX visual-selection entry points.
+/// @details Runs once through `pthread_once`.  It tries the versioned soname
+///          first, then the generic soname, and leaves function pointers NULL
+///          when GLX is unavailable so software presentation can still work.
 static void x11_load_glx_library(void) {
     g_vgfx_glx_libgl_handle = dlopen("libGL.so.1", RTLD_NOW | RTLD_LOCAL);
     if (!g_vgfx_glx_libgl_handle)
@@ -220,6 +250,9 @@ static void x11_load_glx_library(void) {
 /// backend renders to GL_BACK and swaps; using a generic TrueColor visual can leave GLX without a
 /// matching double-buffered FBConfig, which produces a mapped title bar with a never-updated client
 /// area on some Linux drivers.
+/// @param x11 Platform state receiving the selected visual, depth, and colormap.
+/// @param root Root window used to create the selected visual's colormap.
+/// @return 1 when a compatible GLX visual and colormap were selected, otherwise 0.
 static int x11_try_choose_glx_visual(vgfx_x11_data *x11, Window root) {
     GLXFBConfig *configs;
     XVisualInfo *visual_info = NULL;
@@ -287,10 +320,15 @@ static float g_x11_scale_value = 1.0f;
 static pthread_once_t g_x11_threads_once = PTHREAD_ONCE_INIT;
 static int g_x11_threads_available = 0;
 
+/// @brief Perform the process-wide `XInitThreads` initialization call.
+/// @details Stores whether Xlib accepted multithreaded access for subsequent
+///          `pthread_once` callers.
 static void x11_init_threads(void) {
     g_x11_threads_available = XInitThreads() != 0;
 }
 
+/// @brief Ensure Xlib thread support has been initialized exactly once.
+/// @return 1 when `XInitThreads` succeeded, otherwise 0.
 static int x11_init_threads_once(void) {
     if (pthread_once(&g_x11_threads_once, x11_init_threads) != 0)
         return 0;
@@ -303,6 +341,7 @@ static int x11_init_threads_once(void) {
 ///          the default framebuffer can remain black. This helper synchronizes with the server and
 ///          polls the map state for a bounded interval so callers get a realized drawable without
 ///          blocking indefinitely under unusual window-manager behavior.
+/// @param x11 Platform state containing the display and newly mapped window.
 static void x11_wait_for_viewable(vgfx_x11_data *x11) {
     if (!x11 || !x11->display || x11->window == None)
         return;
@@ -327,6 +366,9 @@ enum {
     VGFX_X11_BUTTON_SCROLL_RIGHT = 7,
 };
 
+/// @brief Convert one ASCII hexadecimal digit to its numeric value.
+/// @param c Candidate byte.
+/// @return Value in [0, 15], or -1 when @p c is not a hexadecimal digit.
 static int hex_value(unsigned char c) {
     if (c >= '0' && c <= '9')
         return (int)(c - '0');
@@ -337,6 +379,16 @@ static int hex_value(unsigned char c) {
     return -1;
 }
 
+/// @brief Percent-decode an XDND URI path into bounded storage.
+/// @details Copies ordinary bytes verbatim and replaces valid `%HH` sequences
+///          with their byte value.  Malformed percent escapes are preserved.
+///          Embedded NUL terminates the source early.  On capacity failure the
+///          destination is reset to an empty string.
+/// @param src Source bytes to decode.
+/// @param len Maximum readable source length.
+/// @param dst Destination character buffer.
+/// @param dst_cap Destination capacity including the terminator.
+/// @return 1 when the decoded path fit, otherwise 0.
 static int percent_decode_path(const char *src, size_t len, char *dst, size_t dst_cap) {
     if (!dst || dst_cap == 0)
         return 0;
@@ -365,6 +417,15 @@ static int percent_decode_path(const char *src, size_t len, char *dst, size_t ds
     return 1;
 }
 
+/// @brief Translate one `text/uri-list` line into a file-drop event.
+/// @details Trims CR/NUL suffixes, ignores blank and comment lines, removes
+///          local `file://` authority syntax, discards non-local authority-only
+///          URIs, percent-decodes the remaining path, and enqueues one bounded
+///          `VGFX_EVENT_FILE_DROP`.  Oversized paths count as event overflow.
+/// @param win Window receiving the file-drop event.
+/// @param timestamp Monotonic event timestamp in milliseconds.
+/// @param line Borrowed URI-list line bytes.
+/// @param line_len Number of readable bytes in @p line.
 static void enqueue_xdnd_uri_line(struct vgfx_window *win,
                                   int64_t timestamp,
                                   const char *line,
@@ -405,6 +466,13 @@ static void enqueue_xdnd_uri_line(struct vgfx_window *win,
         vgfx_internal_enqueue_event(win, &vgfx_event);
 }
 
+/// @brief Parse an XDND `text/uri-list` payload into file-drop events.
+/// @details Splits the bounded payload at newline bytes and delegates each line
+///          independently, preserving the original drop timestamp.
+/// @param win Window receiving parsed file-drop events.
+/// @param timestamp Monotonic event timestamp in milliseconds.
+/// @param data Borrowed URI-list payload.
+/// @param len Number of readable bytes in @p data.
 static void parse_xdnd_uri_list(struct vgfx_window *win,
                                 int64_t timestamp,
                                 const unsigned char *data,
@@ -510,6 +578,10 @@ static vgfx_key_t translate_keysym(KeySym keysym) {
     }
 }
 
+/// @brief Translate X11 modifier-state bits to the public modifier mask.
+/// @param state Native X11 state mask from a key, button, or motion event.
+/// @return Bitwise combination of `VGFX_MOD_SHIFT`, `VGFX_MOD_CTRL`,
+///         `VGFX_MOD_ALT`, and `VGFX_MOD_CMD`.
 static int x11_modifiers(unsigned int state) {
     int mods = 0;
     if (state & ShiftMask)
@@ -523,6 +595,16 @@ static int x11_modifiers(unsigned int state) {
     return mods;
 }
 
+/// @brief Decode the first bounded UTF-8 sequence in a byte span.
+/// @details Accepts canonical one- through four-byte sequences and rejects
+///          overlong forms, UTF-16 surrogates, and scalars beyond U+10FFFF.
+///          Malformed input consumes one byte with code point zero so callers
+///          can make forward progress.
+/// @param bytes Start of the bounded byte span.
+/// @param len Number of readable bytes.
+/// @param out_codepoint Receives the decoded scalar, or zero for malformed input.
+/// @return Valid sequence length in [1, 4], one for malformed input, or zero
+///         when arguments contain no decodable byte.
 static int utf8_decode_codepoint(const char *bytes, int len, uint32_t *out_codepoint) {
     const unsigned char *s = (const unsigned char *)bytes;
     if (!s || len <= 0 || !out_codepoint)
@@ -557,6 +639,15 @@ static int utf8_decode_codepoint(const char *bytes, int len, uint32_t *out_codep
     return 1;
 }
 
+/// @brief Decode committed X11 text and enqueue one event per textual scalar.
+/// @details Walks the bounded UTF-8 lookup result, filters control/private-use
+///          values and command-modifier combinations through the shared text
+///          policy, and preserves the native timestamp and modifier state.
+/// @param win Window receiving text-input events.
+/// @param timestamp Monotonic event timestamp in milliseconds.
+/// @param mods Translated bitwise `VGFX_MOD_*` mask.
+/// @param text Borrowed UTF-8 lookup bytes.
+/// @param text_len Number of readable bytes in @p text.
 static void x11_enqueue_text_input_events(
     struct vgfx_window *win, int64_t timestamp, int mods, const char *text, int text_len) {
     int offset = 0;
@@ -945,11 +1036,19 @@ static XIC x11_create_input_context(vgfx_x11_data *x11) {
                      NULL);
 }
 
+/// @brief Convert a logical window dimension to X11 physical pixels.
+/// @param win Window supplying the backing display scale, or NULL for 1.0.
+/// @param logical Logical coordinate or extent.
+/// @return Rounded, saturated physical-pixel value.
 static int32_t x11_logical_to_physical(const struct vgfx_window *win, int32_t logical) {
     float scale = win ? vgfx_internal_sanitize_scale(win->scale_factor) : 1.0f;
     return vgfx_internal_scale_up_i32(logical, scale);
 }
 
+/// @brief Test whether a window has usable native X11 state.
+/// @param win Window to inspect.
+/// @return 1 when platform data, display, and native window are present;
+///         otherwise 0.
 static int x11_window_usable(const struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -957,12 +1056,21 @@ static int x11_window_usable(const struct vgfx_window *win) {
     return x11 && x11->display && x11->window;
 }
 
+/// @brief Ignore an X11 error raised while destroying a possibly stale window.
+/// @param display Display that reported the error.
+/// @param event Error event being suppressed.
+/// @return Zero, as required for a non-terminating Xlib error handler.
 static int x11_ignore_bad_window_error(Display *display, XErrorEvent *event) {
     (void)display;
     (void)event;
     return 0;
 }
 
+/// @brief Publish a fully initialized window to process-global X11 services.
+/// @details Adds the window to the intrusive live list and chooses it as the
+///          initial cursor and clipboard service window when those slots are
+///          empty.  Updates are serialized by the global mutex.
+/// @param win Initialized window to register; invalid input is ignored.
 static void x11_register_window(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -978,6 +1086,10 @@ static void x11_register_window(struct vgfx_window *win) {
     x11_global_unlock();
 }
 
+/// @brief Remove a window from process-global X11 service state.
+/// @details Unlinks the window and redirects cursor/clipboard service slots to
+///          the next live window when necessary.
+/// @param win Window being destroyed.
 static void x11_unregister_window(struct vgfx_window *win) {
     x11_global_lock();
     struct vgfx_window **cursor = &g_vgfx_x11_windows;
@@ -998,6 +1110,11 @@ static void x11_unregister_window(struct vgfx_window *win) {
     x11_global_unlock();
 }
 
+/// @brief Select a usable window for X11 clipboard selection traffic.
+/// @details Keeps the cached clipboard window when valid, otherwise prefers a
+///          focused live window, then the cursor-service window, then the first
+///          live window.  Returns NULL when no native window is usable.
+/// @return Borrowed window pointer valid only while the global mutex remains held.
 /// @pre g_x11_global_mu is held by the caller until it finishes using the result.
 static struct vgfx_window *x11_clipboard_window_locked(void) {
     if (x11_window_usable(g_vgfx_clipboard_window)) {
@@ -1045,6 +1162,9 @@ static void x11_scale_cache_unlock(void) {
 /// @details EWMH-aware window managers prefer _NET_WM_NAME/_NET_WM_ICON_NAME
 ///          with UTF8_STRING. XStoreName/XSetIconName are still updated as a
 ///          fallback for older window managers and tools.
+/// @param display Open X11 display connection.
+/// @param window Native window whose title properties should be changed.
+/// @param title NUL-terminated UTF-8 title.
 static void x11_set_window_title_utf8(Display *display, Window window, const char *title) {
     if (!display || !window || !title)
         return;
@@ -1094,6 +1214,20 @@ static int x11_is_atom_list_property(Atom actual_type,
     return data && actual_type == XA_ATOM && actual_format == 32;
 }
 
+/// @brief Allocate an XImage and its independent native presentation buffer.
+/// @details Validates the physical dimensions, allocates zeroed row storage,
+///          creates an XImage around it using the window's selected visual, and
+///          transfers both allocations through output parameters.  Ownership
+///          remains with the caller on success.
+/// @param x11 Initialized platform state containing display, visual, and depth.
+/// @param width Physical image width in pixels.
+/// @param height Physical image height in pixels.
+/// @param stride Row stride in bytes.
+/// @param out_image Receives the new XImage.
+/// @param out_buf Receives its separately owned data buffer.
+/// @param out_size Receives the data-buffer size in bytes.
+/// @return 1 on success, or 0 after setting an internal error on invalid
+///         dimensions, allocation failure, or XImage creation failure.
 static int x11_create_ximage_resources(vgfx_x11_data *x11,
                                        int32_t width,
                                        int32_t height,
@@ -1137,6 +1271,14 @@ static int x11_create_ximage_resources(vgfx_x11_data *x11,
     return 1;
 }
 
+/// @brief Replace a window's current XImage and presentation buffer.
+/// @details Destroys the prior XImage without allowing it to free the separately
+///          managed data pointer, frees the old buffer, and adopts all new
+///          resources supplied by the caller.
+/// @param x11 Platform state that takes ownership of the replacement resources.
+/// @param new_image Replacement XImage, or NULL.
+/// @param new_buf Replacement presentation buffer, or NULL.
+/// @param new_size Size of @p new_buf in bytes.
 static void x11_replace_ximage(vgfx_x11_data *x11,
                                XImage *new_image,
                                uint8_t *new_buf,
@@ -1154,6 +1296,9 @@ static void x11_replace_ximage(vgfx_x11_data *x11,
     x11->ximage_buf_size = new_size;
 }
 
+/// @brief Recreate presentation resources for the window's current framebuffer.
+/// @param win Window whose physical dimensions and stride should be mirrored.
+/// @return 1 when new resources were installed, otherwise 0.
 static int x11_recreate_ximage(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -1173,6 +1318,18 @@ static int x11_recreate_ximage(struct vgfx_window *win) {
     return 1;
 }
 
+/// @brief Resize both the core framebuffer and X11 presentation backing store.
+/// @details Validates physical limits and allocates replacement XImage resources
+///          before changing the shared framebuffer, so allocation failure leaves
+///          existing state intact.  On success it adopts the new presentation
+///          storage, refreshes cached dimensions, and optionally queues a resize
+///          event containing physical and logical extents.
+/// @param win Window whose backing stores should be resized.
+/// @param new_w New physical width in pixels.
+/// @param new_h New physical height in pixels.
+/// @param timestamp Monotonic timestamp for an optional resize event.
+/// @param emit_event Non-zero to enqueue `VGFX_EVENT_RESIZE`.
+/// @return 1 on complete success, otherwise 0.
 static int x11_resize_backing_store(
     struct vgfx_window *win, int32_t new_w, int32_t new_h, int64_t timestamp, int emit_event) {
     if (!win || !win->platform_data)
@@ -1215,6 +1372,12 @@ static int x11_resize_backing_store(
     return 1;
 }
 
+/// @brief Release all X11 resources owned by a window's platform state.
+/// @details Unregisters global service references, destroys presentation and
+///          input-method resources, cursor handles, graphics context, colormap,
+///          native window, and display connection, then clears platform_data.
+///          Partial initialization and NULL input are accepted.
+/// @param win Window whose platform resources should be released.
 static void x11_cleanup_platform(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -1290,7 +1453,7 @@ static void x11_cleanup_platform(struct vgfx_window *win) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Query the HiDPI backing scale factor for the X11 display.
-/// @details Tries three sources in priority order:
+/// @details Tries environment and X11 sources in priority order:
 ///
 ///   1. GDK_SCALE env var — set by GNOME/Mutter on both Wayland and X11.
 ///      Example: GDK_SCALE=2 on a HiDPI GNOME desktop.
@@ -1374,6 +1537,8 @@ float vgfx_platform_get_display_scale(void) {
 /// @details X11 reports physical pixels; divide by the display scale for
 ///          vgfx logical units. Uses a short-lived display connection (called
 ///          once per fullscreen window creation).
+/// @param out_w Receives the primary display width in logical units when non-NULL.
+/// @param out_h Receives the primary display height in logical units when non-NULL.
 /// @return 1 on success, 0 when no X display is reachable.
 int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
     x11_init_threads_once();
@@ -1631,6 +1796,10 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
     x11_cleanup_platform(win);
 }
 
+/// @brief Duplicate nullable clipboard text into owned storage.
+/// @details Treats NULL as an empty string and includes the trailing NUL byte.
+/// @param text Source text, or NULL.
+/// @return Newly allocated copy, or NULL on allocation failure.
 static char *x11_strdup_text(const char *text) {
     const char *src = text ? text : "";
     size_t len = strlen(src);
@@ -1641,6 +1810,12 @@ static char *x11_strdup_text(const char *text) {
     return copy;
 }
 
+/// @brief Answer an ICCCM clipboard selection request owned by this window.
+/// @details Advertises supported targets or publishes stored text as UTF8_STRING
+///          or XA_STRING, then sends the required SelectionNotify response.  An
+///          unsupported request is answered with a `None` property.
+/// @param x11 Clipboard-owning platform state.
+/// @param request Borrowed native selection request.
 static void x11_handle_selection_request(vgfx_x11_data *x11, XSelectionRequestEvent *request) {
     if (!x11 || !x11->display || !request)
         return;
@@ -1689,6 +1864,11 @@ static void x11_handle_selection_request(vgfx_x11_data *x11, XSelectionRequestEv
     XFlush(x11->display);
 }
 
+/// @brief Match clipboard SelectionNotify events for a waiting requestor.
+/// @param display Display passed by Xlib; not otherwise consulted.
+/// @param event Candidate event.
+/// @param arg Borrowed `vgfx_x11_data` pointer identifying requestor and selection.
+/// @return True only for the expected window's CLIPBOARD SelectionNotify.
 static Bool x11_clipboard_selection_notify_predicate(Display *display,
                                                      XEvent *event,
                                                      XPointer arg) {
@@ -1699,11 +1879,17 @@ static Bool x11_clipboard_selection_notify_predicate(Display *display,
            event->xselection.selection == x11->clipboard_atom;
 }
 
+/// @brief Predicate context for waiting on one incremental clipboard property.
 typedef struct {
     vgfx_x11_data *x11;
     Atom property;
 } x11_property_wait_t;
 
+/// @brief Match a new-value notification for an incremental clipboard property.
+/// @param display Display passed by Xlib; not otherwise consulted.
+/// @param event Candidate event.
+/// @param arg Borrowed `x11_property_wait_t` identifying window and property.
+/// @return True only for a matching `PropertyNewValue` notification.
 static Bool x11_property_new_value_predicate(Display *display, XEvent *event, XPointer arg) {
     (void)display;
     x11_property_wait_t *wait = (x11_property_wait_t *)arg;
@@ -1712,6 +1898,16 @@ static Bool x11_property_new_value_predicate(Display *display, XEvent *event, XP
            event->xproperty.atom == wait->property && event->xproperty.state == PropertyNewValue;
 }
 
+/// @brief Append a clipboard chunk to a bounded growable byte string.
+/// @details Enforces the 16 MiB clipboard ceiling, reserves a terminator, grows
+///          geometrically without overflowing `size_t`, and leaves the caller's
+///          accumulated state unchanged when allocation fails.
+/// @param result Address of the owned destination allocation.
+/// @param len Address of its current payload length.
+/// @param cap Address of its allocated capacity.
+/// @param data Borrowed bytes to append.
+/// @param nitems Number of bytes to append.
+/// @return 1 when the chunk was appended or empty, otherwise 0.
 static int x11_append_bytes(
     char **result, size_t *len, size_t *cap, const unsigned char *data, size_t nitems) {
     if (!result || !len || !cap)
@@ -1744,6 +1940,16 @@ static int x11_append_bytes(
     return 1;
 }
 
+/// @brief Receive an ICCCM INCR clipboard transfer into one owned string.
+/// @details Deletes the property to acknowledge transfer start, waits for
+///          successive property chunks, validates target and eight-bit format,
+///          bounds total size, and resets a one-second inactivity timeout after
+///          each chunk.  The zero-length terminal chunk completes the transfer.
+/// @param x11 Platform state acting as the selection requestor.
+/// @param property Property used for incremental delivery.
+/// @param requested_target Requested UTF8_STRING or XA_STRING target.
+/// @return NUL-terminated owned text, including an allocated empty string for
+///         an empty transfer, or NULL on timeout/protocol/allocation failure.
 static char *x11_read_incr_text_property(vgfx_x11_data *x11, Atom property, Atom requested_target) {
     if (!x11 || !x11->display || property == None)
         return NULL;
@@ -1824,6 +2030,16 @@ static char *x11_read_incr_text_property(vgfx_x11_data *x11, Atom property, Atom
     return NULL;
 }
 
+/// @brief Read a text selection property, including ICCCM incremental transfers.
+/// @details Fetches ordinary eight-bit chunks until `bytes_after` reaches zero,
+///          delegates INCR properties to the incremental reader, validates the
+///          advertised type, deletes the temporary property, and returns bounded
+///          NUL-terminated owned storage.
+/// @param x11 Platform state containing display, requestor window, and atoms.
+/// @param property Selection-conversion property to read.
+/// @param requested_target Requested UTF8_STRING or XA_STRING target.
+/// @return Owned text (possibly empty), or NULL on invalid input, protocol
+///         mismatch, Xlib error, excessive size, or allocation failure.
 static char *x11_read_text_property(vgfx_x11_data *x11, Atom property, Atom requested_target) {
     if (!x11 || !x11->display || !x11->window || property == None)
         return NULL;
@@ -1902,34 +2118,28 @@ static char *x11_read_text_property(vgfx_x11_data *x11, Atom property, Atom requ
     return result;
 }
 
-/// @brief Process pending X11 events and translate to ZannaGFX events.
-/// @details Polls the X11 event queue in non-blocking mode (XPending).
-///          For each XEvent, translates it to a vgfx_event_t and enqueues it.
-///          Updates win->key_state, win->mouse_x, win->mouse_y, and
-///          win->mouse_button_state to reflect current input state.
-///
-///          Handles:
-///            - Keyboard: KeyPress/KeyRelease → KEY_DOWN/KEY_UP
-///            - Mouse move: MotionNotify → MOUSE_MOVE
-///            - Mouse buttons: ButtonPress/ButtonRelease → MOUSE_DOWN/MOUSE_UP
-///            - Window close: ClientMessage (WM_DELETE_WINDOW) → CLOSE
-///            - Focus: FocusIn/FocusOut → FOCUS_GAINED/FOCUS_LOST
-///            - Resize: ConfigureNotify → RESIZE (not fully supported in v1)
-///            - Expose: Request redraw (handled by marking view dirty)
-///
-/// @param win Pointer to the ZannaGFX window structure
-/// @return 1 on success, 0 on failure
-///
-/// @pre  win != NULL
-/// @pre  win->platform_data != NULL
-/// @post All pending XEvents processed and translated
-/// @post win->key_state and win->mouse_* updated to reflect current input state
-/// @post Corresponding vgfx_event_t enqueued for each XEvent
 /* Relative-mouse helpers implemented after the XInput2 loader at the bottom
  * of this file (see "Relative (raw) mouse mode" section). */
+/// @brief Decode an XInput2 generic event when native relative mode is active.
+/// @param win Window receiving any decoded raw-motion delta.
+/// @param event Borrowed generic X11 event.
 static void x11_handle_generic_event(struct vgfx_window *win, XEvent *event);
+
+/// @brief Apply or release the pointer grab used by relative mouse mode.
+/// @param win Window whose pointer grab should change.
+/// @param enable Non-zero to grab and confine, zero to release.
+/// @return 1 when the requested state was applied, otherwise 0.
 static int x11_relative_apply_grab(struct vgfx_window *win, int enable);
 
+/// @brief Wait for X11 connection activity without dispatching events.
+/// @details Returns immediately when Xlib already buffers events; otherwise
+///          polls the display connection descriptor, retrying interrupted waits.
+///          Event decoding remains the responsibility of
+///          `vgfx_platform_process_events()`.
+/// @param win Window selecting the display connection.
+/// @param timeout_ms Maximum positive wait in milliseconds.
+/// @return 1 when the connection became readable or events were already
+///         buffered, otherwise 0 for timeout, invalid state, or poll failure.
 int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     if (!win || !win->platform_data)
         return 0;
@@ -1954,6 +2164,16 @@ int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     return r > 0 && (pfd.revents & POLLIN) != 0 ? 1 : 0;
 }
 
+/// @brief Process pending X11 events and translate them to ZannaGFX state.
+/// @details Drains Xlib's buffered events without blocking, giving XIM first
+///          access and translating keyboard, committed text/composition, mouse,
+///          wheel, close, XDND, clipboard, focus, XInput2 raw motion, and resize
+///          activity.  Sticky polling state and relative-mode grabs are updated
+///          alongside the public event queue.
+/// @param win Window whose display queue should be drained.
+/// @return 1 after processing all pending events, or 0 for invalid platform state.
+/// @post On success, all currently pending X events have been consumed or
+///       filtered and corresponding public state/events have been published.
 int vgfx_platform_process_events(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -2324,6 +2544,11 @@ int vgfx_platform_process_events(struct vgfx_window *win) {
     return 1;
 }
 
+/// @brief Locate an eight-bit color channel within a 32-bit X11 pixel mask.
+/// @details Accepts only contiguous `0xFF` channel masks aligned to a byte
+///          boundary, matching the conversion routine's byte-addressed writes.
+/// @param mask Native visual channel mask.
+/// @return Byte index in [0, 3], or -1 for zero/non-byte-aligned masks.
 static int x11_mask_byte_index(unsigned long mask) {
     if (!mask)
         return -1;
@@ -2340,6 +2565,14 @@ static int x11_mask_byte_index(unsigned long mask) {
     return (index >= 0 && index < 4) ? index : -1;
 }
 
+/// @brief Convert the RGBA framebuffer to the selected X11 visual's byte layout.
+/// @details Derives byte indices from the visual masks, rejects unsupported or
+///          overlapping channel layouts, copies directly when native order is
+///          RGBA, and otherwise swizzles every pixel into the independent XImage
+///          presentation buffer.  The unused byte, when present, receives alpha.
+/// @param win Window supplying the source RGBA framebuffer and dimensions.
+/// @param x11 Platform state supplying visual masks and destination storage.
+/// @return 1 after conversion, otherwise 0 with an error set for unsupported masks.
 static int x11_convert_rgba_to_native32(struct vgfx_window *win, vgfx_x11_data *x11) {
     if (!win || !x11 || !x11->visual || !win->pixels || !x11->ximage_buf)
         return 0;
@@ -2388,9 +2621,10 @@ static int x11_convert_rgba_to_native32(struct vgfx_window *win, vgfx_x11_data *
 }
 
 /// @brief Present (blit) the framebuffer to the X11 window.
-/// @details Copies the ZannaGFX framebuffer (win->pixels) to the X11 window
-///          using XPutImage.  The XImage wrapper points directly to our
-///          framebuffer, so this is an efficient blit operation.
+/// @details Converts the ZannaGFX RGBA framebuffer into the selected visual's
+///          byte order in an independent XImage buffer, then sends it with
+///          XPutImage and flushes the display.  Hidden windows and windows whose
+///          GPU backend suppresses software presentation succeed without a blit.
 ///
 /// @param win Pointer to the ZannaGFX window structure
 /// @return 1 on success, 0 on failure
@@ -2593,6 +2827,12 @@ int vgfx_platform_is_fullscreen(struct vgfx_window *win) {
 }
 
 /// @brief Send a _NET_WM_STATE client message to the window manager.
+/// @details Publishes an EWMH state add, remove, or toggle request to the root
+///          window and flushes it immediately.
+/// @param x11 Platform state containing the target window and display.
+/// @param action EWMH action: zero removes, one adds, and two toggles.
+/// @param atom1 First state atom to modify.
+/// @param atom2 Optional second state atom, or None.
 static void x11_send_wm_state(vgfx_x11_data *x11, int action, Atom atom1, Atom atom2) {
     // action: 0 = remove, 1 = add, 2 = toggle
     XEvent event;
@@ -2613,6 +2853,8 @@ static void x11_send_wm_state(vgfx_x11_data *x11, int action, Atom atom1, Atom a
     XFlush(x11->display);
 }
 
+/// @brief Ask the X11 window manager to iconify a window.
+/// @param win Window to minimize; invalid native state is ignored.
 void vgfx_platform_minimize(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2623,6 +2865,8 @@ void vgfx_platform_minimize(struct vgfx_window *win) {
     }
 }
 
+/// @brief Ask an EWMH window manager to maximize both window dimensions.
+/// @param win Window to maximize; invalid native state is ignored.
 void vgfx_platform_maximize(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2634,6 +2878,10 @@ void vgfx_platform_maximize(struct vgfx_window *win) {
     x11_send_wm_state(x11, 1, hz, vt);
 }
 
+/// @brief Remove maximized state and deiconify an X11 window.
+/// @details Sends the EWMH horizontal/vertical maximize removal request, maps
+///          the window in case it was minimized, and flushes both operations.
+/// @param win Window to restore; invalid native state is ignored.
 void vgfx_platform_restore(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2649,6 +2897,9 @@ void vgfx_platform_restore(struct vgfx_window *win) {
     XFlush(x11->display);
 }
 
+/// @brief Query the EWMH hidden state of an X11 window.
+/// @param win Window whose state property should be inspected.
+/// @return 1 when `_NET_WM_STATE_HIDDEN` is present, otherwise 0.
 int32_t vgfx_platform_is_minimized(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -2690,6 +2941,10 @@ int32_t vgfx_platform_is_minimized(struct vgfx_window *win) {
     return found;
 }
 
+/// @brief Query whether both EWMH maximized state atoms are active.
+/// @param win Window whose state property should be inspected.
+/// @return 1 only when horizontal and vertical maximization are both present,
+///         otherwise 0.
 int32_t vgfx_platform_is_maximized(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -2733,6 +2988,13 @@ int32_t vgfx_platform_is_maximized(struct vgfx_window *win) {
     return found_hz && found_vt;
 }
 
+/// @brief Get an X11 window's root-relative position.
+/// @details Translates the client origin to its root window.  Invalid top-level
+///          input initializes requested outputs to zero; unavailable native
+///          handles leave already supplied outputs unchanged.
+/// @param win Window whose position should be queried.
+/// @param out_x Receives root-relative X when non-NULL.
+/// @param out_y Receives root-relative Y when non-NULL.
 void vgfx_platform_get_position(struct vgfx_window *win, int32_t *out_x, int32_t *out_y) {
     if (!win || !win->platform_data) {
         if (out_x)
@@ -2755,6 +3017,10 @@ void vgfx_platform_get_position(struct vgfx_window *win, int32_t *out_x, int32_t
         *out_y = (int32_t)y;
 }
 
+/// @brief Move an X11 window to a root-relative position.
+/// @param win Window to move.
+/// @param x Requested X coordinate.
+/// @param y Requested Y coordinate.
 void vgfx_platform_set_position(struct vgfx_window *win, int32_t x, int32_t y) {
     if (!win || !win->platform_data)
         return;
@@ -2765,6 +3031,9 @@ void vgfx_platform_set_position(struct vgfx_window *win, int32_t x, int32_t y) {
     }
 }
 
+/// @brief Assign X11 keyboard focus directly to a visible window.
+/// @details Intentionally does nothing for backend-hidden windows.
+/// @param win Window that should receive focus.
 void vgfx_platform_focus(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2777,6 +3046,10 @@ void vgfx_platform_focus(struct vgfx_window *win) {
     }
 }
 
+/// @brief Raise and focus a visible X11 window.
+/// @details Provides the backend's foreground-activation request using
+///          XRaiseWindow followed by XSetInputFocus.
+/// @param win Window to activate.
 void vgfx_platform_request_foreground(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2790,6 +3063,9 @@ void vgfx_platform_request_foreground(struct vgfx_window *win) {
     }
 }
 
+/// @brief Read the backend-maintained focus flag under the event lock.
+/// @param win Window whose focus state should be queried.
+/// @return 1 when focused, otherwise 0.
 int32_t vgfx_platform_is_focused(struct vgfx_window *win) {
     if (!win)
         return 0;
@@ -2799,6 +3075,9 @@ int32_t vgfx_platform_is_focused(struct vgfx_window *win) {
     return focused;
 }
 
+/// @brief Update whether native close requests should be intercepted.
+/// @param win Window whose close policy should change.
+/// @param prevent Non-zero to preserve the window after close requests.
 void vgfx_platform_set_prevent_close(struct vgfx_window *win, int32_t prevent) {
     vgfx_internal_set_prevent_close(win, prevent);
 }
@@ -2810,6 +3089,9 @@ static int x11_cursor_index_for_type(int32_t cursor_type) {
     return (cursor_type >= 0 && cursor_type < 13) ? (int)cursor_type : 0;
 }
 
+/// @brief Map a normalized public cursor type to an X cursor-font glyph.
+/// @param cursor_type Public `VGFX_CURSOR_*` value.
+/// @return Matching `XC_*` cursor-font shape, defaulting to the left pointer.
 static unsigned int x11_cursor_shape_for_type(int32_t cursor_type) {
     switch (x11_cursor_index_for_type(cursor_type)) {
         case 1:
@@ -2860,6 +3142,8 @@ static Cursor x11_cached_cursor_for_type(vgfx_x11_data *x11, int32_t cursor_type
     return x11->cursor_cache[index];
 }
 
+/// @brief Install the window's selected visible cursor handle.
+/// @param x11 Platform state whose native cursor should be updated.
 static void x11_apply_visible_cursor(vgfx_x11_data *x11) {
     if (!x11 || !x11->display || !x11->window)
         return;
@@ -2869,6 +3153,11 @@ static void x11_apply_visible_cursor(vgfx_x11_data *x11) {
     XDefineCursor(x11->display, x11->window, cursor);
 }
 
+/// @brief Change the cursor shape used by one X11 window.
+/// @details Normalizes and caches the public cursor type.  When the cursor is
+///          currently hidden the choice is remembered and applied when shown.
+/// @param win Window whose cursor shape should change.
+/// @param cursor_type Public `VGFX_CURSOR_*` value.
 void vgfx_platform_set_cursor(struct vgfx_window *win, int32_t cursor_type) {
     if (!win || !win->platform_data)
         return;
@@ -2884,6 +3173,9 @@ void vgfx_platform_set_cursor(struct vgfx_window *win, int32_t cursor_type) {
     XFlush(x11->display);
 }
 
+/// @brief Lazily create the transparent cursor used for hidden-cursor mode.
+/// @param x11 Platform state that owns the cached server cursor.
+/// @return Cached invisible cursor, or zero on invalid state/allocation failure.
 static Cursor x11_blank_cursor(vgfx_x11_data *x11) {
     if (!x11 || !x11->display || !x11->window)
         return 0;
@@ -2900,6 +3192,11 @@ static Cursor x11_blank_cursor(vgfx_x11_data *x11) {
     return x11->blank_cursor;
 }
 
+/// @brief Show or hide a window's X11 cursor.
+/// @details Applies the selected visible cursor or a cached transparent pixmap
+///          cursor and flushes the display.
+/// @param win Window whose cursor visibility should change.
+/// @param visible Non-zero to show, zero to hide.
 void vgfx_platform_set_cursor_visible(struct vgfx_window *win, int32_t visible) {
     if (!win || !win->platform_data)
         return;
@@ -2919,6 +3216,9 @@ void vgfx_platform_set_cursor_visible(struct vgfx_window *win, int32_t visible) 
     XFlush(x11->display);
 }
 
+/// @brief Hide the cursor for the process-global active cursor window.
+/// @details Serializes access to the global window selection and is a no-op
+///          when no live cursor-service window exists.
 void vgfx_platform_hide_cursor(void) {
     x11_global_lock();
     struct vgfx_window *win = g_vgfx_cursor_window;
@@ -2927,6 +3227,8 @@ void vgfx_platform_hide_cursor(void) {
     x11_global_unlock();
 }
 
+/// @brief Show the cursor for the process-global active cursor window.
+/// @copydetails vgfx_platform_hide_cursor
 void vgfx_platform_show_cursor(void) {
     x11_global_lock();
     struct vgfx_window *win = g_vgfx_cursor_window;
@@ -2935,6 +3237,13 @@ void vgfx_platform_show_cursor(void) {
     x11_global_unlock();
 }
 
+/// @brief Query physical dimensions of the window's X11 screen.
+/// @details Reuses the window display when available; otherwise opens a
+///          temporary default-display connection.  Outputs are initialized to
+///          zero when no display can be reached.
+/// @param win Optional window selecting a display and screen.
+/// @param out_w Receives physical screen width when non-NULL.
+/// @param out_h Receives physical screen height when non-NULL.
 void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int32_t *out_h) {
     if (out_w)
         *out_w = 0;
@@ -2967,6 +3276,14 @@ void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int
         XCloseDisplay(display);
 }
 
+/// @brief Resize an X11 window from logical client dimensions.
+/// @details Converts through the backing scale, synchronously replaces the core
+///          and XImage backing stores, emits a resize event, then sends the
+///          native resize request.  Its request serial suppresses stale queued
+///          ConfigureNotify events.
+/// @param win Window to resize.
+/// @param w Requested logical width.
+/// @param h Requested logical height.
 void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h) {
     if (!win || !win->platform_data)
         return;
@@ -2984,6 +3301,13 @@ void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h
     XFlush(x11->display);
 }
 
+/// @brief Publish scaled minimum-size hints to the X11 window manager.
+/// @details Preserves existing normal hints, converts logical dimensions to
+///          physical pixels, and pins non-resizable windows to their current
+///          framebuffer size.
+/// @param win Window whose normal hints should be updated.
+/// @param w Minimum logical client width.
+/// @param h Minimum logical client height.
 void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32_t h) {
     if (!win || !win->platform_data || w <= 0 || h <= 0)
         return;
@@ -3012,6 +3336,11 @@ void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32
 // Clipboard (ICCCM CLIPBOARD selection)
 // ============================================================================
 
+/// @brief Check whether the X11 clipboard currently contains non-empty text.
+/// @details Only `VGFX_CLIPBOARD_TEXT` is supported.  The query obtains and
+///          frees a normal clipboard copy, so it may wait for an external owner.
+/// @param format Clipboard format to test.
+/// @return 1 for available non-empty text, otherwise 0.
 int vgfx_clipboard_has_format(vgfx_clipboard_format_t format) {
     char *text = NULL;
     int has_text = 0;
@@ -3025,6 +3354,14 @@ int vgfx_clipboard_has_format(vgfx_clipboard_format_t format) {
     return has_text ? 1 : 0;
 }
 
+/// @brief Retrieve text from the process or external X11 clipboard owner.
+/// @details Uses a live registered window as the selection requestor.  Locally
+///          owned text is copied directly; external data is requested first as
+///          UTF8_STRING and then XA_STRING, with bounded waits and support for
+///          ICCCM INCR transfers.  Global clipboard/window state remains locked
+///          throughout the synchronous exchange.
+/// @return Heap-allocated NUL-terminated text for the caller to free, or NULL
+///         when unavailable, timed out, invalid, or allocation failed.
 char *vgfx_clipboard_get_text(void) {
     vgfx_x11_data *x11 = NULL;
 
@@ -3089,6 +3426,12 @@ char *vgfx_clipboard_get_text(void) {
     return NULL;
 }
 
+/// @brief Claim the X11 CLIPBOARD selection with copied text.
+/// @details Selects a usable registered window, copies nullable input as an
+///          empty-or-NUL-terminated string, publishes selection ownership, and
+///          retains the bytes for future SelectionRequest events.  If ownership
+///          cannot be confirmed, the stored copy is discarded.
+/// @param text UTF-8 text to publish, or NULL for an empty clipboard value.
 void vgfx_clipboard_set_text(const char *text) {
     vgfx_x11_data *x11 = NULL;
 
@@ -3122,10 +3465,14 @@ void vgfx_clipboard_set_text(const char *text) {
     x11_global_unlock();
 }
 
+/// @brief Replace the X11 text clipboard with an empty string.
 void vgfx_clipboard_clear(void) {
     vgfx_clipboard_set_text("");
 }
 
+/// @brief Expose the native X11 Window identifier through the generic view API.
+/// @param window Window whose native identifier should be queried.
+/// @return X11 Window converted through `uintptr_t`, or NULL for invalid state.
 void *vgfx_get_native_view(vgfx_window_t window) {
     if (!window)
         return NULL;
@@ -3135,6 +3482,9 @@ void *vgfx_get_native_view(vgfx_window_t window) {
     return (void *)(uintptr_t)x11->window; /* X11 Window is unsigned long */
 }
 
+/// @brief Expose the native X11 Display connection.
+/// @param window Window whose display should be queried.
+/// @return Borrowed Display pointer, or NULL for invalid state.
 void *vgfx_get_native_display(vgfx_window_t window) {
     if (!window)
         return NULL;
@@ -3144,6 +3494,10 @@ void *vgfx_get_native_display(vgfx_window_t window) {
     return (void *)x11->display;
 }
 
+/// @brief Fill the cross-platform native-handle descriptor for an X11 window.
+/// @param window Window whose handles should be exported.
+/// @param out_handles Receives backend kind, Display pointer, and Window value.
+/// @return 1 when handles were written, otherwise 0.
 int vgfx_get_native_handles(vgfx_window_t window, vgfx_native_handles_t *out_handles) {
     if (!window || !window->platform_data || !out_handles)
         return 0;
@@ -3155,6 +3509,9 @@ int vgfx_get_native_handles(vgfx_window_t window, vgfx_native_handles_t *out_han
     return 1;
 }
 
+/// @brief Report features implemented by the X11 window backend.
+/// @param window Window whose initialized backend should be inspected.
+/// @return Bitwise `VGFX_CAP_*` mask, or zero for invalid platform state.
 vgfx_window_capabilities_t vgfx_get_window_capabilities(vgfx_window_t window) {
     if (!window || !window->platform_data)
         return 0;
@@ -3163,6 +3520,12 @@ vgfx_window_capabilities_t vgfx_get_window_capabilities(vgfx_window_t window) {
            VGFX_CAP_ACTIVATION | VGFX_CAP_CLIPBOARD_TEXT | VGFX_CAP_FILE_DROP;
 }
 
+/// @brief Warp the X11 pointer to a logical client coordinate.
+/// @details Converts coordinates through the active public coordinate scale,
+///          targets the client window, and flushes the request.
+/// @param window Window receiving the pointer.
+/// @param x Logical client X coordinate.
+/// @param y Logical client Y coordinate.
 void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
     if (!window || !window->platform_data)
         return;
@@ -3193,6 +3556,7 @@ void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
 #define VGFX_XI_RAW_MOTION 17
 #define VGFX_XI_ALL_MASTER_DEVICES 1
 
+/// @brief Header-compatible subset of XInput2's `XIEventMask`.
 typedef struct {
     int deviceid;
     int mask_len;
@@ -3201,6 +3565,9 @@ typedef struct {
 
 /* Layout of XIRawEvent (XInput 2.0 stable ABI). Only the fields up to
  * raw_values are accessed. */
+/// @brief Header-compatible prefix of XInput2's stable `XIRawEvent` ABI.
+/// @details Only fields through `raw_values` are declared and accessed, keeping
+///          XInput2 optional at both compile time and runtime.
 typedef struct {
     int type;
     unsigned long serial;
@@ -3223,7 +3590,10 @@ typedef struct {
     double *raw_values;
 } vgfx_xi_raw_event_t;
 
+/// @brief Runtime-resolved signature of `XIQueryVersion`.
 typedef int (*vgfx_xi_query_version_fn)(Display *, int *, int *);
+
+/// @brief Runtime-resolved signature of `XISelectEvents`.
 typedef int (*vgfx_xi_select_events_fn)(Display *, Window, vgfx_xi_event_mask_t *, int);
 
 static void *g_vgfx_xi_handle = NULL;
@@ -3231,6 +3601,9 @@ static vgfx_xi_query_version_fn g_vgfx_xi_query_version = NULL;
 static vgfx_xi_select_events_fn g_vgfx_xi_select_events = NULL;
 static pthread_once_t g_vgfx_xi_once = PTHREAD_ONCE_INIT;
 
+/// @brief Load libXi and resolve the optional XInput2 entry points.
+/// @details Runs once through `pthread_once`, preferring the versioned soname
+///          and leaving entry points NULL when the library or symbols are absent.
 static void x11_xi2_load_library(void) {
     g_vgfx_xi_handle = dlopen("libXi.so.6", RTLD_NOW | RTLD_LOCAL);
     if (!g_vgfx_xi_handle)
@@ -3242,7 +3615,9 @@ static void x11_xi2_load_library(void) {
 }
 
 /// @brief Lazily load libXi and resolve the XInput2 entry points we use.
-/// @return 1 when XInput2 >= 2.0 is available on @p display, 0 otherwise.
+/// @param x11 Platform state containing the display to query and receiving the
+///            XInput extension opcode.
+/// @return 1 when XInput2 >= 2.0 is available on `x11->display`, 0 otherwise.
 static int x11_xi2_load(vgfx_x11_data *x11) {
     if (!x11 || !x11->display)
         return 0;
@@ -3270,6 +3645,8 @@ static int x11_xi2_load(vgfx_x11_data *x11) {
 /// @details Only consumes XI raw-motion events while relative mode is active;
 ///          everything else is ignored. Raw valuator 0/1 presence is checked
 ///          via the event's valuator mask (devices may report axes sparsely).
+/// @param win Window receiving logical relative-motion deltas.
+/// @param event Borrowed X11 GenericEvent whose cookie may contain XI2 data.
 static void x11_handle_generic_event(struct vgfx_window *win, XEvent *event) {
     if (!win || !event || !win->relative_mouse_enabled || !win->relative_mouse_native)
         return;
@@ -3310,6 +3687,9 @@ static void x11_handle_generic_event(struct vgfx_window *win, XEvent *event) {
 }
 
 /// @brief Select or deselect XI raw-motion events on the root window.
+/// @param x11 Platform state with resolved XInput2 entry points.
+/// @param enable Non-zero to select XI_RawMotion, zero to clear the mask.
+/// @return 1 when XISelectEvents succeeded, otherwise 0.
 static int x11_xi2_select_raw_motion(vgfx_x11_data *x11, int enable) {
     unsigned char mask_bits[3] = {0, 0, 0};
     if (enable)
@@ -3328,6 +3708,9 @@ static int x11_xi2_select_raw_motion(vgfx_x11_data *x11, int enable) {
 /// @details Raw motion keeps flowing regardless of the cursor position; the
 ///          grab only prevents the (hidden) cursor from drifting onto other
 ///          windows/workspaces and stealing a click.
+/// @param win Window whose pointer should be confined or released.
+/// @param enable Non-zero to grab/confine, zero to ungrab.
+/// @return 1 when the requested state was applied, otherwise 0.
 static int x11_relative_apply_grab(struct vgfx_window *win, int enable) {
     if (!win || !win->platform_data)
         return 0;
@@ -3353,6 +3736,15 @@ static int x11_relative_apply_grab(struct vgfx_window *win, int enable) {
     return 1;
 }
 
+/// @brief Enable or disable native XInput2 relative mouse delivery.
+/// @details Enabling requires XInput2 raw-motion selection and a successful
+///          pointer grab; a failed grab rolls selection back.  Disabling clears
+///          selection when available and releases the grab.  Core state is
+///          updated by the caller only after this function succeeds.
+/// @param win Window whose native relative mode should change.
+/// @param enabled Non-zero to enable, zero to disable.
+/// @return 1 when the native mode transition succeeded, otherwise 0 so the
+///         caller can use warp-to-center fallback.
 int vgfx_platform_set_relative_mouse(struct vgfx_window *win, int enabled) {
     if (!win || !win->platform_data)
         return 0;
@@ -3378,6 +3770,12 @@ int vgfx_platform_set_relative_mouse(struct vgfx_window *win, int enabled) {
     return 1;
 }
 
+/// @brief Focus or unfocus the window's XIM input context.
+/// @details A missing input context is treated as a supported no-op because
+///          ordinary key lookup remains available.
+/// @param win Window whose input method should change.
+/// @param enabled Non-zero to focus the XIC, zero to unfocus it.
+/// @return 1 for valid platform state, otherwise 0.
 int vgfx_platform_set_text_input_enabled(struct vgfx_window *win, int32_t enabled) {
     if (!win || !win->platform_data)
         return 0;
@@ -3391,6 +3789,12 @@ int vgfx_platform_set_text_input_enabled(struct vgfx_window *win, int32_t enable
     return 1;
 }
 
+/// @brief Accept surrounding-text state for the X11 text-input bridge.
+/// @details The current XIM integration does not expose a portable surrounding
+///          text API, so validated state is acknowledged without native work.
+/// @param win Window whose X11 platform state must be valid.
+/// @param state Validated call-scoped text-input snapshot.
+/// @return 1 when both platform state and snapshot are present, otherwise 0.
 int vgfx_platform_set_text_input_state(struct vgfx_window *win,
                                        const vgfx_text_input_state_t *state) {
     return win && win->platform_data && state;

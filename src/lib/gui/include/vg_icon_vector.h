@@ -25,6 +25,12 @@
 #include "vgfx.h"
 #include <stdint.h>
 
+/// @file
+/// @brief Declares lookup, rendering, and cache control for deterministic vector icons.
+/// @details Stable kebab-case names resolve to compact fixed-point path definitions.
+/// Rasterized tint-independent coverage masks are cached by icon and size, then composited
+/// into a graphics window with the requested role color.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,9 +45,12 @@ extern "C" {
 int32_t vg_icon_vector_find(const char *name);
 
 /// @brief Return the stable name for an icon id, or NULL when out of range.
+/// @param icon_id Registered icon id to query.
+/// @return Process-lifetime kebab-case name, or NULL for an invalid id.
 const char *vg_icon_vector_name(int32_t icon_id);
 
 /// @brief Return the number of registered vector icons.
+/// @return Non-negative number of valid icon ids.
 int32_t vg_icon_vector_count(void);
 
 /// @brief Draw a vector icon with anti-aliased coverage into a window target.
@@ -65,6 +74,8 @@ void vg_icon_vector_draw(vgfx_window_t win,
                          uint32_t tint_rgb);
 
 /// @brief Drop every cached coverage mask (e.g. between pixel-hash tests).
+/// @details Static icon definitions remain available; the next draw lazily rasterizes its
+/// requested icon and size again.
 void vg_icon_vector_cache_clear(void);
 
 #ifdef __cplusplus

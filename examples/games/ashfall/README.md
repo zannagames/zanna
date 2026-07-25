@@ -5,6 +5,12 @@ Zanna engine. Salvager **Rook Ryder** fights through nine missions on the ash
 world Erebos-4 against **HELIX**, a corrupted terraforming AI, its machine army,
 and three distinct bosses.
 
+> **Scene-driven recreation:** `examples/games/ashfall-scenes` rebuilds this
+> complete campaign from Zanna Studio `.scene3d` files;
+> `tools/export_scenes.zia` exports the missions and
+> `tools/scene_parity_probe.zia` proves byte-exact parity with the code-built
+> levels here. This original stays code-driven and untouched.
+
 Ashfall has no product dependencies and stays cross-platform across Metal,
 D3D11, OpenGL, and the software backend. Optional GLTF/GLB enemy and weapon art
 ships beside procedural PBR fallback meshes, so missing assets never make the

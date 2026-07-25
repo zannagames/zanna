@@ -30,6 +30,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements quadratic-outline flattening and antialiased glyph rasterization.
+/// @details TrueType contours are transformed into bitmap coordinates, recursively flattened into
+/// polylines, converted to a sorted edge list, and filled with vertically supersampled even-odd
+/// scanlines. All working buffers are bounded and released before the result is returned.
+
 //=============================================================================
 // Constants
 //=============================================================================
@@ -44,10 +50,12 @@
 // Point and Edge Structures
 //=============================================================================
 
+/// @brief One two-dimensional vertex in the flattened glyph polygon.
 typedef struct {
     float x, y;
 } raster_point_t;
 
+/// @brief One non-horizontal polygon edge prepared for scanline intersection.
 typedef struct {
     float x0, y0, x1, y1;
     float dx; // Precomputed 1/(y1-y0) for scanline intersection
@@ -59,6 +67,19 @@ typedef struct {
 
 /// @brief Recursively flatten a quadratic Bezier into polyline endpoints via
 ///        de Casteljau subdivision until within CURVE_TOLERANCE.
+/// @param x0 Starting point x coordinate.
+/// @param y0 Starting point y coordinate.
+/// @param x1 Quadratic control-point x coordinate.
+/// @param y1 Quadratic control-point y coordinate.
+/// @param x2 Ending point x coordinate.
+/// @param y2 Ending point y coordinate.
+/// @param tolerance Maximum control-point distance from the endpoint chord.
+/// @param out Destination polygon-point array.
+/// @param max_points Capacity of @p out.
+/// @param count Number of points already stored in @p out.
+/// @param depth Current recursive subdivision depth.
+/// @param truncated Optional flag set when a depth or output-capacity bound is reached.
+/// @return Updated number of stored output points.
 static int flatten_quadratic(float x0,
                              float y0,
                              float x1,
@@ -130,6 +151,19 @@ static int flatten_quadratic(float x0,
 
 /// @brief Convert a TTF glyph outline (on/off-curve points) to a flat polygon
 ///        by flattening quadratic Bezier curves into polyline segments.
+/// @param points_x Source outline x coordinates in font units.
+/// @param points_y Source outline y coordinates in font units.
+/// @param flags Per-point on-curve flags.
+/// @param contour_ends Inclusive source point index ending each contour.
+/// @param num_contours Number of readable entries in @p contour_ends.
+/// @param scale Font-unit-to-pixel scale.
+/// @param offset_x Horizontal translation applied after scaling.
+/// @param offset_y Vertical translation applied after scaling.
+/// @param out Destination flattened point array.
+/// @param max_points Capacity of @p out.
+/// @param out_contour_ends Receives the inclusive final point index of each emitted contour.
+/// @param out_contour_count Receives the number of emitted contours.
+/// @return Number of output points, or `-1` when flattening exceeds a safety bound.
 static int outline_to_polygon(float *points_x,
                               float *points_y,
                               uint8_t *flags,
@@ -232,14 +266,21 @@ static int outline_to_polygon(float *points_x,
 // Edge Comparison for Sorting
 //=============================================================================
 
-/// @brief qsort comparator for floats (ascending order).
+/// @brief Compare floating-point values in ascending order for `qsort`.
+/// @param a Address of the first `float`.
+/// @param b Address of the second `float`.
+/// @return A negative, zero, or positive value according to the ordering of @p a and @p b.
 static int raster_cmp_float(const void *a, const void *b) {
     float fa = *(const float *)a;
     float fb = *(const float *)b;
     return (fa > fb) - (fa < fb);
 }
 
-/// @brief qsort comparator for raster_edge_t: ascending by the edge's minimum y.
+/// @brief Compare raster edges by their minimum y coordinate.
+/// @param a Address of the first @ref raster_edge_t.
+/// @param b Address of the second @ref raster_edge_t.
+/// @return A negative value when @p a starts first, a positive value when @p b starts first, or
+/// zero when their minimum y coordinates match.
 static int compare_edges(const void *a, const void *b) {
     const raster_edge_t *ea = (const raster_edge_t *)a;
     const raster_edge_t *eb = (const raster_edge_t *)b;
@@ -258,7 +299,15 @@ static int compare_edges(const void *a, const void *b) {
 // Build Edge List from Polygon
 //=============================================================================
 
-/// @brief Build a sorted edge list from a flattened polygon; skips horizontal edges.
+/// @brief Build a sorted edge list from a flattened multi-contour polygon.
+/// @details Each contour is closed from its last point to its first. Horizontal edges are omitted,
+/// and the remaining edges are sorted by minimum y for early termination during scan conversion.
+/// @param points Flattened polygon vertices.
+/// @param count Number of readable entries in @p points.
+/// @param contour_ends Inclusive final point index for each contour.
+/// @param contour_count Number of readable entries in @p contour_ends.
+/// @param edges Destination array with capacity for at least @p count entries.
+/// @return Number of non-horizontal edges written to @p edges.
 static int build_edges(raster_point_t *points,
                        int count,
                        const int *contour_ends,
@@ -308,6 +357,16 @@ static int build_edges(raster_point_t *points,
 
 /// @brief Fill a bitmap using scanline rasterisation with OVERSAMPLE vertical
 ///        supersampling and even-odd fill rule.
+/// @details The function clears the output first, intersects each fractional scanline with active
+/// edges, sorts the x coordinates, and accumulates fractional coverage between intersection pairs.
+/// Allocation or bounds failures leave a fully or partially cleared bitmap and return silently.
+/// @param points Flattened polygon vertices.
+/// @param point_count Number of readable entries in @p points.
+/// @param contour_ends Inclusive final point index for each contour.
+/// @param contour_count Number of readable entries in @p contour_ends.
+/// @param width Output bitmap width in pixels.
+/// @param height Output bitmap height in pixels.
+/// @param bitmap Destination row-major eight-bit alpha bitmap.
 static void rasterize_scanlines(raster_point_t *points,
                                 int point_count,
                                 const int *contour_ends,
@@ -436,6 +495,15 @@ static void rasterize_scanlines(raster_point_t *points,
 // Main Rasterization Entry Point
 //=============================================================================
 
+/// @brief Rasterize one TrueType glyph into an owned alpha bitmap.
+/// @details Reads the glyph outline and horizontal metrics, scales them to @p size, flattens all
+/// quadratic contours, flips the upward-positive font coordinate system into bitmap coordinates,
+/// and produces an antialiased one-byte-per-pixel coverage map. Empty glyphs return valid metrics
+/// with a NULL bitmap. Invalid dimensions, malformed outlines, or allocation failures return NULL.
+/// @param font Parsed font containing the requested glyph and metric tables.
+/// @param glyph_id Font-local glyph identifier.
+/// @param size Finite positive target size in pixels.
+/// @return Heap-allocated glyph owned by the caller, including its bitmap, or NULL on failure.
 vg_glyph_t *vg_rasterize_glyph(vg_font_t *font, uint16_t glyph_id, float size) {
     if (!font || !isfinite(size) || size <= 0.0f || font->head.units_per_em == 0)
         return NULL;

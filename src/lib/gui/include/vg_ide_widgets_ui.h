@@ -24,6 +24,12 @@
 
 #include "vg_ide_widgets_common.h"
 
+/// @file
+/// @brief Declares IDE chrome, command, notification, tooltip, and floating-panel widgets.
+/// @details The API covers zoned status items, configurable toolbars, searchable command
+/// palettes, timed notifications, anchored tooltips, and movable overlay panels, with explicit
+/// callback and ownership contracts for retained application state.
+
 #ifdef __cplusplus
 extern "C" {
 #endif

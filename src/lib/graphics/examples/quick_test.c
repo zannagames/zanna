@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Short-lived ZannaGFX window and presentation example.
+/// @details Draws a deterministic primitive pattern, presents it, services at
+///          most thirty frames of close and keyboard events, and reports each
+///          lifecycle stage for manual backend verification.
+
 /*
  * ZannaGFX Quick Test - Creates window, draws, and auto-exits
  * Used for automated testing of the macOS backend
@@ -22,6 +28,11 @@
 #include <stdio.h>
 #include <vgfx.h>
 
+/// @brief Create, render, briefly display, and destroy a fixed graphics window.
+/// @details The bounded event loop makes this example suitable for unattended
+///          smoke use while still allowing a user to close the window or press
+///          Escape early. Every failed create or presentation call is reported.
+/// @return 0 after successful cleanup; 1 on window creation or update failure.
 int main(void) {
     printf("ZannaGFX macOS Backend Test\n");
     printf("============================\n\n");
@@ -115,19 +126,3 @@ int main(void) {
 
     return 0;
 }
-
-//===----------------------------------------------------------------------===//
-//
-// Part of the Zanna project, under the GNU GPL v3.
-// See LICENSE for license information.
-//
-//===----------------------------------------------------------------------===//
-//
-// File: src/lib/graphics/examples/quick_test.c
-// Purpose: Minimal ZannaGFX smoke test for CI and manual verification.
-// Key invariants: Keeps runtime short; prints clear diagnostics; exits cleanly.
-// Ownership/Lifetime: Demonstration code; owns and releases any created
-//                     resources.
-// Links: docs/vgfx.md
-//
-//===----------------------------------------------------------------------===//

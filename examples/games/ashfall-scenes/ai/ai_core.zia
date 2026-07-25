@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: examples/games/ashfall/ai/ai_core.zia
+// File: examples/games/ashfall-scenes/ai/ai_core.zia
 // Purpose: Manage pooled enemy state, perception, behavior, combat, movement,
 //          navigation, collision bodies, and encounter direction.
 // Key invariants:
@@ -15,7 +15,7 @@
 // Ownership/Lifetime:
 //   - EnemyManager owns its pooled bodies, models, projectiles, and nav agents.
 //   - World, physics, definitions, registries, and event services are borrowed.
-// Links: examples/games/ashfall/game.zia, docs/graphics3d-guide.md#navagent3d
+// Links: examples/games/ashfall-scenes/game.zia, docs/graphics3d-guide.md#navagent3d
 //
 //===----------------------------------------------------------------------===//
 module ai_core;

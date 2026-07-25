@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: examples/games/ashfall/main.zia
+// File: examples/games/ashfall-scenes/main.zia
 // Purpose: Parse Ashfall launch options and enter its smoke, interactive, or
 //          measured interactive loop.
 // Key invariants:
@@ -14,7 +14,7 @@
 // Ownership/Lifetime:
 //   - The entry point owns one Game for the process lifetime.
 //   - Game.run/runProfile destroy their World3D before returning.
-// Links: examples/games/ashfall/game.zia, examples/games/ashfall/README.md
+// Links: examples/games/ashfall-scenes/game.zia, examples/games/ashfall-scenes/README.md
 //
 //===----------------------------------------------------------------------===//
 module main;

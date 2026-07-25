@@ -35,6 +35,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements font loading, glyph access, text layout, UTF-8 traversal, and canvas drawing.
+/// @details Loaded TrueType faces are registered as live handles, own their parsed tables and
+/// raster cache, and may borrow a fallback chain. Measurement paths read horizontal metrics
+/// without rasterizing, while drawing optionally applies supported GSUB ligature substitutions.
+
 //=============================================================================
 // Live Font Registry
 //=============================================================================
@@ -44,8 +50,14 @@
 
 static vg_font_t *g_live_fonts = NULL;
 
+/// @brief Validate a caller-supplied rasterization or logical font size.
+/// @param size Candidate size in pixels or logical points.
+/// @return `true` only for finite positive values within the implementation's safety bound.
 static bool vg_font_valid_size(float size);
 
+/// @brief Add a newly allocated font to the process-local live-handle registry.
+/// @details Initializes the font's magic value and links it at the head of the intrusive list.
+/// @param font Font object to register; NULL is ignored.
 static void vg_font_register_live(vg_font_t *font) {
     if (!font)
         return;
@@ -57,6 +69,9 @@ static void vg_font_register_live(vg_font_t *font) {
     g_live_fonts = font;
 }
 
+/// @brief Remove a font from the process-local live-handle registry.
+/// @details Repairs neighboring links and clears the removed object's linkage fields.
+/// @param font Registered font to unlink; NULL is ignored.
 static void vg_font_unregister_live(vg_font_t *font) {
     if (!font)
         return;
@@ -70,6 +85,7 @@ static void vg_font_unregister_live(vg_font_t *font) {
     font->live_next = NULL;
 }
 
+/// @copydoc vg_font_is_live
 bool vg_font_is_live(const vg_font_t *font) {
     if (!font)
         return false;
@@ -80,14 +96,14 @@ bool vg_font_is_live(const vg_font_t *font) {
     return false;
 }
 
-/// @brief Store caller-facing logical-size metadata on a live font.
+/// @copydoc vg_font_set_logical_size
 void vg_font_set_logical_size(vg_font_t *font, float logical_size) {
     if (!vg_font_is_live(font))
         return;
     font->logical_size = vg_font_valid_size(logical_size) ? logical_size : 0.0f;
 }
 
-/// @brief Read caller-facing logical-size metadata from a live font.
+/// @copydoc vg_font_get_logical_size
 float vg_font_get_logical_size(const vg_font_t *font) {
     if (!vg_font_is_live(font))
         return 0.0f;
@@ -98,12 +114,17 @@ float vg_font_get_logical_size(const vg_font_t *font) {
 // Font Loading
 //=============================================================================
 
-/// @brief True if @p size is a finite, positive, sanely-bounded font size.
+/// @brief Return whether a font size is finite, positive, and safely bounded.
+/// @param size Candidate size in pixels or logical points.
+/// @return `true` for values in `(0, 1000000]`, otherwise `false`.
 static bool vg_font_valid_size(float size) {
     return isfinite(size) && size > 0.0f && size <= 1000000.0f;
 }
 
-/// @brief Clamp-convert a font metric to int (NaN→0, saturates at INT_MIN/MAX).
+/// @brief Convert a floating-point font metric to a bounded integer.
+/// @param value Metric value to convert.
+/// @return The truncated integer value, zero for non-finite input, or the nearest `int` endpoint
+/// when @p value lies outside the representable range.
 static int vg_font_metric_to_int(double value) {
     if (!isfinite(value))
         return 0;
@@ -422,22 +443,24 @@ const vg_glyph_t *vg_font_get_glyph(vg_font_t *font, float size, uint32_t codepo
 
 static bool g_font_ligatures_enabled = true;
 
-/// @brief Enable or disable ligature shaping in vg_font_draw_text process-wide.
+/// @copydoc vg_font_set_ligatures_enabled
 void vg_font_set_ligatures_enabled(bool enabled) {
     g_font_ligatures_enabled = enabled;
 }
 
-/// @brief Return the process-wide ligature shaping flag.
+/// @copydoc vg_font_ligatures_enabled
 bool vg_font_ligatures_enabled(void) {
     return g_font_ligatures_enabled;
 }
 
+/// @copydoc vg_font_set_fallback
 void vg_font_set_fallback(vg_font_t *font, vg_font_t *fallback) {
     if (!font || font == fallback)
         return;
     font->fallback = fallback;
 }
 
+/// @copydoc vg_font_get_fallback
 vg_font_t *vg_font_get_fallback(vg_font_t *font) {
     return font ? font->fallback : NULL;
 }
@@ -446,6 +469,7 @@ vg_font_t *vg_font_get_fallback(vg_font_t *font) {
 // can never collide with codepoint keys.
 #define VG_FONT_GLYPH_ID_CACHE_BASE 0x40000000u
 
+/// @copydoc vg_font_get_glyph_by_id
 const vg_glyph_t *vg_font_get_glyph_by_id(vg_font_t *font, float size, uint16_t glyph_id) {
     if (!font || !vg_font_valid_size(size))
         return NULL;
@@ -792,25 +816,17 @@ float vg_font_get_cursor_x(vg_font_t *font, float size, const char *text, int ta
 // Text Rendering
 //=============================================================================
 
-// Forward declaration of canvas drawing function
-// This will be implemented in the integration layer
+/// @brief Composite one glyph coverage bitmap into the canvas integration layer.
+/// @param canvas Opaque canvas handle accepted by the active graphics backend.
+/// @param x Left bitmap edge in canvas pixels.
+/// @param y Top bitmap edge in canvas pixels.
+/// @param bitmap Row-major eight-bit coverage values.
+/// @param width Bitmap width in pixels.
+/// @param height Bitmap height in pixels.
+/// @param color Packed foreground color whose low 24 bits are `0xRRGGBB`.
 extern void vg_canvas_draw_glyph(
     void *canvas, int x, int y, const uint8_t *bitmap, int width, int height, uint32_t color);
 
-/// @brief Render a UTF-8 string onto a canvas at the given baseline position.
-///
-/// @details Iterates codepoints, applying kerning between adjacent glyphs and
-///          advancing the cursor by each glyph's advance width. Newlines reset
-///          the cursor x to x and increment y by line_height. Delegates pixel
-///          output to vg_canvas_draw_glyph.
-///
-/// @param canvas vgfx_window_t handle to draw into.
-/// @param font   The font to render with.
-/// @param size   Font size in pixels.
-/// @param x      Pixel x-coordinate of the left edge of the first glyph.
-/// @param y      Pixel y-coordinate of the baseline.
-/// @param text   Null-terminated UTF-8 string to render.
-/// @param color  Foreground colour in 0xRRGGBB format.
 /// @brief Maximum characters shaped as one ligature run before splitting.
 #define VG_FONT_SHAPE_RUN_CAP 256
 
@@ -818,6 +834,15 @@ extern void vg_canvas_draw_glyph(
 /// @details Advances by the SOURCE characters' widths so text layout is
 ///          identical to the unshaped path — ligature glyphs render across
 ///          the columns they replace (plan 06 caret contract).
+/// @param canvas Opaque canvas handle passed to @ref vg_canvas_draw_glyph.
+/// @param font Font face providing shaping, metrics, and rasterized glyphs.
+/// @param size Font size in pixels.
+/// @param cursor_x Initial drawing cursor in canvas pixels.
+/// @param y Baseline position in canvas pixels.
+/// @param codepoints Source Unicode code points for a newline-free segment.
+/// @param count Number of readable entries in @p codepoints.
+/// @param color Packed foreground color whose low 24 bits are `0xRRGGBB`.
+/// @return Cursor position immediately after the rendered segment.
 static float vg_font_draw_shaped_segment(void *canvas,
                                          vg_font_t *font,
                                          float size,
@@ -858,6 +883,18 @@ static float vg_font_draw_shaped_segment(void *canvas,
     return cursor_x;
 }
 
+/// @brief Render a UTF-8 string onto a canvas at the given baseline position.
+/// @details When ligatures are enabled and supported by the face, newline-delimited runs are
+/// shaped in bounded segments before rasterization. Otherwise the function iterates code points
+/// directly, applying pair kerning and cached glyph advances. Newlines reset the horizontal
+/// cursor and advance by the font's line height.
+/// @param canvas Opaque canvas handle accepted by the active graphics backend.
+/// @param font Font face used for shaping, metrics, fallback resolution, and rasterization.
+/// @param size Finite positive font size in pixels.
+/// @param x Left origin for each line in canvas pixels.
+/// @param y Baseline of the first line in canvas pixels.
+/// @param text NUL-terminated UTF-8 text.
+/// @param color Packed foreground color whose low 24 bits are `0xRRGGBB`.
 void vg_font_draw_text(
     void *canvas, vg_font_t *font, float size, float x, float y, const char *text, uint32_t color) {
     if (!canvas || !font || !text || size <= 0)

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: examples/games/ashfall/probes/visual_probe.zia
+// File: examples/games/ashfall-scenes/probes/visual_probe.zia
 // Purpose: Capture and measure a warmed Ashfall campaign frame on the selected backend.
 // Key invariants:
 //   - The authored level retains visible scene structure beyond its HUD overlay.

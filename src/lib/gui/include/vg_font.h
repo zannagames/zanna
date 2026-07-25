@@ -28,6 +28,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/// @file
+/// @brief Declares TrueType loading, shaping, rasterization, measurement, and UTF-8 utilities.
+/// @details Font handles own copied face data and cached coverage bitmaps. Callers can query
+/// metrics, shape optional ligatures, select fallback faces, measure or hit-test UTF-8 text,
+/// and render glyphs onto an opaque canvas.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -36,7 +42,10 @@ extern "C" {
 // Forward Declarations
 //=============================================================================
 
+/// @brief Opaque loaded font face and glyph-cache handle.
 typedef struct vg_font vg_font_t;
+
+/// @brief Opaque runtime canvas accepted by font rendering integrations.
 typedef struct rt_canvas rt_canvas_t;
 
 //=============================================================================
@@ -120,6 +129,8 @@ void vg_font_destroy(vg_font_t *font);
 /// @details This is intended for runtime bindings that receive opaque user
 ///          handles and must reject stale or non-font pointers before storing
 ///          them in widgets.
+/// @param font Candidate handle to validate; may be NULL or unrelated.
+/// @return true only when @p font is registered as a live font object.
 bool vg_font_is_live(const vg_font_t *font);
 
 /// @brief Associate a logical-point size with a live font handle.
@@ -180,13 +191,17 @@ int32_t vg_font_shape(vg_font_t *font,
                       int32_t out_capacity);
 
 /// @brief Return whether the font resolved any liga/calt GSUB lookups.
+/// @param font Font face to inspect.
+/// @return true when at least one supported ligature or contextual-alternate lookup was loaded.
 bool vg_font_has_ligatures(vg_font_t *font);
 
 /// @brief Enable or disable ligature shaping in vg_font_draw_text process-wide.
 /// @details Default on; per-widget overrides push/restore around their draws.
+/// @param enabled true to apply supported ligature shaping during text drawing.
 void vg_font_set_ligatures_enabled(bool enabled);
 
 /// @brief Return the process-wide ligature shaping flag.
+/// @return true when text drawing currently applies supported ligature shaping.
 bool vg_font_ligatures_enabled(void);
 
 /// @brief Rasterize (and cache) a glyph by font glyph index instead of codepoint.
@@ -202,9 +217,13 @@ const vg_glyph_t *vg_font_get_glyph_by_id(vg_font_t *font, float size, uint16_t 
 /// @details Borrowed reference: the caller keeps @p fallback alive for the
 ///          primary font's lifetime. Fallbacks may chain (fallback's own
 ///          fallback is consulted next). NULL clears the link.
+/// @param font Primary font whose missing glyphs should consult a fallback.
+/// @param fallback Borrowed fallback font, or NULL to remove the current link.
 void vg_font_set_fallback(vg_font_t *font, vg_font_t *fallback);
 
 /// @brief Return the font's per-glyph fallback face, or NULL.
+/// @param font Primary font to query.
+/// @return Borrowed fallback handle, or NULL when none is attached.
 vg_font_t *vg_font_get_fallback(vg_font_t *font);
 
 /// @brief Retrieve the font's family name (e.g. "Noto Sans", "Fira Code").

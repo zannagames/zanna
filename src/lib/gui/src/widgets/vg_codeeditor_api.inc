@@ -167,6 +167,11 @@ void vg_codeeditor_set_text_bytes(vg_codeeditor_t *editor, const char *text, siz
     editor->base.needs_paint = true;
 }
 
+/// @brief Replace the complete document from a NUL-terminated UTF-8 string.
+/// @details Delegates to @ref vg_codeeditor_set_text_bytes, resets cursor, selection, scroll,
+/// folding, highlighting, history, and dirty state, and treats NULL as an empty document.
+/// @param editor Code editor whose document should be replaced.
+/// @param text NUL-terminated text copied into editor-owned storage, or NULL to clear.
 void vg_codeeditor_set_text(vg_codeeditor_t *editor, const char *text) {
     vg_codeeditor_set_text_bytes(editor, text, text ? strlen(text) : 0);
 }
@@ -174,13 +179,22 @@ void vg_codeeditor_set_text(vg_codeeditor_t *editor, const char *text) {
 // ── Incremental sync journal serialization (plan 08) ────────────────────────
 
 /// @brief Minimal growable byte buffer for delta-JSON assembly.
+/// @details Storage grows geometrically and @ref ok becomes false after the first allocation
+/// failure so later append operations become harmless no-ops.
 typedef struct {
+    /// @brief Heap allocation containing bytes written so far.
     char *data;
+    /// @brief Number of initialized content bytes.
     size_t len;
+    /// @brief Allocated capacity in bytes.
     size_t cap;
+    /// @brief Whether all growth and append operations have succeeded.
     bool ok;
 } cej_buf_t;
 
+/// @brief Ensure a delta-JSON buffer can accept additional bytes plus a terminator.
+/// @param b Buffer to grow; a failed buffer is left unchanged.
+/// @param extra Number of content bytes the caller intends to append.
 static void cej_ensure(cej_buf_t *b, size_t extra) {
     if (!b->ok)
         return;
@@ -198,6 +212,9 @@ static void cej_ensure(cej_buf_t *b, size_t extra) {
     }
 }
 
+/// @brief Append a NUL-terminated byte string to a delta-JSON buffer.
+/// @param b Destination buffer.
+/// @param s Source string copied without its terminator.
 static void cej_puts(cej_buf_t *b, const char *s) {
     size_t n = strlen(s);
     cej_ensure(b, n);
@@ -207,19 +224,29 @@ static void cej_puts(cej_buf_t *b, const char *s) {
     }
 }
 
+/// @brief Append one byte to a delta-JSON buffer.
+/// @param b Destination buffer.
+/// @param c Byte to append.
 static void cej_putc(cej_buf_t *b, char c) {
     cej_ensure(b, 1);
     if (b->ok)
         b->data[b->len++] = c;
 }
 
+/// @brief Append a signed decimal integer to a delta-JSON buffer.
+/// @param b Destination buffer.
+/// @param v Value formatted in base ten.
 static void cej_put_i64(cej_buf_t *b, long long v) {
     char tmp[32];
     snprintf(tmp, sizeof(tmp), "%lld", v);
     cej_puts(b, tmp);
 }
 
-/// @brief Append @p s as a JSON string literal with standard escaping.
+/// @brief Append a string as a JSON literal with standard escaping.
+/// @details Quotes, reverse solidus, common whitespace controls, and remaining control bytes are
+/// escaped; other bytes are copied unchanged.
+/// @param b Destination buffer.
+/// @param s NUL-terminated source string.
 static void cej_put_jstr(cej_buf_t *b, const char *s) {
     cej_putc(b, '"');
     for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
@@ -244,6 +271,9 @@ static void cej_put_jstr(cej_buf_t *b, const char *s) {
     cej_putc(b, '"');
 }
 
+/// @brief Duplicate a NUL-terminated status string.
+/// @param s Source string.
+/// @return Heap-allocated copy, or NULL on allocation failure.
 static char *cej_dup(const char *s) {
     size_t n = strlen(s) + 1;
     char *r = malloc(n);
@@ -252,6 +282,15 @@ static char *cej_dup(const char *s) {
     return r;
 }
 
+/// @brief Serialize and consume forward document deltas newer than a revision.
+/// @details Each JSON object describes a pre-edit byte range and its replacement text. Cold
+/// mutations, a wrapped journal, or a detected revision gap return the owned literal `overflow`
+/// and require the caller to perform a full synchronization. Successfully serialized or overflowed
+/// entries are pruned from the journal.
+/// @param editor Code editor whose incremental journal is consumed.
+/// @param since_revision Last revision already applied by the consumer.
+/// @return Caller-owned JSON array, caller-owned `overflow` string, or NULL for invalid input or
+/// allocation failure.
 char *vg_codeeditor_take_deltas_json(vg_codeeditor_t *editor, uint64_t since_revision) {
     if (!editor)
         return NULL;
@@ -307,6 +346,8 @@ char *vg_codeeditor_take_deltas_json(vg_codeeditor_t *editor, uint64_t since_rev
     return b.data;
 }
 
+/// @brief Remove every inlay hint and release its copied text.
+/// @param editor Code editor to clear; NULL is ignored.
 void vg_codeeditor_clear_inlay_hints(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -314,6 +355,14 @@ void vg_codeeditor_clear_inlay_hints(vg_codeeditor_t *editor) {
     editor->base.needs_paint = true;
 }
 
+/// @brief Append a painted inlay hint at a document position.
+/// @details The line must exist, the byte column is clamped to that line, and @p text is copied.
+/// Appending an out-of-order position marks the collection for later sorting.
+/// @param editor Code editor that owns the new hint.
+/// @param line Zero-based source line.
+/// @param col Byte column on @p line.
+/// @param text Non-empty hint text copied internally.
+/// @param color Packed hint text color.
 void vg_codeeditor_add_inlay_hint(
     vg_codeeditor_t *editor, int line, int col, const char *text, uint32_t color) {
     if (!editor || !text || text[0] == '\0')
@@ -350,6 +399,9 @@ void vg_codeeditor_add_inlay_hint(
     editor->base.needs_paint = true;
 }
 
+/// @brief Return the number of retained inlay hints.
+/// @param editor Code editor to inspect.
+/// @return Hint count, or zero when @p editor is NULL.
 int vg_codeeditor_get_inlay_hint_count(const vg_codeeditor_t *editor) {
     return editor ? editor->inlay_hint_count : 0;
 }
@@ -409,6 +461,9 @@ char *vg_codeeditor_get_text(vg_codeeditor_t *editor) {
     return result;
 }
 
+/// @brief Return the editor's monotonic content revision.
+/// @param editor Code editor to inspect.
+/// @return Current revision, or zero when @p editor is NULL.
 uint64_t vg_codeeditor_get_revision(vg_codeeditor_t *editor) {
     return editor ? editor->revision : 0;
 }
@@ -650,6 +705,11 @@ void vg_codeeditor_scroll_to_line(vg_codeeditor_t *editor, int line) {
     editor->base.needs_paint = true;
 }
 
+/// @brief Resolve the source line nearest the top of the viewport.
+/// @details Converts the current vertical scroll position to a visual row, then maps that row
+/// through wrapping and folding back to a source line.
+/// @param editor Code editor to inspect.
+/// @return Clamped zero-based source line, or zero when unavailable.
 int vg_codeeditor_get_scroll_top_line(vg_codeeditor_t *editor) {
     if (!editor || editor->line_count <= 0 || editor->line_height <= 0.0f)
         return 0;
@@ -665,6 +725,11 @@ int vg_codeeditor_get_scroll_top_line(vg_codeeditor_t *editor) {
     return line;
 }
 
+/// @brief Place a source line at the top of the viewport when possible.
+/// @details The requested line is clamped, folded lines are mapped to their visible anchor, and
+/// the corresponding visual-row offset is constrained to the document's valid scroll range.
+/// @param editor Code editor to scroll.
+/// @param line Zero-based source line.
 void vg_codeeditor_set_scroll_top_line(vg_codeeditor_t *editor, int line) {
     if (!editor || editor->line_count <= 0)
         return;
@@ -717,6 +782,11 @@ void vg_codeeditor_set_syntax(vg_codeeditor_t *editor,
 
 /// @brief Low-level text insert at (line, col) without recording to history; handles embedded
 /// newlines via line splits.
+/// @param editor Code editor whose line storage is modified.
+/// @param line Zero-based insertion line.
+/// @param col Byte column clamped to the insertion line.
+/// @param text NUL-terminated UTF-8 text, potentially containing newlines.
+/// @return `true` when at least one accepted byte or newline is inserted.
 static bool insert_text_at_internal(vg_codeeditor_t *editor, int line, int col, const char *text) {
     if (!editor || !text || line < 0 || line >= editor->line_count)
         return false;
@@ -765,6 +835,11 @@ static bool insert_text_at_internal(vg_codeeditor_t *editor, int line, int col, 
 
 /// @brief Low-level range deletion without history recording; merges lines when the range spans
 /// newlines.
+/// @param editor Code editor whose line storage is modified.
+/// @param start_line First range line.
+/// @param start_col First range byte column.
+/// @param end_line Last range line.
+/// @param end_col Exclusive final range byte column.
 static void delete_text_range_internal(
     vg_codeeditor_t *editor, int start_line, int start_col, int end_line, int end_col) {
     if (!editor || start_line < 0 || start_line >= editor->line_count)
@@ -837,6 +912,11 @@ static void delete_text_range_internal(
 
 /// @brief Computes the document position reached after inserting @p text starting at (start_line,
 /// start_col).
+/// @param start_line Initial source line.
+/// @param start_col Initial byte column.
+/// @param text NUL-terminated text whose accepted bytes and newlines are traversed.
+/// @param[out] out_line Optional destination for the resulting line.
+/// @param[out] out_col Optional destination for the resulting byte column.
 static void compute_text_end_position(
     int start_line, int start_col, const char *text, int *out_line, int *out_col) {
     int line = start_line;

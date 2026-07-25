@@ -200,7 +200,9 @@ record_raw_macro_violations_batch() {
 
     for path in "${paths[@]}"; do
         path_hits=()
-        for hit in "${hits[@]}"; do
+        # bash 3.2 + set -u treats an empty array expansion as unbound; the
+        # ${arr[@]+...} guard keeps a fully clean batch from aborting the lint.
+        for hit in ${hits[@]+"${hits[@]}"}; do
             case "$hit" in
                 "$path":*)
                     path_hits+=("$hit")

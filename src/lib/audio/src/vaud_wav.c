@@ -34,6 +34,11 @@
 
 /// @file
 /// @brief WAV file parser for ZannaAUD.
+/// @details Parses RIFF chunks from memory or large-file-capable streams,
+///          validates mono/stereo PCM and IEEE-float layouts, converts every
+///          accepted source representation to the internal interleaved stereo
+///          signed-16 format, and provides bounded eager and streaming decode
+///          paths plus dependency-free cubic resampling.
 
 #if !defined(_WIN32) && !defined(_FILE_OFFSET_BITS)
 #define _FILE_OFFSET_BITS 64
@@ -81,6 +86,7 @@
 // Helper Functions
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_wav_seek_stream
 int vaud_wav_seek_stream(void *file, int64_t offset, int origin) {
     if (!file)
         return 0;
@@ -91,6 +97,9 @@ int vaud_wav_seek_stream(void *file, int64_t offset, int origin) {
 #endif
 }
 
+/// @brief Query a WAV stream position using the platform's 64-bit file API.
+/// @param file Open standard-I/O stream.
+/// @return Current byte offset, or -1 for a null stream or query failure.
 static int64_t vaud_wav_tell_stream(FILE *file) {
     if (!file)
         return -1;
@@ -102,21 +111,29 @@ static int64_t vaud_wav_tell_stream(FILE *file) {
 }
 
 /// @brief Read a 16-bit little-endian value from a buffer.
+/// @param p Pointer to at least two readable bytes.
+/// @return Host-order unsigned value.
 static inline uint16_t read_u16_le(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
 
 /// @brief Read a 32-bit little-endian value from a buffer.
+/// @param p Pointer to at least four readable bytes.
+/// @return Host-order unsigned value.
 static inline uint32_t read_u32_le(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 /// @brief Convert 8-bit unsigned sample to 16-bit signed.
+/// @param sample Unsigned PCM sample with 128 as silence.
+/// @return Signed-16 sample with the source range scaled by 256.
 static inline int16_t u8_to_s16(uint8_t sample) {
     return (int16_t)(((int32_t)sample - 128) * 256);
 }
 
 /// @brief Convert 24-bit signed little-endian sample to 16-bit signed.
+/// @param p Pointer to the three-byte two's-complement sample.
+/// @return Most-significant signed 16 bits after sign extension.
 static inline int16_t s24_to_s16(const uint8_t *p) {
     int32_t val = (int32_t)p[0] | ((int32_t)p[1] << 8) | ((int32_t)p[2] << 16);
     if (val & 0x800000)
@@ -125,12 +142,18 @@ static inline int16_t s24_to_s16(const uint8_t *p) {
 }
 
 /// @brief Convert 32-bit signed little-endian sample to 16-bit signed.
+/// @param p Pointer to the four-byte two's-complement sample.
+/// @return Most-significant signed 16 bits.
 static inline int16_t s32_to_s16(const uint8_t *p) {
     uint32_t hi = read_u32_le(p) >> 16;
     return hi >= 0x8000u ? (int16_t)((int32_t)hi - 0x10000) : (int16_t)hi;
 }
 
 /// @brief Convert 32-bit IEEE float sample to 16-bit signed.
+/// @details Non-finite values become silence and finite values outside the
+///          normalized interval saturate.
+/// @param p Pointer to the little-endian IEEE-754 binary32 sample.
+/// @return Signed-16 PCM sample.
 static inline int16_t f32_to_s16(const uint8_t *p) {
     uint32_t bits = read_u32_le(p);
     float val;
@@ -231,6 +254,10 @@ typedef struct {
     int64_t data_size;   /* Size of PCM data in bytes */
 } vaud_wav_info;
 
+/// @brief Derive the raw byte stride of one interleaved source frame.
+/// @param info Parsed WAV channel and bit-depth metadata.
+/// @param out_bytes Receives bytes per complete source frame.
+/// @return 1 for a positive representable byte stride; otherwise 0.
 static int wav_bytes_per_frame(const vaud_wav_info *info, int32_t *out_bytes) {
     if (!info || !out_bytes || info->channels <= 0 || info->bits_per_sample <= 0)
         return 0;
@@ -243,6 +270,12 @@ static int wav_bytes_per_frame(const vaud_wav_info *info, int32_t *out_bytes) {
     return *out_bytes > 0;
 }
 
+/// @brief Validate structural relationships in a parsed WAV format chunk.
+/// @details Requires block alignment to match channel count and sample width.
+///          Byte-rate mismatches are intentionally tolerated because playback
+///          never relies on that advisory field.
+/// @param info Parsed format metadata.
+/// @return 1 when structurally decodable; otherwise 0 after setting an error.
 static int validate_wav_format(const vaud_wav_info *info) {
     int32_t bytes_per_frame = 0;
     if (!wav_bytes_per_frame(info, &bytes_per_frame)) {
@@ -263,6 +296,9 @@ static int validate_wav_format(const vaud_wav_info *info) {
     return 1;
 }
 
+/// @brief Require the data chunk to contain only complete sample frames.
+/// @param info Parsed format and data-chunk metadata.
+/// @return 1 when data size is nonnegative and frame-aligned; otherwise 0.
 static int validate_wav_data_alignment(const vaud_wav_info *info) {
     int32_t bytes_per_frame = 0;
     if (!wav_bytes_per_frame(info, &bytes_per_frame) || info->data_size < 0 ||
@@ -276,6 +312,14 @@ static int validate_wav_data_alignment(const vaud_wav_info *info) {
 /// @brief Reset all successful-stream outputs to inert values after a failure.
 /// @details Callers use this once pointer validation has succeeded so a later
 ///          parse or seek error cannot leave stale file metadata behind.
+/// @param out_file Receives NULL.
+/// @param out_data_offset Receives zero.
+/// @param out_data_size Receives zero.
+/// @param out_frames Receives zero.
+/// @param out_sample_rate Receives zero.
+/// @param out_channels Receives zero.
+/// @param out_bits Receives zero.
+/// @param out_format Receives zero.
 static void reset_wav_stream_outputs(void **out_file,
                                      int64_t *out_data_offset,
                                      int64_t *out_data_size,
@@ -626,6 +670,7 @@ static int convert_pcm_to_stereo_s16(const uint8_t *data,
 // Public Functions
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_wav_load_file
 int vaud_wav_load_file(const char *path,
                        int16_t **out_samples,
                        int64_t *out_frames,
@@ -726,6 +771,7 @@ int vaud_wav_load_file(const char *path,
     return 1;
 }
 
+/// @copydoc vaud_wav_load_mem
 int vaud_wav_load_mem(const void *data,
                       size_t size,
                       int16_t **out_samples,
@@ -759,6 +805,7 @@ int vaud_wav_load_mem(const void *data,
     return 1;
 }
 
+/// @copydoc vaud_wav_open_stream
 int vaud_wav_open_stream(const char *path,
                          void **out_file,
                          int64_t *out_data_offset,
@@ -828,6 +875,7 @@ int vaud_wav_open_stream(const char *path,
     return 1;
 }
 
+/// @copydoc vaud_wav_read_frames
 int32_t vaud_wav_read_frames(void *file,
                              int16_t *samples,
                              int32_t frames,
@@ -861,6 +909,7 @@ int32_t vaud_wav_read_frames(void *file,
     return frames_read;
 }
 
+/// @copydoc vaud_wav_read_frames_buffered
 int32_t vaud_wav_read_frames_buffered(void *file,
                                       int16_t *samples,
                                       int32_t frames,
@@ -918,6 +967,7 @@ int32_t vaud_wav_read_frames_buffered(void *file,
 // Resampling
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_resample_output_frames
 int64_t vaud_resample_output_frames(int64_t in_frames, int32_t in_rate, int32_t out_rate) {
     if (in_frames <= 0 || in_rate <= 0 || out_rate <= 0)
         return 0;
@@ -928,6 +978,7 @@ int64_t vaud_resample_output_frames(int64_t in_frames, int32_t in_rate, int32_t 
     return (in_frames * out_rate + in_rate - 1) / in_rate;
 }
 
+/// @copydoc vaud_pcm_s16_buffer_size
 int vaud_pcm_s16_buffer_size(int64_t frames, int32_t channels, size_t *out_bytes) {
     if (!out_bytes || frames <= 0 || channels <= 0)
         return 0;
@@ -995,6 +1046,7 @@ static inline double cubic_sample_s16(const int16_t *input,
     return ((a0 * frac + a1) * frac + a2) * frac + a3;
 }
 
+/// @copydoc vaud_resample
 void vaud_resample(const int16_t *input,
                    int64_t in_frames,
                    int32_t in_rate,

@@ -47,6 +47,9 @@
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
+/// @brief MSVC-compatible storage for the internal event spin-lock flag.
+/// @details Access only through the `vgfx_atomic_flag_*` wrappers, which map
+///          the long-compatible value to interlocked exchange operations.
 typedef volatile long vgfx_atomic_flag_t;
 
 /// @brief Initialize a ZannaGFX atomic flag to the unlocked state.
@@ -59,14 +62,28 @@ static inline void vgfx_atomic_flag_init(vgfx_atomic_flag_t *flag) {
         *flag = 0;
 }
 
+/// @brief Atomically acquire a ZannaGFX flag and report its previous state.
+/// @details Replaces the flag with the locked value using an acquire-capable
+///          MSVC interlocked exchange.  The event-queue spin lock repeatedly
+///          calls this helper until the previous state was clear.
+/// @param flag Initialized flag to acquire; must not be NULL.
+/// @return Non-zero when the flag was already set, or zero when this call
+///         acquired a previously clear flag.
 static inline int vgfx_atomic_flag_test_and_set(vgfx_atomic_flag_t *flag) {
     return _InterlockedExchange(flag, 1) != 0;
 }
 
+/// @brief Release a ZannaGFX atomic flag.
+/// @details Publishes the unlocked value with the MSVC interlocked primitive
+///          paired with `vgfx_atomic_flag_test_and_set()`.
+/// @param flag Acquired flag to release; must not be NULL.
 static inline void vgfx_atomic_flag_clear(vgfx_atomic_flag_t *flag) {
     (void)_InterlockedExchange(flag, 0);
 }
 #else
+/// @brief C11 atomic storage for the internal event spin-lock flag.
+/// @details Uses an atomic Boolean with explicit acquire/release operations so
+///          dynamically allocated windows can initialize it at runtime.
 typedef atomic_bool vgfx_atomic_flag_t;
 
 /// @brief Initialize a ZannaGFX atomic flag to the unlocked state.
@@ -79,10 +96,20 @@ static inline void vgfx_atomic_flag_init(vgfx_atomic_flag_t *flag) {
         atomic_init(flag, false);
 }
 
+/// @brief Atomically acquire a ZannaGFX flag and report its previous state.
+/// @details Performs an acquire exchange so subsequent accesses protected by
+///          the event lock observe writes published by its previous owner.
+/// @param flag Initialized flag to acquire; must not be NULL.
+/// @return Non-zero when the flag was already set, or zero when this call
+///         acquired a previously clear flag.
 static inline int vgfx_atomic_flag_test_and_set(vgfx_atomic_flag_t *flag) {
     return atomic_exchange_explicit(flag, true, memory_order_acquire);
 }
 
+/// @brief Release a ZannaGFX atomic flag.
+/// @details Uses release ordering so queue and input-state writes made inside
+///          the critical section become visible to the next acquiring thread.
+/// @param flag Acquired flag to release; must not be NULL.
 static inline void vgfx_atomic_flag_clear(vgfx_atomic_flag_t *flag) {
     atomic_store_explicit(flag, false, memory_order_release);
 }
@@ -327,15 +354,16 @@ struct vgfx_window {
     //===------------------------------------------------------------------===//
 
     /// @brief Duration of last frame in milliseconds.
-    /// @details Updated by vgfx_present() after each frame completes.  Used
+    /// @details Updated by vgfx_update() after each frame completes.  Used
     ///          for performance diagnostics and can be queried via
-    ///          vgfx_get_last_frame_time().
+    ///          vgfx_frame_time_ms().
     int64_t last_frame_time_ms;
 
     /// @brief Absolute timestamp for when the next frame should start.
-    /// @details Used for frame rate limiting.  If fps > 0, vgfx_present()
-    ///          sleeps until this deadline before returning.  Computed as:
-    ///          next_frame_deadline_ms = last_start_time + (1000.0 / fps).
+    /// @details Used by vgfx_frame_pace() for deadline-based frame limiting.
+    ///          If fps > 0, pacing sleeps until this deadline and then advances
+    ///          it by 1000.0 / fps; lag exceeding one frame resynchronizes the
+    ///          deadline to prevent an unbounded catch-up loop.
     double next_frame_deadline_ms;
 
     //===------------------------------------------------------------------===//
@@ -389,8 +417,8 @@ struct vgfx_window {
     /// @brief Opaque pointer to platform-specific window data.
     /// @details Allocated and owned by the platform backend.  On macOS, this
     ///          points to a structure containing NSWindow, NSView, etc.  On
-    ///          Linux, it would contain X11 Display/Window handles.  Must be
-    ///          freed by vgfx_platform_destroy_window().
+    ///          Linux it refers to the selected X11 or Wayland adapter state.
+    ///          Must be freed by vgfx_platform_destroy_window().
     void *platform_data;
 };
 
@@ -458,9 +486,21 @@ int vgfx_platform_process_events(struct vgfx_window *win);
 int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms);
 
 /// @brief Toggle the platform input-method context for an editable control.
+/// @details Enables or disables native text composition for the window.
+///          Backends may create, focus, or reset their IME context as needed.
+/// @param win Window whose input-method context should be updated.
+/// @param enabled Non-zero to enable text input, zero to disable it.
+/// @return 1 when the requested state was accepted, or 0 on failure.
 int vgfx_platform_set_text_input_enabled(struct vgfx_window *win, int32_t enabled);
 
 /// @brief Publish validated, call-scoped editable text state to the platform input method.
+/// @details Supplies the current surrounding text, selection, replacement
+///          range, and cursor rectangle needed by native composition services.
+///          The backend must consume or copy borrowed data during the call.
+/// @param win Window whose native input-method state should be updated.
+/// @param state Validated text-input snapshot whose borrowed fields remain
+///              valid only for the duration of this call.
+/// @return 1 when the state was accepted, or 0 on failure.
 int vgfx_platform_set_text_input_state(struct vgfx_window *win,
                                        const vgfx_text_input_state_t *state);
 
@@ -497,7 +537,7 @@ void *vgfx_platform_aligned_alloc(size_t alignment, size_t size);
 void vgfx_platform_aligned_free(void *ptr);
 
 /// @brief Sleep for the specified duration.
-/// @details Used by vgfx_present() for frame rate limiting.  The actual sleep
+/// @details Used by vgfx_frame_pace() for frame rate limiting.  The actual sleep
 ///          duration may be slightly longer due to OS scheduler granularity.
 ///          If ms <= 0, this function returns immediately without sleeping.
 ///
@@ -555,19 +595,24 @@ int vgfx_platform_set_fullscreen(struct vgfx_window *win, int fullscreen);
 int vgfx_platform_is_fullscreen(struct vgfx_window *win);
 
 /// @brief Minimize (iconify) the native window.
+/// @param win Window to minimize.
 void vgfx_platform_minimize(struct vgfx_window *win);
 
 /// @brief Maximize (zoom) the native window.
+/// @param win Window to maximize.
 void vgfx_platform_maximize(struct vgfx_window *win);
 
 /// @brief Restore the native window from minimized or maximized state.
+/// @param win Window to restore.
 void vgfx_platform_restore(struct vgfx_window *win);
 
 /// @brief Check if the native window is currently minimized.
+/// @param win Window whose native minimized state should be queried.
 /// @return 1 if minimized, 0 otherwise
 int32_t vgfx_platform_is_minimized(struct vgfx_window *win);
 
 /// @brief Check if the native window is currently maximized.
+/// @param win Window whose native maximized state should be queried.
 /// @return 1 if maximized, 0 otherwise
 int32_t vgfx_platform_is_maximized(struct vgfx_window *win);
 
@@ -575,36 +620,55 @@ int32_t vgfx_platform_is_maximized(struct vgfx_window *win);
 /// @details Called once in vgfx_create_window() before framebuffer allocation.
 ///          Returns 1.0 on non-HiDPI displays; 2.0 on standard macOS Retina;
 ///          varies on Linux (Xft.dpi / 96.0) and Windows (GetDeviceCaps / 96.0).
+/// @return Positive physical-pixels-per-logical-unit scale, normally at least
+///         1.0; backends fall back to 1.0 when no display scale is available.
 float vgfx_platform_get_display_scale(void);
 
 /// @brief Get the native window's current screen position.
+/// @param win Window whose position should be queried.
+/// @param out_x Receives the native screen-space X coordinate when non-NULL.
+/// @param out_y Receives the native screen-space Y coordinate when non-NULL.
 void vgfx_platform_get_position(struct vgfx_window *win, int32_t *out_x, int32_t *out_y);
 
 /// @brief Move the native window to a new screen position.
+/// @param win Window to move.
+/// @param x Requested native screen-space X coordinate.
+/// @param y Requested native screen-space Y coordinate.
 void vgfx_platform_set_position(struct vgfx_window *win, int32_t x, int32_t y);
 
 /// @brief Give keyboard focus to the native window.
+/// @param win Window that should receive keyboard focus.
 void vgfx_platform_focus(struct vgfx_window *win);
 
 /// @brief Request foreground activation for the native application/window.
+/// @param win Window for which foreground activation is requested.
 void vgfx_platform_request_foreground(struct vgfx_window *win);
 
 /// @brief Check if the native window has keyboard focus.
+/// @param win Window whose native focus state should be queried.
 /// @return 1 if focused, 0 otherwise
 int32_t vgfx_platform_is_focused(struct vgfx_window *win);
 
 /// @brief Control whether clicking the native close button closes the window.
+/// @param win Window whose native close behavior should be updated.
+/// @param prevent Non-zero to intercept native close requests, zero to permit
+///                the backend's normal close behavior.
 void vgfx_platform_set_prevent_close(struct vgfx_window *win, int32_t prevent);
 
 /// @brief Set the native mouse cursor shape.
-/// @param cursor_type VGFX_CURSOR_* constant
+/// @param win Window whose cursor should be changed.
+/// @param cursor_type `VGFX_CURSOR_*` shape constant.
 void vgfx_platform_set_cursor(struct vgfx_window *win, int32_t cursor_type);
 
 /// @brief Show or hide the native mouse cursor.
+/// @param win Window whose cursor visibility should be changed.
+/// @param visible Non-zero to show the cursor, zero to hide it.
 void vgfx_platform_set_cursor_visible(struct vgfx_window *win, int32_t visible);
 
-/// @brief Hide/show the process or current-window cursor through the active platform backend.
+/// @brief Hide the process or current-window cursor through the active platform backend.
 void vgfx_platform_hide_cursor(void);
+
+/// @brief Show a cursor previously hidden through the active platform backend.
 void vgfx_platform_show_cursor(void);
 
 #ifdef __APPLE__
@@ -616,21 +680,34 @@ void vgfx_platform_macos_finish_launching_if_needed(void);
 /// @brief Install the standard macOS app/window menus as the active main menu.
 /// @details Replaces any current main menu with the default Zanna menu set.
 ///          preferred_title is used for the application menu title when non-empty.
+/// @param preferred_title Preferred UTF-8 application-menu title, or NULL or
+///                        empty to derive the process's default display name.
 void vgfx_platform_macos_install_default_main_menu(const char *preferred_title);
 
 /// @brief Ensure a default macOS main menu exists without clobbering custom menus.
 /// @details If the current main menu is absent or is already the default Zanna
 ///          menu, this rebuilds it. If a custom menu is active, it is preserved.
+/// @param preferred_title Preferred UTF-8 application-menu title, or NULL or
+///                        empty to derive the process's default display name.
 void vgfx_platform_macos_ensure_default_main_menu(const char *preferred_title);
 #endif
 
 /// @brief Get the screen dimensions of the monitor containing the window.
+/// @param win Window selecting the monitor to query.
+/// @param out_w Receives the monitor width in native screen units when non-NULL.
+/// @param out_h Receives the monitor height in native screen units when non-NULL.
 void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int32_t *out_h);
 
 /// @brief Resize the native OS window.
+/// @param win Window whose client/content area should be resized.
+/// @param w Requested logical client/content width.
+/// @param h Requested logical client/content height.
 void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h);
 
 /// @brief Publish the minimum logical client/content size to the native window manager.
+/// @param win Window whose resize constraints should be updated.
+/// @param w Minimum logical client/content width.
+/// @param h Minimum logical client/content height.
 void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32_t h);
 
 //===----------------------------------------------------------------------===//
@@ -642,15 +719,16 @@ void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32
 
 /// @brief Set the thread-local error code and message.
 /// @details Stores the error information so it can be retrieved via
-///          vgfx_get_last_error() and vgfx_get_last_error_message().  This
-///          function is called by both the core library and platform backends
-///          when an error occurs.
+///          `vgfx_last_error_code()` and `vgfx_get_last_error()`.  This function
+///          is called by both the core library and platform backends when an
+///          error occurs.  The message is copied into thread-local storage.
 ///
 /// @param code Error code (enum vgfx_error_t)
 /// @param msg  Descriptive error message (UTF-8, not NULL)
 ///
 /// @pre  msg != NULL
-/// @post vgfx_get_last_error() returns code, vgfx_get_last_error_message() returns msg
+/// @post `vgfx_last_error_code()` returns @p code and
+///       `vgfx_get_last_error()` returns the copied message.
 void vgfx_internal_set_error(vgfx_error_t code, const char *msg);
 
 /// @brief Initialize one allocation-free native IME composition event.
@@ -682,19 +760,24 @@ int vgfx_internal_init_composition_event(vgfx_event_t *event,
                                          int modifiers);
 
 /// @brief Enqueue an event into the window's synchronized ring buffer.
-/// @details Attempts to add the event to the queue. If the queue is full, the
-///          oldest non-CLOSE event is evicted; an existing oldest CLOSE event is
-///          preserved and the new event is dropped unless it is a duplicate CLOSE.
+/// @details Consecutive composition-update events are coalesced.  If the queue
+///          is full, a queued event is evicted only when doing so preserves
+///          important state transitions: CLOSE and release-state events are
+///          retained whenever possible, while transient motion, scrolling,
+///          resize, and text events are preferred victims.  When no safe victim
+///          exists, the new event is dropped.  Each full-queue eviction or drop
+///          increments the saturating overflow counter.
 ///
 ///          This function is safe to call from platform event callbacks.
 ///
 /// @param win   Pointer to the window structure
 /// @param event Pointer to the event to enqueue (copied into the queue)
-/// @return 1 if event was enqueued, 0 if queue was full (non-CLOSE event dropped)
+/// @return 1 if the event was enqueued or coalesced, or 0 for invalid input,
+///         destruction in progress, or a full queue with no safe victim.
 ///
 /// @pre  win != NULL
 /// @pre  event != NULL
-/// @post Event is in the queue OR event_overflow incremented
+/// @post On a full queue, the event is stored or event_overflow is incremented.
 int vgfx_internal_enqueue_event(struct vgfx_window *win, const vgfx_event_t *event);
 
 /// @brief Enqueue an event while coalescing consecutive mouse-motion updates.
@@ -710,7 +793,9 @@ int vgfx_internal_enqueue_coalesced_event(struct vgfx_window *win, const vgfx_ev
 
 /// @brief Record a platform-side event that had to be dropped before enqueue.
 /// @details Used when a backend rejects an oversized or otherwise unsafe native
-///          event payload before it can be represented as a vgfx_event_t.
+///          event payload before it can be represented as a vgfx_event_t.  The
+///          window's saturating overflow counter is updated under the event lock.
+/// @param win Window whose overflow counter should be incremented; NULL is ignored.
 void vgfx_internal_note_event_overflow(struct vgfx_window *win);
 
 /// @brief Dequeue the next event from the window's ring buffer.
@@ -756,7 +841,10 @@ int vgfx_internal_resize_framebuffer(struct vgfx_window *win, int32_t width, int
 /// @brief Clear all sticky keyboard and mouse button polling state for a window.
 /// @details Platform backends call this when the native window loses focus so
 ///          polling APIs cannot report keys/buttons as held forever after the
-///          operating system stops sending release events to the window.
+///          operating system stops sending release events to the window.  The
+///          reset occurs while holding the shared event/state lock.
+/// @param win Window whose key, button, and relative-motion state should be
+///            reset; NULL is ignored.
 void vgfx_internal_clear_input_state(struct vgfx_window *win);
 
 /// @brief Set key polling state for a window.
@@ -817,6 +905,14 @@ void vgfx_internal_set_focus_state(struct vgfx_window *win, int32_t focused);
 /// @param prevent Non-zero to prevent close requests, zero to allow them.
 void vgfx_internal_set_prevent_close(struct vgfx_window *win, int32_t prevent);
 
+/// @brief Acquire a window's shared event and input-state spin lock.
+/// @details Spins on the internal atomic flag, using a lightweight scheduler
+///          yield for short contention and a one-millisecond sleep every 64
+///          unsuccessful attempts to avoid monopolizing a CPU.  The matching
+///          `vgfx_internal_event_unlock()` must release the lock.
+/// @param win Valid window whose event lock should be acquired.
+/// @pre win != NULL.
+/// @post The calling thread owns `win->event_lock`.
 static inline void vgfx_internal_event_lock(struct vgfx_window *win) {
     uint32_t spins = 0;
     while (vgfx_atomic_flag_test_and_set(&win->event_lock)) {
@@ -828,6 +924,9 @@ static inline void vgfx_internal_event_lock(struct vgfx_window *win) {
     }
 }
 
+/// @brief Release a window's shared event and input-state spin lock.
+/// @param win Valid window whose event lock is owned by the calling thread.
+/// @pre win != NULL and the caller owns `win->event_lock`.
 static inline void vgfx_internal_event_unlock(struct vgfx_window *win) {
     vgfx_atomic_flag_clear(&win->event_lock);
 }
@@ -846,6 +945,16 @@ static inline int vgfx_internal_in_bounds(struct vgfx_window *win, int32_t x, in
     return (win && x >= 0 && x < win->width && y >= 0 && y < win->height);
 }
 
+/// @brief Test whether a physical pixel survives framebuffer and clip bounds.
+/// @details First rejects coordinates outside the framebuffer.  With clipping
+///          disabled, every remaining pixel is accepted.  With clipping
+///          enabled, an empty rectangle rejects all pixels and otherwise uses
+///          half-open 64-bit edge calculations to avoid signed overflow.
+/// @param win Window providing framebuffer and effective clip state; NULL
+///            rejects the coordinate.
+/// @param x Physical framebuffer X coordinate.
+/// @param y Physical framebuffer Y coordinate.
+/// @return 1 when the pixel is drawable under the active clip, otherwise 0.
 static inline int vgfx_internal_in_effective_clip(struct vgfx_window *win, int32_t x, int32_t y) {
     if (!vgfx_internal_in_bounds(win, x, y))
         return 0;
@@ -864,6 +973,12 @@ static inline int vgfx_internal_in_effective_clip(struct vgfx_window *win, int32
 
 #define VGFX_MAX_SCALE_FACTOR 16.0f
 
+/// @brief Normalize a requested display or coordinate scale.
+/// @details Non-finite values and values below one fall back to 1.0.  Larger
+///          finite values are capped at `VGFX_MAX_SCALE_FACTOR` so later
+///          coordinate multiplication remains bounded.
+/// @param scale Candidate physical-pixels-per-logical-unit scale.
+/// @return Sanitized scale in the inclusive range [1.0, 16.0].
 static inline float vgfx_internal_sanitize_scale(float scale) {
     if (!isfinite(scale) || scale < 1.0f)
         return 1.0f;
@@ -872,6 +987,11 @@ static inline float vgfx_internal_sanitize_scale(float scale) {
     return scale;
 }
 
+/// @brief Round a finite scaled coordinate to the nearest signed integer.
+/// @details Uses half-away-from-zero rounding and saturates values outside the
+///          `int32_t` range.  Non-finite input maps to zero.
+/// @param value Floating-point coordinate or extent to convert.
+/// @return Rounded and saturated 32-bit integer.
 static inline int32_t vgfx_internal_round_scaled(float value) {
     if (!isfinite(value))
         return 0;
@@ -882,14 +1002,29 @@ static inline int32_t vgfx_internal_round_scaled(float value) {
     return (int32_t)(value >= 0.0f ? value + 0.5f : value - 0.5f);
 }
 
+/// @brief Obtain a window's sanitized public-coordinate scale.
+/// @param win Window whose coordinate scale should be read, or NULL.
+/// @return Sanitized `win->coord_scale`, or 1.0 for a NULL window.
 static inline float vgfx_internal_coord_scale(const struct vgfx_window *win) {
     return win ? vgfx_internal_sanitize_scale(win->coord_scale) : 1.0f;
 }
 
+/// @brief Convert a logical integer coordinate to physical pixels.
+/// @details Sanitizes @p scale, multiplies in floating point, and applies the
+///          internal saturating half-away-from-zero rounding rule.
+/// @param logical Logical coordinate or extent.
+/// @param scale Requested physical-pixels-per-logical-unit scale.
+/// @return Rounded physical-pixel value.
 static inline int32_t vgfx_internal_scale_up_i32(int32_t logical, float scale) {
     return vgfx_internal_round_scaled((float)logical * vgfx_internal_sanitize_scale(scale));
 }
 
+/// @brief Convert a physical-pixel integer to logical coordinates.
+/// @details Divides by a sanitized scale and applies the internal saturating
+///          half-away-from-zero rounding rule.
+/// @param physical Physical framebuffer coordinate or extent.
+/// @param scale Requested physical-pixels-per-logical-unit scale.
+/// @return Rounded logical-coordinate value.
 static inline int32_t vgfx_internal_scale_down_i32(int32_t physical, float scale) {
     return vgfx_internal_round_scaled((float)physical / vgfx_internal_sanitize_scale(scale));
 }
@@ -908,6 +1043,14 @@ static inline int32_t vgfx_internal_public_extent_i32(int32_t framebuffer_extent
     return vgfx_internal_scale_down_i32(framebuffer_extent, vgfx_internal_coord_scale(win));
 }
 
+/// @brief Refresh a window's backing scale without overriding an explicit coordinate scale.
+/// @details Stores sanitized @p new_scale in `scale_factor`.  When the current
+///          coordinate scale still tracks the previous backing scale, including
+///          a small tolerance for representation noise, it is advanced to the
+///          new value as well.  A caller-selected independent coordinate scale
+///          is preserved.
+/// @param win Window whose scale state should be refreshed; NULL is ignored.
+/// @param new_scale Newly reported physical-pixels-per-logical-unit scale.
 static inline void vgfx_internal_refresh_scale_factor(struct vgfx_window *win, float new_scale) {
     if (!win)
         return;
@@ -922,6 +1065,16 @@ static inline void vgfx_internal_refresh_scale_factor(struct vgfx_window *win, f
         win->coord_scale = sanitized;
 }
 
+/// @brief Initialize a resize event from physical framebuffer dimensions.
+/// @details Sets the event type and timestamp, records the physical width and
+///          height, and derives logical dimensions through the window's active
+///          coordinate scale.  Other union members are not cleared.
+/// @param event Resize event to initialize; NULL is ignored.
+/// @param win Window whose public coordinate scale should be used; NULL selects
+///            the neutral 1.0 scale.
+/// @param time_ms Monotonic event timestamp in milliseconds.
+/// @param framebuffer_width New physical framebuffer width.
+/// @param framebuffer_height New physical framebuffer height.
 static inline void vgfx_internal_init_resize_event(vgfx_event_t *event,
                                                    struct vgfx_window *win,
                                                    int64_t time_ms,
@@ -938,12 +1091,24 @@ static inline void vgfx_internal_init_resize_event(vgfx_event_t *event,
     event->data.resize.logical_height = vgfx_internal_public_extent_i32(framebuffer_height, win);
 }
 
+/// @brief Test whether a Unicode scalar lies in a private-use area.
+/// @details Recognizes the Basic Multilingual Plane private-use block and the
+///          two supplementary private-use planes through their last assigned
+///          scalar values.
+/// @param codepoint Candidate Unicode scalar value.
+/// @return 1 for a private-use code point, otherwise 0.
 static inline int vgfx_internal_codepoint_is_private_use(uint32_t codepoint) {
     return (codepoint >= 0xE000 && codepoint <= 0xF8FF) ||
            (codepoint >= 0xF0000 && codepoint <= 0xFFFFD) ||
            (codepoint >= 0x100000 && codepoint <= 0x10FFFD);
 }
 
+/// @brief Test whether a Unicode value is suitable for text-input events.
+/// @details Rejects C0/C1 controls, DELETE, surrogate code points, values above
+///          Unicode's maximum scalar, and private-use characters reserved for
+///          platform-specific key representations.
+/// @param codepoint Candidate Unicode value.
+/// @return 1 for an accepted textual scalar, otherwise 0.
 static inline int vgfx_internal_codepoint_is_text(uint32_t codepoint) {
     if (codepoint < 0x20 || codepoint == 0x7F || codepoint > 0x10FFFF)
         return 0;
@@ -956,6 +1121,12 @@ static inline int vgfx_internal_codepoint_is_text(uint32_t codepoint) {
     return 1;
 }
 
+/// @brief Determine whether active command modifiers permit text emission.
+/// @details Command always suppresses text.  Control or Alt alone also
+///          suppresses text, while the AltGr-style Control+Alt combination is
+///          allowed so layouts can produce their alternate characters.
+/// @param modifiers Bitwise `VGFX_MOD_*` mask.
+/// @return 1 when modifiers permit text input, otherwise 0.
 static inline int vgfx_internal_text_modifiers_allow_text(int modifiers) {
     int has_cmd = (modifiers & VGFX_MOD_CMD) != 0;
     int has_ctrl = (modifiers & VGFX_MOD_CTRL) != 0;
@@ -970,6 +1141,11 @@ static inline int vgfx_internal_text_modifiers_allow_text(int modifiers) {
     return 1;
 }
 
+/// @brief Decide whether a translated key should generate a text-input event.
+/// @param codepoint Candidate Unicode value produced by the native key event.
+/// @param modifiers Active bitwise `VGFX_MOD_*` mask.
+/// @return 1 only when both the code point and modifier combination are
+///         acceptable for textual input.
 static inline int vgfx_internal_should_emit_text_input(uint32_t codepoint, int modifiers) {
     return vgfx_internal_codepoint_is_text(codepoint) &&
            vgfx_internal_text_modifiers_allow_text(modifiers);

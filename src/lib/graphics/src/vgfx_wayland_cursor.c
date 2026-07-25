@@ -13,6 +13,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Dynamic Wayland cursor-theme loading and surface application.
+
 #include "vgfx_wayland_cursor.h"
 
 #include "vgfx.h"
@@ -29,6 +32,7 @@ enum {
     WL_SURFACE_COMMIT = 6,
 };
 
+/// @brief Local ABI-compatible cursor image metadata from libwayland-cursor.
 struct wl_cursor_image {
     uint32_t width;
     uint32_t height;
@@ -37,12 +41,14 @@ struct wl_cursor_image {
     uint32_t delay;
 };
 
+/// @brief Local ABI-compatible themed cursor descriptor.
 struct wl_cursor {
     unsigned int image_count;
     struct wl_cursor_image **images;
     char *name;
 };
 
+/// @copydoc vgfx_wayland_cursor_name
 const char *vgfx_wayland_cursor_name(int32_t type) {
     switch (type) {
     case VGFX_CURSOR_POINTER: return "pointer";
@@ -61,6 +67,10 @@ const char *vgfx_wayland_cursor_name(int32_t type) {
     }
 }
 
+/// @brief Look up a themed cursor with legacy-name fallbacks.
+/// @param cursor Initialized cursor-theme state.
+/// @param type Public cursor type.
+/// @return Borrowed themed cursor descriptor, or NULL when unavailable.
 static struct wl_cursor *vgfx_cursor_lookup(vgfx_wayland_cursor_t *cursor, int32_t type) {
     struct wl_cursor *result =
         cursor->theme_get_cursor(cursor->theme, vgfx_wayland_cursor_name(type));
@@ -73,6 +83,12 @@ static struct wl_cursor *vgfx_cursor_lookup(vgfx_wayland_cursor_t *cursor, int32
     return result;
 }
 
+/// @brief Apply cursor visibility and image for a pointer-enter serial.
+/// @details A hidden cursor sends a NULL surface.  A visible cursor selects the
+///          first theme image, assigns its hotspot, attaches/damages its buffer,
+///          and commits the cursor surface.
+/// @param opaque Borrowed `vgfx_wayland_cursor_t` callback context.
+/// @param serial Pointer-enter serial authorizing `wl_pointer.set_cursor`.
 static void vgfx_cursor_apply(void *opaque, uint32_t serial) {
     vgfx_wayland_cursor_t *cursor = opaque;
     if (!cursor || !cursor->input || !cursor->input->pointer)
@@ -132,6 +148,7 @@ static void vgfx_cursor_apply(void *opaque, uint32_t serial) {
                                   0);
 }
 
+/// @copydoc vgfx_wayland_cursor_open
 int vgfx_wayland_cursor_open(vgfx_wayland_cursor_t *cursor,
                              vgfx_wayland_connection_t *connection,
                              vgfx_wayland_input_t *input) {
@@ -180,6 +197,7 @@ int vgfx_wayland_cursor_open(vgfx_wayland_cursor_t *cursor,
     return 1;
 }
 
+/// @copydoc vgfx_wayland_cursor_close
 void vgfx_wayland_cursor_close(vgfx_wayland_cursor_t *cursor) {
     if (!cursor)
         return;
@@ -196,6 +214,7 @@ void vgfx_wayland_cursor_close(vgfx_wayland_cursor_t *cursor) {
     memset(cursor, 0, sizeof(*cursor));
 }
 
+/// @copydoc vgfx_wayland_cursor_set
 void vgfx_wayland_cursor_set(vgfx_wayland_cursor_t *cursor, int32_t type, int32_t visible) {
     if (!cursor)
         return;

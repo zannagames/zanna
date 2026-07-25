@@ -22,38 +22,99 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements text-input-v3 state publication and composition event batching.
+
+/// @brief Text-input-v3 opcodes, protocol values, and local bounds.
 enum {
+    /// @brief Opcode for `zwp_text_input_manager_v3.get_text_input`.
     ZWP_TEXT_INPUT_MANAGER_GET_TEXT_INPUT = 1,
+
+    /// @brief Opcode for `zwp_text_input_v3.destroy`.
     ZWP_TEXT_INPUT_DESTROY = 0,
+
+    /// @brief Opcode for `zwp_text_input_v3.enable`.
     ZWP_TEXT_INPUT_ENABLE = 1,
+
+    /// @brief Opcode for `zwp_text_input_v3.disable`.
     ZWP_TEXT_INPUT_DISABLE = 2,
+
+    /// @brief Opcode for `zwp_text_input_v3.set_surrounding_text`.
     ZWP_TEXT_INPUT_SET_SURROUNDING_TEXT = 3,
+
+    /// @brief Opcode for `zwp_text_input_v3.set_text_change_cause`.
     ZWP_TEXT_INPUT_SET_TEXT_CHANGE_CAUSE = 4,
+
+    /// @brief Opcode for `zwp_text_input_v3.set_content_type`.
     ZWP_TEXT_INPUT_SET_CONTENT_TYPE = 5,
+
+    /// @brief Opcode for `zwp_text_input_v3.set_cursor_rectangle`.
     ZWP_TEXT_INPUT_SET_CURSOR_RECTANGLE = 6,
+
+    /// @brief Opcode for `zwp_text_input_v3.commit`.
     ZWP_TEXT_INPUT_COMMIT = 7,
+
+    /// @brief Protocol cause used when the input method produced the latest text change.
     ZWP_TEXT_CHANGE_CAUSE_INPUT_METHOD = 0,
+
+    /// @brief Content hint requesting hidden visual presentation.
     ZWP_CONTENT_HINT_HIDDEN_TEXT = 1 << 6,
+
+    /// @brief Content hint marking surrounding text as sensitive.
     ZWP_CONTENT_HINT_SENSITIVE_DATA = 1 << 7,
+
+    /// @brief Generic text content purpose.
     ZWP_CONTENT_PURPOSE_NORMAL = 0,
+
+    /// @brief Numeric content purpose.
     ZWP_CONTENT_PURPOSE_NUMBER = 3,
+
+    /// @brief Telephone-number content purpose.
     ZWP_CONTENT_PURPOSE_PHONE = 4,
+
+    /// @brief URL content purpose.
     ZWP_CONTENT_PURPOSE_URL = 5,
+
+    /// @brief Email-address content purpose.
     ZWP_CONTENT_PURPOSE_EMAIL = 6,
+
+    /// @brief Password content purpose.
     ZWP_CONTENT_PURPOSE_PASSWORD = 8,
+
+    /// @brief Marshal flag that destroys a proxy after sending its destructor.
     WL_MARSHAL_FLAG_DESTROY = 1,
+
+    /// @brief Maximum UTF-8 byte count published as surrounding text.
     VGFX_TEXT_SURROUNDING_LIMIT = 4000,
 };
 
+/// @brief ABI callback table for all text-input-v3 events.
 typedef struct {
+    /// @brief Report input-method entry into a surface.
     void (*enter)(void *, struct zwp_text_input_v3 *, struct wl_proxy *);
+
+    /// @brief Report input-method departure from a surface.
     void (*leave)(void *, struct zwp_text_input_v3 *, struct wl_proxy *);
+
+    /// @brief Stage a preedit string and its byte-oriented cursor range.
     void (*preedit_string)(void *, struct zwp_text_input_v3 *, const char *, int32_t, int32_t);
+
+    /// @brief Stage text committed by the input method.
     void (*commit_string)(void *, struct zwp_text_input_v3 *, const char *);
+
+    /// @brief Stage a surrounding-text deletion around the cursor.
     void (*delete_surrounding_text)(void *, struct zwp_text_input_v3 *, uint32_t, uint32_t);
+
+    /// @brief Publish all events staged in the current protocol batch.
     void (*done)(void *, struct zwp_text_input_v3 *, uint32_t);
 } vgfx_zwp_text_input_listener_t;
 
+/// @brief Count UTF-8 codepoint starts within a bounded byte span.
+/// @details The helper assumes ordinary UTF-8 width markers and treats a truncated final
+/// sequence as one codepoint, matching the bridge's defensive offset conversion.
+/// @param text UTF-8 bytes to inspect, or NULL.
+/// @param bytes Maximum number of bytes to consume.
+/// @return Number of codepoint-sized sequences encountered.
 static uint32_t vgfx_text_codepoints(const char *text, size_t bytes) {
     uint32_t count = 0;
     for (size_t i = 0; text && i < bytes;) {
@@ -67,6 +128,14 @@ static uint32_t vgfx_text_codepoints(const char *text, size_t bytes) {
     return count;
 }
 
+/// @brief Construct and enqueue one public composition event.
+/// @param text_input Bridge providing window, modifiers, and timing context.
+/// @param type Composition event kind.
+/// @param text UTF-8 event text, or NULL for an empty string.
+/// @param selection_start Selection start in codepoints.
+/// @param selection_length Selection length in codepoints.
+/// @param replacement_start Surrounding-text replacement start in codepoints, or -1.
+/// @param replacement_length Surrounding-text replacement length in codepoints, or -1.
 static void vgfx_text_emit(vgfx_wayland_text_input_t *text_input,
                            vgfx_event_type_t type,
                            const char *text,
@@ -89,6 +158,8 @@ static void vgfx_text_emit(vgfx_wayland_text_input_t *text_input,
         vgfx_internal_enqueue_event(text_input->window, &event);
 }
 
+/// @brief Commit accumulated client-side state changes to the input method.
+/// @param text_input Bridge with an optional text-input proxy.
 static void vgfx_text_commit_request(vgfx_wayland_text_input_t *text_input) {
     if (!text_input || !text_input->proxy)
         return;
@@ -101,6 +172,10 @@ static void vgfx_text_commit_request(vgfx_wayland_text_input_t *text_input) {
     text_input->commit_serial++;
 }
 
+/// @brief Publish the current surrounding text, purpose, and cursor rectangle.
+/// @details The request sequence is emitted only while the protocol context is enabled and
+/// ends with a text-input commit.
+/// @param text_input Enabled bridge whose public state should be published.
 static void vgfx_text_publish_state(vgfx_wayland_text_input_t *text_input) {
     if (!text_input || !text_input->proxy || !text_input->protocol_enabled)
         return;
@@ -155,6 +230,10 @@ static void vgfx_text_publish_state(vgfx_wayland_text_input_t *text_input) {
     vgfx_text_commit_request(text_input);
 }
 
+/// @brief Reconcile desired enablement with input-method surface focus.
+/// @details Protocol enablement requires both application intent and a matching `enter` event.
+/// Disabling commits the request and cancels any public composition still in progress.
+/// @param text_input Bridge whose enable state should be reconciled.
 static void vgfx_text_apply_enabled(vgfx_wayland_text_input_t *text_input) {
     int should_enable = text_input->desired_enabled && text_input->entered;
     if (should_enable == text_input->protocol_enabled || !text_input->proxy)
@@ -176,6 +255,10 @@ static void vgfx_text_apply_enabled(vgfx_wayland_text_input_t *text_input) {
     }
 }
 
+/// @brief Record input-method entry into the window surface and reconcile enablement.
+/// @param data Registered @ref vgfx_wayland_text_input_t callback context.
+/// @param proxy Text-input proxy that emitted the event.
+/// @param surface Surface entered by the input method.
 static void vgfx_text_enter(void *data,
                             struct zwp_text_input_v3 *proxy,
                             struct wl_proxy *surface) {
@@ -187,6 +270,12 @@ static void vgfx_text_enter(void *data,
     }
 }
 
+/// @brief Clear protocol enablement when the input method leaves the surface.
+/// @details Any active public composition is cancelled because further updates no longer
+/// belong to this window.
+/// @param data Registered @ref vgfx_wayland_text_input_t callback context.
+/// @param proxy Text-input proxy that emitted the event.
+/// @param surface Surface left by the input method.
 static void vgfx_text_leave(void *data,
                             struct zwp_text_input_v3 *proxy,
                             struct wl_proxy *surface) {
@@ -202,6 +291,12 @@ static void vgfx_text_leave(void *data,
     text_input->composition_active = 0;
 }
 
+/// @brief Replace the preedit string staged for the current protocol batch.
+/// @param data Registered @ref vgfx_wayland_text_input_t callback context.
+/// @param proxy Text-input proxy that emitted the event.
+/// @param text Nullable UTF-8 preedit string.
+/// @param begin Selection start byte offset, or a negative protocol sentinel.
+/// @param end Selection end byte offset, or a negative protocol sentinel.
 static void vgfx_text_preedit(void *data,
                               struct zwp_text_input_v3 *proxy,
                               const char *text,
@@ -218,6 +313,10 @@ static void vgfx_text_preedit(void *data,
     text_input->have_preedit = text_input->pending_preedit != NULL;
 }
 
+/// @brief Replace the committed text staged for the current protocol batch.
+/// @param data Registered @ref vgfx_wayland_text_input_t callback context.
+/// @param proxy Text-input proxy that emitted the event.
+/// @param text Nullable UTF-8 committed string.
 static void vgfx_text_commit(void *data,
                              struct zwp_text_input_v3 *proxy,
                              const char *text) {
@@ -230,6 +329,11 @@ static void vgfx_text_commit(void *data,
     text_input->have_commit = text_input->pending_commit != NULL;
 }
 
+/// @brief Stage a surrounding-text deletion for the current protocol batch.
+/// @param data Registered @ref vgfx_wayland_text_input_t callback context.
+/// @param proxy Text-input proxy that emitted the event.
+/// @param before Number of UTF-8 bytes to remove before the cursor.
+/// @param after Number of UTF-8 bytes to remove after the cursor.
 static void vgfx_text_delete(void *data,
                              struct zwp_text_input_v3 *proxy,
                              uint32_t before,
@@ -243,6 +347,13 @@ static void vgfx_text_delete(void *data,
     text_input->have_delete = 1;
 }
 
+/// @brief Translate and publish the complete compositor event batch.
+/// @details Deletion byte counts are converted into codepoint replacement ranges. Commit text
+/// takes precedence over preedit in the same batch; preedit starts, updates, or cancels the
+/// public composition lifecycle as needed. All owned staging buffers and flags are cleared.
+/// @param data Registered @ref vgfx_wayland_text_input_t callback context.
+/// @param proxy Text-input proxy that emitted the event.
+/// @param serial Compositor batch serial, currently not used for client policy.
 static void vgfx_text_done(void *data, struct zwp_text_input_v3 *proxy, uint32_t serial) {
     (void)proxy;
     (void)serial;
@@ -329,6 +440,7 @@ static const vgfx_zwp_text_input_listener_t g_text_listener = {
     vgfx_text_enter, vgfx_text_leave, vgfx_text_preedit,
     vgfx_text_commit, vgfx_text_delete, vgfx_text_done};
 
+/// @copydoc vgfx_wayland_text_input_open
 int vgfx_wayland_text_input_open(vgfx_wayland_text_input_t *text_input,
                                  vgfx_wayland_connection_t *connection,
                                  vgfx_wayland_input_t *input,
@@ -356,6 +468,7 @@ int vgfx_wayland_text_input_open(vgfx_wayland_text_input_t *text_input,
                                               text_input) == 0;
 }
 
+/// @copydoc vgfx_wayland_text_input_close
 void vgfx_wayland_text_input_close(vgfx_wayland_text_input_t *text_input) {
     if (!text_input)
         return;
@@ -372,6 +485,7 @@ void vgfx_wayland_text_input_close(vgfx_wayland_text_input_t *text_input) {
     memset(text_input, 0, sizeof(*text_input));
 }
 
+/// @copydoc vgfx_wayland_text_input_set_enabled
 int vgfx_wayland_text_input_set_enabled(vgfx_wayland_text_input_t *text_input, int32_t enabled) {
     if (!text_input)
         return 0;
@@ -380,6 +494,7 @@ int vgfx_wayland_text_input_set_enabled(vgfx_wayland_text_input_t *text_input, i
     return 1;
 }
 
+/// @copydoc vgfx_wayland_text_input_set_state
 int vgfx_wayland_text_input_set_state(vgfx_wayland_text_input_t *text_input,
                                       const vgfx_text_input_state_t *state) {
     if (!text_input || !state)

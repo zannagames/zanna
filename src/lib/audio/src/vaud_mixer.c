@@ -27,6 +27,11 @@
 
 /// @file
 /// @brief Software audio mixer for ZannaAUD.
+/// @details Implements the allocation-free realtime render path shared by all
+///          platform devices. The mixer advances duck envelopes, routes logical
+///          groups through optional effects, mixes sound and streaming sources
+///          into saturating 32-bit buses, converts the master bus to signed-16
+///          PCM, and caches a degraded fallback period for mutex contention.
 
 #include "vaud_internal.h"
 
@@ -129,6 +134,9 @@ static int32_t vaud_mixer_float_to_accum_sample(float scaled) {
     return (int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
 }
 
+/// @brief Clear an interleaved device buffer after validating its byte count.
+/// @param output Destination signed-16 PCM buffer.
+/// @param frames Number of stereo frames to clear.
 static void vaud_zero_output(int16_t *output, int32_t frames) {
     size_t output_bytes = 0;
     if (vaud_pcm_s16_buffer_size(frames, VAUD_CHANNELS, &output_bytes))
@@ -216,7 +224,10 @@ static void calculate_pan_gains(float pan,
 
 /// @brief Combined duck gain for every rule targeting @p group_id.
 /// @details Rules are updated once per render pass by
-///          vaud_mixer_update_duck_rules(); this is a pure product lookup.
+///          mixer_update_duck_rules(); this is a pure product lookup.
+/// @param ctx Context containing the current duck-rule envelopes.
+/// @param group_id Logical mix group whose target rules are combined.
+/// @return Product of all matching rule gains, or unity when none match.
 static float mixer_group_duck_gain(vaud_context_t ctx, int64_t group_id) {
     float gain = 1.0f;
     for (int32_t i = 0; i < ctx->duck_rule_count; i++) {
@@ -233,6 +244,8 @@ static float mixer_group_duck_gain(vaud_context_t ctx, int64_t group_id) {
 ///          toward unity at the release rate. Rates convert the configured
 ///          attack/release seconds into a per-chunk exponential step so the
 ///          envelope shape is independent of the backend period size.
+/// @param ctx Context whose voices, streams, and duck rules are inspected.
+/// @param frames Number of output frames represented by this envelope step.
 static void mixer_update_duck_rules(vaud_context_t ctx, int32_t frames) {
     if (ctx->duck_rule_count <= 0)
         return;
@@ -275,6 +288,8 @@ static void mixer_update_duck_rules(vaud_context_t ctx, int32_t frames) {
 }
 
 /// @brief One-pole lowpass coefficient for a cutoff at the mixer sample rate.
+/// @param cutoff_hz Positive cutoff frequency in hertz.
+/// @return Stable per-sample interpolation coefficient clamped to [0.0001, 1].
 static inline float mixer_lowpass_coeff(float cutoff_hz) {
     float a = 1.0f - expf(-6.2831853f * cutoff_hz / (float)VAUD_SAMPLE_RATE);
     if (a < 0.0001f)
@@ -464,6 +479,9 @@ static int mix_voice(vaud_voice *voice, int32_t *output, int32_t frames, float m
 //===----------------------------------------------------------------------===//
 
 /// @brief Mix music stream into the output buffer.
+/// @details Consumes ready decoded-buffer slots without blocking or decoding.
+///          Empty slots leave the remainder of the destination untouched and
+///          publish loop/stop state for the control-thread refill pass.
 /// @param music Music stream to mix.
 /// @param output Output buffer (stereo interleaved).
 /// @param frames Number of frames to mix.
@@ -526,6 +544,11 @@ static void mix_music(vaud_music_t music, int32_t *output, int32_t frames, float
     }
 }
 
+/// @brief Test membership in a bounded unsorted logical-group array.
+/// @param groups Array containing @p count group identifiers.
+/// @param count Number of initialized entries in @p groups.
+/// @param group_id Identifier to find.
+/// @return 1 when present; otherwise 0.
 static int group_list_contains(const int64_t *groups, int32_t count, int64_t group_id) {
     for (int32_t i = 0; i < count; i++) {
         if (groups[i] == group_id)
@@ -534,6 +557,11 @@ static int group_list_contains(const int64_t *groups, int32_t count, int64_t gro
     return 0;
 }
 
+/// @brief Append a group identifier if it is unique and capacity remains.
+/// @param groups Destination group array.
+/// @param count In/out number of initialized entries.
+/// @param cap Maximum number of entries in @p groups.
+/// @param group_id Identifier to add.
 static void group_list_add(int64_t *groups, int32_t *count, int32_t cap, int64_t group_id) {
     if (!groups || !count || *count >= cap)
         return;
@@ -547,6 +575,10 @@ static void group_list_add(int64_t *groups, int32_t *count, int32_t cap, int64_t
 /// @details The caller must hold the context mutex. This helper deliberately
 ///          does not call the user query hook; the realtime render path filters
 ///          candidates outside the context lock before mixing.
+/// @param ctx Context whose active voices and streams are scanned.
+/// @param groups Destination array for unique logical group identifiers.
+/// @param cap Capacity of @p groups.
+/// @return Number of candidate identifiers written.
 static int32_t collect_effect_group_candidates_locked(vaud_context_t ctx,
                                                       int64_t *groups,
                                                       int32_t cap) {
@@ -576,6 +608,13 @@ static int32_t collect_effect_group_candidates_locked(vaud_context_t ctx,
 ///          process callback, and their userdata cannot be replaced while a
 ///          render pass is using them. If no query hook is installed, every
 ///          candidate group is treated as effect-enabled.
+/// @param query Optional predicate invoked once for each candidate.
+/// @param userdata Opaque state passed to @p query.
+/// @param candidates Unique active groups available for selection.
+/// @param candidate_count Number of entries in @p candidates.
+/// @param groups Destination array for accepted unique identifiers.
+/// @param cap Capacity of @p groups.
+/// @return Number of accepted groups written.
 static int32_t filter_effect_groups_locked(vaud_group_effects_query_fn query,
                                            void *userdata,
                                            const int64_t *candidates,
@@ -597,6 +636,13 @@ static int32_t filter_effect_groups_locked(vaud_group_effects_query_fn query,
 /// @details The caller holds @p ctx->mutex for the full callback so
 ///          `vaud_set_group_effects_processor()` cannot replace the callback or
 ///          userdata while the render thread is using them.
+/// @param ctx Context providing the preallocated normalized-float scratch bus.
+/// @param process Installed in-place group processor.
+/// @param userdata Opaque processor state.
+/// @param group_id Logical group represented by @p group_accum.
+/// @param group_accum Signed-PCM-unit input bus for the selected group.
+/// @param master_accum Master bus that receives the processed contribution.
+/// @param frames Number of stereo frames in both buses.
 static void add_processed_group_to_master(vaud_context_t ctx,
                                           vaud_group_effects_process_fn process,
                                           void *userdata,
@@ -620,6 +666,19 @@ static void add_processed_group_to_master(vaud_context_t ctx,
     }
 }
 
+/// @brief Route active sources either directly to the master bus or through group effects.
+/// @details Sources in effect-enabled groups are first mixed into the context's
+///          reusable group accumulator, normalized for the callback, and then
+///          saturating-added to @p accum. Other groups take the direct path.
+///          The caller holds @p ctx->mutex throughout the operation.
+/// @param ctx Context containing active sources and preallocated scratch buses.
+/// @param accum Master signed-PCM-unit accumulator.
+/// @param frames Number of stereo frames to mix.
+/// @param master Sanitized context master-volume multiplier.
+/// @param effect_groups Logical groups selected for callback processing.
+/// @param effect_group_count Number of entries in @p effect_groups.
+/// @param process Installed effects callback.
+/// @param userdata Opaque callback state.
 static void mix_with_group_effects(vaud_context_t ctx,
                                    int32_t *accum,
                                    int32_t frames,
@@ -690,6 +749,7 @@ static void mix_with_group_effects(vaud_context_t ctx,
 // Main Mixer Entry Point
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_mixer_render
 void vaud_mixer_render(vaud_context_t ctx, int16_t *output, int32_t frames) {
     if (!ctx || !output || frames <= 0)
         return;
@@ -781,6 +841,9 @@ void vaud_mixer_render(vaud_context_t ctx, int16_t *output, int32_t frames) {
 /// @details Mixing still runs normally so voices, music positions, fades, effects,
 ///          telemetry, and lifecycle assertions advance exactly as they do in a
 ///          live application. Only the final device-bound samples are discarded.
+/// @param ctx Audio context to advance.
+/// @param output Device-bound interleaved signed-16 PCM buffer.
+/// @param frames Number of stereo frames to render.
 void vaud_mixer_render_device(vaud_context_t ctx, int16_t *output, int32_t frames) {
     vaud_mixer_render(ctx, output, frames);
     if (ctx && output && frames > 0 && ctx->device_output_silent)
@@ -791,6 +854,13 @@ void vaud_mixer_render_device(vaud_context_t ctx, int16_t *output, int32_t frame
 // Voice Management
 //===----------------------------------------------------------------------===//
 
+/// @brief Generate a positive voice identifier not used by any active slot.
+/// @details Wraps the signed counter back to one before overflow and performs a
+///          bounded collision scan so stale public handles cannot alias a live
+///          voice merely because the generator wrapped.
+/// @param ctx Context whose voice slots and next-id counter are inspected.
+/// @return Unique identifier, or VAUD_INVALID_VOICE if none is found in the
+///         bounded search.
 static vaud_voice_id vaud_next_voice_id(vaud_context_t ctx) {
     if (!ctx)
         return VAUD_INVALID_VOICE;
@@ -820,6 +890,7 @@ static vaud_voice_id vaud_next_voice_id(vaud_context_t ctx) {
     return VAUD_INVALID_VOICE;
 }
 
+/// @copydoc vaud_alloc_voice
 vaud_voice *vaud_alloc_voice(vaud_context_t ctx) {
     if (!ctx)
         return NULL;
@@ -876,6 +947,7 @@ vaud_voice *vaud_alloc_voice(vaud_context_t ctx) {
     return NULL;
 }
 
+/// @copydoc vaud_find_voice
 vaud_voice *vaud_find_voice(vaud_context_t ctx, vaud_voice_id id) {
     if (!ctx || id == VAUD_INVALID_VOICE)
         return NULL;

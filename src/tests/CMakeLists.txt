@@ -2358,6 +2358,38 @@ set_tests_properties(zia_xenoscape_level_validation PROPERTIES
         LABELS "zia;smoke;gameplay;slow"
         TIMEOUT 180)
 
+add_test(NAME zia_ashfall_scene_parity
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/tools/scene_parity_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall/tools")
+set_tests_properties(zia_ashfall_scene_parity PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;smoke;gameplay;scene;slow"
+        TIMEOUT 300)
+
+add_test(NAME zia_ashfall_scenes_smoke
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/smoke_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
+set_tests_properties(zia_ashfall_scenes_smoke PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;smoke;gameplay;slow"
+        TIMEOUT 300)
+
+add_test(NAME zia_ashfall_scenes_level
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/level_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
+set_tests_properties(zia_ashfall_scenes_level PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;smoke;gameplay;scene;slow"
+        TIMEOUT 300)
+
+add_test(NAME zia_ashfall_scenes_campaign
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/campaign_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
+set_tests_properties(zia_ashfall_scenes_campaign PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;smoke;gameplay;scene;slow"
+        TIMEOUT 300)
+
 add_test(NAME zia_xenoscape_scene_parity
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/tools/scene_parity_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")

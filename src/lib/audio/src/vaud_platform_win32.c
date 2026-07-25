@@ -20,6 +20,11 @@
 
 /// @file
 /// @brief Windows WASAPI audio backend for ZannaAUD.
+/// @details Negotiates a supported shared-mode endpoint format, converts from
+///          the fixed stereo signed-16 mixer bus when required, and drives the
+///          render client from an event-based worker with its own COM
+///          apartment. Control operations remain on the creating thread so COM
+///          and WASAPI ownership are balanced during pause, resume, and teardown.
 
 #if defined(_WIN32)
 
@@ -70,6 +75,7 @@ static const GUID VAUD_KSDATAFORMAT_SUBTYPE_PCM = {
 static const GUID VAUD_KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = {
     0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}};
 
+/// @brief PCM representations accepted from a negotiated WASAPI endpoint.
 typedef enum {
     VAUD_WIN32_SAMPLE_S16 = 0,
     VAUD_WIN32_SAMPLE_S24,
@@ -106,10 +112,21 @@ typedef struct {
     CRITICAL_SECTION pause_cs;                     ///< Protects pause state
 } vaud_win32_data;
 
+/// @brief Compare two non-null Windows GUID values byte-for-byte.
+/// @param a First GUID.
+/// @param b Second GUID.
+/// @return 1 when both pointers are non-null and values match; otherwise 0.
 static int vaud_win32_guid_equal(const GUID *a, const GUID *b) {
     return a && b && memcmp(a, b, sizeof(GUID)) == 0;
 }
 
+/// @brief Resolve the effective sample subtype and valid precision of a wave format.
+/// @details Canonical PCM and IEEE-float tags are mapped to their subtype GUIDs;
+///          extensible formats expose the embedded subtype and valid-bits field.
+/// @param fmt Candidate endpoint format.
+/// @param out_subtype Receives a borrowed subtype GUID pointer.
+/// @param out_valid_bits Receives significant bits per channel sample.
+/// @return 1 for a recognized base or extensible format; otherwise 0.
 static int vaud_win32_format_subtype(const WAVEFORMATEX *fmt,
                                      const GUID **out_subtype,
                                      WORD *out_valid_bits) {
@@ -138,6 +155,14 @@ static int vaud_win32_format_subtype(const WAVEFORMATEX *fmt,
     return 0;
 }
 
+/// @brief Validate a WASAPI render format and cache its conversion parameters.
+/// @details Accepts one to eight channels of signed 16/24/32-bit PCM or
+///          32-bit IEEE float, verifies block alignment and byte rate exactly,
+///          and rejects unsupported precision/subtype combinations before any
+///          endpoint buffer can be written.
+/// @param plat Backend state updated only after complete validation.
+/// @param fmt Candidate shared-mode render format.
+/// @return 1 when accepted and cached; otherwise 0.
 static int vaud_win32_configure_render_format(vaud_win32_data *plat, const WAVEFORMATEX *fmt) {
     if (!plat || !fmt || fmt->nChannels == 0 || fmt->nChannels > 8 || fmt->nSamplesPerSec == 0 ||
         fmt->nBlockAlign == 0 || fmt->wBitsPerSample == 0 || (fmt->wBitsPerSample % 8) != 0) {
@@ -191,6 +216,9 @@ static int vaud_win32_configure_render_format(vaud_win32_data *plat, const WAVEF
     return 1;
 }
 
+/// @brief Copy a variable-length WAVEFORMATEX descriptor to ordinary heap storage.
+/// @param fmt Source descriptor, including @c cbSize extension bytes.
+/// @return Owned copy released with free(), or NULL on invalid input/allocation failure.
 static WAVEFORMATEX *vaud_win32_copy_format(const WAVEFORMATEX *fmt) {
     if (!fmt)
         return NULL;
@@ -202,6 +230,13 @@ static WAVEFORMATEX *vaud_win32_copy_format(const WAVEFORMATEX *fmt) {
     return copy;
 }
 
+/// @brief Choose a shared-mode endpoint format that the backend can safely convert to.
+/// @details Prefers the internal 44.1-kHz stereo signed-16 format, then a
+///          validated closest match returned by WASAPI, and finally the
+///          endpoint mix format. COM-allocated candidates are copied before
+///          being released.
+/// @param client Activated WASAPI audio client.
+/// @return Owned selected format, or NULL when no supported representation exists.
 static WAVEFORMATEX *vaud_win32_select_format(IAudioClient *client) {
     if (!client)
         return NULL;
@@ -246,6 +281,12 @@ static WAVEFORMATEX *vaud_win32_select_format(IAudioClient *client) {
     return selected;
 }
 
+/// @brief Bound an endpoint render request to the fixed internal mixer capacity.
+/// @details Downsampling requires additional internal source frames for linear
+///          interpolation; this limit ensures the required input never exceeds
+///          VAUD_BUFFER_FRAMES.
+/// @param plat Backend state containing the negotiated endpoint sample rate.
+/// @return Maximum endpoint frames safe for one render-client acquisition.
 static UINT32 vaud_win32_max_render_frames(const vaud_win32_data *plat) {
     if (!plat || plat->render_sample_rate == 0)
         return VAUD_BUFFER_FRAMES;
@@ -260,6 +301,16 @@ static UINT32 vaud_win32_max_render_frames(const vaud_win32_data *plat) {
     return (UINT32)frames;
 }
 
+/// @brief Sample one channel of the internal mixer period at an endpoint-frame position.
+/// @details Uses direct indexing when rates match and bounded linear
+///          interpolation otherwise, repeating the final source frame at the
+///          period boundary.
+/// @param mix Interleaved stereo signed-16 source period.
+/// @param internal_frames Available source frames.
+/// @param out_frame Destination frame index.
+/// @param out_rate Negotiated destination sample rate.
+/// @param channel Internal stereo channel index.
+/// @return Interpolated sample in signed-16 amplitude units, or zero for invalid input.
 static int32_t vaud_win32_resampled_sample(
     const int16_t *mix, UINT32 internal_frames, UINT32 out_frame, UINT32 out_rate, UINT32 channel) {
     if (!mix || internal_frames == 0 || out_rate == 0)
@@ -280,6 +331,10 @@ static int32_t vaud_win32_resampled_sample(
     return (int32_t)(a + (b - a) * frac);
 }
 
+/// @brief Store one bounded mixer sample in the negotiated endpoint representation.
+/// @param plat Backend state describing the destination sample format.
+/// @param dst Destination bytes for one channel sample.
+/// @param sample Sample in signed-16 amplitude units; clamped before conversion.
 static void vaud_win32_store_sample(vaud_win32_data *plat, BYTE *dst, int32_t sample) {
     if (sample > 32767)
         sample = 32767;
@@ -313,6 +368,17 @@ static void vaud_win32_store_sample(vaud_win32_data *plat, BYTE *dst, int32_t sa
     }
 }
 
+/// @brief Render and convert one acquired WASAPI endpoint buffer.
+/// @details Uses a zero-copy mixer call for the native stereo signed-16 format.
+///          Other formats render to the preallocated internal bus, resample
+///          linearly, downmix stereo to mono when needed, preserve left/right in
+///          the first two multichannel slots, and leave remaining channels silent.
+/// @param ctx Audio context to advance.
+/// @param plat Backend state describing the negotiated format.
+/// @param buffer Acquired WASAPI destination buffer.
+/// @param frames Number of endpoint frames available.
+/// @return 1 when the buffer contains valid rendered or intentional silent data;
+///         otherwise 0 so the caller can release it with the silent flag.
 static int vaud_win32_render_to_buffer(vaud_context_t ctx,
                                        vaud_win32_data *plat,
                                        BYTE *buffer,
@@ -367,6 +433,8 @@ static int vaud_win32_render_to_buffer(vaud_context_t ctx,
     return 1;
 }
 
+/// @brief Release heap-owned render conversion buffers and clear their pointers.
+/// @param plat Backend state being unwound after initialization failure or shutdown.
 static void vaud_win32_free_render_buffers(vaud_win32_data *plat) {
     if (!plat)
         return;
@@ -411,9 +479,12 @@ static void vaud_win32_join_thread(vaud_context_t ctx, vaud_win32_data *plat, DW
 // Audio Thread
 //===----------------------------------------------------------------------===//
 
-/// @brief Audio thread function - waits for buffer events and fills audio.
-/// @param arg Pointer to our audio context.
-/// @return 0 on exit.
+/// @brief Service event-driven WASAPI render-buffer requests.
+/// @details Initializes a worker-owned COM apartment, reports readiness to the
+///          creating thread, bounds repeated padding/acquisition failures, and
+///          pairs every successful buffer acquisition with exactly one release.
+/// @param arg Pointer to the owning audio context.
+/// @return Always zero after stop, startup failure, or terminal endpoint failure.
 static unsigned __stdcall audio_thread_func(void *arg) {
     vaud_context_t ctx = (vaud_context_t)arg;
     vaud_win32_data *plat = (vaud_win32_data *)ctx->platform_data;
@@ -560,6 +631,7 @@ static unsigned __stdcall audio_thread_func(void *arg) {
 // Platform Interface Implementation
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_platform_init
 int vaud_platform_init(vaud_context_t ctx) {
     if (!ctx)
         return 0;
@@ -850,6 +922,7 @@ int vaud_platform_init(vaud_context_t ctx) {
     return 1;
 }
 
+/// @copydoc vaud_platform_shutdown
 void vaud_platform_shutdown(vaud_context_t ctx) {
     if (!ctx || !ctx->platform_data)
         return;
@@ -899,6 +972,7 @@ void vaud_platform_shutdown(vaud_context_t ctx) {
     }
 }
 
+/// @copydoc vaud_platform_pause
 void vaud_platform_pause(vaud_context_t ctx) {
     if (!ctx || !ctx->platform_data)
         return;
@@ -929,6 +1003,7 @@ void vaud_platform_pause(vaud_context_t ctx) {
     LeaveCriticalSection(&plat->pause_cs);
 }
 
+/// @copydoc vaud_platform_resume
 void vaud_platform_resume(vaud_context_t ctx) {
     if (!ctx || !ctx->platform_data)
         return;
@@ -969,6 +1044,12 @@ void vaud_platform_resume(vaud_context_t ctx) {
 static INIT_ONCE g_vaud_qpc_init_once = INIT_ONCE_STATIC_INIT;
 static LARGE_INTEGER g_vaud_qpc_frequency = {0};
 
+/// @brief Cache the process performance-counter frequency exactly once.
+/// @param init_once Windows one-time initialization token.
+/// @param parameter Unused caller parameter.
+/// @param context Unused output context.
+/// @return TRUE so Windows records the initialization as complete; an
+///         unavailable frequency is represented by a cached zero.
 static BOOL CALLBACK vaud_qpc_init_once(PINIT_ONCE init_once, PVOID parameter, PVOID *context) {
     (void)init_once;
     (void)parameter;
@@ -979,6 +1060,7 @@ static BOOL CALLBACK vaud_qpc_init_once(PINIT_ONCE init_once, PVOID parameter, P
     return TRUE;
 }
 
+/// @copydoc vaud_platform_now_ms
 int64_t vaud_platform_now_ms(void) {
     (void)InitOnceExecuteOnce(&g_vaud_qpc_init_once, vaud_qpc_init_once, NULL, NULL);
     if (g_vaud_qpc_frequency.QuadPart <= 0)

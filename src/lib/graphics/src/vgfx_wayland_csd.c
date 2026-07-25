@@ -15,6 +15,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Wayland fallback client-side decoration implementation.
+
 #include "vgfx_wayland_csd.h"
 
 #include "vgfx_internal.h"
@@ -45,11 +48,25 @@ enum {
     VGFX_XDG_RESIZE_EDGE_BOTTOM_RIGHT = 10,
 };
 
+/// @brief Format a stable client-decoration setup failure.
+/// @param error Destination buffer, or NULL.
+/// @param size Destination capacity including the terminator.
+/// @param detail Failure-specific detail.
 static void vgfx_wayland_csd_error(char *error, uint32_t size, const char *detail) {
     if (error && size > 0)
         (void)snprintf(error, size, "Wayland client decoration setup failed: %s", detail);
 }
 
+/// @brief Fill a rectangular region of an RGBA decoration buffer.
+/// @param pixels Destination top-left pixel buffer.
+/// @param stride Row stride in bytes.
+/// @param x Rectangle left coordinate.
+/// @param y Rectangle top coordinate.
+/// @param width Rectangle width.
+/// @param height Rectangle height.
+/// @param red Red channel value.
+/// @param green Green channel value.
+/// @param blue Blue channel value.
 static void vgfx_wayland_csd_fill(uint8_t *pixels,
                                   int32_t stride,
                                   int32_t x,
@@ -70,6 +87,10 @@ static void vgfx_wayland_csd_fill(uint8_t *pixels,
     }
 }
 
+/// @brief Rasterize the fallback frame and its three title-bar controls.
+/// @details Draws border/background colors plus allocation-free close,
+///          maximize, and minimize glyphs into the owned RGBA source.
+/// @param csd Active decoration state with sized pixel storage.
 static void vgfx_wayland_csd_draw(vgfx_wayland_csd_t *csd) {
     int32_t frame_width = csd->width + VGFX_CSD_BORDER * 2;
     int32_t frame_height = csd->height + VGFX_CSD_TITLE + VGFX_CSD_BORDER;
@@ -109,6 +130,11 @@ static void vgfx_wayland_csd_draw(vgfx_wayland_csd_t *csd) {
     vgfx_wayland_csd_fill(csd->pixels, stride, min_x + 7, 17, 10, 2, 210, 213, 220);
 }
 
+/// @brief Map a decoration-surface coordinate to an xdg resize edge.
+/// @param csd Decoration state supplying content dimensions.
+/// @param x Pointer X coordinate on the frame surface.
+/// @param y Pointer Y coordinate on the frame surface.
+/// @return `XDG_TOPLEVEL_RESIZE_EDGE_*` value, or zero outside resize borders.
 static uint32_t vgfx_wayland_csd_resize_edge(const vgfx_wayland_csd_t *csd, int32_t x, int32_t y) {
     int left = x < VGFX_CSD_BORDER;
     int right = x >= csd->width + VGFX_CSD_BORDER;
@@ -133,6 +159,18 @@ static uint32_t vgfx_wayland_csd_resize_edge(const vgfx_wayland_csd_t *csd, int3
     return 0;
 }
 
+/// @brief Handle pointer activity routed from the decoration child surface.
+/// @details Tracks coordinates and, on a left-button press, uses the triggering
+///          serial to request edge resize, close, maximize toggle, minimize, or
+///          title-bar move according to the hit region.
+/// @param data Borrowed `vgfx_wayland_csd_t` callback context.
+/// @param surface Surface on which the event occurred.
+/// @param serial Seat serial authorizing move/resize.
+/// @param time Native event timestamp; unused.
+/// @param x Decoration-relative X coordinate.
+/// @param y Decoration-relative Y coordinate.
+/// @param button Linux input button code.
+/// @param pressed Non-zero for press, zero for release.
 static void vgfx_wayland_csd_pointer(void *data,
                                      struct wl_proxy *surface,
                                      uint32_t serial,
@@ -191,6 +229,7 @@ static void vgfx_wayland_csd_pointer(void *data,
     }
 }
 
+/// @copydoc vgfx_wayland_csd_close
 void vgfx_wayland_csd_close(vgfx_wayland_csd_t *csd) {
     if (!csd)
         return;
@@ -220,6 +259,7 @@ void vgfx_wayland_csd_close(vgfx_wayland_csd_t *csd) {
     memset(csd, 0, sizeof(*csd));
 }
 
+/// @copydoc vgfx_wayland_csd_resize
 int vgfx_wayland_csd_resize(vgfx_wayland_csd_t *csd,
                             int32_t width,
                             int32_t height,
@@ -276,6 +316,7 @@ int vgfx_wayland_csd_resize(vgfx_wayland_csd_t *csd,
     return vgfx_wayland_shm_present(&csd->presenter, csd->pixels, csd->pixels_size);
 }
 
+/// @copydoc vgfx_wayland_csd_open
 int vgfx_wayland_csd_open(vgfx_wayland_csd_t *csd,
                           vgfx_wayland_shell_t *shell,
                           vgfx_wayland_input_t *input,

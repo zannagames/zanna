@@ -24,6 +24,12 @@
 
 #include <stddef.h>
 
+/// @file
+/// @brief Declares bounded Unicode extended-grapheme segmentation and offset conversion.
+/// @details The dependency-free API implements Unicode 17.0 default extended grapheme rules,
+/// treats malformed UTF-8 deterministically, and converts among byte, codepoint, and
+/// user-perceived-character boundaries without allocating.
+
 #ifdef __cplusplus
 extern "C" {
 #endif

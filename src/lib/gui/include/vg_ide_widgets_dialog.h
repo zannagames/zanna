@@ -21,6 +21,12 @@
 
 #include "vg_ide_widgets_common.h"
 
+/// @file
+/// @brief Declares modal message dialogs and configurable file-selection dialogs.
+/// @details Message dialogs support preset or custom buttons, icons, sizing, and result
+/// callbacks. File dialogs extend that surface with directory listings, filters, bookmarks,
+/// open/save/folder modes, persistent results, and optional blocking host integration.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -472,9 +478,16 @@ void vg_filedialog_set_on_cancel(vg_filedialog_t *dialog,
 /// @brief Host callback used by blocking convenience wrappers to run a file dialog.
 /// @details The callback must dispatch/render until @p dialog closes and return
 ///          true when a selection was confirmed.
+/// @param dialog Visible file dialog to service until it closes.
+/// @param user_data Opaque context registered with @ref vg_filedialog_set_modal_runner.
+/// @return true only when the user confirmed a valid selection.
 typedef bool (*vg_filedialog_modal_runner_t)(vg_filedialog_t *dialog, void *user_data);
 
 /// @brief Install the modal runner used by the blocking convenience wrappers.
+/// @details The callback and context are borrowed process-wide; passing NULL disables blocking
+/// convenience execution until another runner is installed.
+/// @param runner Host event/render loop callback, or NULL.
+/// @param user_data Opaque context supplied to @p runner.
 void vg_filedialog_set_modal_runner(vg_filedialog_modal_runner_t runner, void *user_data);
 
 /// @brief Convenience: show a blocking open-file dialog and return the chosen path.

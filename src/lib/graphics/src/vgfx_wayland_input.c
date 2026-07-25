@@ -15,6 +15,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Core Wayland seat, pointer, keyboard, touch, and repeat implementation.
+
 #define _POSIX_C_SOURCE 200809L
 
 #include "vgfx_wayland_input.h"
@@ -50,11 +53,13 @@ enum {
     BTN_MIDDLE = 0x112,
 };
 
+/// @brief Local ABI for wl_seat listener callbacks.
 typedef struct {
     void (*capabilities)(void *, struct wl_proxy *, uint32_t);
     void (*name)(void *, struct wl_proxy *, const char *);
 } vgfx_wl_seat_listener_t;
 
+/// @brief Local ABI for wl_pointer listener callbacks through protocol version 8.
 typedef struct {
     void (*enter)(void *, struct wl_proxy *, uint32_t, struct wl_proxy *, wl_fixed_t, wl_fixed_t);
     void (*leave)(void *, struct wl_proxy *, uint32_t, struct wl_proxy *);
@@ -69,6 +74,7 @@ typedef struct {
     void (*axis_relative_direction)(void *, struct wl_proxy *, uint32_t, uint32_t);
 } vgfx_wl_pointer_listener_t;
 
+/// @brief Local ABI for wl_keyboard listener callbacks.
 typedef struct {
     void (*keymap)(void *, struct wl_proxy *, uint32_t, int32_t, uint32_t);
     void (*enter)(void *, struct wl_proxy *, uint32_t, struct wl_proxy *, struct wl_array *);
@@ -78,6 +84,7 @@ typedef struct {
     void (*repeat_info)(void *, struct wl_proxy *, int32_t, int32_t);
 } vgfx_wl_keyboard_listener_t;
 
+/// @brief Local ABI for wl_touch listener callbacks.
 typedef struct {
     void (*down)(void *, struct wl_proxy *, uint32_t, uint32_t, struct wl_proxy *, int32_t,
                  wl_fixed_t, wl_fixed_t);
@@ -89,14 +96,19 @@ typedef struct {
     void (*orientation)(void *, struct wl_proxy *, int32_t, wl_fixed_t);
 } vgfx_wl_touch_listener_t;
 
+/// @copydoc vgfx_wayland_fixed_to_pixel
 int32_t vgfx_wayland_fixed_to_pixel(wl_fixed_t value) {
     return value >= 0 ? (value + 128) / 256 : (value - 128) / 256;
 }
 
+/// @brief Normalize a Wayland event timestamp to the backend monotonic clock.
+/// @param time Native millisecond timestamp, where zero means unavailable.
+/// @return @p time when non-zero, otherwise `vgfx_platform_now_ms()`.
 static int64_t vgfx_wl_time(uint32_t time) {
     return time ? (int64_t)time : vgfx_platform_now_ms();
 }
 
+/// @copydoc vgfx_wayland_translate_evdev_key
 vgfx_key_t vgfx_wayland_translate_evdev_key(uint32_t key) {
     static const vgfx_key_t letters[26] = {VGFX_KEY_A, VGFX_KEY_S, VGFX_KEY_D, VGFX_KEY_F,
                                            VGFX_KEY_G, VGFX_KEY_H, VGFX_KEY_J, VGFX_KEY_K,
@@ -147,6 +159,8 @@ vgfx_key_t vgfx_wayland_translate_evdev_key(uint32_t key) {
     }
 }
 
+/// @brief Release all optional xkbcommon objects and unload its library.
+/// @param xkb Keyboard-layout state to clear.
 static void vgfx_wl_xkb_close(vgfx_wayland_xkb_t *xkb) {
     if (xkb->state && xkb->state_unref) xkb->state_unref(xkb->state);
     if (xkb->keymap && xkb->keymap_unref) xkb->keymap_unref(xkb->keymap);
@@ -155,6 +169,9 @@ static void vgfx_wl_xkb_close(vgfx_wayland_xkb_t *xkb) {
     memset(xkb, 0, sizeof(*xkb));
 }
 
+/// @brief Lazily load the required xkbcommon API and create a context.
+/// @param xkb Destination dynamic keyboard-layout state.
+/// @return 1 when all symbols and the context are available, otherwise 0.
 static int vgfx_wl_xkb_load(vgfx_wayland_xkb_t *xkb) {
     if (xkb->library)
         return 1;
@@ -184,6 +201,9 @@ static int vgfx_wl_xkb_load(vgfx_wayland_xkb_t *xkb) {
     return xkb->context != NULL;
 }
 
+/// @brief Derive public modifier flags from current xkb state.
+/// @param input Input state containing layout and fallback modifier state.
+/// @return Bitwise Shift, Control, and Alt `VGFX_MOD_*` flags.
 static int vgfx_wl_modifiers(vgfx_wayland_input_t *input) {
     if (!input->xkb.state || !input->xkb.state_mod_name_is_active)
         return input->modifiers;
@@ -197,6 +217,11 @@ static int vgfx_wl_modifiers(vgfx_wayland_input_t *input) {
     return result;
 }
 
+/// @brief Publish a pointer position and coalescible mouse-move event.
+/// @param input Input state and target core window.
+/// @param sx Wayland fixed-point surface X coordinate.
+/// @param sy Wayland fixed-point surface Y coordinate.
+/// @param time Native event timestamp.
 static void vgfx_wl_pointer_position(vgfx_wayland_input_t *input, wl_fixed_t sx, wl_fixed_t sy, uint32_t time) {
     input->pointer_x = vgfx_wayland_fixed_to_pixel(sx);
     input->pointer_y = vgfx_wayland_fixed_to_pixel(sy);
@@ -208,6 +233,13 @@ static void vgfx_wl_pointer_position(vgfx_wayland_input_t *input, wl_fixed_t sx,
     vgfx_internal_enqueue_coalesced_event(input->window, &event);
 }
 
+/// @brief Track pointer entry and route it to the application or foreign surface.
+/// @param data Borrowed input context.
+/// @param pointer Pointer proxy; unused.
+/// @param serial Pointer-enter serial.
+/// @param surface Entered surface.
+/// @param sx Surface X coordinate.
+/// @param sy Surface Y coordinate.
 static void vgfx_wl_pointer_enter(void *data, struct wl_proxy *pointer, uint32_t serial,
                                   struct wl_proxy *surface, wl_fixed_t sx, wl_fixed_t sy) {
     (void)pointer;
@@ -231,6 +263,12 @@ static void vgfx_wl_pointer_enter(void *data, struct wl_proxy *pointer, uint32_t
                                      0);
     }
 }
+
+/// @brief Clear the active pointer surface on leave.
+/// @param data Borrowed input context.
+/// @param pointer Pointer proxy; unused.
+/// @param serial Pointer-leave serial.
+/// @param surface Departed surface; unused.
 static void vgfx_wl_pointer_leave(void *data, struct wl_proxy *pointer, uint32_t serial,
                                   struct wl_proxy *surface) {
     (void)pointer; (void)surface;
@@ -240,6 +278,13 @@ static void vgfx_wl_pointer_leave(void *data, struct wl_proxy *pointer, uint32_t
         input->pointer_surface = NULL;
     }
 }
+
+/// @brief Route pointer motion to application or foreign-surface handling.
+/// @param data Borrowed input context.
+/// @param pointer Pointer proxy; unused.
+/// @param time Native timestamp.
+/// @param sx Surface X coordinate.
+/// @param sy Surface Y coordinate.
 static void vgfx_wl_pointer_motion(void *data, struct wl_proxy *pointer, uint32_t time,
                                    wl_fixed_t sx, wl_fixed_t sy) {
     (void)pointer;
@@ -261,6 +306,14 @@ static void vgfx_wl_pointer_motion(void *data, struct wl_proxy *pointer, uint32_
                                      0);
     }
 }
+
+/// @brief Translate a native pointer button event or route it to a foreign surface.
+/// @param data Borrowed input context.
+/// @param pointer Pointer proxy; unused.
+/// @param serial Button serial.
+/// @param time Native timestamp.
+/// @param code Linux input button code.
+/// @param state Native pressed/released state.
 static void vgfx_wl_pointer_button(void *data, struct wl_proxy *pointer, uint32_t serial,
                                    uint32_t time, uint32_t code, uint32_t state) {
     (void)pointer;
@@ -294,6 +347,13 @@ static void vgfx_wl_pointer_button(void *data, struct wl_proxy *pointer, uint32_
     event.data.mouse_button.modifiers = input->modifiers;
     vgfx_internal_enqueue_event(input->window, &event);
 }
+
+/// @brief Translate a Wayland pointer axis value into a scroll event.
+/// @param data Borrowed input context.
+/// @param pointer Pointer proxy; unused.
+/// @param time Native timestamp.
+/// @param axis Zero for vertical, non-zero for horizontal.
+/// @param value Signed 24.8 axis distance.
 static void vgfx_wl_pointer_axis(void *data, struct wl_proxy *pointer, uint32_t time,
                                  uint32_t axis, wl_fixed_t value) {
     (void)pointer;
@@ -307,11 +367,18 @@ static void vgfx_wl_pointer_axis(void *data, struct wl_proxy *pointer, uint32_t 
     event.data.scroll.modifiers = input->modifiers;
     vgfx_internal_enqueue_event(input->window, &event);
 }
+
+/// @brief Ignore the pointer frame delimiter because events are published immediately.
 static void vgfx_wl_pointer_frame(void *d, struct wl_proxy *p) { (void)d; (void)p; }
+/// @brief Ignore optional pointer axis-source metadata.
 static void vgfx_wl_pointer_axis_source(void *d, struct wl_proxy *p, uint32_t s) { (void)d; (void)p; (void)s; }
+/// @brief Ignore optional pointer axis-stop metadata.
 static void vgfx_wl_pointer_axis_stop(void *d, struct wl_proxy *p, uint32_t t, uint32_t a) { (void)d; (void)p; (void)t; (void)a; }
+/// @brief Ignore optional discrete-axis metadata in favor of continuous values.
 static void vgfx_wl_pointer_axis_discrete(void *d, struct wl_proxy *p, uint32_t a, int32_t v) { (void)d; (void)p; (void)a; (void)v; }
+/// @brief Ignore optional axis-value120 metadata in favor of continuous values.
 static void vgfx_wl_pointer_axis_value120(void *d, struct wl_proxy *p, uint32_t a, int32_t v) { (void)d; (void)p; (void)a; (void)v; }
+/// @brief Ignore optional natural-scroll direction metadata.
 static void vgfx_wl_pointer_axis_direction(void *d, struct wl_proxy *p, uint32_t a, uint32_t v) { (void)d; (void)p; (void)a; (void)v; }
 
 static const vgfx_wl_pointer_listener_t g_pointer_listener = {
@@ -320,6 +387,12 @@ static const vgfx_wl_pointer_listener_t g_pointer_listener = {
     vgfx_wl_pointer_axis_source, vgfx_wl_pointer_axis_stop, vgfx_wl_pointer_axis_discrete,
     vgfx_wl_pointer_axis_value120, vgfx_wl_pointer_axis_direction};
 
+/// @brief Adopt a compositor-provided xkb keymap from a read-only file mapping.
+/// @param data Borrowed input context.
+/// @param keyboard Keyboard proxy; unused.
+/// @param format Native keymap format.
+/// @param fd Owned keymap descriptor, closed on every path.
+/// @param size Mapped keymap byte count.
 static void vgfx_wl_keyboard_keymap(void *data, struct wl_proxy *keyboard, uint32_t format,
                                     int32_t fd, uint32_t size) {
     (void)keyboard;
@@ -339,6 +412,8 @@ static void vgfx_wl_keyboard_keymap(void *data, struct wl_proxy *keyboard, uint3
     munmap(map, size);
     if (input->xkb.keymap) input->xkb.state = input->xkb.state_new(input->xkb.keymap);
 }
+
+/// @copydoc vgfx_wayland_input_sync_pressed
 void vgfx_wayland_input_sync_pressed(vgfx_wayland_input_t *input,
                                      const struct wl_array *keys) {
     if (!input || !input->window)
@@ -354,6 +429,13 @@ void vgfx_wayland_input_sync_pressed(vgfx_wayland_input_t *input,
             vgfx_internal_set_key_state(input->window, key, 1);
     }
 }
+
+/// @brief Record keyboard focus entry and synchronize pressed keys.
+/// @param data Borrowed input context.
+/// @param keyboard Keyboard proxy; unused.
+/// @param serial Keyboard-enter serial.
+/// @param surface Entered surface.
+/// @param keys Borrowed array of pressed evdev codes.
 static void vgfx_wl_keyboard_enter(void *data, struct wl_proxy *keyboard, uint32_t serial,
                                    struct wl_proxy *surface, struct wl_array *keys) {
     (void)keyboard;
@@ -363,6 +445,12 @@ static void vgfx_wl_keyboard_enter(void *data, struct wl_proxy *keyboard, uint32
     input->keyboard_serial = serial;
     vgfx_wayland_input_sync_pressed(input, keys);
 }
+
+/// @brief Reset keyboard state when focus leaves the application surface.
+/// @param data Borrowed input context.
+/// @param keyboard Keyboard proxy; unused.
+/// @param serial Keyboard-leave serial.
+/// @param surface Departed surface; unused.
 static void vgfx_wl_keyboard_leave(void *data, struct wl_proxy *keyboard, uint32_t serial,
                                    struct wl_proxy *surface) {
     (void)keyboard; (void)surface;
@@ -375,6 +463,13 @@ static void vgfx_wl_keyboard_leave(void *data, struct wl_proxy *keyboard, uint32
     }
 }
 
+/// @brief Emit key state and layout-derived text for one native key action.
+/// @param input Input state and target window.
+/// @param code Evdev key code.
+/// @param key Translated public key.
+/// @param down Non-zero for press.
+/// @param repeat Non-zero for repeated press.
+/// @param time_ms Event timestamp.
 static void vgfx_wl_emit_key(vgfx_wayland_input_t *input,
                              uint32_t code,
                              vgfx_key_t key,
@@ -402,6 +497,13 @@ static void vgfx_wl_emit_key(vgfx_wayland_input_t *input,
     }
 }
 
+/// @brief Translate a wl_keyboard key event and manage repeat scheduling.
+/// @param data Borrowed input context.
+/// @param keyboard Keyboard proxy; unused.
+/// @param serial Key-event serial.
+/// @param time Native timestamp.
+/// @param code Evdev key code.
+/// @param state Native pressed/released state.
 static void vgfx_wl_keyboard_key(void *data, struct wl_proxy *keyboard, uint32_t serial,
                                  uint32_t time, uint32_t code, uint32_t state) {
     (void)keyboard;
@@ -423,6 +525,15 @@ static void vgfx_wl_keyboard_key(void *data, struct wl_proxy *keyboard, uint32_t
         input->repeat_active = 0;
     }
 }
+
+/// @brief Update xkb modifier state from compositor masks.
+/// @param data Borrowed input context.
+/// @param keyboard Keyboard proxy; unused.
+/// @param serial Modifier-event serial.
+/// @param depressed Depressed modifier mask.
+/// @param latched Latched modifier mask.
+/// @param locked Locked modifier mask.
+/// @param group Active layout group.
 static void vgfx_wl_keyboard_modifiers(void *data, struct wl_proxy *keyboard, uint32_t serial,
                                        uint32_t depressed, uint32_t latched, uint32_t locked,
                                        uint32_t group) {
@@ -434,6 +545,12 @@ static void vgfx_wl_keyboard_modifiers(void *data, struct wl_proxy *keyboard, ui
         input->xkb.state_update_mask(input->xkb.state, depressed, latched, locked, 0, 0, group);
     input->modifiers = vgfx_wl_modifiers(input);
 }
+
+/// @brief Store compositor keyboard-repeat rate and delay.
+/// @param data Borrowed input context.
+/// @param keyboard Keyboard proxy; unused.
+/// @param rate Repeats per second; non-positive disables repeat.
+/// @param delay Initial delay in milliseconds.
 static void vgfx_wl_keyboard_repeat(void *data, struct wl_proxy *keyboard, int32_t rate, int32_t delay) {
     (void)keyboard;
     vgfx_wayland_input_t *input = data;
@@ -448,6 +565,11 @@ static const vgfx_wl_keyboard_listener_t g_keyboard_listener = {
     vgfx_wl_keyboard_keymap, vgfx_wl_keyboard_enter, vgfx_wl_keyboard_leave,
     vgfx_wl_keyboard_key, vgfx_wl_keyboard_modifiers, vgfx_wl_keyboard_repeat};
 
+/// @brief Find or allocate a slot for a compositor touch identifier.
+/// @param input Input state containing the fixed contact pool.
+/// @param id Native touch identifier.
+/// @param create Non-zero to allocate a free slot when absent.
+/// @return Slot index in [0, 15], or -1.
 static int vgfx_wl_touch_slot(vgfx_wayland_input_t *input, int32_t id, int create) {
     int free_slot = -1;
     for (int i = 0; i < 16; ++i) {
@@ -464,6 +586,11 @@ static int vgfx_wl_touch_slot(vgfx_wayland_input_t *input, int32_t id, int creat
     return create ? free_slot : -1;
 }
 
+/// @brief Publish one touch event from a cached contact slot.
+/// @param input Input state and target window.
+/// @param slot Contact slot index.
+/// @param type Touch down, move, or up event type.
+/// @param time Native timestamp.
 static void vgfx_wl_touch_event(vgfx_wayland_input_t *input,
                                 int slot,
                                 vgfx_event_type_t type,
@@ -480,6 +607,15 @@ static void vgfx_wl_touch_event(vgfx_wayland_input_t *input,
     vgfx_internal_enqueue_event(input->window, &event);
 }
 
+/// @brief Allocate and publish a touch contact entering the application surface.
+/// @param data Borrowed input context.
+/// @param touch Touch proxy; unused.
+/// @param serial Touch-down serial.
+/// @param time Native timestamp.
+/// @param surface Target surface.
+/// @param id Native contact identifier.
+/// @param x Surface X coordinate.
+/// @param y Surface Y coordinate.
 static void vgfx_wl_touch_down(void *data,
                                struct wl_proxy *touch,
                                uint32_t serial,
@@ -501,6 +637,12 @@ static void vgfx_wl_touch_down(void *data,
     }
 }
 
+/// @brief Publish touch-up and release the matching contact slot.
+/// @param data Borrowed input context.
+/// @param touch Touch proxy; unused.
+/// @param serial Touch-up serial.
+/// @param time Native timestamp.
+/// @param id Native contact identifier.
 static void vgfx_wl_touch_up(void *data,
                              struct wl_proxy *touch,
                              uint32_t serial,
@@ -518,6 +660,13 @@ static void vgfx_wl_touch_up(void *data,
     }
 }
 
+/// @brief Update and publish motion for an active touch contact.
+/// @param data Borrowed input context.
+/// @param touch Touch proxy; unused.
+/// @param time Native timestamp.
+/// @param id Native contact identifier.
+/// @param x Surface X coordinate.
+/// @param y Surface Y coordinate.
 static void vgfx_wl_touch_motion(void *data,
                                  struct wl_proxy *touch,
                                  uint32_t time,
@@ -534,11 +683,17 @@ static void vgfx_wl_touch_motion(void *data,
     }
 }
 
+/// @brief Ignore the touch frame delimiter because contacts publish immediately.
+/// @param data Unused input context.
+/// @param touch Unused touch proxy.
 static void vgfx_wl_touch_frame(void *data, struct wl_proxy *touch) {
     (void)data;
     (void)touch;
 }
 
+/// @brief Cancel all active touch contacts and publish one cancel event.
+/// @param data Borrowed input context.
+/// @param touch Touch proxy; unused.
 static void vgfx_wl_touch_cancel(void *data, struct wl_proxy *touch) {
     (void)touch;
     vgfx_wayland_input_t *input = data;
@@ -549,6 +704,12 @@ static void vgfx_wl_touch_cancel(void *data, struct wl_proxy *touch) {
     memset(input->contacts, 0, sizeof(input->contacts));
 }
 
+/// @brief Cache major/minor ellipse dimensions for an active touch contact.
+/// @param data Borrowed input context.
+/// @param touch Touch proxy; unused.
+/// @param id Native contact identifier.
+/// @param major Major-axis length in Wayland fixed units.
+/// @param minor Minor-axis length in Wayland fixed units.
 static void vgfx_wl_touch_shape(void *data,
                                 struct wl_proxy *touch,
                                 int32_t id,
@@ -563,6 +724,11 @@ static void vgfx_wl_touch_shape(void *data,
     }
 }
 
+/// @brief Cache orientation for an active touch contact.
+/// @param data Borrowed input context.
+/// @param touch Touch proxy; unused.
+/// @param id Native contact identifier.
+/// @param orientation Orientation in Wayland fixed units.
 static void vgfx_wl_touch_orientation(void *data,
                                       struct wl_proxy *touch,
                                       int32_t id,
@@ -579,6 +745,10 @@ static const vgfx_wl_touch_listener_t g_touch_listener = {
     vgfx_wl_touch_frame, vgfx_wl_touch_cancel, vgfx_wl_touch_shape,
     vgfx_wl_touch_orientation};
 
+/// @brief Release an owned seat device proxy using its versioned destructor.
+/// @param input Input state supplying the connection API.
+/// @param proxy Address of the owned proxy, cleared on return.
+/// @param opcode Protocol-specific release opcode.
 static void vgfx_wl_release(vgfx_wayland_input_t *input, struct wl_proxy **proxy, uint32_t opcode) {
     if (!*proxy) return;
     if (input->connection && input->connection->api.proxy_get_version(*proxy) >= 3)
@@ -588,6 +758,10 @@ static void vgfx_wl_release(vgfx_wayland_input_t *input, struct wl_proxy **proxy
     *proxy = NULL;
 }
 
+/// @brief Reconcile owned device proxies with current wl_seat capabilities.
+/// @param data Borrowed input context.
+/// @param seat Seat proxy advertising capabilities.
+/// @param caps Bitwise native capability mask.
 static void vgfx_wl_seat_capabilities(void *data, struct wl_proxy *seat, uint32_t caps) {
     vgfx_wayland_input_t *input = data;
     if (!input || !input->connection) return;
@@ -618,11 +792,17 @@ static void vgfx_wl_seat_capabilities(void *data, struct wl_proxy *seat, uint32_
         memset(input->contacts, 0, sizeof(input->contacts));
     }
 }
+
+/// @brief Ignore the compositor's human-readable seat name.
+/// @param data Unused input context.
+/// @param seat Unused seat proxy.
+/// @param name Unused borrowed name.
 static void vgfx_wl_seat_name(void *data, struct wl_proxy *seat, const char *name) {
     (void)data; (void)seat; (void)name;
 }
 static const vgfx_wl_seat_listener_t g_seat_listener = {vgfx_wl_seat_capabilities, vgfx_wl_seat_name};
 
+/// @copydoc vgfx_wayland_input_open
 int vgfx_wayland_input_open(vgfx_wayland_input_t *input, vgfx_wayland_connection_t *connection,
                             struct wl_proxy *surface, struct vgfx_window *window,
                             char *error, uint32_t error_size) {
@@ -643,6 +823,7 @@ int vgfx_wayland_input_open(vgfx_wayland_input_t *input, vgfx_wayland_connection
     return 1;
 }
 
+/// @copydoc vgfx_wayland_input_close
 void vgfx_wayland_input_close(vgfx_wayland_input_t *input) {
     if (!input) return;
     vgfx_wl_release(input, &input->touch, WL_TOUCH_RELEASE);
@@ -652,6 +833,7 @@ void vgfx_wayland_input_close(vgfx_wayland_input_t *input) {
     memset(input, 0, sizeof(*input));
 }
 
+/// @copydoc vgfx_wayland_input_tick
 int vgfx_wayland_input_tick(vgfx_wayland_input_t *input, int64_t now_ms) {
     if (!input || !input->repeat_active || input->repeat_rate <= 0 ||
         now_ms < input->repeat_at_ms)
@@ -675,6 +857,7 @@ int vgfx_wayland_input_tick(vgfx_wayland_input_t *input, int64_t now_ms) {
     return emitted;
 }
 
+/// @copydoc vgfx_wayland_input_clamp_timeout
 int32_t vgfx_wayland_input_clamp_timeout(const vgfx_wayland_input_t *input,
                                          int32_t requested_ms,
                                          int64_t now_ms) {

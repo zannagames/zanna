@@ -23,6 +23,12 @@
 
 #include "vg_ide_widgets_common.h"
 
+/// @file
+/// @brief Declares the IDE code editor, find/replace bar, and minimap APIs.
+/// @details The editor surface covers line storage, multi-cursor editing, undo history,
+/// incremental change journals, syntax and semantic overlays, folding, inlay hints, scrolling,
+/// clipboard actions, search/replace, and bounded minimap caching.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -136,7 +142,12 @@ typedef struct vg_codeeditor_perf_stats {
     uint64_t full_text_copy_bytes;           ///< Bytes copied by full-document materializations.
 } vg_codeeditor_perf_stats_t;
 
-/// @brief Syntax highlighter callback
+/// @brief Populate per-character colors for one editor line.
+/// @param editor Code editor widget requesting highlighting.
+/// @param line_num Zero-based line number.
+/// @param text Borrowed NUL-terminated line text.
+/// @param colors Mutable per-character color array owned by the editor.
+/// @param user_data Opaque context registered with the syntax callback.
 typedef void (*vg_syntax_callback_t)(
     vg_widget_t *editor, int line_num, const char *text, uint32_t *colors, void *user_data);
 

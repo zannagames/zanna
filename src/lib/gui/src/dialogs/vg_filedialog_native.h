@@ -21,9 +21,21 @@
 
 #include <stddef.h>
 
+/// @file
+/// @brief Declares blocking platform-native open, save, and folder-selection dialogs.
+/// @details Paths cross the adapter boundary as UTF-8. Successful operations return heap-owned
+/// strings, multi-selection returns a heap-owned array of heap-owned strings, and cancellation
+/// or setup failure returns NULL.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/// @brief Return whether native OS dialogs are usable in this session.
+/// @details macOS: always 1. Windows: probes COM once (IFileOpenDialog); a
+///          failed probe routes callers to the drawn fallback dialog.
+/// @return Nonzero when native dialog creation succeeds, otherwise zero.
+int vg_native_dialogs_available(void);
 
 /// @brief Show a native "Open File" dialog and return the selected file path.
 ///
@@ -35,12 +47,7 @@ extern "C" {
 /// @param initial_path   Initial directory to display (may be NULL for default).
 /// @param filter_name    Human-readable filter label (e.g. "C Source Files").
 /// @param filter_pattern Semicolon-separated glob patterns (e.g. "*.c;*.h").
-/// @return Heap-allocated full file path, or NULL if the user cancelled.
-/// @brief Return whether native OS dialogs are usable in this session.
-/// @details macOS: always 1. Windows: probes COM once (IFileOpenDialog); a
-///          failed probe routes callers to the drawn fallback dialog.
-int vg_native_dialogs_available(void);
-
+/// @return Heap-allocated UTF-8 path owned by the caller, or NULL on cancellation or failure.
 char *vg_native_open_file(const char *title,
                           const char *initial_path,
                           const char *filter_name,
@@ -65,6 +72,8 @@ char **vg_native_open_files(const char *title,
                             size_t *out_count);
 
 /// @brief Free an array returned by vg_native_open_files().
+/// @param paths Array of heap-owned path strings, or NULL.
+/// @param count Number of readable entries in @p paths.
 void vg_native_free_paths(char **paths, size_t count);
 
 /// @brief Show a native "Save File" dialog and return the chosen save path.

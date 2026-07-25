@@ -213,28 +213,100 @@ typedef struct {
     uint8_t eos;
 } ogg_packet_info_t;
 
+/// @brief Open a forward-only OGG packet reader over a file.
+/// @param path Path of the OGG container to open.
+/// @return Owned reader handle, or NULL when the file cannot be opened or initialized.
 ogg_reader_t *ogg_reader_open_file(const char *path);
+
+/// @brief Close an OGG reader and release its packet and stream state.
+/// @param r Reader returned by ogg_reader_open_file().
 void ogg_reader_free(ogg_reader_t *r);
+
+/// @brief Rewind a file-backed OGG reader and discard pending packet state.
+/// @param r Reader to reset to the beginning of its container.
 void ogg_reader_rewind(ogg_reader_t *r);
+
+/// @brief Read the next complete OGG packet together with logical-stream metadata.
+/// @details The returned packet storage remains owned by @p r and is valid only
+///          until the next packet-read call on that reader.
+/// @param r Reader whose interleaved logical streams are advanced.
+/// @param out_data Receives the borrowed packet byte pointer.
+/// @param out_len Receives the packet length in bytes.
+/// @param out_info Receives serial, granule-position, and boundary metadata.
+/// @return 1 when a packet was produced; 0 at end of input or on an error.
 int ogg_reader_next_packet_ex(ogg_reader_t *r,
                               const uint8_t **out_data,
                               size_t *out_len,
                               ogg_packet_info_t *out_info);
 
+/// @brief Allocate an empty incremental Vorbis decoder.
+/// @return Owned decoder handle, or NULL on allocation failure.
 vorbis_decoder_t *vorbis_decoder_new(void);
+
+/// @brief Release a Vorbis decoder and all codec-owned buffers.
+/// @param dec Decoder returned by vorbis_decoder_new().
 void vorbis_decoder_free(vorbis_decoder_t *dec);
+
+/// @brief Submit one of the three ordered Vorbis setup packets.
+/// @param dec Decoder being initialized.
+/// @param data Header-packet bytes.
+/// @param len Header-packet length in bytes.
+/// @param num Zero-based header index: identification, comment, then setup.
+/// @return 0 on success, or -1 when the packet is invalid.
 int vorbis_decode_header(vorbis_decoder_t *dec, const uint8_t *data, size_t len, int num);
+
+/// @brief Decode one Vorbis audio packet to borrowed interleaved signed-16 PCM.
+/// @param dec Initialized decoder.
+/// @param data Audio-packet bytes.
+/// @param len Audio-packet length in bytes.
+/// @param out_pcm Receives codec-owned PCM valid until the next decode call.
+/// @param out_samples Receives the decoded sample-frame count per channel.
+/// @return 0 on success, or -1 when the packet cannot be decoded.
 int vorbis_decode_packet(
     vorbis_decoder_t *dec, const uint8_t *data, size_t len, int16_t **out_pcm, int *out_samples);
+
+/// @brief Read the sample rate parsed from the Vorbis identification header.
+/// @param dec Initialized decoder.
+/// @return Source samples per second.
 int vorbis_get_sample_rate(const vorbis_decoder_t *dec);
+
+/// @brief Read the channel count parsed from the Vorbis identification header.
+/// @param dec Initialized decoder.
+/// @return Number of interleaved source channels.
 int vorbis_get_channels(const vorbis_decoder_t *dec);
 
+/// @brief Open an MP3 file for incremental frame decoding.
+/// @param filepath Path of the MP3 file.
+/// @return Owned stream handle, or NULL on open, parse, or allocation failure.
 mp3_stream_t *mp3_stream_open(const char *filepath);
+
+/// @brief Decode the next MP3 frame to stream-owned signed-16 PCM.
+/// @param stream Streaming decoder to advance.
+/// @param out_pcm Receives an interleaved buffer valid until the next decode call.
+/// @return Sample frames per channel, 0 at end of input, or -1 on decode failure.
 int mp3_stream_decode_frame(mp3_stream_t *stream, int16_t **out_pcm);
+
+/// @brief Read an MP3 stream's source sample rate.
+/// @param stream Open stream.
+/// @return Source samples per second.
 int mp3_stream_sample_rate(const mp3_stream_t *stream);
+
+/// @brief Read an MP3 stream's decoded channel count.
+/// @param stream Open stream.
+/// @return Number of interleaved channels.
 int mp3_stream_channels(const mp3_stream_t *stream);
+
+/// @brief Read the stream's estimated total decoded frame count.
+/// @param stream Open stream.
+/// @return Total samples per channel, or a non-positive value when unknown.
 int mp3_stream_total_samples(const mp3_stream_t *stream);
+
+/// @brief Reset an MP3 stream to its first audio frame.
+/// @param stream Stream prepared for looped playback or an absolute seek.
 void mp3_stream_rewind(mp3_stream_t *stream);
+
+/// @brief Release an MP3 stream and its compressed and decoded buffers.
+/// @param stream Stream returned by mp3_stream_open().
 void mp3_stream_free(mp3_stream_t *stream);
 
 //===----------------------------------------------------------------------===//
@@ -2004,9 +2076,21 @@ static void vaud_music_wait_for_refill(vaud_context_t ctx, vaud_music_t music) {
 // Music Loading and Playback
 //===----------------------------------------------------------------------===//
 
+/// @brief Append a fully initialized music stream to a context registry.
+/// @param ctx Context that will service and mix @p music.
+/// @param music Unregistered stream whose context pointer already names @p ctx.
+/// @return 1 when registered; otherwise 0 after publishing a capacity error.
 static int music_register(vaud_context_t ctx, vaud_music_t music);
+
+/// @brief Allocate a music handle, refill event, and fixed decoded-buffer ring.
+/// @details The returned stream is initialized to the stopped state but is not
+///          inserted into @p ctx; callers may safely pass it to vaud_free_music()
+///          while completing codec-specific initialization.
+/// @param ctx Context to associate with the provisional stream.
+/// @return Owned unregistered stream, or NULL on allocation/event failure.
 static vaud_music_t music_alloc_unregistered(vaud_context_t ctx);
 
+/// @copydoc vaud_load_music
 vaud_music_t vaud_load_music(vaud_context_t ctx, const char *path) {
     if (vaud_context_is_destroying(ctx) || !path) {
         vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL context or path");
@@ -2087,6 +2171,7 @@ vaud_music_t vaud_load_music(vaud_context_t ctx, const char *path) {
     return music;
 }
 
+/// @copydoc music_register
 static int music_register(vaud_context_t ctx, vaud_music_t music) {
     if (vaud_context_is_destroying(ctx) || !music)
         return 0;
@@ -2102,7 +2187,7 @@ static int music_register(vaud_context_t ctx, vaud_music_t music) {
     return 0;
 }
 
-/// @brief Helper: allocate music struct with buffers, leaving it unregistered.
+/// @copydoc music_alloc_unregistered
 static vaud_music_t music_alloc_unregistered(vaud_context_t ctx) {
     vaud_music_t music = (vaud_music_t)calloc(1, sizeof(struct vaud_music));
     if (!music)
@@ -2133,6 +2218,7 @@ static vaud_music_t music_alloc_unregistered(vaud_context_t ctx) {
     return music;
 }
 
+/// @copydoc vaud_load_music_ogg
 vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path) {
     if (vaud_context_is_destroying(ctx) || !path)
         return NULL;
@@ -2231,6 +2317,7 @@ vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path) {
     return music;
 }
 
+/// @copydoc vaud_load_music_mp3
 vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path) {
     if (vaud_context_is_destroying(ctx) || !path)
         return NULL;
@@ -2284,6 +2371,7 @@ vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path) {
     return music;
 }
 
+/// @copydoc vaud_update
 void vaud_update(vaud_context_t ctx) {
     if (vaud_context_is_destroying(ctx))
         return;
@@ -2362,6 +2450,7 @@ void vaud_update(vaud_context_t ctx) {
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_free_music
 void vaud_free_music(vaud_music_t music) {
     if (!music)
         return;
@@ -2420,6 +2509,7 @@ void vaud_free_music(vaud_music_t music) {
     free(music);
 }
 
+/// @copydoc vaud_detach_music
 void vaud_detach_music(vaud_music_t music) {
     if (!music)
         return;
@@ -2450,10 +2540,12 @@ void vaud_detach_music(vaud_music_t music) {
     }
 }
 
+/// @copydoc vaud_music_is_attached
 int vaud_music_is_attached(vaud_music_t music) {
     return (music && music->ctx) ? 1 : 0;
 }
 
+/// @copydoc vaud_music_play
 void vaud_music_play(vaud_music_t music, int loop) {
     if (!music || vaud_context_is_destroying(music->ctx))
         return;
@@ -2491,6 +2583,7 @@ void vaud_music_play(vaud_music_t music, int loop) {
     vaud_update(ctx);
 }
 
+/// @copydoc vaud_music_stop
 void vaud_music_stop(vaud_music_t music) {
     if (!music || vaud_context_is_destroying(music->ctx))
         return;
@@ -2513,6 +2606,7 @@ void vaud_music_stop(vaud_music_t music) {
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_music_pause
 void vaud_music_pause(vaud_music_t music) {
     if (!music || vaud_context_is_destroying(music->ctx))
         return;
@@ -2524,6 +2618,7 @@ void vaud_music_pause(vaud_music_t music) {
     vaud_mutex_unlock(&music->ctx->mutex);
 }
 
+/// @copydoc vaud_music_resume
 void vaud_music_resume(vaud_music_t music) {
     if (!music || vaud_context_is_destroying(music->ctx))
         return;
@@ -2537,6 +2632,7 @@ void vaud_music_resume(vaud_music_t music) {
     vaud_update(ctx);
 }
 
+/// @copydoc vaud_music_set_loop
 void vaud_music_set_loop(vaud_music_t music, int loop) {
     if (!music)
         return;
@@ -2550,6 +2646,7 @@ void vaud_music_set_loop(vaud_music_t music, int loop) {
     }
 }
 
+/// @copydoc vaud_music_set_volume
 void vaud_music_set_volume(vaud_music_t music, float volume) {
     if (!music)
         return;
@@ -2565,6 +2662,7 @@ void vaud_music_set_volume(vaud_music_t music, float volume) {
     }
 }
 
+/// @copydoc vaud_music_set_group
 void vaud_music_set_group(vaud_music_t music, int64_t group_id) {
     if (!music)
         return;
@@ -2578,6 +2676,7 @@ void vaud_music_set_group(vaud_music_t music, int64_t group_id) {
     }
 }
 
+/// @copydoc vaud_music_get_volume
 float vaud_music_get_volume(vaud_music_t music) {
     if (!music)
         return 0.0f;
@@ -2591,6 +2690,7 @@ float vaud_music_get_volume(vaud_music_t music) {
     return music->volume;
 }
 
+/// @copydoc vaud_music_is_playing
 int vaud_music_is_playing(vaud_music_t music) {
     if (!music)
         return 0;
@@ -2603,6 +2703,7 @@ int vaud_music_is_playing(vaud_music_t music) {
     return (music->state == VAUD_MUSIC_PLAYING) ? 1 : 0;
 }
 
+/// @copydoc vaud_music_seek
 void vaud_music_seek(vaud_music_t music, float seconds) {
     if (!music || vaud_context_is_destroying(music->ctx))
         return;
@@ -2645,6 +2746,7 @@ void vaud_music_seek(vaud_music_t music, float seconds) {
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_music_get_position
 float vaud_music_get_position(vaud_music_t music) {
     if (!music)
         return 0.0f;
@@ -2658,6 +2760,7 @@ float vaud_music_get_position(vaud_music_t music) {
     return music->sample_rate > 0 ? (float)music->position / (float)music->sample_rate : 0.0f;
 }
 
+/// @copydoc vaud_music_get_duration
 float vaud_music_get_duration(vaud_music_t music) {
     if (!music)
         return 0.0f;
@@ -2675,6 +2778,7 @@ float vaud_music_get_duration(vaud_music_t music) {
 // Utility Functions
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_get_active_voice_count
 int32_t vaud_get_active_voice_count(vaud_context_t ctx) {
     if (vaud_context_is_destroying(ctx))
         return 0;
@@ -2691,6 +2795,7 @@ int32_t vaud_get_active_voice_count(vaud_context_t ctx) {
     return count;
 }
 
+/// @copydoc vaud_stop_all_sounds
 void vaud_stop_all_sounds(vaud_context_t ctx) {
     if (vaud_context_is_destroying(ctx))
         return;
@@ -2703,6 +2808,7 @@ void vaud_stop_all_sounds(vaud_context_t ctx) {
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_get_latency_ms
 float vaud_get_latency_ms(vaud_context_t ctx) {
     if (vaud_context_is_destroying(ctx))
         return 0.0f;
@@ -2734,6 +2840,7 @@ void vaud_get_stats(vaud_context_t ctx, vaud_stats_t *out_stats) {
     out_stats->backend_write_failures = vaud_atomic_load_u64(&ctx->stats.backend_write_failures);
 }
 
+/// @copydoc vaud_set_group_effects_processor
 void vaud_set_group_effects_processor(vaud_context_t ctx,
                                       vaud_group_effects_query_fn query_fn,
                                       vaud_group_effects_process_fn process_fn,

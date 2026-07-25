@@ -908,10 +908,16 @@ These gaps are current documentation, not a plan commitment:
 - Add boxed struct-payload expansion in the debugger.
 - Deepen Source Control with merge/rebase orchestration, ours/theirs review,
   merge-abort, and multi-file conflict recovery.
-- Deepen the 2D/3D scene editors with automatic schema/scene-data migration and
-  richer asset/runtime-component workflows,
-  asset tagging/import settings, material-library/thumbnail workflows, and
-  cubemap/lightmap authoring.
+- Deepen the scene editors' remaining explicit deferrals: prefab per-field
+  descendant overrides (VSCN v7 instances override transform, name,
+  visibility, and metadata only), multiple simultaneous 3D viewports,
+  GPU-accelerated lightmap baking (the CPU path tracer is the only baker),
+  visual terrain/water/navmesh authoring (these stay metadata-driven
+  conventions games consume), automatic unattended schema migration (the
+  assistant remains explicitly confirmed per run), and generalized runtime
+  components beyond the typed-metadata conventions.
+- The Ashfall recreation's test arena intentionally stays code-built
+  (`ashfall-scenes/world/arena.zia`); every campaign mission is scene-driven.
 - Split oversized coordinator modules.
 - Expand platform and display test coverage.
 

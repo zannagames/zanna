@@ -187,6 +187,17 @@ func main() {
              "render target/readback dimensions diverged from the viewport");
         return;
     }
+    // Perspective is the session default (ADR 0183); the exact
+    // OrthoSize-to-viewScale identity is an orthographic contract, so pin
+    // it in ortho and restore the default afterward.
+    if editor.viewportRenderCamera.IsOrtho {
+        Fail(shell, harness,
+             "the retained camera did not default to perspective");
+        return;
+    }
+    editor.SetViewProjection(false);
+    editor.Pump(sceneDoc);
+    shell.Render();
     if editor.viewportRenderCamera.IsOrtho == false
        or Near(
               editor.viewportRenderCamera.OrthoSize,
@@ -196,6 +207,9 @@ func main() {
              "orthographic camera scale did not match editor projection");
         return;
     }
+    editor.SetViewProjection(true);
+    editor.Pump(sceneDoc);
+    shell.Render();
     if editor.viewportRenderCanvas.DrawCount < 1 {
         Fail(shell, harness,
              "scene graph submitted no mesh draws to the embedded canvas");

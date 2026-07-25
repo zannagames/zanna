@@ -28,6 +28,12 @@
 
 #include "vg_ide_widgets_common.h"
 
+/// @file
+/// @brief Declares tree views, menu bars, pull-down menus, and context menus.
+/// @details The hierarchy APIs support stable retained nodes, single or multiple selection,
+/// row-aware drag-and-drop, expansion, inline editing, and callback-driven activation. Menu
+/// APIs provide nested commands, keyboard navigation, stale-handle detection, and popup state.
+
 #ifdef __cplusplus
 extern "C" {
 #endif

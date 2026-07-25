@@ -1,4 +1,37 @@
-# ASHFALL
+# ASHFALL: SCENES
+
+**The complete Ashfall campaign rebuilt from Zanna Studio scene files.** Every
+campaign mission (1-9) and the hub load from authored
+`assets/scenes/mission-NN.scene3d` / `hub.scene3d` files instead of code-side
+level builders — geometry boxes are real mesh nodes with shared palette
+materials and ADR 0185 collider metadata, lights are authored `SceneNode.Light`
+components, and every spawn, pickup, prop, cover, flank, route marker,
+landmark, encounter beat, and objective gate is a typed-metadata marker node
+editable in Studio's 3D scene editor. Objectives, the water pool, ambient,
+start pose, and the complete per-level environment row persist as scene root
+metadata. The test arena (`--level 0`) intentionally stays code-built in
+`world/arena.zia`.
+
+The scenes were exported from the original game by
+`examples/games/ashfall/tools/export_scenes.zia`, and
+`examples/games/ashfall/tools/scene_parity_probe.zia` proves each one
+reproduces the code-built level byte-for-byte through the canonical manifest
+serializer (plus explicit water/objective/environment comparisons). The
+original Ashfall remains untouched at `examples/games/ashfall`.
+
+Launch straight into one authored scene:
+
+```sh
+examples/bin/ashfall-scenes -- --scene assets/scenes/mission-03.scene3d
+```
+
+`scene-components.json` ships the gameplay component palette (spawns, pickups,
+covers, routes, gates, colliders...) for Studio's Add Missing workflow, and
+`materials.scene3d` seeds the project material library with the campaign's
+surface-class palette.
+
+---
+
 
 A single-player, combat-first sci-fi FPS campaign built entirely in Zia on the
 Zanna engine. Salvager **Rook Ryder** fights through nine missions on the ash
@@ -26,15 +59,15 @@ instead of opening an unplayably slow window.
 ```sh
 # macOS/Linux, from a built Zanna checkout:
 mkdir -p examples/bin
-build/src/tools/zanna/zanna build examples/games/ashfall \
-  --build-profile release -o examples/bin/ashfall
+build/src/tools/zanna/zanna build examples/games/ashfall-scenes \
+  --build-profile release -o examples/bin/ashfall-scenes
 
-./examples/bin/ashfall
+./examples/bin/ashfall-scenes
 ./examples/bin/ashfall --windowed
 ./examples/bin/ashfall --windowed --level 1
 
 # The bounded headless smoke may still run in the VM:
-build/src/tools/zanna/zanna run examples/games/ashfall/main.zia -- --smoke
+build/src/tools/zanna/zanna run examples/games/ashfall-scenes/main.zia -- --smoke
 ```
 
 On Windows, use the built or installed `zanna.exe`, select an `.exe` output,
@@ -135,7 +168,7 @@ The 14 portable probes can be run without ctest:
 zanna check examples/games/ashfall --diagnostic-format=json
 
 for probe in core movement perf stress_combat combat enemy level manifest meta render campaign menu assets smoke; do
-  zanna run "examples/games/ashfall/probes/${probe}_probe.zia"
+  zanna run "examples/games/ashfall-scenes/probes/${probe}_probe.zia"
 done
 ```
 
@@ -152,7 +185,7 @@ registered CTest runs it specifically on Metal and rejects backend fallback:
 ctest --test-dir build -R zia_visual_ashfall_metal --output-on-failure
 
 # Direct run on the selected platform backend; the PNG is written to the OS temp directory.
-ZANNA_3D_BACKEND=metal zanna run examples/games/ashfall/probes/visual_probe.zia
+ZANNA_3D_BACKEND=metal zanna run examples/games/ashfall-scenes/probes/visual_probe.zia
 ```
 
 For real GPU timing, build the dedicated benchmark natively. Its default mode
@@ -163,7 +196,7 @@ so the benchmark also loads the loose authored assets. `--fullscreen --paced`
 validates native-resolution delivery at the display's actual refresh rate:
 
 ```sh
-zanna build examples/games/ashfall/probes/gpu_perf_probe.zia \
+zanna build examples/games/ashfall-scenes/probes/gpu_perf_probe.zia \
   --build-profile release -o /tmp/ashfall_gpu_perf
 (cd examples/games/ashfall && /tmp/ashfall_gpu_perf)
 (cd examples/games/ashfall && /tmp/ashfall_gpu_perf --sustained)

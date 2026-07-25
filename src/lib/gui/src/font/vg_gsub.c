@@ -31,6 +31,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements bounded OpenType GSUB parsing and coding-ligature shaping.
+/// @details Load-time discovery records `liga` and `calt` lookups from the default or Latin
+/// script. Run-time shaping supports single, ligature, chaining-context, and extension lookups
+/// while preserving the source-character span represented by every output glyph.
+
 #define GSUB_MAX_NESTED_DEPTH 4
 #define GSUB_MAX_RULE_GLYPHS 16
 
@@ -38,17 +44,26 @@
 // Bounds-checked readers over the GSUB slice
 //=============================================================================
 
+/// @brief Non-owning, bounds-delimited view of a font's GSUB table.
 typedef struct gsub_slice {
     const uint8_t *data; ///< Start of the GSUB table.
     uint32_t length;     ///< Byte length of the GSUB table.
 } gsub_slice_t;
 
+/// @brief Read one big-endian 16-bit GSUB field.
+/// @param gsub Bounded GSUB table view.
+/// @param offset Byte offset from the beginning of @p gsub.
+/// @return Decoded value, or zero when the field lies beyond the view.
 static uint16_t gsub_u16(const gsub_slice_t *gsub, uint32_t offset) {
     if (offset + 2 > gsub->length)
         return 0;
     return ttf_read_u16(gsub->data + offset);
 }
 
+/// @brief Read one big-endian 32-bit GSUB field.
+/// @param gsub Bounded GSUB table view.
+/// @param offset Byte offset from the beginning of @p gsub.
+/// @return Decoded value, or zero when the field lies beyond the view.
 static uint32_t gsub_u32(const gsub_slice_t *gsub, uint32_t offset) {
     if (offset + 4 > gsub->length)
         return 0;
@@ -59,7 +74,13 @@ static uint32_t gsub_u32(const gsub_slice_t *gsub, uint32_t offset) {
 // Coverage and class-definition tables
 //=============================================================================
 
-/// @brief Return the coverage index of @p glyph, or -1 when uncovered.
+/// @brief Find a glyph's index in an OpenType Coverage table.
+/// @details Supports format 1 glyph arrays and format 2 range records, using binary search for
+/// both sorted representations.
+/// @param gsub Bounded GSUB table view.
+/// @param coverage Byte offset of the Coverage table within @p gsub.
+/// @param glyph Glyph identifier to locate.
+/// @return Zero-based coverage index, or `-1` when the glyph is absent or the format is unsupported.
 static int32_t gsub_coverage_index(const gsub_slice_t *gsub, uint32_t coverage, uint16_t glyph) {
     uint16_t format = gsub_u16(gsub, coverage);
     if (format == 1) {
@@ -99,7 +120,13 @@ static int32_t gsub_coverage_index(const gsub_slice_t *gsub, uint32_t coverage, 
     return -1;
 }
 
-/// @brief Return the class of @p glyph in a ClassDef table (0 when absent).
+/// @brief Resolve a glyph's class in an OpenType ClassDef table.
+/// @details Supports format 1 consecutive class arrays and format 2 sorted range records. Class
+/// zero is the implicit value for uncovered glyphs and malformed or unsupported tables.
+/// @param gsub Bounded GSUB table view.
+/// @param classdef Byte offset of the ClassDef table, or zero for the implicit default class.
+/// @param glyph Glyph identifier to classify.
+/// @return Class identifier, or zero when no explicit class applies.
 static uint16_t gsub_glyph_class(const gsub_slice_t *gsub, uint32_t classdef, uint16_t glyph) {
     if (classdef == 0)
         return 0;
@@ -135,17 +162,29 @@ static uint16_t gsub_glyph_class(const gsub_slice_t *gsub, uint32_t classdef, ui
 // Shaping state
 //=============================================================================
 
+/// @brief Mutable glyph run and the GSUB data used to transform it.
 typedef struct gsub_run {
+    /// @brief Non-owning table view valid for the duration of shaping.
     const gsub_slice_t *gsub;
     vg_shaped_glyph_t *glyphs; ///< Mutable shaped run (glyph ids + source spans).
     int32_t count;             ///< Current glyph count.
 } gsub_run_t;
 
+/// @brief Apply a selected GSUB lookup at one run position.
+/// @param run Mutable shaping run.
+/// @param lookup_index Index in the GSUB LookupList.
+/// @param position Glyph position at which matching begins.
+/// @param depth Current contextual-lookup nesting depth.
+/// @return Nonzero when a supported subtable applies, otherwise zero.
 static int32_t
 gsub_apply_lookup_at(gsub_run_t *run, uint32_t lookup_index, int32_t position, int32_t depth);
 
 /// @brief Resolve a lookup's subtable, unwrapping extension (type 7) records.
-/// @return Effective lookup type, filling @p subtable_out; 0 on malformed data.
+/// @param gsub Bounded GSUB table view.
+/// @param lookup_type Lookup type declared by the parent lookup.
+/// @param subtable Byte offset of the selected lookup subtable.
+/// @param subtable_out Receives the effective subtable offset.
+/// @return Effective lookup type, or zero for an unsupported extension format.
 static uint16_t gsub_resolve_subtable(const gsub_slice_t *gsub,
                                       uint16_t lookup_type,
                                       uint32_t subtable,
@@ -163,7 +202,10 @@ static uint16_t gsub_resolve_subtable(const gsub_slice_t *gsub,
 }
 
 /// @brief Apply a single substitution (LookupType 1) at @p position.
-/// @return 1 when substituted.
+/// @param run Mutable shaping run.
+/// @param subtable Offset of a type 1 subtable.
+/// @param position Glyph position to test and potentially replace.
+/// @return One when a substitution occurs, otherwise zero.
 static int32_t
 gsub_apply_single(gsub_run_t *run, uint32_t subtable, int32_t position) {
     uint16_t glyph = run->glyphs[position].glyph_id;
@@ -191,6 +233,9 @@ gsub_apply_single(gsub_run_t *run, uint32_t subtable, int32_t position) {
 /// @brief Apply a ligature substitution (LookupType 4) at @p position.
 /// @details On match, the matched glyphs collapse into one shaped glyph whose
 ///          source span covers every merged character.
+/// @param run Mutable shaping run.
+/// @param subtable Offset of a type 4 ligature-substitution subtable.
+/// @param position Position of the first candidate component.
 /// @return Number of glyphs consumed (>=2) when a ligature formed, else 0.
 static int32_t
 gsub_apply_ligature(gsub_run_t *run, uint32_t subtable, int32_t position) {
@@ -242,7 +287,12 @@ gsub_apply_ligature(gsub_run_t *run, uint32_t subtable, int32_t position) {
     return 0;
 }
 
-/// @brief Apply nested SubstLookupRecords for a matched contextual rule.
+/// @brief Apply nested substitution records for a matched contextual rule.
+/// @param run Mutable shaping run.
+/// @param records Offset of the first `SubstLookupRecord`.
+/// @param record_count Number of consecutive records to inspect.
+/// @param position Run position corresponding to sequence index zero.
+/// @param depth Current contextual-lookup nesting depth.
 static void gsub_apply_records(gsub_run_t *run,
                                uint32_t records,
                                uint16_t record_count,
@@ -257,7 +307,13 @@ static void gsub_apply_records(gsub_run_t *run,
 }
 
 /// @brief Apply a chaining contextual substitution (LookupType 6) at @p position.
-/// @return 1 when a rule matched (records applied), else 0.
+/// @details Handles glyph-, class-, and coverage-based chaining formats. Matching checks input,
+/// backtrack, and lookahead sequences before dispatching nested substitution records.
+/// @param run Mutable shaping run.
+/// @param subtable Offset of a type 6 chaining-context subtable.
+/// @param position Input position at which matching begins.
+/// @param depth Current contextual-lookup nesting depth.
+/// @return One when a contextual rule matches and its records are processed, otherwise zero.
 static int32_t
 gsub_apply_chain(gsub_run_t *run, uint32_t subtable, int32_t position, int32_t depth) {
     uint16_t format = gsub_u16(run->gsub, subtable);
@@ -447,6 +503,12 @@ gsub_apply_chain(gsub_run_t *run, uint32_t subtable, int32_t position, int32_t d
 }
 
 /// @brief Apply one lookup (all its subtables) at a single run position.
+/// @details Extension subtables are unwrapped before dispatch. Supported effective lookup types
+/// are single substitution, ligature substitution, and chaining contextual substitution.
+/// @param run Mutable shaping run.
+/// @param lookup_index Index in the GSUB LookupList.
+/// @param position Glyph position at which matching begins.
+/// @param depth Current contextual-lookup nesting depth.
 /// @return Non-zero when any subtable substituted at this position.
 static int32_t
 gsub_apply_lookup_at(gsub_run_t *run, uint32_t lookup_index, int32_t position, int32_t depth) {
@@ -488,7 +550,11 @@ gsub_apply_lookup_at(gsub_run_t *run, uint32_t lookup_index, int32_t position, i
 // Load-time feature resolution
 //=============================================================================
 
-/// @brief Collect the liga/calt lookup indices for the default or Latin script.
+/// @brief Collect supported ligature lookup indices from a parsed font.
+/// @details Selects the `DFLT` script or falls back to `latn`, reads its default language system,
+/// gathers unique `liga` and `calt` lookup indices, sorts them into LookupList order, and stores an
+/// owned copy on the font. Missing or malformed data simply leaves shaping disabled.
+/// @param font Parsed font whose GSUB metadata and owned lookup list are updated.
 void vg_gsub_init(struct vg_font *font) {
     if (!font || !font->gsub_offset || font->gsub_len < 10)
         return;
@@ -565,10 +631,12 @@ void vg_gsub_init(struct vg_font *font) {
 // Public shaping API
 //=============================================================================
 
+/// @copydoc vg_font_has_ligatures
 bool vg_font_has_ligatures(vg_font_t *font) {
     return font && font->gsub_feature_lookup_count > 0;
 }
 
+/// @copydoc vg_font_shape
 int32_t vg_font_shape(vg_font_t *font,
                       const uint32_t *codepoints,
                       int32_t count,

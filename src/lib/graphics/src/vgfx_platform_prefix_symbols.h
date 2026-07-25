@@ -13,6 +13,18 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Rename the complete Linux graphics adapter ABI through `VGFX_PREFIXED`.
+/// @details This intentionally repeatable mapping header is included by an
+///          adapter-specific prefix header before compiling that adapter.
+///          Every externally visible clipboard, native-handle, window, input,
+///          timing, allocation, and presentation entry point is rewritten to a
+///          backend-qualified symbol so Wayland and X11 can coexist in AUTO
+///          builds.  The including header must define `VGFX_PREFIXED(name)`.
+
+/// @name Linux adapter ABI symbol mappings
+/// @brief Map unqualified adapter exports to backend-qualified link symbols.
+/// @{
 #define vgfx_clipboard_clear VGFX_PREFIXED(vgfx_clipboard_clear)
 #define vgfx_clipboard_get_text VGFX_PREFIXED(vgfx_clipboard_get_text)
 #define vgfx_clipboard_has_format VGFX_PREFIXED(vgfx_clipboard_has_format)
@@ -58,3 +70,4 @@
 #define vgfx_platform_wait_events VGFX_PREFIXED(vgfx_platform_wait_events)
 #define vgfx_platform_warp_cursor VGFX_PREFIXED(vgfx_platform_warp_cursor)
 #define vgfx_platform_yield VGFX_PREFIXED(vgfx_platform_yield)
+/// @}

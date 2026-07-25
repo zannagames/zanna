@@ -32,6 +32,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements the native file-dialog surface with raw Windows COM interfaces.
+/// @details Each public operation initializes a single-threaded COM apartment for its call,
+/// strictly converts UTF-8 to UTF-16, applies common title/folder/filter options, and converts
+/// filesystem shell items back into caller-owned UTF-8 paths.
+
 //=============================================================================
 // COM GUIDs
 //=============================================================================
@@ -53,6 +59,8 @@ static const GUID VGFD_IID_IShellItem = {
 //=============================================================================
 
 /// @brief Convert UTF-8 to a caller-owned wide string (NULL-tolerant).
+/// @param utf8 NUL-terminated UTF-8 input; NULL or empty returns NULL.
+/// @return Heap-allocated UTF-16 string, or NULL for empty/invalid input or allocation failure.
 static wchar_t *vgfd_wide(const char *utf8) {
     if (!utf8 || !*utf8)
         return NULL;
@@ -70,6 +78,8 @@ static wchar_t *vgfd_wide(const char *utf8) {
 }
 
 /// @brief Convert a wide string to caller-owned UTF-8.
+/// @param wide NUL-terminated UTF-16 input, or NULL.
+/// @return Heap-allocated UTF-8 string, or NULL for invalid input or allocation failure.
 static char *vgfd_utf8(const wchar_t *wide) {
     if (!wide)
         return NULL;
@@ -91,10 +101,15 @@ static char *vgfd_utf8(const wchar_t *wide) {
 // COM lifecycle
 //=============================================================================
 
+/// @brief Tracks whether one helper invocation must balance COM initialization.
 typedef struct {
+    /// @brief Nonzero after successful `CoInitializeEx`.
     int uninitialize;
 } vgfd_com_scope;
 
+/// @brief Enter a single-threaded COM apartment for one dialog operation.
+/// @param scope Destination lifecycle state.
+/// @return 1 when COM initialization succeeds, otherwise 0.
 static int vgfd_com_enter(vgfd_com_scope *scope) {
     if (!scope)
         return 0;
@@ -106,13 +121,14 @@ static int vgfd_com_enter(vgfd_com_scope *scope) {
     return 1;
 }
 
+/// @brief Balance a successful COM apartment entry.
+/// @param scope Lifecycle state previously passed to @ref vgfd_com_enter.
 static void vgfd_com_leave(vgfd_com_scope *scope) {
     if (scope && scope->uninitialize)
         CoUninitialize();
 }
 
-/// @brief Probe native-dialog availability on the calling thread.
-/// @return 1 when IFileOpenDialog can be created in this apartment.
+/// @copydoc vg_native_dialogs_available
 int vg_native_dialogs_available(void) {
     vgfd_com_scope scope;
     if (!vgfd_com_enter(&scope))
@@ -131,6 +147,14 @@ int vg_native_dialogs_available(void) {
 }
 
 /// @brief Apply title/initial-folder/filter options to a common dialog.
+/// @param dialog Open common-file-dialog interface.
+/// @param title Optional UTF-8 title.
+/// @param initial_path Optional UTF-8 initial directory.
+/// @param filter_name Optional human-readable filter label.
+/// @param filter_pattern Optional semicolon-delimited filter specification.
+/// @param filter_name_w Receives an owned UTF-16 filter label retained through dialog display.
+/// @param filter_spec_w Receives an owned UTF-16 filter pattern retained through dialog display.
+/// @return 1 when every requested option is applied, otherwise 0.
 static int vgfd_apply_common(IFileDialog *dialog,
                              const char *title,
                              const char *initial_path,
@@ -186,6 +210,8 @@ static int vgfd_apply_common(IFileDialog *dialog,
 }
 
 /// @brief Extract a caller-owned UTF-8 filesystem path from a shell item.
+/// @param item Shell item expected to expose a filesystem display name.
+/// @return Heap-allocated UTF-8 path, or NULL when extraction or conversion fails.
 static char *vgfd_item_path(IShellItem *item) {
     PWSTR wide = NULL;
     if (!item)
@@ -204,6 +230,7 @@ static char *vgfd_item_path(IShellItem *item) {
 // Public dialog surface
 //=============================================================================
 
+/// @copydoc vg_native_open_file
 char *vg_native_open_file(const char *title,
                           const char *initial_path,
                           const char *filter_name,
@@ -253,6 +280,7 @@ cleanup:
     return result;
 }
 
+/// @copydoc vg_native_open_files
 char **vg_native_open_files(const char *title,
                             const char *initial_path,
                             const char *filter_name,
@@ -330,6 +358,7 @@ cleanup:
     return paths;
 }
 
+/// @copydoc vg_native_free_paths
 void vg_native_free_paths(char **paths, size_t count) {
     if (!paths)
         return;
@@ -338,6 +367,7 @@ void vg_native_free_paths(char **paths, size_t count) {
     free(paths);
 }
 
+/// @copydoc vg_native_save_file
 char *vg_native_save_file(const char *title,
                           const char *initial_path,
                           const char *default_name,
@@ -398,6 +428,7 @@ cleanup:
     return result;
 }
 
+/// @copydoc vg_native_select_folder
 char *vg_native_select_folder(const char *title, const char *initial_path) {
     vgfd_com_scope scope;
     if (!vgfd_com_enter(&scope))

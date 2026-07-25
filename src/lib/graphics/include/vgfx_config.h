@@ -58,12 +58,15 @@
 #endif
 
 /// @def VGFX_DEFAULT_FPS
-/// @brief Default frame rate limit when params.fps == 0.
-/// @details Target frames per second for the window's event loop.  The actual
-///          frame rate may be lower if rendering takes longer than 1/FPS.
+/// @brief Initial process-wide frame rate limit for new windows.
+/// @details Initializes the mutable default returned by
+///          vgfx_get_default_fps(). A creation request with `params.fps == 0`
+///          uses that current process default, which may have been changed by
+///          vgfx_set_default_fps(). The actual frame rate may be lower if
+///          rendering takes longer than one frame interval.
 ///
 ///          Special values at runtime (in vgfx_window_params_t.fps):
-///            fps == 0   → Use VGFX_DEFAULT_FPS (this macro)
+///            fps == 0   → Use the current process-wide default
 ///            fps < 0    → Unlimited (no frame rate limiting)
 ///            fps > 0    → Target that specific frame rate
 ///
@@ -79,8 +82,9 @@
 /// @def VGFX_COLOR_DEPTH
 /// @brief Color depth of the internal framebuffer in bits per pixel.
 /// @details For ZannaGFX v1, this MUST remain 32 (RGBA 8-8-8-8 format).
-///          Each pixel is represented as a 32-bit vgfx_color_t value with
-///          8 bits per channel (red, green, blue, alpha).
+///          Each framebuffer pixel occupies four byte-addressable channels;
+///          the public vgfx_color_t drawing value remains a distinct packed
+///          24-bit RGB representation.
 ///
 /// @warning Overriding this macro to any value other than 32 is UNSUPPORTED
 ///          and will lead to undefined behavior.  The entire API assumes
@@ -139,8 +143,10 @@
 ///          queues reduce the risk of event loss during processing spikes at
 ///          the cost of memory.
 ///
-/// @note Memory overhead: VGFX_EVENT_QUEUE_SIZE * sizeof(vgfx_event_t)
-///       (typically ~64 bytes per event, so 256 events = ~16 KB)
+/// @note Queue storage is proportional to
+///       `VGFX_EVENT_QUEUE_SIZE * sizeof(vgfx_event_t)`. The value-type event
+///       includes its bounded inline IME composition buffer, so applications
+///       should measure the actual type size when choosing a larger capacity.
 #ifndef VGFX_EVENT_QUEUE_SIZE
 #define VGFX_EVENT_QUEUE_SIZE 256
 #endif

@@ -27,6 +27,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/// @file
+/// @brief Implements allocation-free Unicode 17 extended-grapheme boundary scanning.
+/// @details Generated property ranges feed a compact UAX #29 state machine covering Hangul,
+/// Indic conjuncts, emoji ZWJ sequences, and regional-indicator pairs. Bounded UTF-8 decoding
+/// consumes malformed bytes individually so every public conversion remains deterministic.
+
 /// @brief Grapheme_Cluster_Break values needed by the UAX #29 rule machine.
 typedef enum vg_grapheme_gcb {
     VG_GRAPHEME_GCB_OTHER = 0,

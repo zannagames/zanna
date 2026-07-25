@@ -27,7 +27,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// @brief Compute the byte size of a glyph bitmap; returns false on overflow.
+/// @file
+/// @brief Implements the rasterized-glyph hash cache and its LRU eviction policy.
+/// @details Cache entries are keyed by a quantized pixel size and Unicode code point. Each entry
+/// owns a copy of its bitmap, while cache-wide counters enforce bounded memory use and trigger
+/// least-recently-used eviction under pressure.
+
+/// @brief Compute the storage required by one glyph bitmap.
+/// @details Empty or non-positive glyph extents are valid and require zero bytes. Positive
+/// dimensions are multiplied only after checking for a `size_t` overflow.
+/// @param glyph Glyph metadata whose one-byte-per-pixel bitmap dimensions are inspected.
+/// @param out_size Receives the required byte count, including zero for an empty bitmap.
+/// @return Nonzero when the size is representable, or zero when the multiplication would overflow.
 static int glyph_bitmap_size(const vg_glyph_t *glyph, size_t *out_size) {
     if (!glyph || !out_size || glyph->width <= 0 || glyph->height <= 0) {
         if (out_size)
@@ -61,12 +72,18 @@ static uint32_t quantize_cache_size(float size) {
     return (uint32_t)scaled;
 }
 
-/// @brief Pack quantized size and codepoint into a single uint64_t key.
+/// @brief Pack a quantized size and code point into one cache key.
+/// @param size Font size in pixels; invalid and non-positive values map to a zero size component.
+/// @param codepoint Unicode scalar value stored in the low 32 bits.
+/// @return Stable 64-bit key for the `(size, codepoint)` pair.
 static uint64_t make_cache_key(float size, uint32_t codepoint) {
     return ((uint64_t)quantize_cache_size(size) << 32) | codepoint;
 }
 
-/// @brief Hash a cache key to a bucket index using FNV-1a-style mixing.
+/// @brief Hash a cache key to a bucket index using avalanche-style mixing.
+/// @param key Packed glyph cache key.
+/// @param bucket_count Number of buckets available in the destination table.
+/// @return Index in `[0, bucket_count)`, or zero when @p bucket_count is zero.
 static size_t hash_key(uint64_t key, size_t bucket_count) {
     if (bucket_count == 0)
         return 0;
@@ -132,7 +149,8 @@ vg_glyph_cache_t *vg_cache_create(void) {
     return cache;
 }
 
-/// @brief Free a single cache entry and its bitmap.
+/// @brief Free a single cache entry and the bitmap it owns.
+/// @param entry Entry to release; callers must pass a valid cache entry.
 static void free_entry(vg_cache_entry_t *entry) {
     if (entry->glyph.bitmap) {
         free(entry->glyph.bitmap);
@@ -194,7 +212,12 @@ void vg_cache_clear(vg_glyph_cache_t *cache) {
 // Cache Resize
 //=============================================================================
 
-/// @brief Double the bucket array and rehash all entries; caps at VG_CACHE_MAX_SIZE.
+/// @brief Double the bucket array and rehash every entry.
+/// @details Growth is capped at `VG_CACHE_MAX_SIZE`. A failed allocation leaves the original
+/// bucket array and all entry chains unchanged.
+/// @param cache Cache whose hash table should grow.
+/// @return `true` when the table is replaced, or `false` for invalid input, a size limit, integer
+/// overflow, or allocation failure.
 static bool cache_resize(vg_glyph_cache_t *cache) {
     if (!cache || cache->bucket_count == 0)
         return false;
@@ -238,7 +261,11 @@ static bool cache_resize(vg_glyph_cache_t *cache) {
 // so they are the first candidates if they are never hit.
 //=============================================================================
 
-/// @brief qsort comparator: ascending by access_tick (oldest first).
+/// @brief Compare cache-entry pointers by ascending access tick.
+/// @param a Address of the first `vg_cache_entry_t *`.
+/// @param b Address of the second `vg_cache_entry_t *`.
+/// @return A negative value when @p a is older, a positive value when @p b is older, or zero for
+/// equal access ticks.
 static int compare_ticks(const void *a, const void *b) {
     const vg_cache_entry_t *const *entry_a = (const vg_cache_entry_t *const *)a;
     const vg_cache_entry_t *const *entry_b = (const vg_cache_entry_t *const *)b;
@@ -247,7 +274,11 @@ static int compare_ticks(const void *a, const void *b) {
     return (ta < tb) ? -1 : (ta > tb) ? 1 : 0;
 }
 
-/// @brief Evict the 25% least-recently-used entries to reclaim bitmap memory.
+/// @brief Evict the oldest quarter of a cache to reclaim bitmap memory.
+/// @details The preferred path sorts a temporary entry-pointer array by access tick. If that
+/// allocation fails, the fallback repeatedly scans the table for the oldest entry. Both paths
+/// unlink victims, update accounting, and release their owned bitmaps.
+/// @param cache Cache to trim; NULL and structurally empty caches are ignored.
 static void cache_evict_some(vg_glyph_cache_t *cache) {
     if (!cache || cache->bucket_count == 0 || !cache->buckets)
         return;
@@ -326,6 +357,14 @@ static void cache_evict_some(vg_glyph_cache_t *cache) {
 // Cache Get
 //=============================================================================
 
+/// @brief Look up a rasterized glyph and mark it as recently used.
+/// @details The requested size is quantized exactly as it is during insertion. A successful lookup
+/// advances the cache-local access clock and stores the new tick on the matching entry.
+/// @param cache Cache to search.
+/// @param size Font size in pixels.
+/// @param codepoint Unicode code point identifying the glyph.
+/// @return Borrowed glyph data owned by @p cache, or NULL when the cache is invalid or the key is
+/// absent. The pointer remains valid until that entry is evicted or the cache is cleared/destroyed.
 const vg_glyph_t *vg_cache_get(vg_glyph_cache_t *cache, float size, uint32_t codepoint) {
     if (!cache)
         return NULL;

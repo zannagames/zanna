@@ -26,25 +26,45 @@
 #include "vg_widget.h"
 #include "vg_widgets.h"
 
+/// @file
+/// @brief Demonstrates basic ZannaGUI label, button, text-input, and checkbox widgets.
+/// @details The example manually renders the widgets and performs simple event translation,
+/// hit testing, focus handling, text editing, and live theme switching.
+
 //=============================================================================
 // Demo State
 //=============================================================================
 
+/// @brief Resources, interactive widgets, and loop state owned by the demo.
 typedef struct {
+    /// @brief Native graphics window used for events and drawing.
     vgfx_window_t window;
+
+    /// @brief Optional platform font used for all visible text.
     vg_font_t *font;
 
     // Root widget
+    /// @brief Root container that owns the widget tree.
     vg_widget_t *root;
 
     // Widgets for interaction
+    /// @brief Label updated by button and text-input callbacks.
     vg_label_t *status_label;
+
+    /// @brief Single-line editable text widget.
     vg_textinput_t *text_input;
+
+    /// @brief Checkbox that selects the global light or dark theme.
     vg_checkbox_t *dark_mode_checkbox;
+
+    /// @brief Primary button incrementing @ref click_count.
     vg_button_t *click_button;
+
+    /// @brief Number of button activations observed so far.
     int click_count;
 
     // Running flag
+    /// @brief True while the application main loop should continue.
     bool running;
 } demo_state_t;
 
@@ -54,6 +74,9 @@ static demo_state_t g_demo;
 // Callbacks
 //=============================================================================
 
+/// @brief Increment the click counter and publish it through the status label.
+/// @param button Button that originated the callback.
+/// @param user_data Owning @ref demo_state_t.
 static void on_button_click(vg_widget_t *button, void *user_data) {
     demo_state_t *demo = (demo_state_t *)user_data;
     demo->click_count++;
@@ -64,6 +87,10 @@ static void on_button_click(vg_widget_t *button, void *user_data) {
     vg_widget_invalidate((vg_widget_t *)demo->status_label);
 }
 
+/// @brief Switch the process-wide widget theme when the checkbox changes.
+/// @param checkbox Checkbox that originated the callback.
+/// @param checked True to select the dark theme; false for the light theme.
+/// @param user_data Callback context, unused by this handler.
 static void on_dark_mode_change(vg_widget_t *checkbox, bool checked, void *user_data) {
     (void)checkbox;
     (void)user_data;
@@ -74,6 +101,10 @@ static void on_dark_mode_change(vg_widget_t *checkbox, bool checked, void *user_
     }
 }
 
+/// @brief Mirror the text input's current contents in the status label.
+/// @param input Text-input widget that originated the callback.
+/// @param text Current UTF-8 text, or NULL.
+/// @param user_data Owning @ref demo_state_t.
 static void on_text_change(vg_widget_t *input, const char *text, void *user_data) {
     (void)input;
     demo_state_t *demo = (demo_state_t *)user_data;
@@ -89,6 +120,13 @@ static void on_text_change(vg_widget_t *input, const char *text, void *user_data
 //=============================================================================
 
 // Draw a filled rectangle using vgfx
+/// @brief Fill a floating-point widget rectangle through the integer graphics API.
+/// @param window Target graphics window.
+/// @param x Left edge in window coordinates.
+/// @param y Top edge in window coordinates.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @param color Packed color whose alpha byte is ignored.
 static void draw_rect(vgfx_window_t window, float x, float y, float w, float h, uint32_t color) {
     // Convert ARGB to RGB for vgfx
     uint32_t rgb = color & 0x00FFFFFF;
@@ -96,6 +134,13 @@ static void draw_rect(vgfx_window_t window, float x, float y, float w, float h, 
 }
 
 // Draw a rectangle outline
+/// @brief Stroke a floating-point widget rectangle through the integer graphics API.
+/// @param window Target graphics window.
+/// @param x Left edge in window coordinates.
+/// @param y Top edge in window coordinates.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @param color Packed color whose alpha byte is ignored.
 static void draw_rect_outline(
     vgfx_window_t window, float x, float y, float w, float h, uint32_t color) {
     uint32_t rgb = color & 0x00FFFFFF;
@@ -106,6 +151,9 @@ static void draw_rect_outline(
 // Simple Widget Rendering (before vtable painting is fully hooked up)
 //=============================================================================
 
+/// @brief Render one visible label at its computed screen position.
+/// @param window Target graphics window.
+/// @param label Label to render; null or hidden labels are ignored.
 static void render_label(vgfx_window_t window, vg_label_t *label) {
     if (!label || !label->base.visible)
         return;
@@ -129,6 +177,9 @@ static void render_label(vgfx_window_t window, vg_label_t *label) {
     }
 }
 
+/// @brief Render a button using its theme, style, and interaction state.
+/// @param window Target graphics window.
+/// @param button Button to render; null or hidden buttons are ignored.
 static void render_button(vgfx_window_t window, vg_button_t *button) {
     if (!button || !button->base.visible)
         return;
@@ -171,6 +222,9 @@ static void render_button(vgfx_window_t window, vg_button_t *button) {
     }
 }
 
+/// @brief Render a text input, placeholder, focus border, and caret.
+/// @param window Target graphics window.
+/// @param input Text input to render; null or hidden inputs are ignored.
 static void render_textinput(vgfx_window_t window, vg_textinput_t *input) {
     if (!input || !input->base.visible)
         return;
@@ -225,6 +279,9 @@ static void render_textinput(vgfx_window_t window, vg_textinput_t *input) {
     }
 }
 
+/// @brief Render a checkbox box, checked mark, and adjacent label text.
+/// @param window Target graphics window.
+/// @param checkbox Checkbox to render; null or hidden widgets are ignored.
 static void render_checkbox(vgfx_window_t window, vg_checkbox_t *checkbox) {
     if (!checkbox || !checkbox->base.visible)
         return;
@@ -279,6 +336,11 @@ static void render_checkbox(vgfx_window_t window, vg_checkbox_t *checkbox) {
 
 static bool g_debug_printed = false;
 
+/// @brief Draw one complete demo frame and emit one-time rendering diagnostics.
+/// @details On the first frame with a font, the function reports logical and framebuffer
+/// dimensions, one glyph record, and font metrics. It then clears the window and renders the
+/// diagnostic primitives and interactive widget set.
+/// @param demo Initialized demo state.
 static void render_demo(demo_state_t *demo) {
     vgfx_window_t window = demo->window;
     vg_theme_t *theme = vg_theme_get_current();
@@ -354,6 +416,10 @@ static void render_demo(demo_state_t *demo) {
 // Event Handling
 //=============================================================================
 
+/// @brief Drain native events and update widget hover, focus, press, theme, and text state.
+/// @details Platform events are translated to GUI events for hit testing and editing. Close
+/// or Escape stops the loop; focused text input handles backspace, arrows, and printable ASCII.
+/// @param demo Mutable initialized demo state.
 static void handle_events(demo_state_t *demo) {
     vgfx_event_t pe;
 
@@ -479,6 +545,11 @@ static void handle_events(demo_state_t *demo) {
 // Initialization
 //=============================================================================
 
+/// @brief Create the demo window, optional font, theme, and widget tree.
+/// @details Font discovery tries common macOS, Linux, and Windows paths and is nonfatal.
+/// Failure to create the native window or root widget aborts initialization.
+/// @param demo Zero-initialized destination state.
+/// @return True when resources required by the main loop are ready.
 static bool init_demo(demo_state_t *demo) {
     // Create window
     vgfx_window_params_t params = vgfx_window_params_default();
@@ -579,6 +650,8 @@ static bool init_demo(demo_state_t *demo) {
     return true;
 }
 
+/// @brief Release the widget tree, font, and graphics window owned by the demo.
+/// @param demo Demo state whose initialized resources should be destroyed.
 static void cleanup_demo(demo_state_t *demo) {
     if (demo->root) {
         vg_widget_destroy(demo->root);
@@ -600,6 +673,10 @@ static void cleanup_demo(demo_state_t *demo) {
 // Main
 //=============================================================================
 
+/// @brief Run the interactive ZannaGUI widget demonstration.
+/// @param argc Process argument count; currently ignored.
+/// @param argv Process argument vector; currently ignored.
+/// @return Zero after normal completion, or one when initialization fails.
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;

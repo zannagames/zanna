@@ -27,6 +27,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements the themed tri-state checkbox widget and its public state API.
+/// @details A checkbox owns its copied label, borrows its font and callback payload, mirrors the
+/// binary checked value into the base-widget state flags, and renders an independent mixed-state
+/// indicator. Pointer clicks and Space/Enter keyboard activation share the same toggle path.
+
 //=============================================================================
 // Forward Declarations
 //=============================================================================
@@ -105,7 +111,8 @@ vg_checkbox_t *vg_checkbox_create(vg_widget_t *parent, const char *text) {
     return checkbox;
 }
 
-/// @brief VTable destroy: frees the checkbox label text string.
+/// @brief Release the copied checkbox label during base-widget destruction.
+/// @param widget Checkbox base widget being destroyed.
 static void checkbox_destroy(vg_widget_t *widget) {
     vg_checkbox_t *checkbox = (vg_checkbox_t *)widget;
     if (checkbox->text) {
@@ -114,7 +121,10 @@ static void checkbox_destroy(vg_widget_t *widget) {
     }
 }
 
-/// @brief VTable measure: sizes the widget to the box square plus gap and optional text extent.
+/// @brief Measure the checkbox square, label gap, and optional text.
+/// @param widget Checkbox base widget whose measured dimensions are updated.
+/// @param available_width Parent-provided width constraint; sizing is content-driven.
+/// @param available_height Parent-provided height constraint; minimum constraints are applied.
 static void checkbox_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_checkbox_t *checkbox = (vg_checkbox_t *)widget;
     (void)available_width;
@@ -141,6 +151,8 @@ static void checkbox_measure(vg_widget_t *widget, float available_width, float a
 
 /// @brief VTable paint: draws the box border, fill/check-mark when checked, focus ring, and label
 /// text.
+/// @param widget Checkbox base widget to render.
+/// @param canvas Graphics window used for shapes and text.
 static void checkbox_paint(vg_widget_t *widget, void *canvas) {
     vg_checkbox_t *checkbox = (vg_checkbox_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -235,7 +247,10 @@ static void checkbox_paint(vg_widget_t *widget, void *canvas) {
     }
 }
 
-/// @brief VTable handle_event: toggles checked state on click or Space key and fires on_change.
+/// @brief Handle pointer or keyboard checkbox activation.
+/// @param widget Checkbox base widget receiving the event.
+/// @param event Click or key event to process.
+/// @return `true` when an enabled checkbox consumes an activation event.
 static bool checkbox_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_checkbox_t *checkbox = (vg_checkbox_t *)widget;
 
@@ -258,7 +273,9 @@ static bool checkbox_handle_event(vg_widget_t *widget, vg_event_t *event) {
     return false;
 }
 
-/// @brief VTable can_focus: returns true when the widget is both enabled and visible.
+/// @brief Return whether a checkbox may participate in keyboard focus traversal.
+/// @param widget Checkbox base widget to inspect.
+/// @return `true` when the widget is enabled and visible.
 static bool checkbox_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }

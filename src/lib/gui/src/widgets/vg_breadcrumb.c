@@ -35,6 +35,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements the breadcrumb navigation widget and its optional item menus.
+/// @details The widget owns copied segment labels, separator text, and drop-down labels, lays them
+/// out from left to right, and captures pointer input while a drop-down is open. User payload
+/// pointers and the configured font remain borrowed unless an item explicitly marks its payload
+/// as owned.
+
 //=============================================================================
 // Forward Declarations
 //=============================================================================
@@ -72,7 +79,9 @@ static vg_widget_vtable_t g_breadcrumb_vtable = {.destroy = breadcrumb_destroy,
 // Breadcrumb Item Management
 //=============================================================================
 
-/// @brief Free the label, tooltip, optional user_data, and dropdown array owned by item.
+/// @brief Release every allocation owned by one breadcrumb item.
+/// @param item Item whose label, tooltip, optionally owned payload, and drop-down labels are freed;
+/// NULL is ignored.
 static void free_breadcrumb_item(vg_breadcrumb_item_t *item) {
     if (!item)
         return;
@@ -88,13 +97,27 @@ static void free_breadcrumb_item(vg_breadcrumb_item_t *item) {
     free(item->dropdown_items);
 }
 
-/// @brief Fill a rectangle with rounded corners using four corner circles and three fill rects.
+/// @brief Fill a rounded rectangle through the shared drawing helper.
+/// @param win Target graphics window.
+/// @param x Left edge in pixels.
+/// @param y Top edge in pixels.
+/// @param w Width in pixels.
+/// @param h Height in pixels.
+/// @param radius Corner radius in pixels.
+/// @param color Packed fill color.
 static void breadcrumb_fill_round_rect(
     vgfx_window_t win, int32_t x, int32_t y, int32_t w, int32_t h, int32_t radius, uint32_t color) {
     vg_draw_round_rect_fill(win, (float)x, (float)y, (float)w, (float)h, (float)radius, color);
 }
 
-/// @brief Stroke a rounded rectangle border using four edge lines and four corner circles.
+/// @brief Stroke a one-pixel rounded-rectangle border through the shared drawing helper.
+/// @param win Target graphics window.
+/// @param x Left edge in pixels.
+/// @param y Top edge in pixels.
+/// @param w Width in pixels.
+/// @param h Height in pixels.
+/// @param radius Corner radius in pixels.
+/// @param color Packed stroke color.
 static void breadcrumb_stroke_round_rect(
     vgfx_window_t win, int32_t x, int32_t y, int32_t w, int32_t h, int32_t radius, uint32_t color) {
     vg_draw_round_rect_stroke(
@@ -102,13 +125,23 @@ static void breadcrumb_stroke_round_rect(
 }
 
 /// @brief Return the outer horizontal padding used between the widget edge and the first item.
+/// @param bc Breadcrumb whose separator padding supplies the spacing basis; NULL uses a fallback.
+/// @return Horizontal outer padding in pixels.
 static float breadcrumb_outer_padding(const vg_breadcrumb_t *bc) {
     if (!bc)
         return 4.0f;
     return (float)bc->separator_padding + 2.0f;
 }
 
-/// @brief Compute the bounding rectangle for the breadcrumb item at index.
+/// @brief Compute the rendered rectangle of one breadcrumb segment.
+/// @details Widths preceding @p index include both item padding and measured separator runs.
+/// @param bc Breadcrumb with a configured font and laid-out widget bounds.
+/// @param index Zero-based segment index.
+/// @param[out] out_x Optional destination for the left edge.
+/// @param[out] out_y Optional destination for the top edge.
+/// @param[out] out_w Optional destination for the width.
+/// @param[out] out_h Optional destination for the height.
+/// @return `true` when the requested segment is valid and measurable, otherwise `false`.
 static bool breadcrumb_item_rect(
     const vg_breadcrumb_t *bc, int index, float *out_x, float *out_y, float *out_w, float *out_h) {
     float x = 0.0f;
@@ -151,7 +184,15 @@ static bool breadcrumb_item_rect(
     return false;
 }
 
-/// @brief Compute the bounding rectangle of the currently open drop-down panel.
+/// @brief Compute the rectangle of the currently open drop-down panel.
+/// @details The panel begins below its owning segment, is at least 160 pixels wide, and assigns a
+/// row height based on the segment height with a 24-pixel minimum.
+/// @param bc Breadcrumb whose open menu should be measured.
+/// @param[out] out_x Optional destination for the left edge.
+/// @param[out] out_y Optional destination for the top edge.
+/// @param[out] out_w Optional destination for the width.
+/// @param[out] out_h Optional destination for the height.
+/// @return `true` when a valid open menu with at least one item exists.
 static bool breadcrumb_dropdown_rect(
     const vg_breadcrumb_t *bc, float *out_x, float *out_y, float *out_w, float *out_h) {
     vg_breadcrumb_item_t *item = NULL;
@@ -187,7 +228,11 @@ static bool breadcrumb_dropdown_rect(
     return true;
 }
 
-/// @brief Return the zero-based drop-down row index under pixel (px, py), or -1 if none.
+/// @brief Hit-test the open drop-down at a pointer coordinate.
+/// @param bc Breadcrumb owning the drop-down.
+/// @param px Pointer x coordinate in widget space.
+/// @param py Pointer y coordinate in widget space.
+/// @return Zero-based drop-down row index, or `-1` outside a valid open panel.
 static int breadcrumb_find_dropdown_item_at(const vg_breadcrumb_t *bc, float px, float py) {
     vg_breadcrumb_item_t *item = NULL;
     float x = 0.0f;
@@ -244,7 +289,8 @@ vg_breadcrumb_t *vg_breadcrumb_create(void) {
     return bc;
 }
 
-/// @brief VTable destroy: frees all item strings, item arrays, and the dropdown item list.
+/// @brief Release breadcrumb-owned data during base-widget destruction.
+/// @param widget Breadcrumb base widget being destroyed.
 static void breadcrumb_destroy(vg_widget_t *widget) {
     vg_breadcrumb_t *bc = (vg_breadcrumb_t *)widget;
 
@@ -266,6 +312,9 @@ void vg_breadcrumb_destroy(vg_breadcrumb_t *bc) {
 
 /// @brief VTable measure: sums item widths including separators, claims available width, and sets a
 /// fixed height from the theme input height.
+/// @param widget Breadcrumb base widget whose measured dimensions are updated.
+/// @param available_width Parent-provided width constraint; currently informational.
+/// @param available_height Parent-provided height constraint; currently informational.
 static void breadcrumb_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_breadcrumb_t *bc = (vg_breadcrumb_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -307,6 +356,8 @@ static void breadcrumb_measure(vg_widget_t *widget, float available_width, float
 
 /// @brief VTable paint: clips to the widget, draws each breadcrumb item with hover highlight,
 /// separator arrows, overflow dropdown button, and open panel overlay.
+/// @param widget Breadcrumb base widget to render.
+/// @param canvas Graphics window used for primitives and text.
 static void breadcrumb_paint(vg_widget_t *widget, void *canvas) {
     vg_breadcrumb_t *bc = (vg_breadcrumb_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -479,7 +530,11 @@ static void breadcrumb_paint(vg_widget_t *widget, void *canvas) {
     }
 }
 
-/// @brief Return the breadcrumb item index under pixel (px, py), or -1 if none.
+/// @brief Hit-test breadcrumb segments at a pointer coordinate.
+/// @param bc Breadcrumb whose measured labels define the hit regions.
+/// @param px Pointer x coordinate in widget space.
+/// @param py Pointer y coordinate in widget space.
+/// @return Zero-based segment index, or `-1` outside every segment.
 static int find_item_at(vg_breadcrumb_t *bc, float px, float py) {
     if (!bc->font)
         return -1;
@@ -514,6 +569,9 @@ static int find_item_at(vg_breadcrumb_t *bc, float px, float py) {
 
 /// @brief VTable handle_event: handles click on items and overflow dropdown, hover tracking, and
 /// mouse-leave cleanup.
+/// @param widget Breadcrumb base widget receiving the event.
+/// @param event Pointer event to process.
+/// @return `true` when the breadcrumb consumes the event, otherwise `false`.
 static bool breadcrumb_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_breadcrumb_t *bc = (vg_breadcrumb_t *)widget;
 
@@ -602,7 +660,10 @@ static bool breadcrumb_handle_event(vg_widget_t *widget, vg_event_t *event) {
     return false;
 }
 
-/// @brief VTable set_font trampoline — forwards to vg_breadcrumb_set_font.
+/// @brief Forward a generic widget font assignment to the typed breadcrumb API.
+/// @param widget Breadcrumb base widget to configure.
+/// @param font Borrowed @ref vg_font_t handle.
+/// @param size Text size in pixels.
 static void breadcrumb_set_font_widget(vg_widget_t *widget, void *font, float size) {
     if (!widget || !font)
         return;

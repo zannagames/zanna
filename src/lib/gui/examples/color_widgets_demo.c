@@ -27,41 +27,76 @@
 #include "vg_widget.h"
 #include "vg_widgets.h"
 
+/// @file
+/// @brief Demonstrates interactive color swatches, palettes, and RGB color picking.
+/// @details The example creates a small manually rendered widget scene, translates raw mouse
+/// events into widget selections, mirrors every selection in a preview and status label, and
+/// exits automatically after a fixed timeout.
+
 //=============================================================================
 // Demo State
 //=============================================================================
 
+/// @brief Resources, widget references, and run-loop state owned by the demo.
 typedef struct {
+    /// @brief Native graphics window used for event polling and drawing.
     vgfx_window_t window;
+
+    /// @brief Optional font selected from the platform fallback list.
     vg_font_t *font;
 
     // Root widget
+    /// @brief Root container that owns the demo's widget tree.
     vg_widget_t *root;
 
     // Color widgets
+    /// @brief Red selectable swatch.
     vg_colorswatch_t *swatch1;
+
+    /// @brief Green selectable swatch.
     vg_colorswatch_t *swatch2;
+
+    /// @brief Blue selectable swatch.
     vg_colorswatch_t *swatch3;
+
+    /// @brief Larger swatch mirroring the latest selected color.
     vg_colorswatch_t *preview_swatch;
 
+    /// @brief Standalone standard 16-color palette.
     vg_colorpalette_t *palette;
+
+    /// @brief Composite RGB slider and palette picker.
     vg_colorpicker_t *picker;
 
     // Labels
+    /// @brief Reserved title label reference.
     vg_label_t *title_label;
+
+    /// @brief Heading for the standalone swatches.
     vg_label_t *swatch_label;
+
+    /// @brief Heading for the standard palette.
     vg_label_t *palette_label;
+
+    /// @brief Heading for the composite picker.
     vg_label_t *picker_label;
+
+    /// @brief Dynamic description of the latest selection.
     vg_label_t *status_label;
 
     // Selected color
+    /// @brief Latest selected packed ARGB color.
     uint32_t selected_color;
 
     // Running flag
+    /// @brief True while the main loop should continue.
     bool running;
 
     // Timer
+    /// @brief Wall-clock time at which the demo began.
     time_t start_time;
+
+    /// @brief Maximum run time before automatic shutdown.
     int timeout_seconds;
 } demo_state_t;
 
@@ -71,6 +106,10 @@ static demo_state_t g_demo;
 // Callbacks
 //=============================================================================
 
+/// @brief Apply a standalone swatch selection to the shared demo state.
+/// @param swatch Widget that originated the callback.
+/// @param color Selected packed ARGB color.
+/// @param user_data Owning @ref demo_state_t.
 static void on_swatch_select(vg_widget_t *swatch, uint32_t color, void *user_data) {
     (void)swatch;
     demo_state_t *demo = (demo_state_t *)user_data;
@@ -91,6 +130,11 @@ static void on_swatch_select(vg_widget_t *swatch, uint32_t color, void *user_dat
     printf("Swatch selected: 0x%08X\n", color);
 }
 
+/// @brief Apply a palette-cell selection to the preview and status text.
+/// @param palette Palette widget that originated the callback.
+/// @param color Selected packed ARGB color.
+/// @param index Zero-based selected palette index.
+/// @param user_data Owning @ref demo_state_t.
 static void on_palette_select(vg_widget_t *palette, uint32_t color, int index, void *user_data) {
     (void)palette;
     demo_state_t *demo = (demo_state_t *)user_data;
@@ -111,6 +155,10 @@ static void on_palette_select(vg_widget_t *palette, uint32_t color, int index, v
     printf("Palette color %d selected: 0x%08X\n", index, color);
 }
 
+/// @brief Apply a composite picker change and display its RGB components.
+/// @param picker Picker widget that originated the callback.
+/// @param color Newly selected packed ARGB color.
+/// @param user_data Owning @ref demo_state_t.
 static void on_picker_change(vg_widget_t *picker, uint32_t color, void *user_data) {
     (void)picker;
     demo_state_t *demo = (demo_state_t *)user_data;
@@ -138,11 +186,25 @@ static void on_picker_change(vg_widget_t *picker, uint32_t color, void *user_dat
 // Widget Drawing Helpers
 //=============================================================================
 
+/// @brief Fill a floating-point widget rectangle through the integer graphics API.
+/// @param window Target graphics window.
+/// @param x Left edge in window coordinates.
+/// @param y Top edge in window coordinates.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @param color Packed color whose alpha byte is ignored.
 static void draw_rect(vgfx_window_t window, float x, float y, float w, float h, uint32_t color) {
     uint32_t rgb = color & 0x00FFFFFF;
     vgfx_fill_rect(window, (int)x, (int)y, (int)w, (int)h, rgb);
 }
 
+/// @brief Stroke a floating-point widget rectangle through the integer graphics API.
+/// @param window Target graphics window.
+/// @param x Left edge in window coordinates.
+/// @param y Top edge in window coordinates.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @param color Packed color whose alpha byte is ignored.
 static void draw_rect_outline(
     vgfx_window_t window, float x, float y, float w, float h, uint32_t color) {
     uint32_t rgb = color & 0x00FFFFFF;
@@ -153,6 +215,9 @@ static void draw_rect_outline(
 // Custom Widget Rendering
 //=============================================================================
 
+/// @brief Render one visible label at its computed screen position.
+/// @param window Target graphics window.
+/// @param label Label to render; null or hidden labels are ignored.
 static void render_label(vgfx_window_t window, vg_label_t *label) {
     if (!label || !label->base.visible)
         return;
@@ -174,6 +239,9 @@ static void render_label(vgfx_window_t window, vg_label_t *label) {
     }
 }
 
+/// @brief Render a color swatch, transparency checkerboard, and selection border.
+/// @param window Target graphics window.
+/// @param swatch Swatch to render; null or hidden swatches are ignored.
 static void render_colorswatch(vgfx_window_t window, vg_colorswatch_t *swatch) {
     if (!swatch || !swatch->base.visible)
         return;
@@ -212,6 +280,9 @@ static void render_colorswatch(vgfx_window_t window, vg_colorswatch_t *swatch) {
     }
 }
 
+/// @brief Render every cell and the active selection of a color palette.
+/// @param window Target graphics window.
+/// @param palette Palette to render; invalid or hidden palettes are ignored.
 static void render_colorpalette(vgfx_window_t window, vg_colorpalette_t *palette) {
     if (!palette || !palette->base.visible || !palette->colors)
         return;
@@ -254,6 +325,12 @@ static void render_colorpalette(vgfx_window_t window, vg_colorpalette_t *palette
     }
 }
 
+/// @brief Render a labeled slider with its track, fill, thumb, and numeric value.
+/// @param window Target graphics window.
+/// @param slider Slider state to render.
+/// @param label Optional short label displayed before the track.
+/// @param font Optional font used for the label and value.
+/// @param fill_color Track fill color representing the slider channel.
 static void render_slider(vgfx_window_t window,
                           vg_slider_t *slider,
                           const char *label,
@@ -306,6 +383,10 @@ static void render_slider(vgfx_window_t window,
     }
 }
 
+/// @brief Render the composite picker background and all visible child controls.
+/// @param window Target graphics window.
+/// @param picker Picker to render; null or hidden pickers are ignored.
+/// @param font Optional font used by the child slider renderers.
 static void render_colorpicker(vgfx_window_t window, vg_colorpicker_t *picker, vg_font_t *font) {
     if (!picker || !picker->base.visible)
         return;
@@ -348,6 +429,8 @@ static void render_colorpicker(vgfx_window_t window, vg_colorpicker_t *picker, v
 // Main Render Function
 //=============================================================================
 
+/// @brief Draw one complete frame of the color-widget demonstration.
+/// @param demo Initialized demo state containing the current widget values.
 static void render_demo(demo_state_t *demo) {
     vgfx_window_t window = demo->window;
     vg_theme_t *theme = vg_theme_get_current();
@@ -403,10 +486,23 @@ static void render_demo(demo_state_t *demo) {
 // Event Handling
 //=============================================================================
 
+/// @brief Test whether an integer point lies inside a half-open floating rectangle.
+/// @param x Point x coordinate.
+/// @param y Point y coordinate.
+/// @param rx Rectangle left edge.
+/// @param ry Rectangle top edge.
+/// @param rw Rectangle width.
+/// @param rh Rectangle height.
+/// @return True when the point lies within the rectangle's left/top-inclusive bounds.
 static bool point_in_rect(int x, int y, float rx, float ry, float rw, float rh) {
     return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
 }
 
+/// @brief Drain window events and update hover, selection, slider, and lifetime state.
+/// @details Close and Escape events stop the demo. Mouse motion updates swatch hover flags,
+/// while mouse presses select standalone or embedded palette cells and reposition RGB sliders.
+/// The timeout is checked after the current event batch.
+/// @param demo Mutable initialized demo state.
 static void handle_events(demo_state_t *demo) {
     vgfx_event_t pe;
 
@@ -597,6 +693,12 @@ static void handle_events(demo_state_t *demo) {
 // Initialization
 //=============================================================================
 
+/// @brief Create the demo window, optional font, widget tree, and initial color state.
+/// @details Font loading tries a cross-platform fallback list. Missing font data is nonfatal,
+/// while failure to create the window or root container aborts initialization.
+/// @param demo Zero-initialized destination state.
+/// @param timeout_seconds Number of seconds before automatic shutdown.
+/// @return True when the resources required by the main loop are ready.
 static bool init_demo(demo_state_t *demo, int timeout_seconds) {
     demo->timeout_seconds = timeout_seconds;
     demo->start_time = time(NULL);
@@ -806,6 +908,8 @@ static bool init_demo(demo_state_t *demo, int timeout_seconds) {
     return true;
 }
 
+/// @brief Release the widget tree, font, and graphics window owned by the demo.
+/// @param demo Demo state whose initialized resources should be destroyed.
 static void cleanup_demo(demo_state_t *demo) {
     if (demo->root) {
         vg_widget_destroy(demo->root);
@@ -827,6 +931,10 @@ static void cleanup_demo(demo_state_t *demo) {
 // Main
 //=============================================================================
 
+/// @brief Run the timed interactive color-widget demonstration.
+/// @param argc Process argument count; currently ignored.
+/// @param argv Process argument vector; currently ignored.
+/// @return Zero after normal completion, or one when initialization fails.
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;

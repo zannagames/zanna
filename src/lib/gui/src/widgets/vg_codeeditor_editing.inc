@@ -40,6 +40,11 @@
 
 /// @brief Reads editor->selection and writes a canonically ordered start/end into the four
 /// out-params.
+/// @param editor Editor containing the primary selection.
+/// @param[out] start_line Receives the earlier endpoint line.
+/// @param[out] start_col Receives the earlier endpoint byte column.
+/// @param[out] end_line Receives the later endpoint line.
+/// @param[out] end_col Receives the later endpoint byte column.
 static void normalize_selection(
     vg_codeeditor_t *editor, int *start_line, int *start_col, int *end_line, int *end_col) {
     *start_line = editor->selection.start_line;
@@ -59,6 +64,10 @@ static void normalize_selection(
 }
 
 /// @brief Swaps the start/end pair in-place so that start always precedes end in document order.
+/// @param[in,out] start_line First endpoint line.
+/// @param[in,out] start_col First endpoint byte column.
+/// @param[in,out] end_line Second endpoint line.
+/// @param[in,out] end_col Second endpoint byte column.
 static void normalize_selection_range(int *start_line,
                                       int *start_col,
                                       int *end_line,
@@ -75,6 +84,13 @@ static void normalize_selection_range(int *start_line,
 
 /// @brief Extracts and returns a heap-allocated copy of the text in [start_line:start_col,
 /// end_line:end_col).
+/// @param editor Editor containing the requested text.
+/// @param start_line First range line.
+/// @param start_col First range byte column.
+/// @param end_line Final range line.
+/// @param end_col Exclusive final range byte column.
+/// @param[out] out_len Optional destination for the copied byte count, excluding the terminator.
+/// @return Caller-owned newline-joined text, or NULL on allocation failure.
 static char *copy_text_range_len(vg_codeeditor_t *editor,
                                  int start_line,
                                  int start_col,
@@ -121,6 +137,12 @@ static char *copy_text_range_len(vg_codeeditor_t *editor,
 
 /// @brief Extracts and returns a heap-allocated copy of the text in [start_line:start_col,
 /// end_line:end_col).
+/// @param editor Editor containing the requested text.
+/// @param start_line First range line.
+/// @param start_col First range byte column.
+/// @param end_line Final range line.
+/// @param end_col Exclusive final range byte column.
+/// @return Caller-owned newline-joined text, or NULL on allocation failure.
 static char *copy_text_range(
     vg_codeeditor_t *editor, int start_line, int start_col, int end_line, int end_col) {
     return copy_text_range_len(editor, start_line, start_col, end_line, end_col, NULL);
@@ -188,6 +210,7 @@ static void codeeditor_discard_document_buffer_mirror(vg_codeeditor_t *editor) {
 }
 
 /// @brief Clears the has_selection flag on all extra (non-primary) cursors.
+/// @param editor Editor whose secondary cursor selections are cleared.
 static void clear_extra_cursor_selections(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -197,6 +220,8 @@ static void clear_extra_cursor_selections(vg_codeeditor_t *editor) {
 
 /// @brief Clamps @p *line to [0, line_count-1] without touching the column (used for selection
 /// anchors).
+/// @param editor Editor defining the valid line range.
+/// @param[in,out] line Candidate line index updated in place.
 static void clamp_editor_line(vg_codeeditor_t *editor, int *line) {
     if (!editor || !line || editor->line_count <= 0)
         return;
@@ -207,6 +232,9 @@ static void clamp_editor_line(vg_codeeditor_t *editor, int *line) {
 }
 
 /// @brief Clamps @p *col to [0, lines[line].length] for an already-validated @p line index.
+/// @param editor Editor containing the source line.
+/// @param line Valid zero-based line index.
+/// @param[in,out] col Candidate byte column updated in place.
 static void clamp_editor_col(vg_codeeditor_t *editor, int line, int *col) {
     if (!editor || !col || editor->line_count <= 0)
         return;
@@ -220,6 +248,9 @@ static void clamp_editor_col(vg_codeeditor_t *editor, int line, int *col) {
 
 /// @brief Clamps both line and col atomically; note that clamping the line may implicitly constrain
 /// the col.
+/// @param editor Editor defining the valid document range.
+/// @param[in,out] line Candidate line index.
+/// @param[in,out] col Candidate byte column.
 static void clamp_editor_position(vg_codeeditor_t *editor, int *line, int *col) {
     if (!editor || !line || !col || editor->line_count <= 0)
         return;
@@ -228,6 +259,9 @@ static void clamp_editor_position(vg_codeeditor_t *editor, int *line, int *col) 
 }
 
 /// @brief Add a secondary cursor unless one already exists at the same position.
+/// @param editor Editor whose cursor array may grow.
+/// @param line Candidate source line, clamped to the document.
+/// @param col Candidate byte column, clamped to the line.
 static void codeeditor_add_extra_cursor_at(vg_codeeditor_t *editor, int line, int col) {
     if (!editor || editor->line_count <= 0)
         return;
@@ -256,6 +290,9 @@ static void codeeditor_add_extra_cursor_at(vg_codeeditor_t *editor, int line, in
 }
 
 /// @brief Clamps (line, col) to valid bounds and then snaps the line to its fold's visible anchor.
+/// @param editor Editor defining document and fold bounds.
+/// @param[in,out] line Candidate source line.
+/// @param[in,out] col Candidate byte column.
 static void codeeditor_clamp_cursor_to_visible(vg_codeeditor_t *editor, int *line, int *col) {
     if (!editor || !line || !col || editor->line_count <= 0)
         return;
@@ -266,6 +303,7 @@ static void codeeditor_clamp_cursor_to_visible(vg_codeeditor_t *editor, int *lin
 
 /// @brief Snaps all cursors (primary and extra) off hidden lines after a fold toggle or line
 /// deletion.
+/// @param editor Editor whose cursors are repaired.
 static void codeeditor_adjust_hidden_cursors(vg_codeeditor_t *editor) {
     if (!editor || editor->line_count <= 0)
         return;
@@ -278,6 +316,11 @@ static void codeeditor_adjust_hidden_cursors(vg_codeeditor_t *editor) {
 }
 
 /// @brief Returns -1, 0, or 1 for lhs < rhs, lhs == rhs, or lhs > rhs in document order.
+/// @param lhs_line Left endpoint line.
+/// @param lhs_col Left endpoint byte column.
+/// @param rhs_line Right endpoint line.
+/// @param rhs_col Right endpoint byte column.
+/// @return Negative, zero, or positive according to document order.
 static int compare_positions(int lhs_line, int lhs_col, int rhs_line, int rhs_col) {
     if (lhs_line != rhs_line)
         return (lhs_line < rhs_line) ? -1 : 1;
@@ -286,18 +329,29 @@ static int compare_positions(int lhs_line, int lhs_col, int rhs_line, int rhs_co
     return 0;
 }
 
+/// @brief One normalized cursor-specific replacement range.
 typedef struct vg_edit_target {
+    /// @brief Zero for the primary cursor or one plus a secondary-cursor index.
     int cursor_id;
+    /// @brief Cursor line captured before applying the edit.
     int cursor_line_before;
+    /// @brief Cursor byte column captured before applying the edit.
     int cursor_col_before;
+    /// @brief First line of the replacement range.
     int start_line;
+    /// @brief First byte column of the replacement range.
     int start_col;
+    /// @brief Final line of the replacement range.
     int end_line;
+    /// @brief Exclusive final byte column of the replacement range.
     int end_col;
 } vg_edit_target_t;
 
 /// @brief qsort comparator that orders edit targets in descending document position (last target
 /// first).
+/// @param lhs Address of the first edit target.
+/// @param rhs Address of the second edit target.
+/// @return A negative, zero, or positive value in reverse document order.
 static int edit_target_compare_desc(const void *lhs, const void *rhs) {
     const vg_edit_target_t *a = (const vg_edit_target_t *)lhs;
     const vg_edit_target_t *b = (const vg_edit_target_t *)rhs;
@@ -312,6 +366,9 @@ static int edit_target_compare_desc(const void *lhs, const void *rhs) {
 
 /// @brief qsort comparator that orders edit targets in ascending document position (first target
 /// first).
+/// @param lhs Address of the first edit target.
+/// @param rhs Address of the second edit target.
+/// @return A negative, zero, or positive value in document order.
 static int edit_target_compare_asc(const void *lhs, const void *rhs) {
     const vg_edit_target_t *a = (const vg_edit_target_t *)lhs;
     const vg_edit_target_t *b = (const vg_edit_target_t *)rhs;
@@ -325,6 +382,10 @@ static int edit_target_compare_asc(const void *lhs, const void *rhs) {
 }
 
 /// @brief Updates the cursor at @p cursor_id (0 = primary, 1+ = extra) to (line, col).
+/// @param editor Editor containing the cursor.
+/// @param cursor_id Zero for primary or one plus the secondary-cursor index.
+/// @param line New source line.
+/// @param col New byte column.
 static void set_cursor_position_by_id(vg_codeeditor_t *editor, int cursor_id, int line, int col) {
     if (cursor_id == 0) {
         editor->cursor_line = line;
@@ -339,6 +400,8 @@ static void set_cursor_position_by_id(vg_codeeditor_t *editor, int cursor_id, in
 }
 
 /// @brief Clears the selection flag for the cursor identified by @p cursor_id.
+/// @param editor Editor containing the cursor.
+/// @param cursor_id Zero for primary or one plus the secondary-cursor index.
 static void clear_cursor_selection_by_id(vg_codeeditor_t *editor, int cursor_id) {
     if (cursor_id == 0) {
         editor->has_selection = false;
@@ -352,6 +415,15 @@ static void clear_cursor_selection_by_id(vg_codeeditor_t *editor, int cursor_id)
 
 /// @brief Appends a normalized, de-duplicated edit target to @p targets[]; no-op if an identical
 /// range exists.
+/// @param targets Caller-provided target array with room for one more entry.
+/// @param[in,out] count Current target count incremented on append.
+/// @param cursor_id Cursor owning the target.
+/// @param cursor_line_before Pre-edit cursor line.
+/// @param cursor_col_before Pre-edit cursor byte column.
+/// @param start_line First replacement-range line.
+/// @param start_col First replacement-range byte column.
+/// @param end_line Final replacement-range line.
+/// @param end_col Exclusive final replacement-range byte column.
 static void add_edit_target(vg_edit_target_t *targets,
                             int *count,
                             int cursor_id,
@@ -379,6 +451,21 @@ static void add_edit_target(vg_edit_target_t *targets,
 }
 
 /// @brief Creates an edit operation and pushes it onto the undo history; no-op if history is NULL.
+/// @details Eligible single-code-point primary inserts may coalesce into the preceding typing unit;
+/// other edits are appended as distinct history operations.
+/// @param editor Editor owning the history.
+/// @param type Insert, delete, or replace operation type.
+/// @param cursor_id Cursor that performed the edit.
+/// @param start_line First edited line.
+/// @param start_col First edited byte column.
+/// @param end_line Final edited line.
+/// @param end_col Final edited byte column.
+/// @param old_text Replaced text copied into the operation, or NULL.
+/// @param new_text Inserted text copied into the operation, or NULL.
+/// @param cursor_line_before Cursor line before the edit.
+/// @param cursor_col_before Cursor byte column before the edit.
+/// @param cursor_line_after Cursor line after the edit.
+/// @param cursor_col_after Cursor byte column after the edit.
 static void record_edit_history(vg_codeeditor_t *editor,
                                 vg_edit_op_type_t type,
                                 int cursor_id,
@@ -426,6 +513,13 @@ static void record_edit_history(vg_codeeditor_t *editor,
 
 /// @brief Applies @p replacement_text at each edit target in descending order, recording undo ops,
 /// then updates cursor positions.
+/// @details Target ranges are clamped and copied before mutation. Multi-cursor operations share a
+/// history group and force full synchronization, while a single target emits a forward delta.
+/// Syntax and layout caches are invalidated according to the changed text.
+/// @param editor Editor whose document and cursors are modified.
+/// @param targets Edit targets ordered from later to earlier document positions.
+/// @param target_count Number of readable targets.
+/// @param replacement_text Text inserted at every target, or NULL/empty for deletion.
 static void apply_edit_targets(vg_codeeditor_t *editor,
                                vg_edit_target_t *targets,
                                int target_count,

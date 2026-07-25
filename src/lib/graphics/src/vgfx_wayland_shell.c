@@ -20,50 +20,93 @@
 #include <stdio.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements xdg-shell toplevel creation, configuration, and teardown.
+
+/// @brief ABI callback table for `xdg_surface` events.
 typedef struct vgfx_xdg_surface_listener {
+    /// @brief Receive and acknowledge a compositor configure serial.
     void (*configure)(void *data, struct xdg_surface *xdg_surface, uint32_t serial);
 } vgfx_xdg_surface_listener_t;
 
+/// @brief ABI callback table for stable `xdg_toplevel` events through version 6.
 typedef struct vgfx_xdg_toplevel_listener {
+    /// @brief Receive a proposed logical size and packed window-state array.
     void (*configure)(void *data,
                       struct xdg_toplevel *toplevel,
                       int32_t width,
                       int32_t height,
                       struct wl_array *states);
+
+    /// @brief Receive a compositor request to close the window.
     void (*close)(void *data, struct xdg_toplevel *toplevel);
+
+    /// @brief Receive compositor-recommended toplevel size bounds.
     void (*configure_bounds)(void *data,
                              struct xdg_toplevel *toplevel,
                              int32_t width,
                              int32_t height);
+
+    /// @brief Receive the compositor's supported window-management operations.
     void (*wm_capabilities)(void *data,
                             struct xdg_toplevel *toplevel,
                             struct wl_array *capabilities);
 } vgfx_xdg_toplevel_listener_t;
 
+/// @brief ABI callback table for core `wl_surface` events through version 6.
 typedef struct vgfx_wl_surface_listener {
+    /// @brief Report that the surface began overlapping an output.
     void (*enter)(void *data, struct wl_surface *surface, struct wl_proxy *output);
+
+    /// @brief Report that the surface stopped overlapping an output.
     void (*leave)(void *data, struct wl_surface *surface, struct wl_proxy *output);
+
+    /// @brief Report the compositor's preferred integer buffer scale.
     void (*preferred_buffer_scale)(void *data, struct wl_surface *surface, int32_t factor);
+
+    /// @brief Report the compositor's preferred buffer transform.
     void (*preferred_buffer_transform)(void *data, struct wl_surface *surface, uint32_t transform);
 } vgfx_wl_surface_listener_t;
 
+/// @brief ABI callback table for xdg-decoration mode negotiation.
 typedef struct vgfx_zxdg_toplevel_decoration_listener {
+    /// @brief Receive the compositor-selected client-side or server-side mode.
     void (*configure)(void *data,
                       struct zxdg_toplevel_decoration_v1 *decoration,
                       uint32_t mode);
 } vgfx_zxdg_toplevel_decoration_listener_t;
 
+/// @brief xdg-shell state values and xdg-decoration request constants.
 enum {
+    /// @brief `xdg_toplevel` state value indicating a maximized window.
     VGFX_XDG_TOPLEVEL_STATE_MAXIMIZED = 1,
+
+    /// @brief `xdg_toplevel` state value indicating a fullscreen window.
     VGFX_XDG_TOPLEVEL_STATE_FULLSCREEN = 2,
+
+    /// @brief `xdg_toplevel` state value indicating an interactive resize.
     VGFX_XDG_TOPLEVEL_STATE_RESIZING = 3,
+
+    /// @brief `xdg_toplevel` state value indicating keyboard activation.
     VGFX_XDG_TOPLEVEL_STATE_ACTIVATED = 4,
+
+    /// @brief Opcode for `zxdg_decoration_manager_v1.get_toplevel_decoration`.
     VGFX_ZXDG_DECORATION_MANAGER_GET_TOPLEVEL_DECORATION = 1,
+
+    /// @brief Opcode for `zxdg_toplevel_decoration_v1.destroy`.
     VGFX_ZXDG_TOPLEVEL_DECORATION_DESTROY = 0,
+
+    /// @brief Opcode for `zxdg_toplevel_decoration_v1.set_mode`.
     VGFX_ZXDG_TOPLEVEL_DECORATION_SET_MODE = 1,
+
+    /// @brief Decoration protocol value requesting compositor-rendered chrome.
     VGFX_ZXDG_TOPLEVEL_DECORATION_MODE_SERVER_SIDE = 2,
 };
 
+/// @brief Store the decoration mode selected by the compositor.
+/// @param data Registered @ref vgfx_wayland_shell_t callback context.
+/// @param decoration Decoration proxy that emitted the event.
+/// @param mode Protocol decoration-mode value.
 static void vgfx_wayland_decoration_configure(
     void *data, struct zxdg_toplevel_decoration_v1 *decoration, uint32_t mode) {
     (void)decoration;
@@ -76,15 +119,27 @@ static const vgfx_zxdg_toplevel_decoration_listener_t g_vgfx_decoration_listener
     .configure = vgfx_wayland_decoration_configure,
 };
 
+/// @brief Write a stable window-creation diagnostic into a caller buffer.
+/// @param error Destination buffer, or NULL.
+/// @param size Capacity of @p error in bytes, including its terminator.
+/// @param detail Specific non-null failure description.
 static void vgfx_wayland_shell_error(char *error, uint32_t size, const char *detail) {
     if (error && size > 0)
         (void)snprintf(error, (size_t)size, "Wayland window creation failed: %s", detail);
 }
 
+/// @brief Query the negotiated protocol version of a shell-owned proxy.
+/// @param shell Shell whose connection provides the dispatch entry point.
+/// @param proxy Non-null protocol proxy.
+/// @return Version negotiated for @p proxy.
 static uint32_t vgfx_wayland_proxy_version(vgfx_wayland_shell_t *shell, void *proxy) {
     return shell->connection->api.proxy_get_version((struct wl_proxy *)proxy);
 }
 
+/// @brief Acknowledge an xdg-surface configure and mark the initial handshake complete.
+/// @param data Registered @ref vgfx_wayland_shell_t callback context.
+/// @param xdg_surface Surface role that emitted the configure event.
+/// @param serial Configure serial that must be acknowledged before committing content.
 static void vgfx_wayland_xdg_surface_configure(void *data,
                                                struct xdg_surface *xdg_surface,
                                                uint32_t serial) {
@@ -101,6 +156,14 @@ static void vgfx_wayland_xdg_surface_configure(void *data,
     shell->configured = 1;
 }
 
+/// @brief Apply the compositor's latest toplevel size and state proposal.
+/// @details Zero dimensions mean the client may retain its current size. State flags are
+/// cleared before parsing the packed array so the structure represents only this configure.
+/// @param data Registered @ref vgfx_wayland_shell_t callback context.
+/// @param toplevel Toplevel proxy that emitted the event.
+/// @param width Proposed logical width, or zero when unconstrained.
+/// @param height Proposed logical height, or zero when unconstrained.
+/// @param states Packed array of 32-bit xdg-toplevel state values.
 static void vgfx_wayland_xdg_toplevel_configure(void *data,
                                                 struct xdg_toplevel *toplevel,
                                                 int32_t width,
@@ -134,6 +197,9 @@ static void vgfx_wayland_xdg_toplevel_configure(void *data,
     }
 }
 
+/// @brief Record the compositor's request to close the toplevel.
+/// @param data Registered @ref vgfx_wayland_shell_t callback context.
+/// @param toplevel Toplevel proxy that emitted the event.
 static void vgfx_wayland_xdg_toplevel_close(void *data, struct xdg_toplevel *toplevel) {
     (void)toplevel;
     vgfx_wayland_shell_t *shell = (vgfx_wayland_shell_t *)data;
@@ -141,6 +207,11 @@ static void vgfx_wayland_xdg_toplevel_close(void *data, struct xdg_toplevel *top
         shell->close_requested = 1;
 }
 
+/// @brief Consume optional compositor size bounds not currently used by window policy.
+/// @param data Registered shell callback context.
+/// @param toplevel Toplevel proxy that emitted the event.
+/// @param width Recommended maximum content width.
+/// @param height Recommended maximum content height.
 static void vgfx_wayland_xdg_toplevel_configure_bounds(void *data,
                                                        struct xdg_toplevel *toplevel,
                                                        int32_t width,
@@ -151,6 +222,10 @@ static void vgfx_wayland_xdg_toplevel_configure_bounds(void *data,
     (void)height;
 }
 
+/// @brief Consume optional compositor window-management capabilities.
+/// @param data Registered shell callback context.
+/// @param toplevel Toplevel proxy that emitted the event.
+/// @param capabilities Packed array of supported xdg-toplevel operations.
 static void vgfx_wayland_xdg_toplevel_wm_capabilities(void *data,
                                                       struct xdg_toplevel *toplevel,
                                                       struct wl_array *capabilities) {
@@ -170,6 +245,12 @@ static const vgfx_xdg_toplevel_listener_t g_vgfx_xdg_toplevel_listener = {
     .wm_capabilities = vgfx_wayland_xdg_toplevel_wm_capabilities,
 };
 
+/// @brief Track surface entry into an output and notify the optional observer.
+/// @details Duplicate entries are ignored. The fixed inventory retains at most 16 output
+/// proxies, but the observer is still notified for a new output when the inventory is full.
+/// @param data Registered @ref vgfx_wayland_shell_t callback context.
+/// @param surface Core surface that emitted the event.
+/// @param output Output proxy newly containing the surface.
 static void vgfx_wayland_surface_enter(void *data,
                                        struct wl_surface *surface,
                                        struct wl_proxy *output) {
@@ -186,6 +267,10 @@ static void vgfx_wayland_surface_enter(void *data,
         shell->output_observer(shell->output_observer_data, output, 1);
 }
 
+/// @brief Remove an output from surface membership and notify the optional observer.
+/// @param data Registered @ref vgfx_wayland_shell_t callback context.
+/// @param surface Core surface that emitted the event.
+/// @param output Output proxy no longer containing the surface.
 static void vgfx_wayland_surface_leave(void *data,
                                        struct wl_surface *surface,
                                        struct wl_proxy *output) {
@@ -204,6 +289,10 @@ static void vgfx_wayland_surface_leave(void *data,
         shell->output_observer(shell->output_observer_data, output, 0);
 }
 
+/// @brief Forward a core preferred buffer scale to the registered scaling observer.
+/// @param data Registered @ref vgfx_wayland_shell_t callback context.
+/// @param surface Core surface that emitted the event.
+/// @param factor Compositor-preferred positive integer scale.
 static void vgfx_wayland_surface_preferred_scale(void *data,
                                                  struct wl_surface *surface,
                                                  int32_t factor) {
@@ -213,6 +302,10 @@ static void vgfx_wayland_surface_preferred_scale(void *data,
         shell->preferred_scale_observer(shell->preferred_scale_observer_data, factor);
 }
 
+/// @brief Consume a preferred transform event not currently used by the renderer.
+/// @param data Registered shell callback context.
+/// @param surface Core surface that emitted the event.
+/// @param transform Preferred core-protocol buffer transform.
 static void vgfx_wayland_surface_preferred_transform(void *data,
                                                      struct wl_surface *surface,
                                                      uint32_t transform) {
@@ -228,6 +321,10 @@ static const vgfx_wl_surface_listener_t g_vgfx_wayland_surface_listener = {
     vgfx_wayland_surface_preferred_transform,
 };
 
+/// @brief Marshal the appropriate destructor for one shell-owned protocol object.
+/// @param shell Shell whose connection supplies the marshal dispatch.
+/// @param proxy Owned proxy to destroy, or NULL.
+/// @param opcode Destructor request opcode appropriate for @p proxy.
 static void vgfx_wayland_destroy_request(vgfx_wayland_shell_t *shell,
                                          void *proxy,
                                          uint32_t opcode) {
@@ -241,6 +338,7 @@ static void vgfx_wayland_destroy_request(vgfx_wayland_shell_t *shell,
         VGFX_WL_MARSHAL_FLAG_DESTROY);
 }
 
+/// @copydoc vgfx_wayland_shell_close
 void vgfx_wayland_shell_close(vgfx_wayland_shell_t *shell) {
     if (!shell)
         return;
@@ -256,6 +354,7 @@ void vgfx_wayland_shell_close(vgfx_wayland_shell_t *shell) {
     memset(shell, 0, sizeof(*shell));
 }
 
+/// @copydoc vgfx_wayland_shell_open
 int vgfx_wayland_shell_open(vgfx_wayland_shell_t *shell,
                             vgfx_wayland_connection_t *connection,
                             const char *title,

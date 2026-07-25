@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: examples/games/ashfall/probes/gpu_perf_probe.zia
+// File: examples/games/ashfall-scenes/probes/gpu_perf_probe.zia
 // Purpose: Measure Ashfall's native frame performance across the campaign and
 //          during a sustained combat workload.
 // Key invariants:
@@ -15,7 +15,7 @@
 // Ownership/Lifetime:
 //   - The probe owns one Game and Canvas3D for the process lifetime.
 //   - Runtime objects created by gameplay remain governed by Zia ownership.
-// Links: examples/games/ashfall/game.zia, docs/internals/testing.md
+// Links: examples/games/ashfall-scenes/game.zia, docs/internals/testing.md
 //
 //===----------------------------------------------------------------------===//
 module gpu_perf_probe;

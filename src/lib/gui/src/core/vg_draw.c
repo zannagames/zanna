@@ -31,11 +31,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements deterministic fixed-point anti-aliased GUI drawing primitives.
+/// @details Floating-point geometry is quantized during setup; coverage loops use Q8 integer
+/// arithmetic and an integer square root. Opaque interiors use bulk fills, edge coverage uses
+/// source-over alpha pixels, and rounded shadows use a small single-threaded LRU mask cache.
+
 //=============================================================================
 // Fixed-point helpers (Q8: 1 pixel == 256 units)
 //=============================================================================
 
 /// @brief Round a pixel coordinate to Q8 fixed point (deterministic).
+/// @param v Floating-point pixel coordinate; non-finite values become zero.
+/// @return Saturated signed Q8 representation of @p v.
 static inline int32_t vg__q8(float v) {
     if (!isfinite(v))
         return 0;
@@ -57,18 +65,24 @@ static inline int64_t vg__pixel_center_q8(int pixel) {
 }
 
 /// @brief Floor of a float to int (for bounding-box lower edges).
+/// @param v Finite value within the representable integer range.
+/// @return Greatest integer not larger than @p v.
 static inline int vg__floor_i(float v) {
     int i = (int)v;
     return (v < (float)i) ? i - 1 : i;
 }
 
 /// @brief Ceil of a float to int (for bounding-box upper edges).
+/// @param v Finite value within the representable integer range.
+/// @return Smallest integer not less than @p v.
 static inline int vg__ceil_i(float v) {
     int i = (int)v;
     return (v > (float)i) ? i + 1 : i;
 }
 
 /// @brief Integer square root of a 64-bit value (floor). Fully deterministic.
+/// @param n Unsigned radicand.
+/// @return Greatest integer whose square does not exceed @p n.
 static inline uint32_t vg__isqrt64(uint64_t n) {
     uint64_t x = 0;
     uint64_t bit = (uint64_t)1 << 62;
@@ -88,6 +102,7 @@ static inline uint32_t vg__isqrt64(uint64_t n) {
 
 /// @brief Convert a Q8 coverage value to an 8-bit alpha (0..255).
 /// @param cov_q8 Coverage in Q8 (>=256 fully covered, <=0 empty).
+/// @return Clamped alpha value from zero through 255.
 static inline int32_t vg__cov_to_alpha(int32_t cov_q8) {
     if (cov_q8 <= 0)
         return 0;
@@ -105,6 +120,15 @@ static inline int32_t vg__cov_to_alpha(int32_t cov_q8) {
 ///          for whole discs and for rounded-rect corner quadrants (the box
 ///          confines the work to the corner square so it never overdraws the
 ///          opaque interior bars).
+/// @param win Target graphics window.
+/// @param cxq Disc-center x coordinate in Q8 units.
+/// @param cyq Disc-center y coordinate in Q8 units.
+/// @param rq Radius in Q8 units.
+/// @param bx0 Inclusive integer box left edge.
+/// @param by0 Inclusive integer box top edge.
+/// @param bx1 Exclusive integer box right edge.
+/// @param by1 Exclusive integer box bottom edge.
+/// @param base Source RGB color without alpha.
 static void vg__disc_box(vgfx_window_t win,
                          int32_t cxq,
                          int32_t cyq,
@@ -132,6 +156,16 @@ static void vg__disc_box(vgfx_window_t win,
 /// @brief Composite an anti-aliased ring (annulus) of width t, in an int box.
 /// @details Coverage peaks on the mid-radius and feathers over the stroke
 ///          width plus a 1px ramp, so corner strokes line up with disc fills.
+/// @param win Target graphics window.
+/// @param cxq Ring-center x coordinate in Q8 units.
+/// @param cyq Ring-center y coordinate in Q8 units.
+/// @param rmidq Midline radius in Q8 units.
+/// @param halfq Half of the stroke width in Q8 units.
+/// @param bx0 Inclusive integer box left edge.
+/// @param by0 Inclusive integer box top edge.
+/// @param bx1 Exclusive integer box right edge.
+/// @param by1 Exclusive integer box bottom edge.
+/// @param base Source RGB color without alpha.
 static void vg__ring_box(vgfx_window_t win,
                          int32_t cxq,
                          int32_t cyq,
@@ -164,6 +198,7 @@ static void vg__ring_box(vgfx_window_t win,
 // Public API
 //=============================================================================
 
+/// @copydoc vg_draw_round_rect_fill
 void vg_draw_round_rect_fill(
     vgfx_window_t win, float x, float y, float w, float h, float radius, uint32_t rgb) {
     if (!win || w <= 0.0f || h <= 0.0f)
@@ -219,6 +254,7 @@ void vg_draw_round_rect_fill(
                  base);
 }
 
+/// @copydoc vg_draw_round_rect_stroke
 void vg_draw_round_rect_stroke(vgfx_window_t win,
                                float x,
                                float y,
@@ -301,6 +337,7 @@ void vg_draw_round_rect_stroke(vgfx_window_t win,
                  base);
 }
 
+/// @copydoc vg_draw_disc_fill
 void vg_draw_disc_fill(vgfx_window_t win, float cx, float cy, float r, uint32_t rgb) {
     if (!win || r <= 0.0f)
         return;
@@ -311,6 +348,7 @@ void vg_draw_disc_fill(vgfx_window_t win, float cx, float cy, float r, uint32_t 
     vg__disc_box(win, vg__q8(cx), vg__q8(cy), vg__q8(r), bx0, by0, bx1, by1, rgb & 0x00FFFFFFu);
 }
 
+/// @copydoc vg_draw_circle_stroke
 void vg_draw_circle_stroke(
     vgfx_window_t win, float cx, float cy, float r, float stroke_w, uint32_t rgb) {
     if (!win || r <= 0.0f)
@@ -325,6 +363,7 @@ void vg_draw_circle_stroke(
     vg__ring_box(win, vg__q8(cx), vg__q8(cy), rmidq, halfq, bx0, by0, bx1, by1, rgb & 0x00FFFFFFu);
 }
 
+/// @copydoc vg_draw_line_aa
 void vg_draw_line_aa(
     vgfx_window_t win, float x0, float y0, float x1, float y1, float stroke_w, uint32_t rgb) {
     if (!win)
@@ -384,6 +423,10 @@ void vg_draw_line_aa(
 //=============================================================================
 
 /// @brief Linearly interpolate two 0x00RRGGBB colours (t in Q8, 0..256).
+/// @param a RGB color selected at a zero interpolation factor.
+/// @param b RGB color selected at a full interpolation factor.
+/// @param t_q8 Q8 interpolation factor in the inclusive range zero through 256.
+/// @return Channel-wise interpolated 24-bit RGB color.
 static inline uint32_t vg__lerp_rgb(uint32_t a, uint32_t b, int32_t t_q8) {
     int32_t inv = 256 - t_q8;
     int32_t ar = (int32_t)((a >> 16) & 0xFF), ag = (int32_t)((a >> 8) & 0xFF),
@@ -400,6 +443,7 @@ static inline uint32_t vg__lerp_rgb(uint32_t a, uint32_t b, int32_t t_q8) {
 // Vertical gradient fill + inner highlight
 //=============================================================================
 
+/// @copydoc vg_draw_round_rect_gradient_v
 void vg_draw_round_rect_gradient_v(vgfx_window_t win,
                                    float x,
                                    float y,
@@ -464,6 +508,7 @@ void vg_draw_round_rect_gradient_v(vgfx_window_t win,
     }
 }
 
+/// @copydoc vg_draw_inner_highlight_top
 void vg_draw_inner_highlight_top(
     vgfx_window_t win, float x, float y, float w, float radius, uint32_t rgb) {
     if (!win || w <= 0.0f)
@@ -535,7 +580,14 @@ static int vg__shadow_dims(
     return 1;
 }
 
-/// @brief Rasterise a hard rounded-rect silhouette into a padded buffer.
+/// @brief Rasterise a hard rounded-rectangle silhouette into a padded alpha buffer.
+/// @param buf Destination buffer containing at least @p W times @p H bytes.
+/// @param W Padded buffer width.
+/// @param H Padded buffer height.
+/// @param pad Empty border preceding the silhouette on each side.
+/// @param iw Unpadded silhouette width.
+/// @param ih Unpadded silhouette height.
+/// @param r Clamped corner radius in pixels.
 static void vg__rasterize_silhouette(uint8_t *buf, int W, int H, int pad, int iw, int ih, int r) {
     memset(buf, 0, (size_t)W * (size_t)H);
     for (int ly = 0; ly < ih; ++ly) {
@@ -567,6 +619,11 @@ static void vg__rasterize_silhouette(uint8_t *buf, int W, int H, int pad, int iw
 }
 
 /// @brief Horizontal box blur with zero-padding at the buffer edges.
+/// @param src Source coverage buffer containing @p W times @p H bytes.
+/// @param dst Distinct destination buffer of the same size.
+/// @param W Buffer width.
+/// @param H Buffer height.
+/// @param r Non-negative box radius.
 static void vg__box_blur_h(const uint8_t *src, uint8_t *dst, int W, int H, int r) {
     int norm = 2 * r + 1;
     for (int y = 0; y < H; ++y) {
@@ -588,6 +645,11 @@ static void vg__box_blur_h(const uint8_t *src, uint8_t *dst, int W, int H, int r
 }
 
 /// @brief Vertical box blur with zero-padding at the buffer edges.
+/// @param src Source coverage buffer containing @p W times @p H bytes.
+/// @param dst Distinct destination buffer of the same size.
+/// @param W Buffer width.
+/// @param H Buffer height.
+/// @param r Non-negative box radius.
 static void vg__box_blur_v(const uint8_t *src, uint8_t *dst, int W, int H, int r) {
     int norm = 2 * r + 1;
     for (int x = 0; x < W; ++x) {
@@ -607,8 +669,19 @@ static void vg__box_blur_v(const uint8_t *src, uint8_t *dst, int W, int H, int r
 }
 
 /// @brief Fetch (or compute and cache) the blurred shadow bitmap.
+/// @details Cacheable dimensions use the least-recently-used static entry. Oversized but valid
+/// dimensions return a transient allocation instead.
+/// @param iw Unpadded silhouette width.
+/// @param ih Unpadded silhouette height.
+/// @param r Clamped corner radius.
+/// @param br Box-blur radius.
+/// @param outW Receives padded bitmap width.
+/// @param outH Receives padded bitmap height.
+/// @param outPad Receives surrounding padding.
 /// @param transient_out Receives a freshly-allocated bitmap the caller must
 ///        free, used only when the result is too large to cache.
+/// @return Borrowed cached bytes or owned transient bytes on success; NULL on invalid
+/// dimensions or allocation failure.
 static const uint8_t *vg__get_shadow(
     int iw, int ih, int r, int br, int *outW, int *outH, int *outPad, uint8_t **transient_out) {
     int pad = 0;
@@ -679,6 +752,7 @@ static const uint8_t *vg__get_shadow(
     return a;
 }
 
+/// @copydoc vg_draw_round_rect_shadow
 void vg_draw_round_rect_shadow(vgfx_window_t win,
                                float x,
                                float y,

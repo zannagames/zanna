@@ -28,9 +28,16 @@
 
 #include "vg_gamma_tables.inc"
 
+/// @file
+/// @brief Bridges rasterized font coverage maps to ZannaGFX canvas drawing.
+/// @details The primary path clips and blends directly into an RGBA framebuffer, optionally in
+/// linear light. A thresholded `vgfx_pset` implementation remains available for canvas backends
+/// that do not expose framebuffer memory.
+
 /// @brief Return whether gamma-correct linear-light glyph blending is active.
 /// @details Default on; the ZANNA_GUI_TEXT_GAMMA=off environment escape hatch
 ///          restores the legacy sRGB-space blend (checked once per process).
+/// @return Nonzero for gamma-correct blending, or zero for legacy sRGB-space blending.
 static int vg_text_gamma_blend_enabled(void) {
     static int s_state = -1;
     if (s_state < 0) {

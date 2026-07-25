@@ -22,6 +22,12 @@
 
 #include "vg_ide_widgets_common.h"
 
+/// @file
+/// @brief Declares tab bars, split panes, output panes, and breadcrumb navigation.
+/// @details These widgets form the retained layout and document-navigation primitives used by
+/// IDE shells, including stable tab identities, draggable split ratios, categorized output
+/// streams, and path segments with callback-driven activation.
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Sanity-check example covering the core ZannaGFX C API.
+/// @details Creates a small window, verifies framebuffer layout and selected
+///          stateful operations, exercises primitive drawing and color helpers,
+///          samples empty input/event state, presents one frame, and releases
+///          the owned window. Failures are reported immediately to stderr.
+
 /*
  * ZannaGFX API Test
  * Tests core API functionality without requiring platform backend
@@ -24,9 +31,12 @@
 #include <string.h>
 #include <vgfx.h>
 
-/// What: Entry point that exercises API calls as a smoke test.
-/// Why:  Quickly reveal ABI or linkage issues in CI.
-/// How:  Calls a representative subset of the API and checks return values.
+/// @brief Exercise representative window, framebuffer, drawing, input, and event APIs.
+/// @details The routine intentionally performs explicit value checks after each
+///          state-changing call so an ABI mismatch or backend contract failure
+///          is localized to the first affected operation. The created window is
+///          destroyed on the successful path.
+/// @return 0 when every check succeeds; 1 after reporting the first failure.
 int main(void) {
     printf("=== ZannaGFX API Test ===\n");
     printf("Version: %s\n\n", vgfx_version_string());
@@ -163,20 +173,3 @@ int main(void) {
     printf("=== All Tests Passed ===\n");
     return 0;
 }
-
-//===----------------------------------------------------------------------===//
-//
-// Part of the Zanna project, under the GNU GPL v3.
-// See LICENSE for license information.
-//
-//===----------------------------------------------------------------------===//
-//
-// File: src/lib/graphics/examples/api_test.c
-// Purpose: ZannaGFX example used to exercise API surface for sanity checks.
-// Key invariants: Avoids undefined behavior; reports failures to stderr; exits
-//                 non-zero on error.
-// Ownership/Lifetime: Demonstration program; owns and releases created
-//                     resources within main.
-// Links: docs/vgfx.md
-//
-//===----------------------------------------------------------------------===//

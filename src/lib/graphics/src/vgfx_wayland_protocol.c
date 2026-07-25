@@ -17,6 +17,12 @@
 
 #include "vgfx_wayland_protocol.h"
 
+/// @file
+/// @brief Defines Wayland wire metadata and the small xdg-shell request helpers.
+/// @details The immutable tables below mirror protocol XML message order and signatures.
+/// They are passed to the dynamically loaded `wl_proxy_marshal_flags` entry point and have
+/// process lifetime.
+
 /* Core protocol interfaces are normally provided by generated scanner code. Zanna loads
  * libwayland dynamically, so stable name/version-only descriptors supply the object metadata
  * required by wl_proxy_marshal_flags without adding a link-time dependency. */
@@ -261,6 +267,7 @@ const struct wl_interface vgfx_xdg_activation_token_v1_interface = {
     "xdg_activation_token_v1", 1, 5, g_activation_token_requests, 1,
     g_activation_token_events};
 
+/// @copydoc vgfx_wayland_registry_bind
 struct wl_proxy *vgfx_wayland_registry_bind(const vgfx_wayland_client_api_t *api,
                                              struct wl_registry *registry,
                                              uint32_t name,
@@ -282,6 +289,7 @@ struct wl_proxy *vgfx_wayland_registry_bind(const vgfx_wayland_client_api_t *api
                                     NULL);
 }
 
+/// @copydoc vgfx_xdg_wm_base_add_listener
 int vgfx_xdg_wm_base_add_listener(const vgfx_wayland_client_api_t *api,
                                   struct xdg_wm_base *wm_base,
                                   const vgfx_xdg_wm_base_listener_t *listener,
@@ -293,6 +301,7 @@ int vgfx_xdg_wm_base_add_listener(const vgfx_wayland_client_api_t *api,
                                    data);
 }
 
+/// @copydoc vgfx_xdg_wm_base_pong
 void vgfx_xdg_wm_base_pong(const vgfx_wayland_client_api_t *api,
                            struct xdg_wm_base *wm_base,
                            uint32_t serial) {

@@ -29,6 +29,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @file
+/// @brief Implements themed push-button measurement, painting, activation, and configuration.
+/// @details Buttons own copied label and text-icon strings, borrow their font and callback payload,
+/// and render style presets with animated hover, press, and focus effects. Vector icons take
+/// precedence over text icons and participate in the same centered content layout.
+
 //=============================================================================
 // Forward Declarations
 //=============================================================================
@@ -56,6 +62,9 @@ static vg_widget_vtable_t g_button_vtable = {.destroy = button_destroy,
 //=============================================================================
 
 /// @brief Return the effective corner radius (button override or theme default).
+/// @param button Button whose explicit radius is preferred when positive.
+/// @param theme Current theme supplying the fallback radius.
+/// @return Corner radius rounded down to pixels, with a minimum of two.
 static int button_corner_radius(const vg_button_t *button, const vg_theme_t *theme) {
     float radius = button && button->border_radius > 0.0f
                        ? button->border_radius
@@ -116,7 +125,8 @@ vg_button_t *vg_button_create(vg_widget_t *parent, const char *text) {
     return button;
 }
 
-/// @brief VTable destroy: frees the button label text string.
+/// @brief Release strings owned by a button during base-widget destruction.
+/// @param widget Button base widget being destroyed.
 static void button_destroy(vg_widget_t *widget) {
     vg_button_t *button = (vg_button_t *)widget;
     if (button->text) {
@@ -129,6 +139,9 @@ static void button_destroy(vg_widget_t *widget) {
 
 /// @brief VTable measure: sizes the button from icon, text, and padding dimensions then applies
 /// layout constraints.
+/// @param widget Button base widget whose measured dimensions are updated.
+/// @param available_width Parent-provided width constraint; sizing is content-driven.
+/// @param available_height Parent-provided height constraint; the theme supplies button height.
 static void button_measure(vg_widget_t *widget, float available_width, float available_height) {
     vg_button_t *button = (vg_button_t *)widget;
     (void)available_width;
@@ -178,6 +191,8 @@ static void button_measure(vg_widget_t *widget, float available_width, float ava
 
 /// @brief VTable paint: renders the button background (rounded rect), border, hover/press tints,
 /// optional icon, and centred label text.
+/// @param widget Button base widget to render.
+/// @param canvas Graphics window used for shapes, icons, clipping, and text.
 static void button_paint(vg_widget_t *widget, void *canvas) {
     vg_button_t *button = (vg_button_t *)widget;
     vg_theme_t *theme = vg_theme_get_current();
@@ -402,6 +417,9 @@ static void button_paint(vg_widget_t *widget, void *canvas) {
 
 /// @brief VTable handle_event: handles hover, press/release state transitions, click firing, and
 /// Space/Enter keyboard activation.
+/// @param widget Button base widget receiving the event.
+/// @param event Click or key event to process.
+/// @return `true` when activation is handled, otherwise `false`.
 static bool button_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_button_t *button = (vg_button_t *)widget;
 
@@ -439,7 +457,9 @@ static bool button_handle_event(vg_widget_t *widget, vg_event_t *event) {
     return false;
 }
 
-/// @brief VTable can_focus: returns true when the widget is both enabled and visible.
+/// @brief Return whether a button may participate in keyboard focus traversal.
+/// @param widget Button base widget to inspect.
+/// @return `true` when the widget is enabled and visible.
 static bool button_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }

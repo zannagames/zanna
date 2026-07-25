@@ -43,8 +43,8 @@
 /// @details Controlled by vgfx_mock_set_time_ms() and vgfx_mock_advance_time_ms().
 ///          Advanced automatically by vgfx_platform_sleep_ms() (simulates sleep).
 ///          Used by vgfx_platform_now_ms() to return consistent timestamps.
-///
-/// @invariant g_mock_time_ms >= 0 (never negative)
+///          Control hooks may deliberately set or advance it to negative values
+///          when exercising edge cases.
 static int64_t g_mock_time_ms = 0;
 
 /// @brief Mock display scale returned for newly-created windows.
@@ -55,11 +55,13 @@ static float g_mock_display_scale = 1.0f;
 static char *g_mock_clipboard_text = NULL;
 static vgfx_atomic_flag_t g_mock_clipboard_lock;
 
+/// @brief Acquire the global mock clipboard spin lock.
 static void mock_clipboard_lock(void) {
     while (vgfx_atomic_flag_test_and_set(&g_mock_clipboard_lock))
         vgfx_internal_event_wait();
 }
 
+/// @brief Release the global mock clipboard spin lock.
 static void mock_clipboard_unlock(void) {
     vgfx_atomic_flag_clear(&g_mock_clipboard_lock);
 }
@@ -79,6 +81,9 @@ typedef struct {
     vgfx_event_t pending_events[VGFX_MOCK_PENDING_QUEUE_SLOTS];
 } vgfx_mock_platform;
 
+/// @brief Check whether deterministic mock clipboard text is non-empty.
+/// @param format Format to query; only `VGFX_CLIPBOARD_TEXT` is supported.
+/// @return 1 for available non-empty text, otherwise 0.
 int vgfx_clipboard_has_format(vgfx_clipboard_format_t format) {
     if (format != VGFX_CLIPBOARD_TEXT)
         return 0;
@@ -88,6 +93,9 @@ int vgfx_clipboard_has_format(vgfx_clipboard_format_t format) {
     return available;
 }
 
+/// @brief Copy the deterministic mock clipboard text.
+/// @return Heap-allocated NUL-terminated text, using an empty string when the
+///         clipboard has not been initialized, or NULL on allocation failure.
 char *vgfx_clipboard_get_text(void) {
     mock_clipboard_lock();
     const char *source = g_mock_clipboard_text ? g_mock_clipboard_text : "";
@@ -99,6 +107,8 @@ char *vgfx_clipboard_get_text(void) {
     return copy;
 }
 
+/// @brief Replace the deterministic mock clipboard with copied text.
+/// @param text Source text, or NULL to publish an empty string.
 void vgfx_clipboard_set_text(const char *text) {
     const char *source = text ? text : "";
     size_t length = strlen(source);
@@ -112,6 +122,7 @@ void vgfx_clipboard_set_text(const char *text) {
     mock_clipboard_unlock();
 }
 
+/// @brief Replace the mock clipboard with an empty string.
 void vgfx_clipboard_clear(void) {
     vgfx_clipboard_set_text("");
 }
@@ -154,6 +165,13 @@ void vgfx_platform_aligned_free(void *ptr) {
     free(((void **)ptr)[-1]);
 }
 
+/// @brief Append an injected event to the mock platform's pending queue.
+/// @details Uses a fixed ring buffer distinct from the public event queue.
+///          When full, the oldest pending injection is discarded so the newest
+///          deterministic stimulus is retained.
+/// @param platform Mock platform state receiving the event.
+/// @param event Event value to copy.
+/// @return 1 when copied, or 0 for invalid input.
 static int mock_pending_enqueue(vgfx_mock_platform *platform, const vgfx_event_t *event) {
     if (!platform || !event)
         return 0;
@@ -168,6 +186,10 @@ static int mock_pending_enqueue(vgfx_mock_platform *platform, const vgfx_event_t
     return 1;
 }
 
+/// @brief Remove the oldest injected event from the mock pending queue.
+/// @param platform Mock platform state to drain.
+/// @param out_event Receives the removed event.
+/// @return 1 when an event was returned, otherwise 0.
 static int mock_pending_dequeue(vgfx_mock_platform *platform, vgfx_event_t *out_event) {
     if (!platform || !out_event || platform->pending_head == platform->pending_tail)
         return 0;
@@ -177,6 +199,13 @@ static int mock_pending_dequeue(vgfx_mock_platform *platform, vgfx_event_t *out_
     return 1;
 }
 
+/// @brief Apply one injected event to mock window polling state.
+/// @details Mirrors native backend side effects before the event is transferred
+///          to the public queue: key/button/mouse state, framebuffer resize,
+///          close handling, focus state, and focus-loss input reset.
+/// @param win Window receiving state changes.
+/// @param platform Mock platform state associated with @p win.
+/// @param event Pending event to apply.
 static void mock_apply_event(struct vgfx_window *win,
                              vgfx_mock_platform *platform,
                              const vgfx_event_t *event) {
@@ -289,16 +318,13 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
     win->platform_data = NULL;
 }
 
-/// @brief Process OS events (mock version - no-op).
-/// @details The mock backend does NOT generate events automatically.  Tests
-///          must manually inject events using vgfx_mock_inject_*() functions.
-///          This function always succeeds and does nothing.
-///
-/// @param win Pointer to the ZannaGFX window structure (unused)
-/// @return 1 (always succeeds)
-///
-/// @note To simulate events, use vgfx_mock_inject_key_event(),
-///       vgfx_mock_inject_mouse_move(), etc.
+/// @brief Wait for a pending mock event or advance deterministic time.
+/// @details Returns immediately when an injected event is pending.  Otherwise
+///          a positive timeout is simulated by advancing the mock clock without
+///          blocking, after which the queue is checked again.
+/// @param win Mock window whose pending queue should be inspected.
+/// @param timeout_ms Maximum simulated wait in milliseconds.
+/// @return 1 when an event is pending, otherwise 0.
 int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     if (!win || !win->platform_data)
         return 0;
@@ -312,6 +338,12 @@ int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     return platform->pending_head != platform->pending_tail ? 1 : 0;
 }
 
+/// @brief Transfer injected mock events into core window state and queue.
+/// @details Drains the platform-side pending queue in order, applies the same
+///          sticky state transitions a native backend would perform, and then
+///          enqueues each event through the synchronized core queue.
+/// @param win Mock window whose injected events should be processed.
+/// @return 1 after draining valid platform state, otherwise 0.
 int vgfx_platform_process_events(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -364,9 +396,11 @@ void vgfx_platform_sleep_ms(int32_t ms) {
 ///          g_mock_time_ms.
 void vgfx_platform_yield(void) {}
 
-/// @brief Query HiDPI scale factor (mock version — always 1.0).
-/// @details Tests run at 1:1 scale so all existing tests continue to pass
-///          unchanged.  Physical == logical in the mock backend.
+/// @brief Query the configurable mock HiDPI scale factor.
+/// @details Defaults to 1.0 for physical/logical parity.  Tests may change it
+///          with `vgfx_mock_set_display_scale()` to exercise scaled coordinate
+///          and framebuffer contracts without a real display.
+/// @return Sanitized mock physical-pixels-per-logical-unit scale.
 float vgfx_platform_get_display_scale(void) {
     return vgfx_internal_sanitize_scale(g_mock_display_scale);
 }
@@ -404,16 +438,26 @@ void vgfx_mock_set_time_ms(int64_t ms) {
     g_mock_time_ms = ms;
 }
 
+/// @brief Return the mock backend's absent native display handle.
+/// @param window Ignored mock window.
+/// @return Always NULL.
 void *vgfx_get_native_display(vgfx_window_t window) {
     (void)window;
     return NULL;
 }
 
+/// @brief Return the mock backend's absent native view handle.
+/// @param window Ignored mock window.
+/// @return Always NULL.
 void *vgfx_get_native_view(vgfx_window_t window) {
     (void)window;
     return NULL; /* Mock backend has no native view */
 }
 
+/// @brief Fill an explicit no-native-backend handle descriptor.
+/// @param window Mock window used only for validity checking.
+/// @param out_handles Receives a zeroed descriptor with backend `NONE`.
+/// @return 1 when the descriptor was written, otherwise 0.
 int vgfx_get_native_handles(vgfx_window_t window, vgfx_native_handles_t *out_handles) {
     if (!window || !out_handles)
         return 0;
@@ -421,23 +465,35 @@ int vgfx_get_native_handles(vgfx_window_t window, vgfx_native_handles_t *out_han
     return 1;
 }
 
+/// @brief Report that the mock backend exposes no native window capabilities.
+/// @param window Ignored mock window.
+/// @return Always zero.
 vgfx_window_capabilities_t vgfx_get_window_capabilities(vgfx_window_t window) {
     (void)window;
     return 0;
 }
 
+/// @brief Accept a cursor-warp request without native side effects.
+/// @param win Ignored mock window.
+/// @param x Ignored logical X coordinate.
+/// @param y Ignored logical Y coordinate.
 void vgfx_platform_warp_cursor(struct vgfx_window *win, int32_t x, int32_t y) {
     (void)win;
     (void)x;
     (void)y;
 }
 
+/// @brief Accept a process cursor-hide request as a deterministic no-op.
 void vgfx_platform_hide_cursor(void) {}
 
+/// @brief Accept a process cursor-show request as a deterministic no-op.
 void vgfx_platform_show_cursor(void) {}
 
 /// @brief Mock display size: unavailable, so fullscreen creation falls back
 ///        to the default window dimensions (deterministic for tests).
+/// @param out_w Ignored width output.
+/// @param out_h Ignored height output.
+/// @return Always 0 to report unavailable display dimensions.
 int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
     (void)out_w;
     (void)out_h;
@@ -449,17 +505,28 @@ int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
 ///          vgfx_mock_push_relative_delta(), exercising the exact code path
 ///          real backends use (vgfx_internal_add_relative_delta +
 ///          vgfx_get_relative_deltas drain).
+/// @param win Ignored mock window.
+/// @param enabled Ignored requested state.
+/// @return Always 1 to expose the native-relative test path.
 int vgfx_platform_set_relative_mouse(struct vgfx_window *win, int enabled) {
     (void)win;
     (void)enabled;
     return 1;
 }
 
+/// @brief Accept mock text-input enablement for a valid window.
+/// @param win Window whose presence is validated.
+/// @param enabled Ignored requested state.
+/// @return 1 for a non-NULL window, otherwise 0.
 int vgfx_platform_set_text_input_enabled(struct vgfx_window *win, int32_t enabled) {
     (void)enabled;
     return win != NULL;
 }
 
+/// @brief Accept a mock surrounding-text snapshot for a valid window.
+/// @param win Window whose presence is validated.
+/// @param state Text-input state whose presence is validated.
+/// @return 1 when both pointers are non-NULL, otherwise 0.
 int vgfx_platform_set_text_input_state(struct vgfx_window *win,
                                        const vgfx_text_input_state_t *state) {
     return win && state;
@@ -503,6 +570,10 @@ void vgfx_mock_advance_time_ms(int64_t delta_ms) {
     g_mock_time_ms += delta_ms;
 }
 
+/// @brief Set the display scale returned by the mock backend.
+/// @details Sanitizes the requested value using the production scale bounds,
+///          allowing deterministic HiDPI framebuffer/coordinate tests.
+/// @param scale Requested physical-pixels-per-logical-unit scale.
 void vgfx_mock_set_display_scale(float scale) {
     g_mock_display_scale = vgfx_internal_sanitize_scale(scale);
 }
@@ -516,9 +587,10 @@ void vgfx_mock_set_display_scale(float scale) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Inject a synthetic keyboard event.
-/// @details Simulates a key press or release.  Updates win->key_state and
-///          enqueues a KEY_DOWN or KEY_UP event.  The event timestamp is
-///          set to the current mock time.
+/// @details Appends a KEY_DOWN or KEY_UP event to the platform-side pending
+///          queue with the current mock timestamp.  The next
+///          `vgfx_platform_process_events()` call applies key polling state and
+///          transfers the event to the public queue.
 ///
 /// @param window Window handle
 /// @param key    Key code (must be < 512 and != VGFX_KEY_UNKNOWN)
@@ -526,8 +598,7 @@ void vgfx_mock_set_display_scale(float scale) {
 ///
 /// @pre  window != NULL
 /// @pre  key < 512 && key != VGFX_KEY_UNKNOWN
-/// @post win->key_state[key] updated to down ? 1 : 0
-/// @post Corresponding KEY_DOWN or KEY_UP event enqueued
+/// @post A corresponding KEY_DOWN or KEY_UP event is pending for processing.
 ///
 /// @note Only available in mock backend (not in real platform backends).
 void vgfx_mock_inject_key_event(vgfx_window_t window, vgfx_key_t key, int down) {
@@ -579,9 +650,9 @@ void vgfx_mock_inject_mouse_move(vgfx_window_t window, int32_t x, int32_t y) {
 }
 
 /// @brief Inject a synthetic mouse button event.
-/// @details Simulates a mouse button press or release.  Updates
-///          win->mouse_button_state and enqueues a MOUSE_DOWN or MOUSE_UP
-///          event.  The event includes the current mouse position.
+/// @details Appends a MOUSE_DOWN or MOUSE_UP event carrying the current mouse
+///          position.  The next platform event pump applies button state and
+///          transfers it to the public queue.
 ///
 /// @param window Window handle
 /// @param btn    Button code (must be < 8)
@@ -589,8 +660,7 @@ void vgfx_mock_inject_mouse_move(vgfx_window_t window, int32_t x, int32_t y) {
 ///
 /// @pre  window != NULL
 /// @pre  btn < 8
-/// @post win->mouse_button_state[btn] updated to down ? 1 : 0
-/// @post Corresponding MOUSE_DOWN or MOUSE_UP event enqueued
+/// @post A corresponding MOUSE_DOWN or MOUSE_UP event is pending for processing.
 ///
 /// @note Only available in mock backend (not in real platform backends).
 void vgfx_mock_inject_mouse_button(vgfx_window_t window, vgfx_mouse_button_t btn, int down) {
@@ -615,20 +685,16 @@ void vgfx_mock_inject_mouse_button(vgfx_window_t window, vgfx_mouse_button_t btn
 }
 
 /// @brief Inject a synthetic resize event.
-/// @details Simulates window resize.  Updates win->width, win->height, and
-///          win->stride, then reallocates the framebuffer to match the new
-///          dimensions.  Enqueues a RESIZE event.
+/// @details Appends a RESIZE event containing physical dimensions and derived
+///          logical dimensions.  The next platform event pump reallocates the
+///          framebuffer and transfers the event to the public queue.
 ///
 /// @param window Window handle
 /// @param width  New window width in pixels
 /// @param height New window height in pixels
 ///
 /// @pre  window != NULL
-/// @post win->width == width
-/// @post win->height == height
-/// @post win->stride == width * 4
-/// @post Framebuffer reallocated and cleared to black
-/// @post RESIZE event enqueued
+/// @post A RESIZE event is pending for processing.
 ///
 /// @note Only available in mock backend (not in real platform backends).
 void vgfx_mock_inject_resize(vgfx_window_t window, int32_t width, int32_t height) {
@@ -647,13 +713,14 @@ void vgfx_mock_inject_resize(vgfx_window_t window, int32_t width, int32_t height
 
 /// @brief Inject a synthetic close event.
 /// @details Simulates the user closing the window (clicking the X button).
-///          Enqueues a CLOSE event.  Does NOT actually destroy the window -
-///          test code must call vgfx_destroy_window() explicitly.
+///          Appends a CLOSE event for the next platform pump.  Processing sets
+///          close-requested state unless prevention is active but never destroys
+///          the window; test code must call vgfx_destroy_window() explicitly.
 ///
 /// @param window Window handle
 ///
 /// @pre  window != NULL
-/// @post CLOSE event enqueued
+/// @post A CLOSE event is pending for processing.
 ///
 /// @note Only available in mock backend (not in real platform backends).
 void vgfx_mock_inject_close(vgfx_window_t window) {
@@ -671,13 +738,14 @@ void vgfx_mock_inject_close(vgfx_window_t window) {
 
 /// @brief Inject a synthetic focus event.
 /// @details Simulates the window gaining or losing focus (becoming active or
-///          inactive).  Enqueues a FOCUS_GAINED or FOCUS_LOST event.
+///          inactive).  The next platform pump applies focus/input state and
+///          publishes FOCUS_GAINED or FOCUS_LOST.
 ///
 /// @param window Window handle
 /// @param gained 1 for focus gained, 0 for focus lost
 ///
 /// @pre  window != NULL
-/// @post Corresponding FOCUS_GAINED or FOCUS_LOST event enqueued
+/// @post A corresponding focus event is pending for processing.
 ///
 /// @note Only available in mock backend (not in real platform backends).
 void vgfx_mock_inject_focus(vgfx_window_t window, int gained) {
@@ -694,6 +762,11 @@ void vgfx_mock_inject_focus(vgfx_window_t window, int gained) {
     mock_pending_enqueue(platform, &event);
 }
 
+/// @brief Inject one filtered Unicode text-input event.
+/// @details Applies the production text-scalar policy with no modifiers, then
+///          appends an accepted event using the current mock timestamp.
+/// @param window Mock window receiving the event.
+/// @param codepoint Candidate Unicode scalar.
 void vgfx_mock_inject_text_input(vgfx_window_t window, uint32_t codepoint) {
     struct vgfx_window *win = (struct vgfx_window *)window;
     if (!win)
@@ -786,6 +859,12 @@ void vgfx_mock_inject_composition_cancel(vgfx_window_t window) {
     mock_inject_composition(window, VGFX_EVENT_COMPOSITION_CANCEL, "", 0, 0, -1, -1);
 }
 
+/// @brief Inject a synthetic scroll-wheel event.
+/// @param window Mock window receiving the event.
+/// @param dx Horizontal scroll delta.
+/// @param dy Vertical scroll delta.
+/// @param x Logical pointer X coordinate accompanying the event.
+/// @param y Logical pointer Y coordinate accompanying the event.
 void vgfx_mock_inject_scroll(vgfx_window_t window, float dx, float dy, int32_t x, int32_t y) {
     struct vgfx_window *win = (struct vgfx_window *)window;
     if (!win)
@@ -845,28 +924,44 @@ int vgfx_platform_is_fullscreen(struct vgfx_window *win) {
 // Window Management Stubs (added with platform extensions)
 //===----------------------------------------------------------------------===//
 
+/// @brief Accept a minimize request without changing mock state.
+/// @param win Ignored mock window.
 void vgfx_platform_minimize(struct vgfx_window *win) {
     (void)win;
 }
 
+/// @brief Accept a maximize request without changing mock state.
+/// @param win Ignored mock window.
 void vgfx_platform_maximize(struct vgfx_window *win) {
     (void)win;
 }
 
+/// @brief Accept a restore request without changing mock state.
+/// @param win Ignored mock window.
 void vgfx_platform_restore(struct vgfx_window *win) {
     (void)win;
 }
 
+/// @brief Report that mock windows are never minimized.
+/// @param win Ignored mock window.
+/// @return Always 0.
 int32_t vgfx_platform_is_minimized(struct vgfx_window *win) {
     (void)win;
     return 0;
 }
 
+/// @brief Report that mock windows are never maximized.
+/// @param win Ignored mock window.
+/// @return Always 0.
 int32_t vgfx_platform_is_maximized(struct vgfx_window *win) {
     (void)win;
     return 0;
 }
 
+/// @brief Return the deterministic mock window origin.
+/// @param win Ignored mock window.
+/// @param x Receives zero when non-NULL.
+/// @param y Receives zero when non-NULL.
 void vgfx_platform_get_position(struct vgfx_window *win, int32_t *x, int32_t *y) {
     (void)win;
     if (x)
@@ -875,16 +970,25 @@ void vgfx_platform_get_position(struct vgfx_window *win, int32_t *x, int32_t *y)
         *y = 0;
 }
 
+/// @brief Accept a mock window-position request as a no-op.
+/// @param win Ignored mock window.
+/// @param x Ignored X coordinate.
+/// @param y Ignored Y coordinate.
 void vgfx_platform_set_position(struct vgfx_window *win, int32_t x, int32_t y) {
     (void)win;
     (void)x;
     (void)y;
 }
 
+/// @brief Give a mock window focus through the foreground-request path.
+/// @param win Window whose focus state should be set.
 void vgfx_platform_focus(struct vgfx_window *win) {
     vgfx_platform_request_foreground(win);
 }
 
+/// @brief Mark a valid mock window focused.
+/// @details Updates both backend-local and core synchronized focus state.
+/// @param win Window to focus.
 void vgfx_platform_request_foreground(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -893,6 +997,9 @@ void vgfx_platform_request_foreground(struct vgfx_window *win) {
     vgfx_internal_set_focus_state(win, 1);
 }
 
+/// @brief Query mock backend focus state.
+/// @param win Window whose focus flag should be read.
+/// @return 1 when focused, otherwise 0.
 int32_t vgfx_platform_is_focused(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -900,20 +1007,33 @@ int32_t vgfx_platform_is_focused(struct vgfx_window *win) {
     return platform->focused ? 1 : 0;
 }
 
+/// @brief Update the core close-prevention flag for a mock window.
+/// @param win Window whose close policy should change.
+/// @param p Non-zero to prevent close-request state, zero to allow it.
 void vgfx_platform_set_prevent_close(struct vgfx_window *win, int32_t p) {
     vgfx_internal_set_prevent_close(win, p);
 }
 
+/// @brief Accept a cursor-shape request without native side effects.
+/// @param win Ignored mock window.
+/// @param type Ignored public cursor type.
 void vgfx_platform_set_cursor(struct vgfx_window *win, int32_t type) {
     (void)win;
     (void)type;
 }
 
+/// @brief Accept a cursor-visibility request without native side effects.
+/// @param win Ignored mock window.
+/// @param visible Ignored visibility state.
 void vgfx_platform_set_cursor_visible(struct vgfx_window *win, int32_t visible) {
     (void)win;
     (void)visible;
 }
 
+/// @brief Return deterministic physical monitor dimensions for mock tests.
+/// @param win Ignored mock window.
+/// @param out_w Receives 1920 when non-NULL.
+/// @param out_h Receives 1080 when non-NULL.
 void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int32_t *out_h) {
     (void)win;
     if (out_w)
@@ -922,6 +1042,12 @@ void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int
         *out_h = 1080;
 }
 
+/// @brief Queue a mock resize request for the next event pump.
+/// @details Creates a resize event with the current mock timestamp and active
+///          coordinate scale; framebuffer reallocation occurs during processing.
+/// @param win Window to resize.
+/// @param w Requested physical framebuffer width used by this mock hook.
+/// @param h Requested physical framebuffer height used by this mock hook.
 void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h) {
     if (!win || !win->platform_data)
         return;
@@ -931,6 +1057,10 @@ void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h
     mock_pending_enqueue(platform, &event);
 }
 
+/// @brief Accept minimum-size publication without storing native constraints.
+/// @param win Ignored mock window.
+/// @param w Ignored minimum width.
+/// @param h Ignored minimum height.
 void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32_t h) {
     (void)win;
     (void)w;

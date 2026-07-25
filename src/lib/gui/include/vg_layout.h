@@ -25,6 +25,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/// @file
+/// @brief Declares retained VBox, HBox, Flex, Grid, and Dock layout containers.
+/// @details Layout widgets own algorithm-specific configuration while ordinary child widgets
+/// contribute sizing constraints, margins, flex factors, grid placement, and dock positions.
+/// Public checked operations preserve existing tree state when validation or allocation fails.
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -33,6 +39,7 @@ extern "C" {
 // Forward Declarations
 //=============================================================================
 
+/// @brief Widget base type arranged by layout containers.
 typedef struct vg_widget vg_widget_t;
 
 //=============================================================================
@@ -338,6 +345,8 @@ void vg_flex_set_gap(vg_widget_t *flex, float gap);
 /// @brief Set the primary-axis spacing/gap for a supported layout container.
 /// @details Applies to VBox, HBox, and Flex containers. Other widgets are a
 ///          safe no-op.
+/// @param container VBox, HBox, or Flex container to update.
+/// @param spacing New primary-axis gap in pixels.
 void vg_container_set_spacing(vg_widget_t *container, float spacing);
 
 /// @brief Enable or disable line wrapping in a Flex container.

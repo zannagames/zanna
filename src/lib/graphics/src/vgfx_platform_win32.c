@@ -106,6 +106,12 @@ typedef struct {
 // Forward Declarations
 //===----------------------------------------------------------------------===//
 
+/// @brief Dispatch Win32 messages for a ZannaGFX native window.
+/// @param hwnd Native window receiving the message.
+/// @param msg Win32 message identifier.
+/// @param wparam Message-specific word parameter.
+/// @param lparam Message-specific long parameter.
+/// @return Message-specific result or the result of `DefWindowProcW`.
 static LRESULT CALLBACK vgfx_win32_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
 static INIT_ONCE g_vgfx_win32_dpi_awareness_once = INIT_ONCE_STATIC_INIT;
@@ -115,11 +121,20 @@ static INIT_ONCE g_vgfx_win32_qpc_once = INIT_ONCE_STATIC_INIT;
 static SRWLOCK g_vgfx_win32_clipboard_lock = SRWLOCK_INIT;
 static HWND g_vgfx_win32_clipboard_owner = NULL;
 static char *g_vgfx_win32_clipboard_text = NULL;
+
+/// @brief Runtime-resolved signature of the Desktop Window Manager flush API.
 typedef HRESULT(WINAPI *vgfx_win32_dwm_flush_fn)(void);
 static vgfx_win32_dwm_flush_fn g_vgfx_win32_dwm_flush = NULL;
 static LARGE_INTEGER g_vgfx_win32_qpc_frequency = {0};
 static volatile LONG g_vgfx_win32_cursor_visible = 1;
 
+/// @brief Resolve optional Desktop Window Manager frame synchronization once.
+/// @details Loads `dwmapi.dll` dynamically and caches `DwmFlush` when present,
+///          preserving compatibility with environments where DWM is absent.
+/// @param once One-time initialization token.
+/// @param parameter Unused callback parameter.
+/// @param context Unused callback context output.
+/// @return TRUE so `InitOnceExecuteOnce` records completion.
 static BOOL CALLBACK win32_resolve_dwm_once(PINIT_ONCE once, PVOID parameter, PVOID *context) {
     HMODULE module;
     (void)once;
@@ -132,6 +147,13 @@ static BOOL CALLBACK win32_resolve_dwm_once(PINIT_ONCE once, PVOID parameter, PV
     return TRUE;
 }
 
+/// @brief Cache the high-resolution performance-counter frequency once.
+/// @details Records zero when QueryPerformanceCounter timing is unavailable so
+///          callers can fall back to the system tick count.
+/// @param once One-time initialization token.
+/// @param parameter Unused callback parameter.
+/// @param context Unused callback context output.
+/// @return TRUE so `InitOnceExecuteOnce` records completion.
 static BOOL CALLBACK win32_initialize_qpc_once(PINIT_ONCE once, PVOID parameter, PVOID *context) {
     (void)once;
     (void)parameter;
@@ -203,6 +225,14 @@ static WCHAR *utf8_to_utf16(const char *utf8) {
     return wstr;
 }
 
+/// @brief Convert a NUL-terminated UTF-16 string into bounded UTF-8 storage.
+/// @details Validates the UTF-16 input with `WC_ERR_INVALID_CHARS`, includes
+///          the terminator in its capacity check, and performs no partial write
+///          when the destination is too small.
+/// @param wstr NUL-terminated UTF-16 source.
+/// @param out Destination byte buffer.
+/// @param out_size Destination capacity including the terminator.
+/// @return 1 when conversion succeeded, otherwise 0.
 static int utf16_to_utf8_buffer(const WCHAR *wstr, char *out, size_t out_size) {
     if (!wstr || !out || out_size == 0)
         return 0;
@@ -241,6 +271,7 @@ static int win32_open_clipboard_retry(void) {
 ///          desktop sessions.  Keeping a fallback preserves in-process
 ///          copy/paste semantics while system clipboard integration remains the
 ///          preferred path whenever the OS accepts it.
+/// @param text UTF-8 text to copy, or NULL to clear the fallback.
 static void win32_store_clipboard_text(const char *text) {
     char *copy = NULL;
     if (text) {
@@ -264,6 +295,7 @@ static void win32_store_clipboard_text(const char *text) {
 }
 
 /// @brief Return a caller-owned copy of the process-local clipboard fallback.
+/// @return Heap-allocated NUL-terminated text, or NULL when absent or allocation fails.
 static char *win32_dup_clipboard_text(void) {
     char *copy = NULL;
     AcquireSRWLockShared(&g_vgfx_win32_clipboard_lock);
@@ -279,6 +311,8 @@ static char *win32_dup_clipboard_text(void) {
     return copy;
 }
 
+/// @brief Test whether the process-local clipboard fallback contains text.
+/// @return 1 for a present non-empty string, otherwise 0.
 static int win32_has_clipboard_text(void) {
     int present;
     AcquireSRWLockShared(&g_vgfx_win32_clipboard_lock);
@@ -287,6 +321,14 @@ static int win32_has_clipboard_text(void) {
     return present;
 }
 
+/// @brief Convert a Win32 client mouse coordinate to physical framebuffer space.
+/// @details Per-monitor DPI awareness makes client message coordinates physical
+///          already, so this helper currently copies each requested component.
+/// @param win Window associated with the coordinate; currently unused.
+/// @param client_x Native client X coordinate.
+/// @param client_y Native client Y coordinate.
+/// @param out_x Receives physical X when non-NULL.
+/// @param out_y Receives physical Y when non-NULL.
 static void win32_client_to_physical_mouse(
     struct vgfx_window *win, int32_t client_x, int32_t client_y, int32_t *out_x, int32_t *out_y) {
     (void)win;
@@ -296,15 +338,33 @@ static void win32_client_to_physical_mouse(
         *out_y = client_y;
 }
 
+/// @brief Convert a public drawing coordinate to Win32 client pixels.
+/// @param win Window supplying the active public coordinate scale.
+/// @param value Public logical coordinate or extent.
+/// @return Rounded physical client value.
 static int32_t win32_public_to_client_coord(const struct vgfx_window *win, int32_t value) {
     return vgfx_internal_scale_up_i32(value, vgfx_internal_coord_scale(win));
 }
 
+/// @brief Convert a logical window dimension through the backing display scale.
+/// @param win Window supplying the sanitized HiDPI backing scale.
+/// @param value Logical window coordinate or extent.
+/// @return Rounded physical client value.
 static int32_t win32_logical_window_to_client_coord(const struct vgfx_window *win, int32_t value) {
     float scale = win ? vgfx_internal_sanitize_scale(win->scale_factor) : 1.0f;
     return vgfx_internal_scale_up_i32(value, scale);
 }
 
+/// @brief Expand a desired client rectangle for style and current DPI.
+/// @details Uses dynamically resolved `AdjustWindowRectExForDpi` when available,
+///          deriving DPI from the window scale, and falls back to the legacy
+///          system-DPI API on older Windows versions.
+/// @param win Window supplying the backing scale.
+/// @param rect In/out rectangle describing the desired client area.
+/// @param style Native window style.
+/// @param has_menu Whether the native window owns a menu.
+/// @param exstyle Native extended style.
+/// @return Non-zero when Windows adjusted the rectangle successfully.
 static BOOL win32_adjust_window_rect_for_scale(
     const struct vgfx_window *win, LPRECT rect, DWORD style, BOOL has_menu, DWORD exstyle) {
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
@@ -325,6 +385,10 @@ static BOOL win32_adjust_window_rect_for_scale(
 }
 
 /// @brief Read a 32-bit window style field without confusing a valid zero with API failure.
+/// @param hwnd Native window whose style field should be queried.
+/// @param index `GWL_*` field selector.
+/// @param out_value Receives the style value.
+/// @return 1 on success, otherwise 0.
 static int win32_get_window_style(HWND hwnd, int index, LONG *out_value) {
     LONG value;
     if (!hwnd || !out_value)
@@ -338,6 +402,10 @@ static int win32_get_window_style(HWND hwnd, int index, LONG *out_value) {
 }
 
 /// @brief Write a 32-bit window style field without confusing a zero previous value with failure.
+/// @param hwnd Native window whose style field should be changed.
+/// @param index `GWL_*` field selector.
+/// @param value Replacement style value.
+/// @return 1 on success, otherwise 0.
 static int win32_set_window_style(HWND hwnd, int index, LONG value) {
     LONG previous;
     if (!hwnd)
@@ -347,6 +415,9 @@ static int win32_set_window_style(HWND hwnd, int index, LONG value) {
     return previous != 0 || GetLastError() == ERROR_SUCCESS;
 }
 
+/// @brief Map a public cursor type to a shared Win32 stock cursor.
+/// @param type Public `VGFX_CURSOR_*` value.
+/// @return Loaded stock cursor handle, defaulting to the arrow.
 static HCURSOR win32_cursor_handle(int32_t type) {
     static LPCTSTR const s_cursor_ids[] = {
         IDC_ARROW,    /* 0: default */
@@ -367,6 +438,8 @@ static HCURSOR win32_cursor_handle(int32_t type) {
     return LoadCursor(NULL, s_cursor_ids[idx]);
 }
 
+/// @brief Apply the cursor shape cached in one window's platform state.
+/// @param w32 Platform state whose cursor type should be installed.
 static void win32_apply_cursor(vgfx_win32_data *w32) {
     if (!w32)
         return;
@@ -413,6 +486,9 @@ static BOOL CALLBACK win32_set_dpi_awareness_once(PINIT_ONCE init_once,
 ///          their own identity without adding icon concerns to the runtime C ABI.  Zanna Studio is
 ///          installed as `zannastudio.exe` plus `zannastudio.ico`; other applications fall back to
 ///          the standard Windows application icon when no adjacent icon is present.
+/// @param width Requested icon width in pixels.
+/// @param height Requested icon height in pixels.
+/// @return Loaded icon handle, or NULL when the executable path or icon cannot be loaded.
 static HICON win32_load_adjacent_application_icon(int width, int height) {
     WCHAR path[32768];
     DWORD length = GetModuleFileNameW(NULL, path, (DWORD)(sizeof(path) / sizeof(path[0])));
@@ -488,6 +564,12 @@ static BOOL CALLBACK win32_register_window_class_once(PINIT_ONCE init_once,
     return FALSE;
 }
 
+/// @brief Recreate the top-down 32-bit DIB for the current framebuffer size.
+/// @details Allocates and selects a replacement bitmap before deleting the old
+///          one, retains the memory DC's original selected object for teardown,
+///          and caches the new writable BGRA storage and dimensions.
+/// @param win Window whose platform DIB should mirror the core framebuffer.
+/// @return 1 on success, otherwise 0 with a platform error set.
 static int win32_recreate_dib(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -530,6 +612,13 @@ static int win32_recreate_dib(struct vgfx_window *win) {
     return 1;
 }
 
+/// @brief Allocate an unselected top-down 32-bit DIB for explicit dimensions.
+/// @param w32 Platform state supplying the compatible memory DC.
+/// @param width Physical DIB width.
+/// @param height Physical DIB height.
+/// @param out_hbmp Receives the created bitmap handle.
+/// @param out_pixels Receives its writable pixel mapping.
+/// @return 1 on success, otherwise 0 with a platform error set.
 static int win32_create_dib_for_size(
     vgfx_win32_data *w32, int width, int height, HBITMAP *out_hbmp, void **out_pixels) {
     if (!w32 || !w32->memdc || width <= 0 || height <= 0 || !out_hbmp || !out_pixels)
@@ -560,6 +649,16 @@ static int win32_create_dib_for_size(
     return 1;
 }
 
+/// @brief Resize core and Win32 backing stores as one recoverable transaction.
+/// @details Validates platform limits, prepares and selects a replacement DIB,
+///          then resizes the shared framebuffer.  Failure restores the previous
+///          selected bitmap; success adopts new resources, caches client size,
+///          and emits a resize event after native DC initialization.
+/// @param win Window whose backing stores should change.
+/// @param client_w New physical client width.
+/// @param client_h New physical client height.
+/// @param timestamp Monotonic resize-event timestamp.
+/// @return 1 on success or unchanged valid dimensions, otherwise 0.
 static int win32_resize_backing_store(struct vgfx_window *win,
                                       int client_w,
                                       int client_h,
@@ -723,6 +822,9 @@ static vgfx_key_t translate_vk(WPARAM vk) {
     }
 }
 
+/// @brief Snapshot active Win32 keyboard modifiers.
+/// @return Bitwise `VGFX_MOD_*` mask for Shift, Control, Alt, and either
+///         Windows key.
 static int win32_modifiers(void) {
     int mods = 0;
     if (GetKeyState(VK_SHIFT) & 0x8000)
@@ -917,6 +1019,9 @@ static void win32_enqueue_ime_boundary(struct vgfx_window *win,
 }
 
 /// @brief Enqueue one validated Unicode scalar as ordinary text input.
+/// @param win Window receiving the text-input event.
+/// @param codepoint Candidate Unicode scalar.
+/// @param timestamp Monotonic event timestamp in milliseconds.
 static void win32_enqueue_text_codepoint(struct vgfx_window *win,
                                          uint32_t codepoint,
                                          int64_t timestamp) {
@@ -930,6 +1035,7 @@ static void win32_enqueue_text_codepoint(struct vgfx_window *win,
 }
 
 /// @brief Capture the pointer for a button drag and remember only proven ownership.
+/// @param w32 Platform state whose native window should capture the pointer.
 static void win32_begin_mouse_capture(vgfx_win32_data *w32) {
     if (!w32 || !w32->hwnd)
         return;
@@ -939,6 +1045,8 @@ static void win32_begin_mouse_capture(vgfx_win32_data *w32) {
 }
 
 /// @brief Release pointer capture after the final supported mouse button is up.
+/// @param w32 Platform state that may own pointer capture.
+/// @param button_state Current `MK_*` button mask from the native message.
 static void win32_end_mouse_capture_if_idle(vgfx_win32_data *w32, WPARAM button_state) {
     if (!w32 || !w32->mouse_captured)
         return;
@@ -950,6 +1058,7 @@ static void win32_end_mouse_capture_if_idle(vgfx_win32_data *w32, WPARAM button_
 }
 
 /// @brief Clear supported mouse-button state after native capture is cancelled.
+/// @param win Window whose left, right, and middle polling state should reset.
 static void win32_clear_mouse_buttons(struct vgfx_window *win) {
     if (!win)
         return;
@@ -962,26 +1071,23 @@ static void win32_clear_mouse_buttons(struct vgfx_window *win) {
 // Window Procedure
 //===----------------------------------------------------------------------===//
 
-/// @brief Window procedure for ZannaGFX Win32 windows.
-/// @details Processes Win32 messages and translates them to ZannaGFX events.
-///          The vgfx_window* pointer is stored in GWLP_USERDATA during window
-///          creation, allowing us to access the window state from messages.
-///
-/// @param hwnd Window handle receiving the message
-/// @param msg Message identifier (WM_*)
-/// @param wparam Message-specific parameter (often event data)
-/// @param lparam Message-specific parameter (often coordinates or flags)
-/// @return Result value depends on message type
-///
-/// @details Handles:
-///            - WM_CLOSE: Window close button clicked
-///            - WM_SIZE: Window resized
-///            - WM_SETFOCUS/WM_KILLFOCUS: Focus change
-///            - WM_KEYDOWN/WM_KEYUP: Keyboard input
-///            - WM_MOUSEMOVE: Mouse movement
-///            - WM_LBUTTONDOWN/UP, WM_RBUTTONDOWN/UP, WM_MBUTTONDOWN/UP: Mouse buttons
+/// @brief Apply or release Win32 cursor confinement for relative mouse mode.
+/// @param win Window whose client rectangle should constrain the cursor.
+/// @param enable Non-zero to clip to the client rectangle, zero to release.
+/// @return 1 when the requested clip state was applied, otherwise 0.
 static int win32_apply_cursor_clip(struct vgfx_window *win, int enable);
 
+/// @brief Process native Win32 messages for a ZannaGFX window.
+/// @details Retrieves core state from GWLP_USERDATA and translates close,
+///          size/DPI, focus, raw/absolute input, IME composition, Unicode text,
+///          keyboard, mouse buttons/wheel/capture, cursor, paint, file-drop,
+///          and higher-layer native hook messages.  Handled input updates both
+///          sticky polling state and the synchronized public event queue.
+/// @param hwnd Native window receiving the message.
+/// @param msg `WM_*` message identifier.
+/// @param wparam Message-specific word parameter.
+/// @param lparam Message-specific long parameter.
+/// @return Message-specific handled value or `DefWindowProcW` result.
 static LRESULT CALLBACK vgfx_win32_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     /* Retrieve vgfx_window pointer stored in GWLP_USERDATA */
     struct vgfx_window *win = (struct vgfx_window *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
@@ -1570,6 +1676,8 @@ float vgfx_platform_get_display_scale(void) {
 /// @brief Query the primary display's logical dimensions.
 /// @details GetSystemMetrics returns physical pixels under our DPI-aware
 ///          process; divide by the display scale to get vgfx logical units.
+/// @param out_w Receives logical display width when non-NULL.
+/// @param out_h Receives logical display height when non-NULL.
 /// @return 1 on success, 0 when the metrics are unavailable.
 int vgfx_platform_get_display_logical_size(int32_t *out_w, int32_t *out_h) {
     int phys_w = GetSystemMetrics(SM_CXSCREEN);
@@ -1832,21 +1940,14 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
     win->platform_data = NULL;
 }
 
-/// @brief Process pending Win32 messages and translate to ZannaGFX events.
-/// @details Polls the Win32 message queue in non-blocking mode (PeekMessage
-///          with PM_REMOVE).  Messages are translated and dispatched to the
-///          window procedure, which enqueues vgfx_event_t.  Also updates
-///          win->key_state, win->mouse_x, win->mouse_y, and
-///          win->mouse_button_state.
-///
-/// @param win Pointer to the ZannaGFX window structure
-/// @return 1 on success, 0 on failure
-///
-/// @pre  win != NULL
-/// @pre  win->platform_data != NULL
-/// @post All pending messages processed and translated
-/// @post win->key_state and win->mouse_* updated to reflect current input state
-/// @post Corresponding vgfx_event_t enqueued for each message
+/// @brief Wait for a message on the owning Win32 thread without dispatching it.
+/// @details Returns immediately when a matching native-window message is
+///          already queued; otherwise waits for any thread-queue input up to
+///          the requested timeout and leaves messages for the normal pump.
+/// @param win Window selecting the native message queue.
+/// @param timeout_ms Maximum positive wait in milliseconds.
+/// @return 1 when input became available, otherwise 0 for timeout, invalid
+///         state, or wait failure.
 int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     if (!win || !win->platform_data)
         return 0;
@@ -1871,6 +1972,12 @@ int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     return result == WAIT_OBJECT_0 ? 1 : 0;
 }
 
+/// @brief Drain pending Win32 messages for one native window.
+/// @details Removes matching messages with PeekMessageW, translates keyboard
+///          text messages, and dispatches each through `vgfx_win32_wndproc`,
+///          which updates polling state and enqueues public events.
+/// @param win Window whose native messages should be processed.
+/// @return 1 after draining valid platform state, otherwise 0.
 int vgfx_platform_process_events(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -2340,6 +2447,7 @@ int vgfx_platform_is_fullscreen(struct vgfx_window *win) {
 }
 
 /// @brief Minimize (iconify) the window.
+/// @param win Window to minimize.
 void vgfx_platform_minimize(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2349,6 +2457,7 @@ void vgfx_platform_minimize(struct vgfx_window *win) {
 }
 
 /// @brief Maximize the window.
+/// @param win Window to maximize.
 void vgfx_platform_maximize(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2358,6 +2467,7 @@ void vgfx_platform_maximize(struct vgfx_window *win) {
 }
 
 /// @brief Restore the window from minimized or maximized state.
+/// @param win Window to restore.
 void vgfx_platform_restore(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2367,6 +2477,8 @@ void vgfx_platform_restore(struct vgfx_window *win) {
 }
 
 /// @brief Return 1 if the window is minimized (iconic), 0 otherwise.
+/// @param win Window whose native state should be queried.
+/// @return 1 when iconic, otherwise 0.
 int32_t vgfx_platform_is_minimized(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -2375,6 +2487,8 @@ int32_t vgfx_platform_is_minimized(struct vgfx_window *win) {
 }
 
 /// @brief Return 1 if the window is maximized (zoomed), 0 otherwise.
+/// @param win Window whose native state should be queried.
+/// @return 1 when zoomed, otherwise 0.
 int32_t vgfx_platform_is_maximized(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
@@ -2383,6 +2497,9 @@ int32_t vgfx_platform_is_maximized(struct vgfx_window *win) {
 }
 
 /// @brief Get the window's top-left screen position.
+/// @param win Window whose outer bounds should be queried.
+/// @param x Receives screen-space left coordinate when non-NULL.
+/// @param y Receives screen-space top coordinate when non-NULL.
 void vgfx_platform_get_position(struct vgfx_window *win, int32_t *x, int32_t *y) {
     if (x)
         *x = 0;
@@ -2403,6 +2520,9 @@ void vgfx_platform_get_position(struct vgfx_window *win, int32_t *x, int32_t *y)
 }
 
 /// @brief Move the window to the given screen position.
+/// @param win Window to move.
+/// @param x Requested screen-space left coordinate.
+/// @param y Requested screen-space top coordinate.
 void vgfx_platform_set_position(struct vgfx_window *win, int32_t x, int32_t y) {
     if (!win || !win->platform_data)
         return;
@@ -2413,6 +2533,7 @@ void vgfx_platform_set_position(struct vgfx_window *win, int32_t x, int32_t y) {
 }
 
 /// @brief Bring the window to the foreground and give it focus.
+/// @param win Window to activate.
 void vgfx_platform_focus(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2422,6 +2543,7 @@ void vgfx_platform_focus(struct vgfx_window *win) {
 }
 
 /// @brief Request foreground activation for the application window.
+/// @param win Window to show, raise, and focus.
 void vgfx_platform_request_foreground(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return;
@@ -2435,6 +2557,8 @@ void vgfx_platform_request_foreground(struct vgfx_window *win) {
 }
 
 /// @brief Return 1 if the window currently has keyboard focus.
+/// @param win Window whose synchronized focus state should be read.
+/// @return 1 when focused, otherwise 0.
 int32_t vgfx_platform_is_focused(struct vgfx_window *win) {
     if (!win)
         return 0;
@@ -2445,11 +2569,14 @@ int32_t vgfx_platform_is_focused(struct vgfx_window *win) {
 }
 
 /// @brief Set whether the close button dismisses the window.
+/// @param win Window whose close policy should change.
+/// @param prevent Non-zero to prevent close-request state, zero to permit it.
 void vgfx_platform_set_prevent_close(struct vgfx_window *win, int32_t prevent) {
     vgfx_internal_set_prevent_close(win, prevent);
 }
 
 /// @brief Change the cursor shape for this window.
+/// @param win Window whose cursor should change.
 /// @param type 0=arrow, 1=hand, 2=ibeam, 3=resize_h, 4=resize_v, 5=wait
 void vgfx_platform_set_cursor(struct vgfx_window *win, int32_t type) {
     if (!win || !win->platform_data)
@@ -2460,6 +2587,8 @@ void vgfx_platform_set_cursor(struct vgfx_window *win, int32_t type) {
 }
 
 /// @brief Show or hide the mouse cursor.
+/// @param win Ignored window; Win32 cursor visibility is process-global.
+/// @param visible Non-zero to show, zero to hide.
 void vgfx_platform_set_cursor_visible(struct vgfx_window *win, int32_t visible) {
     LONG previous;
     int count;
@@ -2479,6 +2608,12 @@ void vgfx_platform_set_cursor_visible(struct vgfx_window *win, int32_t visible) 
     vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Win32 cursor visibility counter did not converge");
 }
 
+/// @brief Query physical dimensions of the monitor nearest a Win32 window.
+/// @details Falls back to the primary monitor and then system metrics when
+///          monitor information is unavailable.
+/// @param win Optional window selecting the nearest monitor.
+/// @param out_w Receives physical monitor width when non-NULL.
+/// @param out_h Receives physical monitor height when non-NULL.
 void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int32_t *out_h) {
     HMONITOR monitor = NULL;
     if (win && win->platform_data) {
@@ -2505,6 +2640,14 @@ void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int
         *out_h = mi.rcMonitor.bottom - mi.rcMonitor.top;
 }
 
+/// @brief Resize a window to a requested logical client extent.
+/// @details Converts dimensions through the backing scale, expands for current
+///          native styles/DPI, resizes the outer window, then synchronously
+///          reconciles the framebuffer and DIB to the resulting client area.
+///          Fullscreen windows ignore the request.
+/// @param win Window to resize.
+/// @param w Requested logical client width.
+/// @param h Requested logical client height.
 void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h) {
     if (!win || !win->platform_data)
         return;
@@ -2547,6 +2690,12 @@ void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h
     }
 }
 
+/// @brief Notify Win32 that minimum tracking constraints have changed.
+/// @details Core minimum fields are read by WM_GETMINMAXINFO; forcing a
+///          non-sizing frame change causes Windows to refresh those constraints.
+/// @param win Window whose frame constraints should refresh.
+/// @param w Validated logical minimum width, stored by the core.
+/// @param h Validated logical minimum height, stored by the core.
 void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32_t h) {
     if (!win || !win->platform_data || w <= 0 || h <= 0)
         return;
@@ -2562,11 +2711,17 @@ void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 }
 
+/// @brief Return the absent Win32 display-connection handle.
+/// @param window Ignored window.
+/// @return Always NULL because Win32 does not expose a separate display object.
 void *vgfx_get_native_display(vgfx_window_t window) {
     (void)window;
     return NULL; /* Windows doesn't have a separate display connection */
 }
 
+/// @brief Expose a window's native HWND through the generic view API.
+/// @param window Window whose native handle should be queried.
+/// @return Borrowed HWND cast to `void *`, or NULL for invalid state.
 void *vgfx_get_native_view(vgfx_window_t window) {
     if (!window)
         return NULL;
@@ -2576,6 +2731,10 @@ void *vgfx_get_native_view(vgfx_window_t window) {
     return (void *)w32->hwnd;
 }
 
+/// @brief Fill the cross-platform native-handle descriptor for Win32.
+/// @param window Window whose HWND should be exported.
+/// @param out_handles Receives backend kind and HWND surface pointer.
+/// @return 1 when written, otherwise 0.
 int vgfx_get_native_handles(vgfx_window_t window, vgfx_native_handles_t *out_handles) {
     if (!window || !window->platform_data || !out_handles)
         return 0;
@@ -2587,6 +2746,9 @@ int vgfx_get_native_handles(vgfx_window_t window, vgfx_native_handles_t *out_han
     return 1;
 }
 
+/// @brief Report native capabilities implemented by the Win32 backend.
+/// @param window Window whose initialized backend should be validated.
+/// @return Bitwise `VGFX_CAP_*` mask, or zero for invalid platform state.
 vgfx_window_capabilities_t vgfx_get_window_capabilities(vgfx_window_t window) {
     if (!window || !window->platform_data)
         return 0;
@@ -2595,6 +2757,12 @@ vgfx_window_capabilities_t vgfx_get_window_capabilities(vgfx_window_t window) {
            VGFX_CAP_ACTIVATION | VGFX_CAP_CLIPBOARD_TEXT | VGFX_CAP_FILE_DROP;
 }
 
+/// @brief Warp the system cursor to a logical client coordinate.
+/// @details Converts public coordinates to client pixels, translates them to
+///          screen space, and reports a platform error if either native step fails.
+/// @param window Target window.
+/// @param x Logical client X coordinate.
+/// @param y Logical client Y coordinate.
 void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
     if (!window || !window->platform_data)
         return;
@@ -2611,6 +2779,10 @@ void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
 /// @details Used by relative mouse mode: raw WM_INPUT deltas drive look
 ///          motion, while the (hidden) system cursor is clipped so stray
 ///          movement can't click a different window or monitor.
+/// @param win Window whose client rectangle should constrain the cursor; NULL
+///            releases any process cursor clip.
+/// @param enable Non-zero to confine, zero to release.
+/// @return 1 when ClipCursor accepted the requested state, otherwise 0.
 static int win32_apply_cursor_clip(struct vgfx_window *win, int enable) {
     if (!win || !win->platform_data) {
         return ClipCursor(NULL) ? 1 : 0;
@@ -2635,6 +2807,13 @@ static int win32_apply_cursor_clip(struct vgfx_window *win, int enable) {
     return ClipCursor(&screen_rect) ? 1 : 0;
 }
 
+/// @brief Enable or disable native raw relative mouse input.
+/// @details Registers or removes a foreground raw HID mouse target and applies
+///          client-area cursor confinement.  Failed confinement rolls back raw
+///          registration so the caller can use its fallback path.
+/// @param win Window whose relative mouse mode should change.
+/// @param enabled Non-zero to enable, zero to disable.
+/// @return 1 when both raw-input and cursor-clip state were applied, otherwise 0.
 int vgfx_platform_set_relative_mouse(struct vgfx_window *win, int enabled) {
     if (!win || !win->platform_data)
         return 0;
@@ -2670,20 +2849,34 @@ int vgfx_platform_set_relative_mouse(struct vgfx_window *win, int enabled) {
     return 1;
 }
 
+/// @brief Accept text-input enablement for a valid Win32 window.
+/// @details IMM32 composition messages remain tied to native focus, so no
+///          separate enable/disable call is required by this backend.
+/// @param win Window whose presence is validated.
+/// @param enabled Requested state; currently informational.
+/// @return 1 for a non-NULL window, otherwise 0.
 int vgfx_platform_set_text_input_enabled(struct vgfx_window *win, int32_t enabled) {
     (void)enabled;
     return win != NULL;
 }
 
+/// @brief Accept surrounding-text state for a valid Win32 window.
+/// @details The current IMM32 bridge does not expose surrounding-text editing,
+///          so the validated snapshot is acknowledged without native mutation.
+/// @param win Window whose presence is validated.
+/// @param state Text-input snapshot whose presence is validated.
+/// @return 1 when both pointers are non-NULL, otherwise 0.
 int vgfx_platform_set_text_input_state(struct vgfx_window *win,
                                        const vgfx_text_input_state_t *state) {
     return win && state;
 }
 
+/// @brief Hide the process cursor through the shared Win32 visibility counter.
 void vgfx_platform_hide_cursor(void) {
     vgfx_platform_set_cursor_visible(NULL, 0);
 }
 
+/// @brief Show the process cursor through the shared Win32 visibility counter.
 void vgfx_platform_show_cursor(void) {
     vgfx_platform_set_cursor_visible(NULL, 1);
 }

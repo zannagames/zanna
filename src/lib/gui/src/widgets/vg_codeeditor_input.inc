@@ -36,6 +36,9 @@
 
 /// @brief Encodes @p cp as UTF-8 into @p buf (≥4 bytes); returns bytes written, or 0 for invalid
 /// codepoints.
+/// @param cp Unicode scalar value to encode.
+/// @param[out] buf Destination with capacity for at least four bytes.
+/// @return Encoded byte count, or zero for surrogates and out-of-range values.
 static int encode_utf8(uint32_t cp, char *buf) {
     if (cp < 0x80) {
         buf[0] = (char)cp;
@@ -67,6 +70,8 @@ static int encode_utf8(uint32_t cp, char *buf) {
 
 /// @brief True if a character event should insert literal text instead of being treated as a
 /// command shortcut.
+/// @param event Character event whose modifier state is inspected.
+/// @return `true` when no platform command modifier is active, including AltGr-style Ctrl+Alt.
 static bool codeeditor_key_char_allows_text(const vg_event_t *event) {
     if (!event)
         return false;
@@ -85,6 +90,11 @@ static bool codeeditor_key_char_allows_text(const vg_event_t *event) {
     return true;
 }
 
+/// @brief Return whether a Unicode scalar is accepted as editor text input.
+/// @details C0/C1 controls, delete, surrogates, private-use scalars, and out-of-range values are
+/// rejected before UTF-8 encoding.
+/// @param cp Candidate Unicode scalar value.
+/// @return `true` when the value is ordinary insertable text.
 static bool codeeditor_codepoint_is_text(uint32_t cp) {
     if (cp < 0x20 || cp == 0x7F || cp > 0x10FFFF)
         return false;
@@ -98,6 +108,10 @@ static bool codeeditor_codepoint_is_text(uint32_t cp) {
     return true;
 }
 
+/// @brief Count the leading ASCII spaces and tabs in a line.
+/// @param text Source line bytes.
+/// @param len Number of readable bytes.
+/// @return Leading indentation byte count.
 static int codeeditor_leading_indent_len(const char *text, size_t len) {
     int i = 0;
     while ((size_t)i < len && (text[i] == ' ' || text[i] == '\t'))
@@ -105,6 +119,10 @@ static int codeeditor_leading_indent_len(const char *text, size_t len) {
     return i;
 }
 
+/// @brief Find the last non-space, non-tab byte before a column.
+/// @param text Source line bytes.
+/// @param col Exclusive scan limit.
+/// @return Byte index, or `-1` when the prefix is all indentation.
 static int codeeditor_last_nonspace_before(const char *text, int col) {
     int i = col - 1;
     while (i >= 0 && (text[i] == ' ' || text[i] == '\t'))
@@ -112,16 +130,24 @@ static int codeeditor_last_nonspace_before(const char *text, int col) {
     return i;
 }
 
+/// @brief Return whether an opening delimiter increases automatic indentation.
+/// @param ch Candidate byte.
+/// @return `true` for an opening brace, parenthesis, or bracket.
 static bool codeeditor_opener_adds_indent(char ch) {
     return ch == '{' || ch == '(' || ch == '[';
 }
 
+/// @brief Map an automatic-pair opener to its closing delimiter.
+/// @param opener Candidate opening delimiter.
+/// @return Matching closer, or NUL when unsupported.
 static char codeeditor_closing_for_opener(char opener);
 
 /// @brief Return true when @p ch is an ASCII identifier character.
 /// @details Used by pair insertion heuristics to avoid inserting quotes in the
 ///          middle of words and to avoid adding paired punctuation immediately
 ///          before identifiers.
+/// @param ch Candidate byte.
+/// @return `true` for ASCII letters, digits, or underscore.
 static bool codeeditor_is_identifier_byte(char ch) {
     unsigned char c = (unsigned char)ch;
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
@@ -241,6 +267,10 @@ static void codeeditor_select_line_at(vg_codeeditor_t *editor, int line_idx) {
 /// @details The returned text is stored in @p out and is always NUL-terminated.
 ///          It respects the editor's soft-tab setting and clamps extreme tab
 ///          widths to the same range as the rest of the editor input code.
+/// @param editor Editor supplying tab width and soft-tab mode.
+/// @param[out] out Destination byte buffer.
+/// @param out_cap Capacity of @p out.
+/// @param[out] out_len Optional destination for the produced byte count.
 static void codeeditor_make_extra_indent(const vg_codeeditor_t *editor,
                                          char *out,
                                          size_t out_cap,
@@ -277,6 +307,9 @@ static void codeeditor_make_extra_indent(const vg_codeeditor_t *editor,
 
 /// @brief Return true when @p opener and @p closer form one of the editor's
 ///        automatic insertion pairs.
+/// @param opener Candidate opening delimiter.
+/// @param closer Candidate closing delimiter.
+/// @return `true` when @p closer is the configured peer for @p opener.
 static bool codeeditor_chars_are_pair(char opener, char closer) {
     return codeeditor_closing_for_opener(opener) == closer;
 }
@@ -285,6 +318,9 @@ static bool codeeditor_chars_are_pair(char opener, char closer) {
 /// @details This is the condition needed to split `{|}` into a three-line block
 ///          on Enter. The helper is intentionally byte-based because all pair
 ///          characters are single-byte ASCII.
+/// @param editor Editor whose primary cursor and line are inspected.
+/// @param[out] out_opener Optional destination for the opening delimiter.
+/// @return `true` when the adjacent bytes form an automatic pair.
 static bool codeeditor_cursor_between_pair(vg_codeeditor_t *editor, char *out_opener) {
     if (out_opener)
         *out_opener = '\0';
@@ -308,6 +344,8 @@ static bool codeeditor_cursor_between_pair(vg_codeeditor_t *editor, char *out_op
 ///          cursor to the indented middle line. The underlying insertion remains
 ///          a single undo step; the latest history cursor is adjusted to the
 ///          user-visible final cursor position.
+/// @param editor Editor receiving the split block.
+/// @return `true` when the cursor was between an indenting pair and the block was inserted.
 static bool codeeditor_try_split_pair_on_enter(vg_codeeditor_t *editor) {
     char opener = '\0';
     if (!codeeditor_cursor_between_pair(editor, &opener))
@@ -357,6 +395,10 @@ static bool codeeditor_try_split_pair_on_enter(vg_codeeditor_t *editor) {
     return true;
 }
 
+/// @brief Insert a newline with copied and optionally increased leading indentation.
+/// @details Pair splitting takes precedence. Read-only edge cases, selections, multiple cursors,
+/// or disabled auto-indent fall back to inserting a plain newline.
+/// @param editor Editor receiving the newline.
 static void codeeditor_insert_newline_with_indent(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -522,6 +564,9 @@ static void codeeditor_move_cursor_word_right(vg_codeeditor_t *editor) {
     codeeditor_next_word_position(editor, &editor->cursor_line, &editor->cursor_col);
 }
 
+/// @brief Map an automatic-pair opener to its closing delimiter.
+/// @param opener Candidate opening delimiter.
+/// @return Matching closer, or NUL when unsupported.
 static char codeeditor_closing_for_opener(char opener) {
     switch (opener) {
         case '(':
@@ -539,10 +584,18 @@ static char codeeditor_closing_for_opener(char opener) {
     }
 }
 
+/// @brief Return whether a byte is a supported automatic-pair closer.
+/// @param ch Candidate byte.
+/// @return `true` for closing braces, brackets, parentheses, or either quote.
 static bool codeeditor_is_pair_closer(char ch) {
     return ch == ')' || ch == ']' || ch == '}' || ch == '"' || ch == '\'';
 }
 
+/// @brief Test whether a byte range contains only ASCII spaces and tabs.
+/// @param text Source bytes.
+/// @param start First byte to inspect.
+/// @param end Exclusive final byte.
+/// @return `true` for a valid all-whitespace range.
 static bool codeeditor_is_whitespace_span(const char *text, int start, int end) {
     if (!text || start < 0 || end < start)
         return false;
@@ -553,6 +606,12 @@ static bool codeeditor_is_whitespace_span(const char *text, int start, int end) 
     return true;
 }
 
+/// @brief Reindent and insert a closing brace on an otherwise blank line.
+/// @details The preferred indent matches the nearest unmatched opening brace; without one, a
+/// single indentation level is removed. The entire line replacement is recorded through the
+/// ordinary edit-target path.
+/// @param editor Editor receiving the closing brace.
+/// @return `true` when context permitted formatting and replacement was attempted.
 static bool codeeditor_try_format_closing_brace(vg_codeeditor_t *editor) {
     if (!editor || !editor->auto_indent || editor->has_selection || editor->extra_cursor_count > 0)
         return false;
@@ -632,6 +691,10 @@ static bool codeeditor_try_format_closing_brace(vg_codeeditor_t *editor) {
     return true;
 }
 
+/// @brief Advance over an identical closer already present at the primary cursor.
+/// @param editor Editor whose cursor may advance.
+/// @param ch Typed closing delimiter.
+/// @return `true` when the existing byte is skipped instead of inserted.
 static bool codeeditor_try_skip_pair_closer(vg_codeeditor_t *editor, char ch) {
     if (!editor || editor->has_selection || editor->extra_cursor_count > 0)
         return false;
@@ -655,6 +718,11 @@ static bool codeeditor_try_skip_pair_closer(vg_codeeditor_t *editor, char ch) {
 ///          pair inside comments/strings, before identifiers, or for quotes in
 ///          the middle of identifier text. Returning false lets the caller fall
 ///          back to inserting the literal opener.
+/// @param editor Editor containing the candidate caret context.
+/// @param line_index Source line of the caret.
+/// @param col Caret byte column.
+/// @param opener Typed opening delimiter.
+/// @return `true` when inserting both opener and closer is appropriate.
 static bool codeeditor_should_insert_pair_at(vg_codeeditor_t *editor,
                                              int line_index,
                                              int col,
@@ -678,6 +746,8 @@ static bool codeeditor_should_insert_pair_at(vg_codeeditor_t *editor,
 }
 
 /// @brief Return whether an edit target covers selected text rather than a caret.
+/// @param target Edit target to inspect.
+/// @return `true` when its normalized endpoints differ.
 static bool codeeditor_edit_target_has_range(const vg_edit_target_t *target) {
     return target &&
            compare_positions(
@@ -688,6 +758,12 @@ static bool codeeditor_edit_target_has_range(const vg_edit_target_t *target) {
 /// @details Selection targets are wrapped as `<opener><selected><closer>`.
 ///          Caret targets insert either the opener/closer pair or the literal
 ///          opener depending on @p use_pair. The returned string is heap-owned.
+/// @param editor Editor containing selected source text.
+/// @param target Replacement range or caret.
+/// @param opener Opening delimiter.
+/// @param closer Closing delimiter.
+/// @param use_pair Whether a caret target should receive both bytes.
+/// @return Caller-owned replacement string, or NULL on allocation failure.
 static char *codeeditor_pair_replacement_for_target(vg_codeeditor_t *editor,
                                                     const vg_edit_target_t *target,
                                                     char opener,
@@ -740,6 +816,9 @@ static char *codeeditor_pair_replacement_for_target(vg_codeeditor_t *editor,
 ///          context check, the cursor is restored between the inserted pair.
 ///          At selection targets, the selected text is wrapped and the cursor
 ///          lands after the closing delimiter.
+/// @param editor Editor receiving the pair operation.
+/// @param opener Typed opening delimiter.
+/// @return `true` when at least one target warrants pair handling.
 static bool codeeditor_try_insert_pair(vg_codeeditor_t *editor, char opener) {
     if (!editor)
         return false;
@@ -850,7 +929,10 @@ static bool codeeditor_try_insert_pair(vg_codeeditor_t *editor, char opener) {
     return true;
 }
 
-// Insert n raw bytes at the current cursor position and advance cursor_col by n.
+/// @brief Insert raw bytes at the primary cursor without recording history.
+/// @param editor Editor whose current line is modified.
+/// @param bytes Source bytes.
+/// @param n Number of bytes to insert.
 VG_UNUSED static void insert_bytes(vg_codeeditor_t *editor, const char *bytes, size_t n) {
     if (!editor || !bytes || !n)
         return;
@@ -875,6 +957,9 @@ VG_UNUSED static void insert_bytes(vg_codeeditor_t *editor, const char *bytes, s
     codeeditor_invalidate_line_highlight(editor, editor->cursor_line);
 }
 
+/// @brief Insert one raw byte at the primary cursor without recording history.
+/// @param editor Editor whose current line is modified.
+/// @param c Byte to insert.
 VG_UNUSED static void insert_char(vg_codeeditor_t *editor, char c) {
     if (!editor)
         return;
@@ -901,6 +986,12 @@ VG_UNUSED static void insert_char(vg_codeeditor_t *editor, char c) {
 
 /// @brief Inserts @p n bytes from @p bytes into @p line_idx at *col, advancing *col past the
 /// inserted content.
+/// @param editor Editor containing the destination line.
+/// @param line_idx Zero-based destination line.
+/// @param[in,out] col Byte column updated past the inserted bytes.
+/// @param bytes Source bytes.
+/// @param n Number of bytes to insert.
+/// @return `true` when storage is updated.
 static bool codeeditor_insert_bytes_at(
     vg_codeeditor_t *editor, int line_idx, int *col, const char *bytes, size_t n) {
     if (!editor || !bytes || !col || n == 0 || line_idx < 0 || line_idx >= editor->line_count)
@@ -934,6 +1025,10 @@ static bool codeeditor_insert_bytes_at(
 
 /// @brief Splits @p line_idx at @p col by inserting a new empty line and moving trailing text to
 /// it.
+/// @param editor Editor whose line array is modified.
+/// @param line_idx Zero-based line to split.
+/// @param col Byte column at which the new line begins.
+/// @return `true` when the line array and both text buffers are updated.
 static bool codeeditor_split_line_at(vg_codeeditor_t *editor, int line_idx, int col) {
     if (!editor || line_idx < 0 || line_idx >= editor->line_count)
         return false;
@@ -974,6 +1069,8 @@ static bool codeeditor_split_line_at(vg_codeeditor_t *editor, int line_idx, int 
     return true;
 }
 
+/// @brief Split the primary cursor's line and move the cursor to the new line.
+/// @param editor Editor to modify.
 VG_UNUSED static void insert_newline(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -988,6 +1085,8 @@ VG_UNUSED static void insert_newline(vg_codeeditor_t *editor) {
     vg_codeeditor_refresh_layout_state(editor);
 }
 
+/// @brief Delete one byte before the primary cursor or join with the previous line.
+/// @param editor Editor to modify.
 VG_UNUSED static void delete_char_backward(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -1042,6 +1141,12 @@ VG_UNUSED static void delete_char_backward(vg_codeeditor_t *editor) {
 /// @brief Find the two-character delete range for Backspace between an automatic pair.
 /// @details When the caret is between an automatic ASCII pair, the range spans
 ///          both delimiters so a single Backspace removes the pair together.
+/// @param editor Editor containing the candidate pair.
+/// @param line_index Source line of the caret.
+/// @param col Caret byte column between the delimiters.
+/// @param[out] out_start_col Optional destination for the opening-delimiter column.
+/// @param[out] out_end_col Optional destination just after the closing delimiter.
+/// @return `true` when adjacent bytes form a supported pair.
 static bool codeeditor_backspace_pair_range(
     vg_codeeditor_t *editor, int line_index, int col, int *out_start_col, int *out_end_col) {
     if (out_start_col)
@@ -1071,6 +1176,7 @@ static bool codeeditor_backspace_pair_range(
 /// @details Deletes selections, removes paired delimiters when the caret is
 ///          between them, removes the previous UTF-8 codepoint otherwise, or
 ///          joins with the previous line at column zero.
+/// @param editor Editor whose active cursor targets are deleted.
 static void delete_backspace_targets(vg_codeeditor_t *editor) {
     if (!editor)
         return;
@@ -1415,6 +1521,10 @@ static void codeeditor_finish_keyboard_navigation(vg_codeeditor_t *editor,
 ///          widget for repaint. Shared by the MOUSE_MOVE handler (live pointer)
 ///          and the per-frame edge-autoscroll tick (last known pointer), so the
 ///          selection math lives in exactly one place.
+/// @param editor Editor whose primary selection is extended.
+/// @param widget Editor widget defining local-to-document geometry.
+/// @param x Pointer x coordinate in widget-local space.
+/// @param y Pointer y coordinate in widget-local space.
 static void codeeditor_update_drag_selection(vg_codeeditor_t *editor,
                                              vg_widget_t *widget,
                                              float x,
@@ -1530,6 +1640,9 @@ static void codeeditor_drag_autoscroll_tick(vg_codeeditor_t *editor,
 
 /// @brief VTable handle_event: routes mouse (click/drag/scroll/scrollbar) and keyboard events to
 /// the appropriate editor action.
+/// @param widget Code-editor base widget receiving the event.
+/// @param event Pointer, wheel, text, or keyboard event to dispatch.
+/// @return `true` when the editor consumes the event, otherwise `false`.
 static bool codeeditor_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_codeeditor_t *editor = (vg_codeeditor_t *)widget;
 
@@ -2180,12 +2293,16 @@ static bool codeeditor_handle_event(vg_widget_t *widget, vg_event_t *event) {
     return false;
 }
 
-/// @brief VTable can_focus: returns true when the editor is both enabled and visible.
+/// @brief Return whether the code editor may participate in keyboard focus traversal.
+/// @param widget Code-editor base widget to inspect.
+/// @return `true` when enabled and visible.
 static bool codeeditor_can_focus(vg_widget_t *widget) {
     return widget->enabled && widget->visible;
 }
 
-/// @brief VTable on_focus: on focus gain, resets the cursor blink state and triggers a repaint.
+/// @brief Update cursor blink state after a focus transition.
+/// @param widget Code-editor base widget whose state changed.
+/// @param gained Whether the editor gained focus.
 static void codeeditor_on_focus(vg_widget_t *widget, bool gained) {
     vg_codeeditor_t *editor = (vg_codeeditor_t *)widget;
     if (gained) {
