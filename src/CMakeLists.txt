@@ -386,6 +386,7 @@ if(WIN32)
         tools/windows_installer/main.cpp
         tools/windows_installer/WindowsInstallerHost.cpp
         tools/windows_installer/WindowsInstallerBrandDialog.cpp
+        tools/windows_installer/WindowsInstallerBrandValidation.cpp
         tools/windows_installer/WindowsInstallerLifecycle.cpp
         tools/windows_installer/WindowsInstallerTheme.cpp
         tools/windows_installer/WindowsInstallerVersion.cpp

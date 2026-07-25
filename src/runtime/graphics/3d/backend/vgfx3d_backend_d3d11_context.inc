@@ -884,6 +884,47 @@ static HRESULT d3d11_create_context_skybox_buffer(d3d11_context_t *ctx) {
     return hr;
 }
 
+/// @brief Release every partial core interface produced by one device-creation attempt.
+static void d3d11_release_device_attempt(d3d11_context_t *ctx) {
+    if (!ctx)
+        return;
+    SAFE_RELEASE(ctx->ctx);
+    SAFE_RELEASE(ctx->swap_chain);
+    SAFE_RELEASE(ctx->device);
+}
+
+/// @brief Attempt one feature-level-11 device/swapchain creation transaction.
+static HRESULT d3d11_try_create_device(d3d11_context_t *ctx,
+                                       D3D_DRIVER_TYPE driver_type,
+                                       DXGI_SWAP_CHAIN_DESC *swap_desc) {
+    const D3D_FEATURE_LEVEL requested_feature_level = D3D_FEATURE_LEVEL_11_0;
+    D3D_FEATURE_LEVEL created_feature_level = (D3D_FEATURE_LEVEL)0;
+    HRESULT hr;
+
+    if (!ctx || !swap_desc)
+        return E_INVALIDARG;
+    d3d11_release_device_attempt(ctx);
+    hr = D3D11CreateDeviceAndSwapChain(NULL,
+                                       driver_type,
+                                       NULL,
+                                       D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                       &requested_feature_level,
+                                       1,
+                                       D3D11_SDK_VERSION,
+                                       swap_desc,
+                                       &ctx->swap_chain,
+                                       &ctx->device,
+                                       &created_feature_level,
+                                       &ctx->ctx);
+    if (SUCCEEDED(hr) && (!ctx->swap_chain || !ctx->device || !ctx->ctx))
+        hr = E_POINTER;
+    if (SUCCEEDED(hr) && created_feature_level != requested_feature_level)
+        hr = E_FAIL;
+    if (FAILED(hr))
+        d3d11_release_device_attempt(ctx);
+    return hr;
+}
+
 /// @brief Allocate and initialize the entire D3D11 backend context.
 ///
 /// The big one — creates the device + swap chain, compiles every
@@ -897,8 +938,6 @@ static void *d3d11_create_ctx(vgfx_window_t win, int32_t width, int32_t height) 
     HWND hwnd = (HWND)vgfx_get_native_view(win);
     vgfx_framebuffer_t fb;
     DXGI_SWAP_CHAIN_DESC swap_desc;
-    const D3D_FEATURE_LEVEL requested_feature_level = D3D_FEATURE_LEVEL_11_0;
-    D3D_FEATURE_LEVEL created_feature_level = (D3D_FEATURE_LEVEL)0;
     d3d11_shader_blobs_t blobs;
     HRESULT hr;
     memset(&blobs, 0, sizeof(blobs));
@@ -922,24 +961,13 @@ static void *d3d11_create_ctx(vgfx_window_t win, int32_t width, int32_t height) 
     d3d11_init_context_defaults(ctx, width, height);
     d3d11_fill_swap_chain_desc(&swap_desc, hwnd, width, height);
 
-    hr = D3D11CreateDeviceAndSwapChain(NULL,
-                                       D3D_DRIVER_TYPE_HARDWARE,
-                                       NULL,
-                                       D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                       &requested_feature_level,
-                                       1,
-                                       D3D11_SDK_VERSION,
-                                       &swap_desc,
-                                       &ctx->swap_chain,
-                                       &ctx->device,
-                                       &created_feature_level,
-                                       &ctx->ctx);
-    if (SUCCEEDED(hr) && (!ctx->swap_chain || !ctx->device || !ctx->ctx))
-        hr = E_POINTER;
-    if (SUCCEEDED(hr) && created_feature_level != requested_feature_level)
-        hr = E_FAIL;
+    hr = d3d11_try_create_device(ctx, D3D_DRIVER_TYPE_HARDWARE, &swap_desc);
     if (FAILED(hr)) {
-        d3d11_log_hresult("D3D11CreateDeviceAndSwapChain", hr);
+        d3d11_log_hresult("D3D11CreateDeviceAndSwapChain(hardware)", hr);
+        hr = d3d11_try_create_device(ctx, D3D_DRIVER_TYPE_WARP, &swap_desc);
+    }
+    if (FAILED(hr)) {
+        d3d11_log_hresult("D3D11CreateDeviceAndSwapChain(WARP)", hr);
         d3d11_destroy_ctx(ctx);
         return NULL;
     }

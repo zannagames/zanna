@@ -30,20 +30,41 @@
  * compiler or runtime dependencies.
  */
 
-// gen_sounds.c — Procedural WAV sound effect generator for sidescroller demo
+// gen_sounds.c -- Procedural WAV sound effect generator for sidescroller demo
 // Compile: cc -o gen_sounds gen_sounds.c -lm
 // Run:     ./gen_sounds
 // Creates .wav files in a sounds/ subdirectory next to this file.
 
+#include <errno.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#if __has_include(<direct.h>)
+#include <direct.h>
+#else
 #include <sys/stat.h>
+#endif
 
 #define SAMPLE_RATE 22050
 #define PI 3.14159265358979323846
+
+/**
+ * @brief Create the sound output directory through the available host API.
+ *
+ * @param path Null-terminated directory path.
+ *
+ * @return Zero on success and a nonzero value on failure.
+ */
+static int create_output_directory(const char *path) {
+#if __has_include(<direct.h>)
+    return _mkdir(path);
+#else
+    return mkdir(path, 0755);
+#endif
+}
 
 /**
  * @brief Write signed samples as a mono, 16-bit PCM RIFF/WAVE file.
@@ -63,32 +84,43 @@
  * @note Failure to open the file is reported to standard error. Individual
  *       write and close errors are not checked by this example utility.
  */
-static void write_wav(const char *path, const int16_t *samples, int count)
-{
+static void write_wav(const char *path, const int16_t *samples, int count) {
     FILE *f = fopen(path, "wb");
-    if (!f) { fprintf(stderr, "Cannot open %s\n", path); return; }
+    if (!f) {
+        fprintf(stderr, "Cannot open %s\n", path);
+        return;
+    }
 
     int data_size = count * 2;
     int file_size = 36 + data_size;
 
     // RIFF header
     fwrite("RIFF", 1, 4, f);
-    uint32_t v = (uint32_t)file_size; fwrite(&v, 4, 1, f);
+    uint32_t v = (uint32_t)file_size;
+    fwrite(&v, 4, 1, f);
     fwrite("WAVE", 1, 4, f);
 
     // fmt chunk
     fwrite("fmt ", 1, 4, f);
-    v = 16; fwrite(&v, 4, 1, f);           // chunk size
-    uint16_t s = 1; fwrite(&s, 2, 1, f);   // PCM format
-    s = 1; fwrite(&s, 2, 1, f);            // mono
-    v = SAMPLE_RATE; fwrite(&v, 4, 1, f);  // sample rate
-    v = SAMPLE_RATE * 2; fwrite(&v, 4, 1, f); // byte rate
-    s = 2; fwrite(&s, 2, 1, f);            // block align
-    s = 16; fwrite(&s, 2, 1, f);           // bits per sample
+    v = 16;
+    fwrite(&v, 4, 1, f); // chunk size
+    uint16_t s = 1;
+    fwrite(&s, 2, 1, f); // PCM format
+    s = 1;
+    fwrite(&s, 2, 1, f); // mono
+    v = SAMPLE_RATE;
+    fwrite(&v, 4, 1, f); // sample rate
+    v = SAMPLE_RATE * 2;
+    fwrite(&v, 4, 1, f); // byte rate
+    s = 2;
+    fwrite(&s, 2, 1, f); // block align
+    s = 16;
+    fwrite(&s, 2, 1, f); // bits per sample
 
     // data chunk
     fwrite("data", 1, 4, f);
-    v = (uint32_t)data_size; fwrite(&v, 4, 1, f);
+    v = (uint32_t)data_size;
+    fwrite(&v, 4, 1, f);
     fwrite(samples, 2, (size_t)count, f);
 
     fclose(f);
@@ -103,7 +135,9 @@ static void write_wav(const char *path, const int16_t *samples, int count)
  *
  * @note A NaN input is returned unchanged because both comparisons are false.
  */
-static double clamp(double x) { return x < -1.0 ? -1.0 : x > 1.0 ? 1.0 : x; }
+static double clamp(double x) {
+    return x < -1.0 ? -1.0 : x > 1.0 ? 1.0 : x;
+}
 
 /**
  * @brief Evaluate an attack-decay-sustain-release amplitude envelope.
@@ -123,13 +157,16 @@ static double clamp(double x) { return x < -1.0 ? -1.0 : x > 1.0 ? 1.0 : x; }
  * @pre `atk`, `dec`, and `rel` are positive.
  * @pre `dur` is at least `atk + dec + rel`.
  */
-static double envelope(double t, double dur, double atk, double dec, double sus, double rel)
-{
+static double envelope(double t, double dur, double atk, double dec, double sus, double rel) {
     double rel_start = dur - rel;
-    if (t < atk) return t / atk;
-    if (t < atk + dec) return 1.0 - (1.0 - sus) * (t - atk) / dec;
-    if (t < rel_start) return sus;
-    if (t < dur) return sus * (1.0 - (t - rel_start) / rel);
+    if (t < atk)
+        return t / atk;
+    if (t < atk + dec)
+        return 1.0 - (1.0 - sus) * (t - atk) / dec;
+    if (t < rel_start)
+        return sus;
+    if (t < dur)
+        return sus * (1.0 - (t - rel_start) / rel);
     return 0.0;
 }
 
@@ -139,7 +176,9 @@ static double envelope(double t, double dur, double atk, double dec, double sus,
  * @param phase Oscillator phase measured in cycles, not radians.
  * @return `sin(2 * pi * phase)`, in the interval [-1, 1].
  */
-static double osc_sin(double phase) { return sin(phase * 2.0 * PI); }
+static double osc_sin(double phase) {
+    return sin(phase * 2.0 * PI);
+}
 
 /**
  * @brief Evaluate a bipolar square-wave oscillator.
@@ -151,8 +190,7 @@ static double osc_sin(double phase) { return sin(phase * 2.0 * PI); }
  * @note Callers in this utility pass non-negative phases. Negative phases
  *       inherit the signed-remainder behavior of `fmod`.
  */
-static double osc_square(double phase)
-{
+static double osc_square(double phase) {
     double p = fmod(phase, 1.0);
     return p < 0.5 ? 1.0 : -1.0;
 }
@@ -165,7 +203,9 @@ static double osc_square(double phase)
  * @note The sequence is deterministic after `main()` seeds the process-global
  *       C pseudo-random generator with 42.
  */
-static double osc_noise(void) { return (double)rand() / RAND_MAX * 2.0 - 1.0; }
+static double osc_noise(void) {
+    return (double)rand() / RAND_MAX * 2.0 - 1.0;
+}
 
 /**
  * @brief Evaluate a bipolar triangle-wave oscillator.
@@ -176,11 +216,12 @@ static double osc_noise(void) { return (double)rand() / RAND_MAX * 2.0 - 1.0; }
  *
  * @note The waveform contract assumes a non-negative phase.
  */
-static double osc_tri(double phase)
-{
+static double osc_tri(double phase) {
     double p = fmod(phase, 1.0);
-    if (p < 0.25) return p * 4.0;
-    if (p < 0.75) return 2.0 - p * 4.0;
+    if (p < 0.25)
+        return p * 4.0;
+    if (p < 0.75)
+        return 2.0 - p * 4.0;
     return p * 4.0 - 4.0;
 }
 
@@ -196,8 +237,7 @@ static double osc_tri(double phase)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_jump(const char *path)
-{
+static void gen_jump(const char *path) {
     // Rising square wave chirp
     double dur = 0.15;
     int n = (int)(dur * SAMPLE_RATE);
@@ -223,8 +263,7 @@ static void gen_jump(const char *path)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_shoot(const char *path)
-{
+static void gen_shoot(const char *path) {
     // Short descending noise + sine zap
     double dur = 0.12;
     int n = (int)(dur * SAMPLE_RATE);
@@ -251,8 +290,7 @@ static void gen_shoot(const char *path)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_coin(const char *path)
-{
+static void gen_coin(const char *path) {
     // Two-tone chime (classic coin sound)
     double dur = 0.2;
     int n = (int)(dur * SAMPLE_RATE);
@@ -284,8 +322,7 @@ static void gen_coin(const char *path)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_hurt(const char *path)
-{
+static void gen_hurt(const char *path) {
     // Low thud with noise
     double dur = 0.25;
     int n = (int)(dur * SAMPLE_RATE);
@@ -312,8 +349,7 @@ static void gen_hurt(const char *path)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_enemy_death(const char *path)
-{
+static void gen_enemy_death(const char *path) {
     // Quick pop/splat
     double dur = 0.18;
     int n = (int)(dur * SAMPLE_RATE);
@@ -340,8 +376,7 @@ static void gen_enemy_death(const char *path)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_powerup(const char *path)
-{
+static void gen_powerup(const char *path) {
     // Ascending arpeggio — three quick notes
     double dur = 0.35;
     int n = (int)(dur * SAMPLE_RATE);
@@ -350,7 +385,8 @@ static void gen_powerup(const char *path)
     for (int i = 0; i < n; i++) {
         double t = (double)i / SAMPLE_RATE;
         int note_idx = (int)(t / (dur / 3.0));
-        if (note_idx > 2) note_idx = 2;
+        if (note_idx > 2)
+            note_idx = 2;
         double note_t = t - note_idx * (dur / 3.0);
         double note_dur = dur / 3.0;
         double env = envelope(note_t, note_dur, 0.005, 0.02, 0.5, 0.03);
@@ -371,8 +407,7 @@ static void gen_powerup(const char *path)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_checkpoint(const char *path)
-{
+static void gen_checkpoint(const char *path) {
     // Cheerful two-note ding
     double dur = 0.3;
     int n = (int)(dur * SAMPLE_RATE);
@@ -404,8 +439,7 @@ static void gen_checkpoint(const char *path)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_level_complete(const char *path)
-{
+static void gen_level_complete(const char *path) {
     // Victory fanfare: C-E-G-C ascending with harmonics
     double dur = 0.8;
     int n = (int)(dur * SAMPLE_RATE);
@@ -414,7 +448,8 @@ static void gen_level_complete(const char *path)
     for (int i = 0; i < n; i++) {
         double t = (double)i / SAMPLE_RATE;
         int note_idx = (int)(t / 0.2);
-        if (note_idx > 3) note_idx = 3;
+        if (note_idx > 3)
+            note_idx = 3;
         double note_t = t - note_idx * 0.2;
         double note_dur = (note_idx == 3) ? 0.2 : 0.2;
         double env = envelope(note_t, note_dur, 0.005, 0.03, 0.6, 0.05);
@@ -436,8 +471,7 @@ static void gen_level_complete(const char *path)
  *
  * @details The effect is a 660 Hz square wave shaped to 0.06 seconds.
  */
-static void gen_menu_select(const char *path)
-{
+static void gen_menu_select(const char *path) {
     // Quick blip
     double dur = 0.06;
     int n = (int)(dur * SAMPLE_RATE);
@@ -462,8 +496,7 @@ static void gen_menu_select(const char *path)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_death(const char *path)
-{
+static void gen_death(const char *path) {
     // Descending tone with noise
     double dur = 0.6;
     int n = (int)(dur * SAMPLE_RATE);
@@ -473,8 +506,7 @@ static void gen_death(const char *path)
         double freq = 500.0 - 400.0 * (t / dur);
         double phase = t * freq;
         double env = envelope(t, dur, 0.01, 0.05, 0.5, 0.2);
-        double sig = osc_square(phase) * 0.3 + osc_sin(phase * 0.5) * 0.2 +
-                     osc_noise() * 0.1;
+        double sig = osc_square(phase) * 0.3 + osc_sin(phase * 0.5) * 0.2 + osc_noise() * 0.1;
         buf[i] = (int16_t)(clamp(sig * env) * 32000);
     }
     write_wav(path, buf, n);
@@ -491,8 +523,7 @@ static void gen_death(const char *path)
  * @pre `path` is non-null and the parent directory exists.
  * @pre Allocation of the fixed-size sample buffer succeeds.
  */
-static void gen_stomp(const char *path)
-{
+static void gen_stomp(const char *path) {
     // Bouncy pop for stomping enemies
     double dur = 0.1;
     int n = (int)(dur * SAMPLE_RATE);
@@ -518,8 +549,7 @@ static void gen_stomp(const char *path)
  *
  * @details The effect is a lightly amplified 440 Hz sine lasting 0.04 seconds.
  */
-static void gen_menu_move(const char *path)
-{
+static void gen_menu_move(const char *path) {
     // Subtle tick for menu navigation
     double dur = 0.04;
     int n = (int)(dur * SAMPLE_RATE);
@@ -547,16 +577,14 @@ static void gen_menu_move(const char *path)
  *       only indirectly; generation continues so one failure does not suppress
  *       attempts for the remaining assets.
  */
-int main(void)
-{
+int main(void) {
     srand(42); // deterministic noise
 
     const char *dir = "sounds";
-#ifdef _WIN32
-    _mkdir(dir);
-#else
-    mkdir(dir, 0755);
-#endif
+    if (create_output_directory(dir) != 0 && errno != EEXIST) {
+        perror("Cannot create sounds");
+        return 1;
+    }
 
     printf("Generating sidescroller sound effects...\n");
     gen_jump("sounds/jump.wav");

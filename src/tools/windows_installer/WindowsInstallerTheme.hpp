@@ -84,8 +84,8 @@ class InstallerThemeResources {
 
     InstallerThemeResources(const InstallerThemeResources &) = delete;
     InstallerThemeResources &operator=(const InstallerThemeResources &) = delete;
-    InstallerThemeResources(InstallerThemeResources &&) = delete;
-    InstallerThemeResources &operator=(InstallerThemeResources &&) = delete;
+    InstallerThemeResources(InstallerThemeResources &&other) noexcept;
+    InstallerThemeResources &operator=(InstallerThemeResources &&other) noexcept;
 
     UINT dpi() const noexcept {
         return dpi_;
@@ -155,6 +155,15 @@ class InstallerThemeResources {
     HBRUSH raisedBrush_{nullptr};
     HBRUSH inputBrush_{nullptr};
 };
+
+/// @brief Normalize a native DPI value before any checked pixel scaling.
+UINT normalizeInstallerDpi(UINT dpi) noexcept;
+
+/// @brief Register a process-local installer class or verify an identical existing class.
+ATOM registerVerifiedInstallerWindowClass(const WNDCLASSEXW &windowClass) noexcept;
+
+/// @brief Rescale every direct and nested child control for a per-monitor DPI transition.
+bool rescaleInstallerChildWindows(HWND parent, UINT oldDpi, UINT newDpi) noexcept;
 
 /// @brief Apply supported dark title-bar and native-control hints.
 void applyInstallerWindowTheme(HWND window, const InstallerThemeResources &theme) noexcept;

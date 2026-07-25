@@ -200,10 +200,34 @@ Assert-True ($demoSource.Contains('src\tools\zanna\zanna.exe')) `
     "The demo driver lacks single-config executable discovery."
 Assert-True ($demoSource.Contains('Assert-CMakeTreeArchitecture')) `
     "The demo driver lacks CMake architecture validation."
+Assert-True ($demoSource.Contains('Get-CMakeGeneratedSystemProcessor')) `
+    "The demo driver cannot prove architecture from generated CMake system data."
 Assert-True ($demoSource.Contains('Test-PathWithin')) `
     "The demo driver lacks asset and project path confinement."
 Assert-True ($demoSource.Contains('duplicate demo executable name')) `
     "The demo driver lacks duplicate-output rejection."
+Assert-True ($demoSource.Contains('$outputDirectory = Join-Path $binDir $Name')) `
+    "The demo driver does not isolate each demo's published executable and assets."
+Assert-True ($demoSource.Contains("Assert-NoReparsePath") -and
+             $demoSource.Contains("Assert-PortableExecutableArchitecture") -and
+             $demoSource.Contains("Publish-DemoExecutable")) `
+    "The demo driver lacks indirection checks or transactional PE publication."
+Assert-True ($demoSource.Contains("New-DemoRunDirectory") -and
+             $demoSource.Contains("Stop-DemoProcessTree") -and
+             $demoSource.Contains("taskkill.exe")) `
+    "The demo driver does not isolate smoke runs or terminate child process trees."
+Assert-True ($demoSource.Contains('WaitForExit($processStopTimeoutMilliseconds)') -and
+             -not $demoSource.Contains('$process.WaitForExit()')) `
+    "The demo driver retains an unbounded redirected-process wait."
+Assert-True ($demoSource.Contains("ConvertFrom-NativeArgumentString -Value `$trimmed") -and
+             $demoSource.Contains("malformed asset directive")) `
+    "The demo driver does not parse quoted asset paths fail-closed."
+Assert-True ($demoSource.Contains("cannot prove its target architecture") -and
+             $demoSource.Contains("Unsupported native Windows host architecture")) `
+    "The demo driver still guesses unknown CMake or native-host architectures."
+Assert-True (-not $demoSource.Contains("Get-DemoBinSnapshot") -and
+             -not $demoSource.Contains("Remove-NewDemoArtifacts")) `
+    "Demo smoke cleanup can still mutate the shared published output directory."
 
 $demoCmd = [IO.Path]::ChangeExtension($DemoScript, ".cmd")
 Assert-True (Test-Path -LiteralPath $demoCmd -PathType Leaf) `
@@ -254,6 +278,12 @@ Assert-True ($installerSource.Contains("ZANNA_INSTALL_ZANNASTUDIO") -and
     "The installer wrapper does not verify the default Zanna Studio build."
 Assert-True ($installerSource.Contains("[IO.Path]::GetFullPath(`$buildDir)")) `
     "The installer wrapper does not normalize an absolute build directory."
+Assert-True ($installerSource.Contains("Invoke-StagedPackageDriver") -and
+             $installerSource.Contains(".zanna-installer-driver-") -and
+             $installerSource.Contains("[IO.FileMode]::CreateNew") -and
+             $installerSource.Contains("failed SHA-256 verification") -and
+             -not $installerSource.Contains("& `$zanna @packageArguments")) `
+    "The installer wrapper can execute a package driver from a relink target."
 
 $buildSource = [IO.File]::ReadAllText($BuildScript)
 Assert-True ($buildSource.Contains(

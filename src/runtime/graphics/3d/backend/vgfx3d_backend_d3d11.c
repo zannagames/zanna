@@ -41,6 +41,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -773,13 +774,35 @@ static void mat4f_mul_d3d(const float *a, const float *b, float *out) {
 /// @param msg  Human-readable label for the API call that failed (e.g.,
 ///   `"Map(cbPostFX)"`), used as the leading text in the log entry.
 /// @param hr   The HRESULT returned by the failing call, printed as 0x%08lx.
+static void d3d11_format_log_message(char *buffer, size_t capacity, const char *format, ...) {
+    static const char kFallback[] = "[vgfx3d_d3d11] diagnostic formatting failed\n";
+    int written;
+    va_list arguments;
+
+    if (!buffer || capacity == 0)
+        return;
+    buffer[0] = '\0';
+    va_start(arguments, format);
+    written = vsnprintf(buffer, capacity, format, arguments);
+    va_end(arguments);
+    if (written < 0) {
+        const size_t copy_length =
+            sizeof(kFallback) - 1u < capacity - 1u ? sizeof(kFallback) - 1u : capacity - 1u;
+        memcpy(buffer, kFallback, copy_length);
+        buffer[copy_length] = '\0';
+    } else if ((size_t)written >= capacity && capacity > 1u) {
+        buffer[capacity - 2u] = '\n';
+        buffer[capacity - 1u] = '\0';
+    }
+}
+
 static void d3d11_log_hresult(const char *msg, HRESULT hr) {
-    char buffer[256];
-    snprintf(buffer,
-             sizeof(buffer),
-             "[vgfx3d_d3d11] %s failed (hr=0x%08lx)\n",
-             msg ? msg : "D3D11 call",
-             (unsigned long)hr);
+    char buffer[256] = {0};
+    d3d11_format_log_message(buffer,
+                             sizeof(buffer),
+                             "[vgfx3d_d3d11] %s failed (hr=0x%08lx)\n",
+                             msg ? msg : "D3D11 call",
+                             (unsigned long)hr);
     OutputDebugStringA(buffer);
     fputs(buffer, stderr);
 }
@@ -799,17 +822,18 @@ static int d3d11_hresult_is_device_removed(HRESULT hr) {
 /// keep their existing recovery behavior.
 static void d3d11_log_device_removed_reason(d3d11_context_t *ctx, const char *msg, HRESULT hr) {
     HRESULT reason;
-    char buffer[256];
+    char buffer[256] = {0};
 
     if (!ctx || !ctx->device || !d3d11_hresult_is_device_removed(hr))
         return;
     reason = ID3D11Device_GetDeviceRemovedReason(ctx->device);
-    snprintf(buffer,
-             sizeof(buffer),
-             "[vgfx3d_d3d11] %s device removed/reset reason=0x%08lx (trigger=0x%08lx)\n",
-             msg ? msg : "D3D11",
-             (unsigned long)reason,
-             (unsigned long)hr);
+    d3d11_format_log_message(
+        buffer,
+        sizeof(buffer),
+        "[vgfx3d_d3d11] %s device removed/reset reason=0x%08lx (trigger=0x%08lx)\n",
+        msg ? msg : "D3D11",
+        (unsigned long)reason,
+        (unsigned long)hr);
     OutputDebugStringA(buffer);
     fputs(buffer, stderr);
 }
@@ -839,7 +863,7 @@ static void d3d11_log_shader_diagnostics(const char *stage, ID3DBlob *diagnostic
     const char *text;
     SIZE_T text_len;
     int print_len;
-    char buffer[8192];
+    char buffer[8192] = {0};
 
     if (!diagnostics)
         return;
@@ -848,14 +872,14 @@ static void d3d11_log_shader_diagnostics(const char *stage, ID3DBlob *diagnostic
     while (text && text_len > 0 && text[text_len - 1] == '\0')
         text_len--;
     print_len = text_len > (failed ? 7936 : 768) ? (failed ? 7936 : 768) : (int)text_len;
-    snprintf(buffer,
-             sizeof(buffer),
-             "[vgfx3d_d3d11] %s compile %s: %.*s%s\n",
-             stage ? stage : "shader",
-             failed ? "failed" : "diagnostics",
-             print_len,
-             text ? text : "",
-             text_len > (SIZE_T)print_len ? "..." : "");
+    d3d11_format_log_message(buffer,
+                             sizeof(buffer),
+                             "[vgfx3d_d3d11] %s compile %s: %.*s%s\n",
+                             stage ? stage : "shader",
+                             failed ? "failed" : "diagnostics",
+                             print_len,
+                             text ? text : "",
+                             text_len > (SIZE_T)print_len ? "..." : "");
     OutputDebugStringA(buffer);
     fputs(buffer, stderr);
 }
@@ -995,6 +1019,10 @@ static void d3d11_begin_frame_timing(d3d11_context_t *ctx) {
         return;
     ID3D11DeviceContext_Begin(ctx->ctx, (ID3D11Asynchronous *)ctx->frame_time_disjoint_query);
     ID3D11DeviceContext_End(ctx->ctx, (ID3D11Asynchronous *)ctx->frame_time_start_query);
+    if (FAILED(d3d11_device_status_after_void_command(ctx, "Begin(frame timestamp)"))) {
+        d3d11_create_frame_timing_queries(ctx);
+        return;
+    }
     ctx->frame_time_active = 1;
 }
 
@@ -1004,6 +1032,10 @@ static void d3d11_end_frame_timing(d3d11_context_t *ctx) {
         return;
     ID3D11DeviceContext_End(ctx->ctx, (ID3D11Asynchronous *)ctx->frame_time_end_query);
     ID3D11DeviceContext_End(ctx->ctx, (ID3D11Asynchronous *)ctx->frame_time_disjoint_query);
+    if (FAILED(d3d11_device_status_after_void_command(ctx, "End(frame timestamp)"))) {
+        d3d11_create_frame_timing_queries(ctx);
+        return;
+    }
     ctx->frame_time_active = 0;
     ctx->frame_time_pending = 1;
     ctx->frame_time_pending_polls = 0;
@@ -1951,11 +1983,18 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc;
     D3D11_SUBRESOURCE_DATA init_data;
     D3D11_SUBRESOURCE_DATA cube_init[6];
-    HRESULT hr;
+    ID3D11Texture2D *new_fallback_white_tex = NULL;
+    ID3D11ShaderResourceView *new_fallback_white_srv = NULL;
+    ID3D11Texture2D *new_fallback_white_cube_tex = NULL;
+    ID3D11ShaderResourceView *new_fallback_white_cube_srv = NULL;
+    ID3D11Texture2D *new_brdf_lut_tex = NULL;
+    ID3D11ShaderResourceView *new_brdf_lut_srv = NULL;
+    HRESULT hr = E_FAIL;
 
     if (!ctx || !ctx->device)
         return E_INVALIDARG;
-    if (ctx->fallback_white_srv && ctx->fallback_white_cube_srv)
+    if (ctx->fallback_white_tex && ctx->fallback_white_srv && ctx->fallback_white_cube_tex &&
+        ctx->fallback_white_cube_srv && ctx->brdf_lut_tex && ctx->brdf_lut_srv)
         return S_OK;
 
     memset(&desc, 0, sizeof(desc));
@@ -1971,26 +2010,23 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     init_data.pSysMem = kWhitePixel;
     init_data.SysMemPitch = sizeof(kWhitePixel);
     init_data.SysMemSlicePitch = sizeof(kWhitePixel);
-    hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, &init_data, &ctx->fallback_white_tex);
-    hr = d3d11_required_output_result(hr, ctx->fallback_white_tex);
+    hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, &init_data, &new_fallback_white_tex);
+    hr = d3d11_required_output_result(hr, new_fallback_white_tex);
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateTexture2D(fallbackWhite2D)", hr);
-        return hr;
+        goto fail;
     }
 
     memset(&srv_desc, 0, sizeof(srv_desc));
     srv_desc.Format = desc.Format;
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     srv_desc.Texture2D.MipLevels = 1;
-    hr = ID3D11Device_CreateShaderResourceView(ctx->device,
-                                               (ID3D11Resource *)ctx->fallback_white_tex,
-                                               &srv_desc,
-                                               &ctx->fallback_white_srv);
-    hr = d3d11_required_output_result(hr, ctx->fallback_white_srv);
+    hr = ID3D11Device_CreateShaderResourceView(
+        ctx->device, (ID3D11Resource *)new_fallback_white_tex, &srv_desc, &new_fallback_white_srv);
+    hr = d3d11_required_output_result(hr, new_fallback_white_srv);
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateShaderResourceView(fallbackWhite2D)", hr);
-        SAFE_RELEASE(ctx->fallback_white_tex);
-        return hr;
+        goto fail;
     }
 
     desc.ArraySize = 6;
@@ -1998,13 +2034,11 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     for (int face = 0; face < 6; face++) {
         cube_init[face] = init_data;
     }
-    hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, cube_init, &ctx->fallback_white_cube_tex);
-    hr = d3d11_required_output_result(hr, ctx->fallback_white_cube_tex);
+    hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, cube_init, &new_fallback_white_cube_tex);
+    hr = d3d11_required_output_result(hr, new_fallback_white_cube_tex);
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateTexture2D(fallbackWhiteCube)", hr);
-        SAFE_RELEASE(ctx->fallback_white_srv);
-        SAFE_RELEASE(ctx->fallback_white_tex);
-        return hr;
+        goto fail;
     }
 
     memset(&srv_desc, 0, sizeof(srv_desc));
@@ -2012,51 +2046,68 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
     srv_desc.TextureCube.MipLevels = 1;
     hr = ID3D11Device_CreateShaderResourceView(ctx->device,
-                                               (ID3D11Resource *)ctx->fallback_white_cube_tex,
+                                               (ID3D11Resource *)new_fallback_white_cube_tex,
                                                &srv_desc,
-                                               &ctx->fallback_white_cube_srv);
-    hr = d3d11_required_output_result(hr, ctx->fallback_white_cube_srv);
+                                               &new_fallback_white_cube_srv);
+    hr = d3d11_required_output_result(hr, new_fallback_white_cube_srv);
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateShaderResourceView(fallbackWhiteCube)", hr);
-        SAFE_RELEASE(ctx->fallback_white_cube_tex);
-        SAFE_RELEASE(ctx->fallback_white_srv);
-        SAFE_RELEASE(ctx->fallback_white_tex);
-        return hr;
+        goto fail;
     }
 
     /* Split-sum environment BRDF table (shared CPU precomputation, immutable). */
-    if (!ctx->brdf_lut_srv) {
-        memset(&desc, 0, sizeof(desc));
-        desc.Width = VGFX3D_BRDF_LUT_SIZE;
-        desc.Height = VGFX3D_BRDF_LUT_SIZE;
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.Format = DXGI_FORMAT_R32G32_FLOAT;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_IMMUTABLE;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        memset(&init_data, 0, sizeof(init_data));
-        init_data.pSysMem = vgfx3d_brdf_lut_data();
-        init_data.SysMemPitch = (UINT)(VGFX3D_BRDF_LUT_SIZE * 2u * sizeof(float));
-        init_data.SysMemSlicePitch = 0;
-        hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, &init_data, &ctx->brdf_lut_tex);
-        hr = d3d11_required_output_result(hr, ctx->brdf_lut_tex);
-        if (FAILED(hr)) {
-            d3d11_log_hresult("CreateTexture2D(brdfLut)", hr);
-            return hr;
-        }
-        memset(&srv_desc, 0, sizeof(srv_desc));
-        srv_desc.Format = desc.Format;
-        srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-        srv_desc.Texture2D.MipLevels = 1;
-        hr = ID3D11Device_CreateShaderResourceView(
-            ctx->device, (ID3D11Resource *)ctx->brdf_lut_tex, &srv_desc, &ctx->brdf_lut_srv);
-        hr = d3d11_required_output_result(hr, ctx->brdf_lut_srv);
-        if (FAILED(hr)) {
-            d3d11_log_hresult("CreateShaderResourceView(brdfLut)", hr);
-            SAFE_RELEASE(ctx->brdf_lut_tex);
-        }
+    memset(&desc, 0, sizeof(desc));
+    desc.Width = VGFX3D_BRDF_LUT_SIZE;
+    desc.Height = VGFX3D_BRDF_LUT_SIZE;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R32G32_FLOAT;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    memset(&init_data, 0, sizeof(init_data));
+    init_data.pSysMem = vgfx3d_brdf_lut_data();
+    init_data.SysMemPitch = (UINT)(VGFX3D_BRDF_LUT_SIZE * 2u * sizeof(float));
+    init_data.SysMemSlicePitch = 0;
+    hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, &init_data, &new_brdf_lut_tex);
+    hr = d3d11_required_output_result(hr, new_brdf_lut_tex);
+    if (FAILED(hr)) {
+        d3d11_log_hresult("CreateTexture2D(brdfLut)", hr);
+        goto fail;
     }
+    memset(&srv_desc, 0, sizeof(srv_desc));
+    srv_desc.Format = desc.Format;
+    srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels = 1;
+    hr = ID3D11Device_CreateShaderResourceView(
+        ctx->device, (ID3D11Resource *)new_brdf_lut_tex, &srv_desc, &new_brdf_lut_srv);
+    hr = d3d11_required_output_result(hr, new_brdf_lut_srv);
+    if (FAILED(hr)) {
+        d3d11_log_hresult("CreateShaderResourceView(brdfLut)", hr);
+        goto fail;
+    }
+
+    SAFE_RELEASE(ctx->fallback_white_srv);
+    SAFE_RELEASE(ctx->fallback_white_tex);
+    SAFE_RELEASE(ctx->fallback_white_cube_srv);
+    SAFE_RELEASE(ctx->fallback_white_cube_tex);
+    SAFE_RELEASE(ctx->brdf_lut_srv);
+    SAFE_RELEASE(ctx->brdf_lut_tex);
+    ctx->fallback_white_tex = new_fallback_white_tex;
+    ctx->fallback_white_srv = new_fallback_white_srv;
+    ctx->fallback_white_cube_tex = new_fallback_white_cube_tex;
+    ctx->fallback_white_cube_srv = new_fallback_white_cube_srv;
+    ctx->brdf_lut_tex = new_brdf_lut_tex;
+    ctx->brdf_lut_srv = new_brdf_lut_srv;
+    return S_OK;
+
+fail:
+    SAFE_RELEASE(new_brdf_lut_srv);
+    SAFE_RELEASE(new_brdf_lut_tex);
+    SAFE_RELEASE(new_fallback_white_cube_srv);
+    SAFE_RELEASE(new_fallback_white_cube_tex);
+    SAFE_RELEASE(new_fallback_white_srv);
+    SAFE_RELEASE(new_fallback_white_tex);
     return hr;
 }
 

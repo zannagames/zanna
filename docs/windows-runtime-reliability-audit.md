@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers
-last-verified: 2026-07-23
+last-verified: 2026-07-24
 ---
 
 # Windows Runtime Reliability Audit
@@ -16,9 +16,9 @@ native-link cross-layer dependency added for current MSVC object code.
 ## Repaired findings
 
 The 2026-07-23 passes added WR-199 through WR-450: 252 concrete repairs, with installer and
-Zanna Studio packaging intentionally receiving the largest share. WR-347 through WR-450 are the
-fresh 104-finding Direct3D/Windows runtime/installer alpha-hardening tranche recorded by this
-audit.
+Zanna Studio packaging intentionally receiving the largest share. The 2026-07-24 pass adds
+WR-451 through WR-502: 52 further Direct3D, native-installer, Windows build, and demo-automation
+repairs aimed at alpha-quality failure behavior.
 
 | ID | Area | Finding and repair |
 |----|------|--------------------|
@@ -472,6 +472,58 @@ audit.
 | WR-448 | native execution diagnostics | Native-run launch failures replaced the process runner's actionable Win32 diagnostic with a generic executable-path message. The detailed launch error is now retained beneath the operation context. |
 | WR-449 | Studio responsive regression | The bottom-panel wide-layout fixture depended on obtaining a window larger than the host work area, so low-resolution or fractionally scaled Windows desktops could never cross the responsive threshold. The fixture temporarily collapses the primary sidebar and then restores it, exercising both layouts within the available viewport. |
 | WR-450 | Studio CTest contention | Scene-editor and multi-root probes completed well within their isolated budgets but exceeded 60/60/30-second ceilings while seven unrelated Debug workers saturated the Windows host. Their bounded ceilings now retain measured headroom, and the especially heavy hidden 3D fixture reserves the runner while the display resource lock preserves graphical isolation. |
+| WR-451 | Windows MSVC build | Scene-editor code used `std::array` without including `<array>`, so a clean MSVC build failed before Windows runtime validation began. The owning translation unit now includes its direct standard-library dependency. |
+| WR-452 | D3D11 device availability | Device creation tried only the hardware driver, excluding Remote Desktop, virtual machines, CI hosts, and machines whose installed display driver could not create a feature-level-11 device. A failed hardware attempt now retries the in-box WARP driver before falling back to Zanna's software backend. |
+| WR-453 | D3D11 device retry | Adding a second driver attempt without a transaction boundary would let partial swapchain, device, or immediate-context outputs from the first attempt contaminate the retry. A shared attempt helper clears outputs before creation, validates the complete feature-level-11 result, and releases every partial interface on failure. |
+| WR-454 | D3D11 timing begin | `Begin` and the starting timestamp `End` return no HRESULT, yet `frame_time_active` was published immediately even if device removal discarded the commands. Device health now gates active-query publication and a failed set is retired. |
+| WR-455 | D3D11 timing end | The ending timestamp and disjoint `End` calls similarly published a pending timing sample after unobservable command failure. Pending state is now committed only after the device remains healthy. |
+| WR-456 | D3D11 fallback completeness | Fallback creation returned success once the white 2D and cube SRVs existed even if the BRDF LUT was absent. Readiness now requires both textures, both SRVs, and the complete LUT pair. |
+| WR-457 | D3D11 fallback transaction | White textures, cube resources, and the BRDF LUT were written into context fields incrementally, so a late failure exposed a partial resource set to retry and cleanup paths. All six COM objects are staged locally and published together only after complete success. |
+| WR-458 | D3D11 RTT staging descriptor | A cached readback surface with an invalid size, format, usage, bind, access, or subresource descriptor returned failure forever while remaining cached. Invalid staging descriptors are diagnosed, evicted, and replaced before a later retry. |
+| WR-459 | D3D11 RTT mapped payload | A successful map with an impossible row pitch failed the current read but retained the same poisoned staging resource. Invalid mapped staging payloads now follow the same unmap, eviction, and validated-recreation path as failed and null maps. |
+| WR-460 | D3D11 diagnostics | HRESULT and shader diagnostics assumed `snprintf` succeeded, so a CRT formatting failure could send uninitialized stack bytes to the debugger and stderr. One bounded formatter initializes every destination and emits a deterministic fallback or terminated truncation. |
+| WR-461 | branded installer models | Null module instances and malformed or embedded-NUL UTF-16 could reach native registration and control creation with a different visible meaning from the model. Page and progress models now validate the instance and every UTF-16 code unit before allocating Win32 resources. |
+| WR-462 | branded installer text bounds | Window, heading, body, metadata, details, verification, cancel, action, and progress strings had no practical limits. Per-field bounds now cap allocation, native message, accessibility, and owner-draw work. |
+| WR-463 | branded action IDs | IDs outside the unsigned 16-bit `WM_COMMAND` control range were narrowed through `HMENU`/`LOWORD`, allowing one action to activate another. Every action ID must now be positive and exactly representable. |
+| WR-464 | branded action ownership | Page action IDs could collide with cancel, status, verification, details, heading, or other internal controls. The complete reserved control set is rejected before window creation. |
+| WR-465 | branded action identity | Duplicate action IDs made focus/default state and click lookup ambiguous. Validation now requires a unique ID for every action. |
+| WR-466 | branded accessibility | Empty action titles, visible cancel text, or details labels produced nameless controls or unlabeled read-only content. Every visible actionable/auxiliary surface now requires an accessible name. |
+| WR-467 | branded default action | A default ID that did not name a page action silently focused the first action while retaining contradictory model state. The default must exist, and the native window now exposes it through the dialog default-button protocol so Enter activates it. |
+| WR-468 | branded close action | The title-bar close result could name no action and no cancellation result. Close now resolves only to `IDCANCEL` or a declared action. |
+| WR-469 | branded verification | `requiresVerification` silently did nothing when the page omitted verification text. Gated actions now require a real accessible checkbox before the page can be shown. |
+| WR-470 | branded progress work | An empty `std::function` created the progress window and worker before failing with `bad_function_call`. Progress work and its required presentation strings are validated before registration, timers, callbacks, or threads. |
+| WR-471 | branded page class | `ERROR_CLASS_ALREADY_EXISTS` trusted any process-local class with the branded page name. Reuse now verifies module, window procedure, style, and class/window extra storage. |
+| WR-472 | branded progress class | The progress class had the same foreign-registration and concurrent first-use ambiguity. It now uses the shared verified registration boundary. |
+| WR-473 | custom-options class | The custom options window also accepted an unverified existing class. All three installer window classes now share collision-intolerant registration with no racy atomic sentinel. |
+| WR-474 | branded keyboard default | Owner-drawn page buttons had no parent default-ID protocol, so `IsDialogMessageW` could not reliably activate the model's default action with Enter. `DM_GETDEFID`/`DM_SETDEFID` now preserve native keyboard semantics. |
+| WR-475 | custom-options keyboard default | The custom installer accepted only a pointer click on its owner-drawn install button on hosts where the raw window supplied no default dialog ID. Its parent now exposes and maintains `IDOK` as the native default. |
+| WR-476 | branded page painting | The page drew and called `EndPaint` even when `BeginPaint` returned no device context. It now delegates safely on begin failure and draws only after client bounds are available. |
+| WR-477 | branded progress painting | The progress surface repeated the same invalid paint lifecycle. Its backdrop, compact mark, and track are now guarded by successful paint and bounds acquisition. |
+| WR-478 | custom-options painting | The custom page also used a failed `BeginPaint` result and assumed `SaveDC` succeeded. Both native boundaries are checked before drawing or restoring state. |
+| WR-479 | installer GDI state | Shared drawing helpers restored DC state with a zero save level, risking selected-object lifetime and subsequent paint corruption. Every helper now stops before mutating the DC when `SaveDC` fails. |
+| WR-480 | branded page quit handling | The modal page consumed `WM_QUIT` and returned without restoring it, allowing one nested setup surface to cancel process shutdown. It reposts the exact quit status before unwinding. |
+| WR-481 | branded progress quit handling | The progress loop similarly swallowed the thread quit request while joining its worker. It now preserves the quit message after cooperative cancellation and cleanup. |
+| WR-482 | custom-options quit handling | The custom-options loop had the same nested-message-loop defect. All installer modal loops now leave the outer application shutdown request intact. |
+| WR-483 | installer per-monitor DPI | Raw pages used an unchecked system DPI, so API failure produced zero-sized geometry and moving a PerMonitorV2 window retained stale fonts, controls, scroll extents, and brand geometry. DPI is normalized to a bounded fallback; all page types handle `WM_DPICHANGED`, rescale children/state, rebuild GDI resources, apply the suggested bounds, and repaint. |
+| WR-484 | installer progress queue | Every log update allocated a new string and posted a distinct window message, allowing a fast worker to grow heap and queue usage without bound. One bounded pending string is protected by a mutex and updates are coalesced behind a single posted message. |
+| WR-485 | demo host architecture | Any native host architecture other than ARM64 was assumed to be x64, so an x86 or unknown environment could reuse and run the wrong tools. Only explicit AMD64 and ARM64 host identities are accepted. |
+| WR-486 | demo CMake cache proof | An existing tree with neither generator-platform nor system-processor identity was accepted. Reuse now fails closed when the target architecture cannot be proven. |
+| WR-487 | demo CMake architecture | An unrecognized non-empty cache architecture was ignored as though compatible. Unknown architecture values are rejected rather than bypassing the requested-target comparison. |
+| WR-488 | demo asset parsing | Whitespace splitting only appeared to support quotes and corrupted project asset paths containing spaces. Asset directives now use the same quote-aware native argument tokenizer as CMake options. |
+| WR-489 | demo asset grammar | Missing sources, extra fields, and empty quoted operands could be silently skipped or reinterpreted. Every line beginning with `asset` now has an exact two- or three-field grammar and fails with project context when malformed. |
+| WR-490 | demo asset source ancestry | Lexical containment did not stop a project asset path from traversing an existing junction or symbolic link outside the project. Every existing source ancestor is checked for reparse indirection. |
+| WR-491 | demo asset source trees | A contained source directory could hide a nested reparse point that recursive copy followed. The complete declared source tree is rejected if any entry is indirect. |
+| WR-492 | demo asset destinations | Output directories and parents were created or reused without proving that an existing component was not a reparse point. Destination ancestry is checked before each copy. |
+| WR-493 | demo asset collisions | Two projects could silently overwrite the same shared asset path with different content, making results depend on manifest order; 3D Bowling and Xenoscape already had different title-art bytes at one path. Each published demo now owns a sidecar directory, and per-demo ownership still rejects conflicting directives while allowing byte-identical aliases. |
+| WR-494 | demo executable preservation | Compilation wrote directly over the published `.exe`, so a late compiler/linker failure could destroy the last good demo. Every build now targets a same-directory unique stage. |
+| WR-495 | demo stale output | Exit zero was trusted without proving that the requested output existed, allowing a stale prior executable to be reported and run. The exact staged file must exist and pass validation before smoke or publication. |
+| WR-496 | demo PE shape | Arbitrary/truncated/MZ-only output was accepted as a Windows demo. Stages now require bounded DOS/PE offsets, a PE signature, a sane section count, a complete PE32+ optional header, and executable/non-DLL characteristics. |
+| WR-497 | demo PE architecture | A host or compiler mix-up could publish an x64 image for ARM64 or vice versa. The COFF machine must exactly match the requested demo architecture and the image must have an entry point. |
+| WR-498 | demo smoke isolation | Demos ran in shared `examples/bin`, so a smoke launch could modify or delete published executables and assets. Each launch now receives a unique private directory containing only its executable and declared assets. |
+| WR-499 | demo timeout process trees | Timeout killed only the immediate process, allowing descendants to survive with inherited handles or locks. The Windows tree terminator now stops the complete PID tree. |
+| WR-500 | demo timeout wait | After kill, the driver performed an unbounded `WaitForExit()`, so inherited redirected handles or failed termination could hang all demo automation. Reaping uses one finite five-second bound and reports a deterministic failure. |
+| WR-501 | Xenoscape asset generator | A newly added scene-source copy retained a raw `_WIN32` branch that was absent from the platform-policy debt baseline, making the complete Windows CTest gate fail after every compiled test passed. Both generator copies now select the available directory API through header capability detection, and directory-creation failures other than an existing output directory are fatal. |
+| WR-502 | installer build self-lock | Explicit `--build-dir` packaging launched that tree's `zanna.exe` and then asked it to relink the same image, which Windows denied with `LNK1104`. The wrapper now executes a unique, byte-exact staged driver outside the relink target, verifies its shape and SHA-256 before launch, and removes only the exact file and empty private directory afterward. |
 
 ## Regression coverage
 
@@ -504,7 +556,8 @@ audit.
   draw/shadow ownership, transactional RTT
   switching, staging recovery, resize ordering, post-FX target planning, overlay-preserving scene
   replacement, BGRA/feature-level device creation, device-health checks after void GPU commands,
-  and the shader helpers' initialized single-result control flow;
+  hardware-to-WARP retry cleanup, complete fallback-resource publication, timing-query health
+  checks, malformed RTT staging eviction, and initialized diagnostic formatting;
   `zia_smoke_d3d11_rtt_readback`,
   `g3d_test_canvas3d_viewmodel_sprite`, `g3d_test_canvas3d_point_shadows_d3d11`, and the Ridgebound
   D3D11 smoke exercise the hardware backend.
@@ -516,10 +569,12 @@ audit.
   own strict-decoded JPEG fixture.
 - `windows_automation_script_contracts` exercises failure-atomic signing, timestamp-URL rejection,
   input-race detection, paired metadata publication, staging cleanup, single/multi-config Studio
-  discovery, PE/provenance checks, path confinement, bounded installer validation, and duplicate
-  demo-output rejection. It also launches the logic-free `.cmd` compatibility shim and pins
-  installer-wrapper help, equals-form input detection, required Studio output checks, and the
-  distinct package/product version domains used during lifecycle validation.
+  discovery, PE/provenance checks, path confinement, bounded installer validation, duplicate
+  demo-output rejection, transactional demo PE publication, quoted asset parsing, reparse
+  rejection, architecture proof, private smoke directories, process-tree termination, and bounded
+  reap waits. It also launches the logic-free `.cmd` compatibility shim and pins installer-wrapper
+  help, equals-form input detection, required Studio output checks, and the distinct
+  package/product version domains used during lifecycle validation.
 - `test_windows_installer_cleanup_policy` covers supported drive/UNC namespaces, root and traversal
   refusal, reserved devices, alternate streams, illegal/trailing characters, and ordinal path
   identity. `test_vg_filedialog_platform_win32` covers root-preserving parent navigation, strict
@@ -535,7 +590,11 @@ audit.
   `test_windows_installer_lifecycle_contract` protects exact recovery schemas, durable staging,
   validated PATH mutation, required Shell Link outputs, typed registry/elevation handling, bounded
   destination probes, upgrade filtering, fail-closed destination/shortcut cleanup, paired internal
-  worker arguments, and cache/elevation proof before handoff waiting.
+  worker arguments, cache/elevation proof before handoff waiting, verified installer class reuse,
+  guarded painting, per-monitor DPI transitions, quit preservation, and bounded/coalesced progress.
+  `test_windows_installer_brand_validation` directly exercises page/progress UTF-16 and size
+  bounds, action identity, accessible labels, default/close results, verification gates, and work
+  presence.
 - `windows_installer_host_cli_contracts` exercises duplicate, empty, ambiguous-help, and malformed
   internal-handoff options without entering an installer mutation path.
 - `windows_utf8_tool_command_line` exercises Unicode source input through `zanna`, `zia`, and
@@ -558,6 +617,41 @@ The `.cmd` demo shim delegates to that canonical PowerShell implementation under
 remains mandatory for future changes in these adapters.
 
 ## Validation record
+
+Revalidated on Windows x64/MSVC on 2026-07-24:
+
+- The warning-as-error incremental Debug `scripts/build_zanna_win.ps1` pipeline passed
+  1,891/1,891 CTests and completed strict platform lint, the runtime-surface audit, every
+  cross-platform host smoke, and the install stage in 576.2 seconds. The first complete run
+  exposed the tracked Xenoscape scene-generator policy drift recorded as WR-501; its focused
+  strict-policy rerun and the complete canonical rerun both passed after repair.
+- The Direct3D shared-backend, native installer validation/lifecycle/update/cleanup, and Windows
+  automation regression set passed 7/7 focused CTests. The automation contract passed again after
+  pinning generated CMake architecture proof, per-demo publication isolation, and the staged
+  installer package driver.
+- `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+  scripts/build_demos_win.ps1 --clean --run` built, PE-validated, privately launch-smoked, and
+  published all nine curated native x64 demos in 308.1 seconds: Ashfall, 3D Bowling, Ridgebound,
+  Xenoscape, Crackman, Chess, Baseball, Paint, and ZannaSQL. Each executable and its assets now
+  live below a demo-owned `examples/bin/<demo>/` directory.
+- `scripts/build_installer.ps1 --build-dir build --config Release --target windows` completed in
+  1,864.3 seconds after its first invocation exposed and repaired the Windows self-relink lock in
+  WR-502. It produced the verified, unsigned development installer
+  `zanna-0.2.99-win-x64.exe`: 298,583,630 bytes with SHA-256
+  `1570f9cf5a848a3113da0cb25d1c7871f36ac5598df88b2d408074f6191369ed`.
+  Independent checksum-required verification, the bounded installer-host self-test, and schema-3
+  inspection all returned zero. Inspection reports 1,984 payload files, 642,324,370 installed
+  bytes, and the `core`, `zannastudio`, `sdk`, and `samples` components.
+- The opt-in slow application-installer lifecycle pair passed 2/2 in 37.7 seconds. It generated
+  both the synthetic user package and the real Xenoscape package, completed quiet user-scope
+  installs, launched the installed Xenoscape executable outside its source working directory,
+  validated assets, shortcuts, registry identity, and maintenance-cache ownership, then completed
+  residue-free uninstalls.
+- `scripts/audit_doc_comments.sh` found zero missing source-file headers; strict changed-only
+  platform lint, PowerShell parser checks, `clang-format --dry-run --Werror`,
+  `scripts/check_docs.sh`, and `git diff --check` passed. The documentation auditor's 1,024
+  existing undocumented runtime prototypes remain informational debt and were not increased by
+  this pass.
 
 Revalidated on Windows x64/MSVC on 2026-07-23:
 
